@@ -1,0 +1,16 @@
+{
+  "name": "swindowzig",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "zig build web && bun backends/wasm/dev-server.ts",
+    "dev": "zig build web && bun --watch backends/wasm/dev-server.ts",
+    "build": "zig build",
+    "build:native": "zig build native",
+    "build:web": "zig build web && bun build backends/wasm/boot.ts --outdir=dist",
+    "test": "zig build test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.5"
+  }
+}
