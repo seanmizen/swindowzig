@@ -8,7 +8,7 @@ export interface GPUBridge {
 }
 
 // Debug state
-let debugEnabled = true;
+const debugEnabled = true;
 let mouseX = 0;
 let mouseY = 0;
 let keysPressedText = '';
@@ -135,7 +135,7 @@ export async function initWebGPU(
 function drawDebugOverlay(
   ctx: CanvasRenderingContext2D,
   width: number,
-  height: number,
+  _height: number,
 ) {
   const padding = 16;
   const boxWidth = 280;
@@ -162,13 +162,21 @@ function drawDebugOverlay(
   ctx.fillText(`Tick: ${debugInfo.tick || 0}`, x + 12, textY);
   textY += lineHeight;
 
-  ctx.fillText(`Mouse: ${mouseX.toFixed(0)}, ${mouseY.toFixed(0)}`, x + 12, textY);
+  ctx.fillText(
+    `Mouse: ${mouseX.toFixed(0)}, ${mouseY.toFixed(0)}`,
+    x + 12,
+    textY,
+  );
   textY += lineHeight;
 
   ctx.fillText(`Keys: ${keysPressedText || 'none'}`, x + 12, textY);
   textY += lineHeight;
 
-  ctx.fillText(`Ship: ${debugInfo.shipAlive ? 'alive' : 'dead'}`, x + 12, textY);
+  ctx.fillText(
+    `Ship: ${debugInfo.shipAlive ? 'alive' : 'dead'}`,
+    x + 12,
+    textY,
+  );
   textY += lineHeight;
 
   ctx.fillText(`Asteroids: ${debugInfo.asteroidCount || 0}`, x + 12, textY);

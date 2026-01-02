@@ -1,67 +1,70 @@
 // DOM event forwarding to WASM
-import { setMousePos, setKeysPressed } from './webgpu';
+import { setKeysPressed, setMousePos } from './webgpu';
 
 const keysDown = new Set<string>();
 
-export function attachEventListeners(canvas: HTMLCanvasElement, wasmExports: any) {
-    // Mouse move
-    canvas.addEventListener('mousemove', (e) => {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        const dx = e.movementX;
-        const dy = e.movementY;
-        setMousePos(x, y);
-        wasmExports.swindowzig_event_mouse_move?.(x, y, dx, dy);
-    });
+export function attachEventListeners(
+  canvas: HTMLCanvasElement,
+  wasmExports: any,
+) {
+  // Mouse move
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const dx = e.movementX;
+    const dy = e.movementY;
+    setMousePos(x, y);
+    wasmExports.swindowzig_event_mouse_move?.(x, y, dx, dy);
+  });
 
-    // Mouse buttons
-    canvas.addEventListener('mousedown', (e) => {
-        wasmExports.swindowzig_event_mouse_button?.(e.button, true);
-    });
+  // Mouse buttons
+  canvas.addEventListener('mousedown', (e) => {
+    wasmExports.swindowzig_event_mouse_button?.(e.button, true);
+  });
 
-    canvas.addEventListener('mouseup', (e) => {
-        wasmExports.swindowzig_event_mouse_button?.(e.button, false);
-    });
+  canvas.addEventListener('mouseup', (e) => {
+    wasmExports.swindowzig_event_mouse_button?.(e.button, false);
+  });
 
-    // Keyboard
-    window.addEventListener('keydown', (e) => {
-        const keycode = e.keyCode || e.which;
-        // Use keycode as the stable identifier for tracking
-        keysDown.add(String(keycode));
-        updateKeysDisplay();
-        wasmExports.swindowzig_event_key?.(keycode, true);
-    });
+  // Keyboard
+  window.addEventListener('keydown', (e) => {
+    const keycode = e.keyCode || e.which;
+    // Use keycode as the stable identifier for tracking
+    keysDown.add(String(keycode));
+    updateKeysDisplay();
+    wasmExports.swindowzig_event_key?.(keycode, true);
+  });
 
-    window.addEventListener('keyup', (e) => {
-        const keycode = e.keyCode || e.which;
-        keysDown.delete(String(keycode));
-        updateKeysDisplay();
-        wasmExports.swindowzig_event_key?.(keycode, false);
-    });
+  window.addEventListener('keyup', (e) => {
+    const keycode = e.keyCode || e.which;
+    keysDown.delete(String(keycode));
+    updateKeysDisplay();
+    wasmExports.swindowzig_event_key?.(keycode, false);
+  });
 
-    // No resize observer - we have fixed 1280x720 canvas size set in boot.ts
+  // No resize observer - we have fixed 1280x720 canvas size set in boot.ts
 }
 
 // Map keycodes to readable names
 const keyNames: Record<string, string> = {
-    '32': 'Space',
-    '37': 'Left',
-    '38': 'Up',
-    '39': 'Right',
-    '40': 'Down',
-    '87': 'W',
-    '65': 'A',
-    '83': 'S',
-    '68': 'D',
-    '16': 'Shift',
-    '17': 'Ctrl',
-    '18': 'Alt',
+  '32': 'Space',
+  '37': 'Left',
+  '38': 'Up',
+  '39': 'Right',
+  '40': 'Down',
+  '87': 'W',
+  '65': 'A',
+  '83': 'S',
+  '68': 'D',
+  '16': 'Shift',
+  '17': 'Ctrl',
+  '18': 'Alt',
 };
 
 function updateKeysDisplay() {
-    const keys = Array.from(keysDown)
-        .map((code) => keyNames[code] || code)
-        .join(', ');
-    setKeysPressed(keys);
+  const keys = Array.from(keysDown)
+    .map((code) => keyNames[code] || code)
+    .join(', ');
+  setKeysPressed(keys);
 }
