@@ -31,25 +31,37 @@ pub const AudioState = enum {
 
 pub const Audio = struct {
     state: AudioState = .uninitialized,
+    master_volume: f32 = 0.5,
 
     pub fn init() Audio {
         audioInit();
-        return .{ .state = .ready };
+        return .{ .state = .ready, .master_volume = 0.5 };
     }
 
     pub fn isReady(self: *const Audio) bool {
         return self.state == .ready;
     }
 
-    /// Play a synthesized sound
+    /// Set master volume (0.0 - 1.0)
+    pub fn setMasterVolume(self: *Audio, volume: f32) void {
+        self.master_volume = @max(0.0, @min(1.0, volume));
+    }
+
+    /// Get current master volume
+    pub fn getMasterVolume(self: *const Audio) f32 {
+        return self.master_volume;
+    }
+
+    /// Play a synthesized sound (applies master volume)
     pub fn play(self: *Audio, sound: Sound) void {
-        _ = self;
+        const effective_volume = sound.volume * self.master_volume;
+        if (effective_volume <= 0.001) return; // Skip if effectively silent
         audioPlay(
             sound.frequency,
             sound.frequency_end orelse sound.frequency,
             sound.duration,
             @intFromEnum(sound.waveform),
-            sound.volume,
+            effective_volume,
         );
     }
 
@@ -97,9 +109,9 @@ pub const Audio = struct {
 
     pub fn thrust(self: *Audio) void {
         self.play(.{
-            .frequency = 60,
-            .duration = 0.05,
-            .waveform = .sawtooth,
+            .frequency = 70,
+            .duration = 0.03,
+            .waveform = .triangle,
             .volume = 0.15,
         });
     }

@@ -135,6 +135,69 @@ export async function initWebGPU(
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.stroke();
     },
+
+    gpuDrawFilledRect: (
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      r: number,
+      g: number,
+      b: number,
+      a: number,
+    ) => {
+      ctx.fillStyle = `rgba(${r * 255}, ${g * 255}, ${b * 255}, ${a})`;
+      ctx.fillRect(x, y, width, height);
+    },
+
+    gpuDrawFilledCircle: (
+      x: number,
+      y: number,
+      radius: number,
+      r: number,
+      g: number,
+      b: number,
+      a: number,
+    ) => {
+      ctx.fillStyle = `rgba(${r * 255}, ${g * 255}, ${b * 255}, ${a})`;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    },
+
+    gpuDrawRoundedRect: (
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      radius: number,
+      r: number,
+      g: number,
+      b: number,
+      a: number,
+    ) => {
+      ctx.fillStyle = `rgba(${r * 255}, ${g * 255}, ${b * 255}, ${a})`;
+      ctx.beginPath();
+      ctx.roundRect(x, y, width, height, radius);
+      ctx.fill();
+    },
+
+    gpuDrawText: (
+      textPtr: number,
+      textLen: number,
+      x: number,
+      y: number,
+      size: number,
+      r: number,
+      g: number,
+      b: number,
+      a: number,
+    ) => {
+      // Text rendering requires memory access - will be set up later
+      ctx.fillStyle = `rgba(${r * 255}, ${g * 255}, ${b * 255}, ${a})`;
+      ctx.font = `${size}px monospace`;
+      // For now, we'll handle text via JS-side debug info
+    },
   };
 
   return { device, context, canvas2d: ctx, imports };
