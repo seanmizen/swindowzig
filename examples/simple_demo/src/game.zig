@@ -179,6 +179,14 @@ pub const Input = struct {
     fire: bool,
 };
 
+// Events that occurred this tick (for audio/effects)
+pub const Events = struct {
+    fired: bool = false,
+    asteroid_hit: bool = false,
+    ship_died: bool = false,
+    thrust: bool = false,
+};
+
 pub const Game = struct {
     ship: Ship,
     bullets: [32]Bullet,
@@ -190,6 +198,7 @@ pub const Game = struct {
     fire_cooldown: f32,
     tick_count: u64,
     last_input: Input,
+    events: Events,
 
     pub fn init(width: f32, height: f32) Game {
         var game = Game{
@@ -208,6 +217,7 @@ pub const Game = struct {
                 .turn_right = false,
                 .fire = false,
             },
+            .events = .{},
         };
 
         // Initialize bullets as inactive
@@ -267,6 +277,12 @@ pub const Game = struct {
         self.tick_count += 1;
         self.last_input = input;
 
+        // Clear events from previous tick
+        self.events = .{};
+
+        // Track thrust for audio
+        self.events.thrust = input.thrust and self.ship.alive;
+
         // Update fire cooldown
         if (self.fire_cooldown > 0) {
             self.fire_cooldown -= dt;
@@ -281,6 +297,7 @@ pub const Game = struct {
             for (&self.bullets) |*bullet| {
                 if (!bullet.active) {
                     bullet.* = Bullet.init(self.ship.pos, self.ship.angle);
+                    self.events.fired = true;
                     break;
                 }
             }
@@ -313,6 +330,7 @@ pub const Game = struct {
                     bullet.active = false;
                     asteroid.active = false;
                     self.score += 100;
+                    self.events.asteroid_hit = true;
 
                     // Split asteroid
                     if (asteroid.size.split()) |smaller_size| {
@@ -354,6 +372,7 @@ pub const Game = struct {
                 if (dist_sq < total_radius * total_radius) {
                     // Ship hit!
                     self.ship.die();
+                    self.events.ship_died = true;
                     if (self.lives > 0) {
                         self.lives -= 1;
                     }

@@ -2,6 +2,7 @@
 
 import { attachEventListeners } from './events';
 import { initWebGPU } from './webgpu';
+import { audioImports } from './audio';
 
 async function main() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -80,6 +81,7 @@ async function main() {
       },
     },
     gpu: gpu.imports,
+    audio: audioImports,
   };
 
   // Instantiate WASM

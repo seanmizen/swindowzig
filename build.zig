@@ -18,12 +18,17 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("libs/sw_gpu/src/gpu_root.zig"),
     });
 
+    const sw_audio = b.addModule("sw_audio", .{
+        .root_source_file = b.path("libs/sw_audio/src/audio_root.zig"),
+    });
+
     const sw_app = b.addModule("sw_app", .{
         .root_source_file = b.path("libs/sw_app/src/app_root.zig"),
     });
     sw_app.addImport("sw_core", sw_core);
     sw_app.addImport("sw_platform", sw_platform);
     sw_app.addImport("sw_gpu", sw_gpu);
+    sw_app.addImport("sw_audio", sw_audio);
 
     // Example app - WASM build
     const wasm_target = b.resolveTargetQuery(.{

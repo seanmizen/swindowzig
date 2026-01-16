@@ -77,6 +77,8 @@ const server = serve({
       '/webgpu': './backends/wasm/webgpu.ts',
       '/events.js': './backends/wasm/events.ts',
       '/events': './backends/wasm/events.ts',
+      '/audio.js': './backends/wasm/audio.ts',
+      '/audio': './backends/wasm/audio.ts',
       '/app.wasm': './zig-out/bin/app.wasm',
       '/zig-out/bin/app.wasm': './zig-out/bin/app.wasm',
     };

@@ -31,6 +31,7 @@ var bus: sw.core_types.Bus = undefined;
 var input_snapshot: sw.core_types.InputSnapshot = undefined;
 var backend: sw.platform_types.Backend = undefined;
 var gpu_device: sw.gpu_types.GPU = undefined;
+var audio: sw.audio_types.Audio = undefined;
 var ctx: sw.Context = undefined;
 var initialized: bool = false;
 var last_time: u64 = 0;
@@ -71,6 +72,9 @@ export fn swindowzig_init() void {
 
     // Initialize GPU
     gpu_device = sw.gpu_types.GPU{ .state = .ready };
+
+    // Initialize Audio
+    audio = sw.audio_types.Audio.init();
 
     // Create context
     ctx = sw.Context{
@@ -143,6 +147,20 @@ export fn swindowzig_frame(timestamp_ms: f64) void {
         // Update game logic
         const dt = @as(f32, @floatFromInt(ctx.dtNs())) / 1_000_000_000.0;
         game_state.update(input, dt);
+
+        // Play sounds based on game events
+        if (game_state.events.fired) {
+            audio.laser();
+        }
+        if (game_state.events.asteroid_hit) {
+            audio.explosion();
+        }
+        if (game_state.events.ship_died) {
+            audio.explosion();
+        }
+        if (game_state.events.thrust) {
+            audio.thrust();
+        }
     }
 
     // Clear processed events
