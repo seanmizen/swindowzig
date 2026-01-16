@@ -55,6 +55,8 @@ export async function initWebGPU(
   canvas2d.style.position = 'absolute';
   canvas2d.style.left = '0';
   canvas2d.style.top = '0';
+  canvas2d.style.width = '100vw';
+  canvas2d.style.height = '100vh';
   canvas2d.style.pointerEvents = 'none';
   canvas.parentElement?.appendChild(canvas2d);
 
@@ -62,6 +64,12 @@ export async function initWebGPU(
   if (!ctx) {
     throw new Error('Failed to get 2D context');
   }
+
+  // Sync overlay canvas size with window on resize
+  window.addEventListener('resize', () => {
+    canvas2d.width = window.innerWidth;
+    canvas2d.height = window.innerHeight;
+  });
 
   // WASM imports for GPU operations
   const imports = {
@@ -139,7 +147,7 @@ function drawDebugOverlay(
 ) {
   const padding = 16;
   const boxWidth = 280;
-  const boxHeight = 140;
+  const boxHeight = 200;
   const x = width - boxWidth - padding;
   const y = padding;
 
@@ -158,6 +166,13 @@ function drawDebugOverlay(
 
   // Get debug info from global state (set by WASM exports)
   const debugInfo = (window as any).swindowzigDebug || {};
+
+  ctx.fillText(
+    `FPS: ${debugInfo.fps || 0}  TPS: ${debugInfo.tps || 0}`,
+    x + 12,
+    textY,
+  );
+  textY += lineHeight;
 
   ctx.fillText(`Tick: ${debugInfo.tick || 0}`, x + 12, textY);
   textY += lineHeight;
@@ -180,6 +195,9 @@ function drawDebugOverlay(
   textY += lineHeight;
 
   ctx.fillText(`Asteroids: ${debugInfo.asteroidCount || 0}`, x + 12, textY);
+  textY += lineHeight;
+
+  ctx.fillText(`Bullets: ${debugInfo.bullets || 0}/128`, x + 12, textY);
   textY += lineHeight;
 
   ctx.fillText(`Score: ${debugInfo.score || 0}`, x + 12, textY);

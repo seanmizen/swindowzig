@@ -6,6 +6,8 @@ const platform = @import("platform.zig");
 
 // Global event queue for WASM event handlers
 var global_event_queue: ?*std.ArrayList(core.Event) = null;
+// Global window info reference for resize updates
+var global_window_info: ?*platform.WindowInfo = null;
 
 pub const WasmBackend = struct {
     allocator: std.mem.Allocator,
@@ -28,8 +30,9 @@ pub const WasmBackend = struct {
             .next_tick_id = 0,
         };
 
-        // Set global event queue reference
+        // Set global references for WASM exports
         global_event_queue = &self.event_queue;
+        global_window_info = &self.window_info;
         global_allocator = allocator;
 
         return .{
@@ -113,6 +116,12 @@ fn mapKeyCode(js_keycode: u16) core.KeyCode {
 
 // Event injection from JS (exported from user's main.zig)
 export fn swindowzig_event_resize(width: u32, height: u32, dpi_scale: f32) void {
+    // Update window info immediately so getWindowInfo() returns correct values
+    if (global_window_info) |info| {
+        info.width = width;
+        info.height = height;
+        info.dpi_scale = dpi_scale;
+    }
     pushEvent(.{ .resize = .{ .width = width, .height = height, .dpi_scale = dpi_scale } }, global_allocator);
 }
 

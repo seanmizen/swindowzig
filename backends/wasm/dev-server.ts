@@ -1,5 +1,63 @@
-// Simple dev server for testing WASM build
-import { serve } from 'bun';
+// Simple dev server for testing WASM build with live Zig rebuilds
+import { serve, spawn } from 'bun';
+import { watch } from 'fs';
+
+// Watch Zig source files and rebuild on change
+let buildInProgress = false;
+let buildQueued = false;
+
+async function rebuildZig() {
+  if (buildInProgress) {
+    buildQueued = true;
+    return;
+  }
+
+  buildInProgress = true;
+  console.log('\n🔨 Rebuilding Zig...');
+
+  const start = performance.now();
+  const proc = spawn(['zig', 'build', 'web'], {
+    cwd: process.cwd(),
+    stdout: 'inherit',
+    stderr: 'inherit',
+  });
+
+  const exitCode = await proc.exited;
+  const elapsed = (performance.now() - start).toFixed(0);
+
+  if (exitCode === 0) {
+    console.log(`✅ Zig build complete (${elapsed}ms)`);
+  } else {
+    console.log(`❌ Zig build failed (exit code ${exitCode})`);
+  }
+
+  buildInProgress = false;
+
+  if (buildQueued) {
+    buildQueued = false;
+    rebuildZig();
+  }
+}
+
+// Watch directories for .zig file changes
+const watchDirs = ['libs', 'examples'];
+for (const dir of watchDirs) {
+  try {
+    watch(dir, { recursive: true }, (event, filename) => {
+      if (filename?.endsWith('.zig')) {
+        console.log(`\n📝 Changed: ${dir}/${filename}`);
+        rebuildZig();
+      }
+    });
+    console.log(`👀 Watching ${dir}/ for .zig changes`);
+  } catch (e) {
+    console.log(`⚠️  Could not watch ${dir}/ (may not exist)`);
+  }
+}
+
+// Initial build
+console.log('🚀 Initial Zig build...');
+await rebuildZig();
 
 const server = serve({
   port: 3020,

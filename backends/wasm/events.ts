@@ -1,7 +1,7 @@
 // DOM event forwarding to WASM
 import { setKeysPressed, setMousePos } from './webgpu';
 
-const keysDown = new Set<string>();
+const keysDown = new Set<number>();
 
 export function attachEventListeners(
   canvas: HTMLCanvasElement,
@@ -31,19 +31,37 @@ export function attachEventListeners(
   window.addEventListener('keydown', (e) => {
     const keycode = e.keyCode || e.which;
     // Use keycode as the stable identifier for tracking
-    keysDown.add(String(keycode));
+    keysDown.add(keycode);
     updateKeysDisplay();
     wasmExports.swindowzig_event_key?.(keycode, true);
   });
 
   window.addEventListener('keyup', (e) => {
     const keycode = e.keyCode || e.which;
-    keysDown.delete(String(keycode));
+    keysDown.delete(keycode);
     updateKeysDisplay();
     wasmExports.swindowzig_event_key?.(keycode, false);
   });
 
-  // No resize observer - we have fixed 1280x720 canvas size set in boot.ts
+  // Release all keys when window loses focus - prevents stuck keys
+  // This is critical because the browser won't fire keyup if you switch tabs/apps
+  // while holding a key
+  const releaseAllKeys = () => {
+    for (const keycode of keysDown) {
+      wasmExports.swindowzig_event_key?.(keycode, false);
+    }
+    keysDown.clear();
+    updateKeysDisplay();
+  };
+
+  window.addEventListener('blur', releaseAllKeys);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      releaseAllKeys();
+    }
+  });
+
+  // Resize is handled in boot.ts via window resize listener
 }
 
 // Map keycodes to readable names
@@ -64,7 +82,7 @@ const keyNames: Record<string, string> = {
 
 function updateKeysDisplay() {
   const keys = Array.from(keysDown)
-    .map((code) => keyNames[code] || code)
+    .map((code) => keyNames[String(code)] || String(code))
     .join(', ');
   setKeysPressed(keys);
 }

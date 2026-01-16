@@ -91,7 +91,7 @@ pub const Bullet = struct {
     active: bool,
 
     pub fn init(pos: Vec2, angle: f32) Bullet {
-        const speed: f32 = 500.0;
+        const speed: f32 = 400.0;
         return .{
             .pos = pos,
             .vel = .{
@@ -258,6 +258,11 @@ pub const Game = struct {
         }
     }
 
+    pub fn setDimensions(self: *Game, width: f32, height: f32) void {
+        self.width = width;
+        self.height = height;
+    }
+
     pub fn update(self: *Game, input: Input, dt: f32) void {
         self.tick_count += 1;
         self.last_input = input;
@@ -272,7 +277,7 @@ pub const Game = struct {
 
         // Fire bullet
         if (input.fire and self.fire_cooldown <= 0 and self.ship.alive) {
-            self.fire_cooldown = 0.2; // 200ms between shots
+            self.fire_cooldown = 0.16; // 160ms between shots (~16/sec)
             for (&self.bullets) |*bullet| {
                 if (!bullet.active) {
                     bullet.* = Bullet.init(self.ship.pos, self.ship.angle);

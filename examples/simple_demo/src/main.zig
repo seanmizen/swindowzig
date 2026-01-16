@@ -35,6 +35,13 @@ var ctx: sw.Context = undefined;
 var initialized: bool = false;
 var last_time: u64 = 0;
 
+// Performance tracking
+var frame_count: u32 = 0;
+var tick_count_this_second: u32 = 0;
+var fps: u32 = 0;
+var tps: u32 = 0;
+var second_timer: u64 = 0;
+
 pub fn main() !void {
     try sw.run(.{
         .title = "Woke Asteroids",
@@ -103,27 +110,58 @@ export fn swindowzig_frame(timestamp_ms: f64) void {
     // Advance timeline
     const ticks_to_run = timeline.advance(frame_dt);
 
+    // Sync game dimensions with window size
+    const window = ctx.window();
+    game_state.setDimensions(@floatFromInt(window.width), @floatFromInt(window.height));
+    renderer.setDimensions(@floatFromInt(window.width), @floatFromInt(window.height));
+
+    // Always process input events, even if no ticks run this frame
+    // This prevents keyup events from being lost when ticks_to_run == 0
+    const all_events = bus.eventsForTick(0);
+    input_snapshot.updateFromEvents(all_events);
+
     // Run ticks
     var i: u32 = 0;
     while (i < ticks_to_run) : (i += 1) {
-        const tick_events = bus.eventsForTick(timeline.currentTick());
-        input_snapshot.updateFromEvents(tick_events);
-
-        // Get input from context
+        // Get input from snapshot (already updated above)
         const input = game_mod.Input{
             .thrust = input_snapshot.keyDown(.W) or input_snapshot.keyDown(.Up),
             .turn_left = input_snapshot.keyDown(.A) or input_snapshot.keyDown(.Left),
             .turn_right = input_snapshot.keyDown(.D) or input_snapshot.keyDown(.Right),
-            .fire = input_snapshot.keyPressed(.Space),
+            .fire = input_snapshot.keyDown(.Space),
         };
+
+        // Log fire state for ticks 1000-2000
+        const tick = game_state.tick_count;
+        const cooldown_before = game_state.fire_cooldown;
+        const will_fire = input.fire and cooldown_before <= 0 and game_state.ship.alive;
+
+        if (tick >= 1000 and tick <= 2000) {
+            jsLogFireState(tick, input.fire, will_fire, cooldown_before);
+        }
 
         // Update game logic
         const dt = @as(f32, @floatFromInt(ctx.dtNs())) / 1_000_000_000.0;
         game_state.update(input, dt);
     }
 
-    // Clear processed events to prevent them from being replayed
+    // Clear processed events
     bus.clear();
+
+    // Track performance metrics
+    frame_count += 1;
+    tick_count_this_second += ticks_to_run;
+    second_timer += frame_dt;
+
+    // Update FPS/TPS every second
+    const one_second_ns: u64 = 1_000_000_000;
+    if (second_timer >= one_second_ns) {
+        fps = frame_count;
+        tps = tick_count_this_second;
+        frame_count = 0;
+        tick_count_this_second = 0;
+        second_timer -= one_second_ns;
+    }
 
     // Render
     if (ctx.gpu().isReady()) {
@@ -141,13 +179,23 @@ fn updateDebugInfo() void {
         if (asteroid.active) asteroid_count += 1;
     }
 
-    // Export to JS global (simple approach without proper JS interop)
+    // Count active bullets
+    var bullet_count: u32 = 0;
+    for (game_state.bullets) |bullet| {
+        if (bullet.active) bullet_count += 1;
+    }
+
+    // Export to JS global
     jsSetDebugInfo(
         game_state.tick_count,
         game_state.ship.alive,
         asteroid_count,
         game_state.score,
+        fps,
+        tps,
+        bullet_count,
     );
 }
 
-extern fn jsSetDebugInfo(tick: u64, ship_alive: bool, asteroid_count: u32, score: u32) void;
+extern fn jsSetDebugInfo(tick: u64, ship_alive: bool, asteroid_count: u32, score: u32, fps_val: u32, tps_val: u32, bullet_count: u32) void;
+extern fn jsLogFireState(tick: u64, space_down: bool, fired: bool, cooldown_remaining: f32) void;

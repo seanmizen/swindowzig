@@ -13,6 +13,11 @@ pub const Renderer = struct {
         };
     }
 
+    pub fn setDimensions(self: *Renderer, width: f32, height: f32) void {
+        self.width = width;
+        self.height = height;
+    }
+
     pub fn draw(self: *Renderer, ctx: *sw.Context, g: *const game.Game) !void {
         if (!ctx.gpu().isReady()) return;
 
