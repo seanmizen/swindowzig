@@ -3,9 +3,27 @@ import { setKeysPressed, setMousePos } from './webgpu';
 
 const keysDown = new Set<number>();
 
+export interface WasmExports {
+  swindowzig_init: () => void;
+  swindowzig_frame: (timestamp: number) => void;
+  swindowzig_event_resize?: (
+    width: number,
+    height: number,
+    dpiScale: number,
+  ) => void;
+  swindowzig_event_mouse_move?: (
+    x: number,
+    y: number,
+    dx: number,
+    dy: number,
+  ) => void;
+  swindowzig_event_mouse_button?: (button: number, down: boolean) => void;
+  swindowzig_event_key?: (keycode: number, down: boolean) => void;
+}
+
 export function attachEventListeners(
   canvas: HTMLCanvasElement,
-  wasmExports: any,
+  wasmExports: WasmExports,
 ) {
   // Mouse move
   canvas.addEventListener('mousemove', (e) => {

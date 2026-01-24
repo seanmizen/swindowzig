@@ -1,8 +1,27 @@
 // WASM boot loader for swindowzig
 
+import { audioImports } from './audio';
 import { attachEventListeners } from './events';
 import { initWebGPU } from './webgpu';
-import { audioImports } from './audio';
+
+// Type definitions
+export interface SwindowzigDebug {
+  tick: number;
+  shipAlive: boolean;
+  asteroidCount: number;
+  score: number;
+  fps?: number;
+  tps?: number;
+  bullets?: number;
+}
+
+declare global {
+  interface Window {
+    swindowzigDebug: SwindowzigDebug;
+    getFireLog: () => string;
+    downloadFireLog: () => void;
+  }
+}
 
 async function main() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -24,7 +43,7 @@ async function main() {
   const gpu = await initWebGPU(canvas);
 
   // Initialize debug global
-  (window as any).swindowzigDebug = {
+  window.swindowzigDebug = {
     tick: 0,
     shipAlive: true,
     asteroidCount: 0,
@@ -33,8 +52,8 @@ async function main() {
 
   // Fire state log collector
   const fireLog: string[] = [];
-  (window as any).getFireLog = () => fireLog.join('\n');
-  (window as any).downloadFireLog = () => {
+  window.getFireLog = () => fireLog.join('\n');
+  window.downloadFireLog = () => {
     const blob = new Blob([fireLog.join('\n')], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -69,7 +88,7 @@ async function main() {
         tpsVal: number,
         bulletCount: number,
       ) => {
-        (window as any).swindowzigDebug = {
+        window.swindowzigDebug = {
           tick: Number(tick),
           shipAlive: shipAlive !== 0,
           asteroidCount,
@@ -89,7 +108,11 @@ async function main() {
   const exports = instance.exports as {
     swindowzig_init: () => void;
     swindowzig_frame: (timestamp: number) => void;
-    swindowzig_event_resize: (width: number, height: number, dpiScale: number) => void;
+    swindowzig_event_resize: (
+      width: number,
+      height: number,
+      dpiScale: number,
+    ) => void;
   };
 
   // Attach DOM event listeners
@@ -97,7 +120,11 @@ async function main() {
 
   // Send resize events to Zig
   const notifyResize = () => {
-    exports.swindowzig_event_resize(canvas.width, canvas.height, window.devicePixelRatio || 1);
+    exports.swindowzig_event_resize(
+      canvas.width,
+      canvas.height,
+      window.devicePixelRatio || 1,
+    );
   };
   window.addEventListener('resize', notifyResize);
 

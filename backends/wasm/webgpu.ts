@@ -1,10 +1,12 @@
 // WebGPU initialization and bridge
 
+import type { SwindowzigDebug } from './boot';
+
 export interface GPUBridge {
   device: GPUDevice;
   context: GPUCanvasContext;
   canvas2d: CanvasRenderingContext2D;
-  imports: Record<string, Function>;
+  imports: Record<string, (...args: never[]) => unknown>;
 }
 
 // Debug state
@@ -183,10 +185,10 @@ export async function initWebGPU(
     },
 
     gpuDrawText: (
-      textPtr: number,
-      textLen: number,
-      x: number,
-      y: number,
+      _textPtr: number,
+      _textLen: number,
+      _x: number,
+      _y: number,
       size: number,
       r: number,
       g: number,
@@ -228,7 +230,7 @@ function drawDebugOverlay(
   const lineHeight = 20;
 
   // Get debug info from global state (set by WASM exports)
-  const debugInfo = (window as any).swindowzigDebug || {};
+  const debugInfo: Partial<SwindowzigDebug> = window.swindowzigDebug || {};
 
   ctx.fillText(
     `FPS: ${debugInfo.fps || 0}  TPS: ${debugInfo.tps || 0}`,

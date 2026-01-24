@@ -1,6 +1,7 @@
 // Simple dev server for testing WASM build with live Zig rebuilds
+
+import { watch } from 'node:fs';
 import { serve, spawn } from 'bun';
-import { watch } from 'fs';
 
 // Watch Zig source files and rebuild on change
 let buildInProgress = false;
@@ -43,14 +44,14 @@ async function rebuildZig() {
 const watchDirs = ['libs', 'examples'];
 for (const dir of watchDirs) {
   try {
-    watch(dir, { recursive: true }, (event, filename) => {
+    watch(dir, { recursive: true }, (_event, filename) => {
       if (filename?.endsWith('.zig')) {
         console.log(`\n📝 Changed: ${dir}/${filename}`);
         rebuildZig();
       }
     });
     console.log(`👀 Watching ${dir}/ for .zig changes`);
-  } catch (e) {
+  } catch (_e) {
     console.log(`⚠️  Could not watch ${dir}/ (may not exist)`);
   }
 }

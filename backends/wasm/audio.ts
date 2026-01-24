@@ -86,7 +86,7 @@ function playNoise(ctx: AudioContext, duration: number, volume: number): void {
   for (let i = 0; i < bufferSize; i++) {
     // White noise with decay envelope
     const t = i / bufferSize;
-    const envelope = Math.pow(1 - t, 2); // Quadratic decay
+    const envelope = (1 - t) ** 2; // Quadratic decay
     data[i] = (Math.random() * 2 - 1) * envelope;
   }
 
