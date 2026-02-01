@@ -67,7 +67,8 @@ pub const TextBuffer = struct {
     }
 };
 
-/// Input snapshot computed from events each tick
+/// Ergonomic input state snapshot computed each tick from raw events.
+/// Provides .keyDown(), .keyPressed(), .buttonDown(), mouse position, etc.
 pub const InputSnapshot = struct {
     mouse: MouseState = .{},
     wheel: WheelState = .{},
@@ -79,7 +80,7 @@ pub const InputSnapshot = struct {
         return .{};
     }
 
-    /// Update snapshot from events for a tick
+    /// Update snapshot from events for a tick (called internally by swindowzig).
     pub fn updateFromEvents(self: *InputSnapshot, events: []const Event) void {
         // Clear per-frame state
         self.keyboard.pressed = std.bit_set.IntegerBitSet(256).initEmpty();
@@ -141,19 +142,22 @@ pub const InputSnapshot = struct {
         }
     }
 
-    /// Convenience helpers
+    /// Is this key currently held down?
     pub fn keyDown(self: *const InputSnapshot, key: KeyCode) bool {
         return self.keyboard.isKeyDown(key);
     }
 
+    /// Was this key just pressed this tick? (goes from up to down)
     pub fn keyPressed(self: *const InputSnapshot, key: KeyCode) bool {
         return self.keyboard.isKeyPressed(key);
     }
 
+    /// Was this key just released this tick? (goes from down to up)
     pub fn keyReleased(self: *const InputSnapshot, key: KeyCode) bool {
         return self.keyboard.isKeyReleased(key);
     }
 
+    /// Is this mouse button currently held down?
     pub fn buttonDown(self: *const InputSnapshot, button: MouseButton) bool {
         return self.mouse.isButtonDown(button);
     }

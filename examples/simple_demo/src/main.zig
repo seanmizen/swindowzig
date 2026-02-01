@@ -55,7 +55,10 @@ pub fn main() !void {
 export fn swindowzig_init() void {
     if (initialized) return;
 
-    const allocator = std.heap.wasm_allocator;
+    const allocator = if (builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64)
+        std.heap.wasm_allocator
+    else
+        std.heap.page_allocator;
 
     // Initialize timeline
     timeline = sw.core_types.FixedStepTimeline.init(120);

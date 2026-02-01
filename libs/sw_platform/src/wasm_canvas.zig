@@ -43,6 +43,7 @@ pub const WasmBackend = struct {
                 .pollEvents = pollEvents,
                 .getTime = getTime,
                 .getWindowInfo = getWindowInfo,
+                .getWindow = getWindow,
             },
         };
     }
@@ -78,6 +79,11 @@ pub const WasmBackend = struct {
     fn getWindowInfo(ptr: *anyopaque) platform.WindowInfo {
         const self: *WasmBackend = @ptrCast(@alignCast(ptr));
         return self.window_info;
+    }
+
+    fn getWindow(_: *anyopaque) ?*anyopaque {
+        // WASM doesn't have a window handle concept
+        return null;
     }
 };
 
@@ -125,6 +131,9 @@ export fn swindowzig_event_resize(width: u32, height: u32, dpi_scale: f32) void 
     pushEvent(.{ .resize = .{ .width = width, .height = height, .dpi_scale = dpi_scale } }, global_allocator);
 }
 
+// Track current modifier state
+var current_mods: core.Modifiers = .{};
+
 export fn swindowzig_event_mouse_move(x: f32, y: f32, dx: f32, dy: f32) void {
     pushEvent(.{ .pointer_move = .{
         .x = x,
@@ -132,7 +141,7 @@ export fn swindowzig_event_mouse_move(x: f32, y: f32, dx: f32, dy: f32) void {
         .dx = dx,
         .dy = dy,
         .device_id = 0,
-        .mods = .{},
+        .mods = current_mods,
     } }, global_allocator);
 }
 
@@ -141,18 +150,28 @@ export fn swindowzig_event_mouse_button(button: u8, down: bool) void {
     pushEvent(.{ .pointer_button = .{
         .button = mouse_button,
         .down = down,
-        .mods = .{},
+        .mods = current_mods,
     } }, global_allocator);
 }
 
 export fn swindowzig_event_key(keycode: u16, down: bool) void {
     const key = mapKeyCode(keycode);
+
+    // Update modifier state
+    switch (key) {
+        .Ctrl => current_mods.ctrl = down,
+        .Shift => current_mods.shift = down,
+        .Alt => current_mods.alt = down,
+        .Super => current_mods.super = down,
+        else => {},
+    }
+
     pushEvent(.{ .key = .{
         .keycode = key,
         .scancode = 0,
         .down = down,
         .repeat = false,
-        .mods = .{},
+        .mods = current_mods,
     } }, global_allocator);
 }
 

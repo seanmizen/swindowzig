@@ -72,6 +72,7 @@ const server = serve({
     // Map common paths (with and without .js extension for ES modules)
     const fileMap: Record<string, string> = {
       '/index.html': './backends/wasm/index.html',
+      '/debug.html': './backends/wasm/debug.html',
       '/boot.js': './backends/wasm/boot.ts',
       '/boot': './backends/wasm/boot.ts',
       '/webgpu.js': './backends/wasm/webgpu.ts',

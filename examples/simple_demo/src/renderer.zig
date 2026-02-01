@@ -72,9 +72,9 @@ pub const Renderer = struct {
         const bry = ship.pos.y + @sin(ship.angle - 2.5) * size;
 
         // Draw triangle
-        gpu.drawLine(fx, fy, blx, bly, 0.0, 1.0, 0.0, 1.0); // Green
-        gpu.drawLine(blx, bly, brx, bry, 0.0, 1.0, 0.0, 1.0);
-        gpu.drawLine(brx, bry, fx, fy, 0.0, 1.0, 0.0, 1.0);
+        gpu.drawLine(fx, fy, blx, bly, 2.0, 0.0, 1.0, 0.0, 1.0); // Green
+        gpu.drawLine(blx, bly, brx, bry, 2.0, 0.0, 1.0, 0.0, 1.0);
+        gpu.drawLine(brx, bry, fx, fy, 2.0, 0.0, 1.0, 0.0, 1.0);
     }
 
     fn drawBullet(self: *Renderer, ctx: *sw.Context, bullet: game.Bullet) void {
@@ -82,7 +82,7 @@ pub const Renderer = struct {
         const gpu = ctx.gpu();
 
         // Draw small circle for bullet
-        gpu.drawCircle(bullet.pos.x, bullet.pos.y, 3.0, 1.0, 1.0, 1.0, 1.0); // White
+        gpu.drawCircle(bullet.pos.x, bullet.pos.y, 3.0, 2.0, 1.0, 1.0, 1.0, 1.0); // White
     }
 
     fn drawAsteroid(self: *Renderer, ctx: *sw.Context, asteroid: game.Asteroid) void {
@@ -91,6 +91,6 @@ pub const Renderer = struct {
 
         // Draw circle for asteroid
         const radius = asteroid.size.radius();
-        gpu.drawCircle(asteroid.pos.x, asteroid.pos.y, radius, 0.7, 0.7, 0.7, 1.0); // Gray
+        gpu.drawCircle(asteroid.pos.x, asteroid.pos.y, radius, 2.0, 0.7, 0.7, 0.7, 1.0); // Gray
     }
 };

@@ -16,6 +16,7 @@ pub const Backend = struct {
         pollEvents: *const fn (ptr: *anyopaque, bus: *core.Bus) anyerror!void,
         getTime: *const fn (ptr: *anyopaque) u64,
         getWindowInfo: *const fn (ptr: *anyopaque) WindowInfo,
+        getWindow: *const fn (ptr: *anyopaque) ?*anyopaque,
     };
 
     pub fn init(self: Backend) !void {
@@ -36,5 +37,9 @@ pub const Backend = struct {
 
     pub fn getWindowInfo(self: Backend) WindowInfo {
         return self.vtable.getWindowInfo(self.ptr);
+    }
+
+    pub fn getWindow(self: Backend) ?*anyopaque {
+        return self.vtable.getWindow(self.ptr);
     }
 };
