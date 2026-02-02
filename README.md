@@ -278,7 +278,17 @@ const mesh = try gpu.loadMesh("model.obj");
 - Filled and outline modes
 - Batched rendering
 
-**3. Test Suite** (4-6 hours)
+**3. MSAA Support** (2-3 hours)
+- Create multisampled render targets
+- Resolve to screen texture
+- Enable 4x/8x anti-aliasing
+
+**4. Uniform Buffers & Bind Groups** (3-4 hours)
+- Full bind group API implementation
+- Uniform buffer support for shader parameters
+- Enable GPU-side transformations
+
+**5. Test Suite** (4-6 hours)
 - Struct layout validation
 - Resource lifecycle tests
 - Integration tests
