@@ -10,18 +10,38 @@
 ### Prerequisites
 - **Zig 0.15.2+** (standard release)
 - **SDL2** (for native builds)
+- **wgpu-native** (WebGPU implementation for native builds)
 - **Node.js 20+** & **Yarn 4** (for web builds)
 
 ### Install Dependencies
 
+**Linux / WSL:**
+```bash
+# Install SDL2
+sudo apt install libsdl2-dev
+
+# Install wgpu-native (WebGPU implementation)
+mkdir -p ~/.local/lib ~/.local/include
+cd /tmp
+wget https://github.com/gfx-rs/wgpu-native/releases/download/v0.19.4.1/wgpu-linux-x86_64-release.zip
+unzip wgpu-linux-x86_64-release.zip
+cp libwgpu_native.so ~/.local/lib/
+cp webgpu.h wgpu.h ~/.local/include/
+rm -f wgpu-linux-x86_64-release.zip libwgpu_native.so libwgpu_native.a webgpu.h wgpu.h commit-sha
+```
+
 **macOS:**
 ```bash
 brew install sdl2
-```
 
-**Linux:**
-```bash
-sudo apt install libsdl2-dev
+# Install wgpu-native
+mkdir -p ~/.local/lib ~/.local/include
+cd /tmp
+wget https://github.com/gfx-rs/wgpu-native/releases/download/v0.19.4.1/wgpu-macos-x86_64-release.zip
+unzip wgpu-macos-x86_64-release.zip
+cp libwgpu_native.dylib ~/.local/lib/
+cp webgpu.h wgpu.h ~/.local/include/
+rm -f wgpu-macos-x86_64-release.zip libwgpu_native.dylib libwgpu_native.a webgpu.h wgpu.h commit-sha
 ```
 
 **From monorepo root:**
@@ -40,7 +60,7 @@ zig build native  # Compile only
 zig build run     # Compile and run
 ```
 
-**Current state:** ✅ Working! Triangle renders at ~600 FPS with debug overlay.
+**Current state:** ✅ Working! Triangle renders at ~7000-10000 FPS on Linux/Vulkan, ~600 FPS on macOS/Metal with debug overlay.
 
 ### Web (WASM)
 ```bash
@@ -49,7 +69,7 @@ bun build backends/wasm/boot.ts --outdir=dist  # Bundle JS
 bun backends/wasm/dev-server.ts          # Run dev server
 ```
 
-**Current state:** ✅ Working with full WebGPU support.
+**Current state:** ✅ Working! Triangle renders at ~7000-10000 FPS on Linux/WSL (Vulkan), ~600 FPS on macOS (Metal).
 
 ---
 

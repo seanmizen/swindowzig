@@ -98,14 +98,48 @@ const GameCallbacks = struct {
 ### Prerequisites
 
 - **Zig 0.15.2+** - [Download](https://ziglang.org/download/)
-- **SDL2** - `brew install sdl2` (macOS) or `sudo apt install libsdl2-dev` (Linux)
-- **Node/Bun** - For web builds
+- **SDL2** - Window management library
+- **wgpu-native** - WebGPU implementation (auto-selects Vulkan/Metal/DirectX)
+- **Node/Bun** - For web builds (optional)
+
+### Install Dependencies
+
+**Linux / WSL:**
+```bash
+# Install SDL2
+sudo apt install libsdl2-dev
+
+# Install wgpu-native (WebGPU implementation)
+mkdir -p ~/.local/lib ~/.local/include
+cd /tmp
+wget https://github.com/gfx-rs/wgpu-native/releases/download/v0.19.4.1/wgpu-linux-x86_64-release.zip
+unzip wgpu-linux-x86_64-release.zip
+cp libwgpu_native.so ~/.local/lib/
+cp webgpu.h wgpu.h ~/.local/include/
+rm -f wgpu-linux-x86_64-release.zip libwgpu_native.so libwgpu_native.a webgpu.h wgpu.h commit-sha
+```
+
+**macOS:**
+```bash
+brew install sdl2
+
+# Install wgpu-native
+mkdir -p ~/.local/lib ~/.local/include
+cd /tmp
+wget https://github.com/gfx-rs/wgpu-native/releases/download/v0.19.4.1/wgpu-macos-x86_64-release.zip
+unzip wgpu-macos-x86_64-release.zip
+cp libwgpu_native.dylib ~/.local/lib/
+cp webgpu.h wgpu.h ~/.local/include/
+rm -f wgpu-macos-x86_64-release.zip libwgpu_native.dylib libwgpu_native.a webgpu.h wgpu.h commit-sha
+```
 
 ### Run Native Example
 
 ```bash
 zig build run
 # Opens window with triangle demo
+# Linux/WSL (Vulkan): ~7000-10000 FPS
+# macOS (Metal): ~600 FPS
 ```
 
 ### Run Web Example
@@ -301,9 +335,18 @@ zig build run
 
 ## Performance
 
-**Current:** ~600 FPS (single triangle)
-**Target:** 60 FPS stable (complex scenes with thousands of objects)
-**Backend:** Metal on macOS, Vulkan on Linux, D3D12 on Windows (via wgpu-native)
+**Current (single triangle):**
+- Linux/WSL (Vulkan): ~7000-10000 FPS
+- macOS (Metal): ~600 FPS
+- Windows native (DirectX 12): Similar to Linux
+
+**Target:** 60 FPS stable for complex scenes with thousands of objects
+
+**Graphics Backend (auto-selected by wgpu-native):**
+- Linux/WSL → Vulkan
+- macOS → Metal
+- Windows → DirectX 12 or Vulkan
+- Web → Browser's WebGPU implementation
 
 ---
 

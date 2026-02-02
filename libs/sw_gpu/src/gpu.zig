@@ -134,13 +134,20 @@ pub const GPU = struct {
             // Native: Initialize wgpu-native
             if (window == null) return error.WindowRequired;
 
-            // Create instance with Metal backend
+            // Create instance with appropriate backend for platform
+            const backend_flags = switch (builtin.os.tag) {
+                .macos => native.WGPUInstanceBackend_Metal,
+                .linux => native.WGPUInstanceBackend_Vulkan,
+                .windows => native.WGPUInstanceBackend_DX12 | native.WGPUInstanceBackend_Vulkan,
+                else => native.WGPUInstanceBackend_Vulkan,
+            };
+            
             const instance_extras = native.WGPUInstanceExtras{
                 .chain = .{
                     .next = null,
                     .s_type = .instance_extras,
                 },
-                .backends = native.WGPUInstanceBackend_Metal,
+                .backends = backend_flags,
             };
 
             const instance_desc = native.WGPUInstanceDescriptor{
@@ -165,17 +172,12 @@ pub const GPU = struct {
                 &adapter_result,
             );
 
-            std.log.info("Adapter request initiated", .{});
-
             // Wait for adapter (simple spin-wait for now)
             while (!adapter_result.received) {}
             if (adapter_result.adapter == null) return error.AdapterRequestFailed;
 
-            std.log.info("Adapter received successfully", .{});
-
             // Now create surface from SDL window
             const surface = try native.createSurfaceFromSDLWindow(instance, window.?);
-            std.log.info("Surface created successfully", .{});
 
             // Request device (using callback)
             var device_result = DeviceRequestResult{};
@@ -337,18 +339,23 @@ pub const GPU = struct {
             );
             return ShaderModule{ .handle = handle };
         } else {
-            // Native requires chained struct for WGSL source
+            // Native requires null-terminated string for WGSL source
+            const allocator = std.heap.page_allocator;
+            const code_z = try allocator.dupeZ(u8, desc.code);
+            defer allocator.free(code_z);
+            
             var wgsl_desc = native.WGPUShaderModuleWGSLDescriptor{
                 .chain = .{
                     .next = null,
                     .s_type = .shader_module_wgsl_descriptor,
                 },
-                .code = @as([*:0]const u8, @ptrCast(desc.code.ptr)),
+                .code = code_z.ptr,
             };
             const c_desc = native.WGPUShaderModuleDescriptor{
                 .next_in_chain = @ptrCast(&wgsl_desc.chain),
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
             };
+            
             const handle = native.wgpuDeviceCreateShaderModule(self.device, &c_desc);
             return ShaderModule{ .handle = handle orelse return error.ShaderCreationFailed };
         }
@@ -560,13 +567,8 @@ pub const GPU = struct {
                 .fragment = fragment_ptr,
             };
 
-            std.log.info("Creating render pipeline...", .{});
-            std.log.info("  Vertex module: {any}", .{vertex_state.module});
-            std.log.info("  Fragment state: {any}", .{pipeline_desc.fragment != null});
-
             // Create pipeline
             const handle = native.wgpuDeviceCreateRenderPipeline(self.device, &pipeline_desc);
-            std.log.info("Pipeline created: {any}", .{handle});
             if (handle == null) return error.PipelineCreationFailed;
 
             return RenderPipeline{ .handle = handle };
@@ -1125,7 +1127,6 @@ pub const CommandEncoder = struct {
                 // Initialize each field explicitly
                 color_attachments[i].next_in_chain = null;
                 color_attachments[i].view = att.view.handle;
-                color_attachments[i].depth_slice = 0xFFFFFFFF; // WGPU_DEPTH_SLICE_UNDEFINED
                 color_attachments[i].resolve_target = if (att.resolve_target) |rt| rt.handle else null;
                 color_attachments[i].load_op = @enumFromInt(@intFromEnum(att.load_op));
                 color_attachments[i].store_op = @enumFromInt(@intFromEnum(att.store_op));

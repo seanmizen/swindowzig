@@ -163,13 +163,18 @@ pub const WGPUChainedStruct = extern struct {
 };
 
 pub const WGPUSType = enum(u32) {
-    invalid = 0,
-    surface_descriptor_from_metal_layer = 1,
-    surface_descriptor_from_windows_hwnd = 2,
-    surface_descriptor_from_xlib_window = 3,
-    surface_descriptor_from_canvas_html_selector = 4,
-    shader_module_spirv_descriptor = 5,
-    shader_module_wgsl_descriptor = 6,
+    invalid = 0x00000000,
+    surface_descriptor_from_metal_layer = 0x00000001,
+    surface_descriptor_from_windows_hwnd = 0x00000002,
+    surface_descriptor_from_xlib_window = 0x00000003,
+    surface_descriptor_from_canvas_html_selector = 0x00000004,
+    shader_module_spirv_descriptor = 0x00000005,
+    shader_module_wgsl_descriptor = 0x00000006,
+    primitive_depth_clip_control = 0x00000007,
+    surface_descriptor_from_wayland_surface = 0x00000008,
+    surface_descriptor_from_android_native_window = 0x00000009,
+    surface_descriptor_from_xcb_window = 0x0000000A,
+    render_pass_descriptor_max_draw_count = 0x0000000F,
     instance_extras = 0x00030006,
     _,
 };
@@ -770,7 +775,6 @@ pub const WGPURenderPassDescriptor = extern struct {
 pub const WGPURenderPassColorAttachment = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     view: WGPUTextureView,
-    depth_slice: u32 = 0xFFFFFFFF, // WGPU_DEPTH_SLICE_UNDEFINED
     resolve_target: WGPUTextureView = null,
     load_op: WGPULoadOp,
     store_op: WGPUStoreOp,
@@ -850,6 +854,24 @@ pub const WGPUSurfaceDescriptor = extern struct {
 pub const WGPUSurfaceDescriptorFromMetalLayer = extern struct {
     chain: WGPUChainedStruct,
     layer: *anyopaque,
+};
+
+pub const WGPUSurfaceDescriptorFromXlibWindow = extern struct {
+    chain: WGPUChainedStruct,
+    display: *anyopaque,
+    window: u64,
+};
+
+pub const WGPUSurfaceDescriptorFromWaylandSurface = extern struct {
+    chain: WGPUChainedStruct,
+    display: *anyopaque,
+    surface: *anyopaque,
+};
+
+pub const WGPUSurfaceDescriptorFromWindowsHWND = extern struct {
+    chain: WGPUChainedStruct,
+    hinstance: *anyopaque,
+    hwnd: *anyopaque,
 };
 
 pub const WGPUSurfaceConfiguration = extern struct {
@@ -970,35 +992,130 @@ pub fn shaderStageToFlags(stage: types.ShaderStage) WGPUShaderStageFlags {
 // Platform-Specific Surface Creation
 // =============================================================================
 
-// SDL2 Metal declarations
+// SDL2 declarations for platform-specific surface creation
 pub extern fn SDL_Metal_CreateView(window: *anyopaque) ?*anyopaque;
 pub extern fn SDL_Metal_GetLayer(view: *anyopaque) ?*anyopaque;
 pub extern fn SDL_Metal_DestroyView(view: *anyopaque) void;
 
-/// Create a WGPUSurface from an SDL2 window on macOS
-pub fn createSurfaceFromSDLWindow(instance: WGPUInstance, sdl_window: *anyopaque) !WGPUSurface {
-    // Create Metal view from SDL window
-    const metal_view = SDL_Metal_CreateView(sdl_window) orelse return error.MetalViewCreationFailed;
+// SDL2 X11 declarations
+const SDL_SYSWM_X11 = 2;
+const SDL_SYSWM_WAYLAND = 3;
 
-    // Get the CAMetalLayer from the view
-    const metal_layer = SDL_Metal_GetLayer(metal_view) orelse return error.MetalLayerCreationFailed;
-
-    // Create surface descriptor with Metal layer
-    const metal_desc = WGPUSurfaceDescriptorFromMetalLayer{
-        .chain = .{
-            .next = null,
-            .s_type = .surface_descriptor_from_metal_layer,
+const SDL_SysWMinfo = extern struct {
+    version: SDL_version,
+    subsystem: u32,
+    info: extern union {
+        x11: extern struct {
+            display: *anyopaque,
+            window: u64,
         },
-        .layer = metal_layer,
-    };
+        wl: extern struct {
+            display: *anyopaque,
+            surface: *anyopaque,
+        },
+        dummy: [64]u8,
+    },
+};
 
-    const surface_desc = WGPUSurfaceDescriptor{
-        .next_in_chain = @ptrCast(&metal_desc),
-        .label = null,
-    };
+const SDL_version = extern struct {
+    major: u8,
+    minor: u8,
+    patch: u8,
+};
 
-    const surface = wgpuInstanceCreateSurface(instance, &surface_desc);
-    if (surface == null) return error.SurfaceCreationFailed;
+pub extern fn SDL_GetVersion(ver: *SDL_version) void;
+pub extern fn SDL_GetWindowWMInfo(window: *anyopaque, info: *SDL_SysWMinfo) c_int;
 
-    return surface;
+/// Create a WGPUSurface from an SDL2 window (cross-platform)
+pub fn createSurfaceFromSDLWindow(instance: WGPUInstance, sdl_window: *anyopaque) !WGPUSurface {
+    const builtin = @import("builtin");
+    
+    switch (builtin.os.tag) {
+        .macos => {
+            // Create Metal view from SDL window
+            const metal_view = SDL_Metal_CreateView(sdl_window) orelse return error.MetalViewCreationFailed;
+
+            // Get the CAMetalLayer from the view
+            const metal_layer = SDL_Metal_GetLayer(metal_view) orelse return error.MetalLayerCreationFailed;
+
+            // Create surface descriptor with Metal layer
+            const metal_desc = WGPUSurfaceDescriptorFromMetalLayer{
+                .chain = .{
+                    .next = null,
+                    .s_type = .surface_descriptor_from_metal_layer,
+                },
+                .layer = metal_layer,
+            };
+
+            const surface_desc = WGPUSurfaceDescriptor{
+                .next_in_chain = @ptrCast(&metal_desc),
+                .label = null,
+            };
+
+            const surface = wgpuInstanceCreateSurface(instance, &surface_desc);
+            if (surface == null) return error.SurfaceCreationFailed;
+
+            return surface;
+        },
+        .linux => {
+            // Get window manager info from SDL
+            var wm_info: SDL_SysWMinfo = undefined;
+            SDL_GetVersion(&wm_info.version);
+            
+            if (SDL_GetWindowWMInfo(sdl_window, &wm_info) == 0) {
+                return error.SDLWMInfoFailed;
+            }
+
+            if (wm_info.subsystem == SDL_SYSWM_X11) {
+                // X11 surface
+                const x11_desc = WGPUSurfaceDescriptorFromXlibWindow{
+                    .chain = .{
+                        .next = null,
+                        .s_type = .surface_descriptor_from_xlib_window,
+                    },
+                    .display = wm_info.info.x11.display,
+                    .window = wm_info.info.x11.window,
+                };
+
+                const surface_desc = WGPUSurfaceDescriptor{
+                    .next_in_chain = @ptrCast(&x11_desc),
+                    .label = null,
+                };
+
+                const surface = wgpuInstanceCreateSurface(instance, &surface_desc);
+                if (surface == null) return error.SurfaceCreationFailed;
+
+                return surface;
+            } else if (wm_info.subsystem == SDL_SYSWM_WAYLAND) {
+                // Wayland surface
+                const wl_desc = WGPUSurfaceDescriptorFromWaylandSurface{
+                    .chain = .{
+                        .next = null,
+                        .s_type = .surface_descriptor_from_wayland_surface,
+                    },
+                    .display = wm_info.info.wl.display,
+                    .surface = wm_info.info.wl.surface,
+                };
+
+                const surface_desc = WGPUSurfaceDescriptor{
+                    .next_in_chain = @ptrCast(&wl_desc),
+                    .label = null,
+                };
+
+                const surface = wgpuInstanceCreateSurface(instance, &surface_desc);
+                if (surface == null) return error.SurfaceCreationFailed;
+
+                return surface;
+            } else {
+                return error.UnsupportedWindowSystem;
+            }
+        },
+        .windows => {
+            // TODO: Implement Windows HWND surface creation
+            return error.NotImplementedYet;
+        },
+        else => {
+            return error.UnsupportedPlatform;
+        },
+    }
 }
