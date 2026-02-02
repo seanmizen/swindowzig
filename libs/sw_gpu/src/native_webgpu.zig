@@ -775,6 +775,7 @@ pub const WGPURenderPassDescriptor = extern struct {
 pub const WGPURenderPassColorAttachment = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     view: WGPUTextureView,
+    depth_slice: u32 = 0xFFFFFFFF, // WGPU_DEPTH_SLICE_UNDEFINED
     resolve_target: WGPUTextureView = null,
     load_op: WGPULoadOp,
     store_op: WGPUStoreOp,
