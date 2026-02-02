@@ -12,9 +12,19 @@ pub const MouseState = struct {
     delta_x: f32 = 0,
     delta_y: f32 = 0,
     buttons: std.bit_set.IntegerBitSet(5) = std.bit_set.IntegerBitSet(5).initEmpty(),
+    pressed: std.bit_set.IntegerBitSet(5) = std.bit_set.IntegerBitSet(5).initEmpty(),
+    released: std.bit_set.IntegerBitSet(5) = std.bit_set.IntegerBitSet(5).initEmpty(),
 
     pub fn isButtonDown(self: *const MouseState, button: MouseButton) bool {
         return self.buttons.isSet(@intFromEnum(button));
+    }
+
+    pub fn isButtonPressed(self: *const MouseState, button: MouseButton) bool {
+        return self.pressed.isSet(@intFromEnum(button));
+    }
+
+    pub fn isButtonReleased(self: *const MouseState, button: MouseButton) bool {
+        return self.released.isSet(@intFromEnum(button));
     }
 };
 
@@ -85,6 +95,8 @@ pub const InputSnapshot = struct {
         // Clear per-frame state
         self.keyboard.pressed = std.bit_set.IntegerBitSet(256).initEmpty();
         self.keyboard.released = std.bit_set.IntegerBitSet(256).initEmpty();
+        self.mouse.pressed = std.bit_set.IntegerBitSet(5).initEmpty();
+        self.mouse.released = std.bit_set.IntegerBitSet(5).initEmpty();
         self.mouse.delta_x = 0;
         self.mouse.delta_y = 0;
         self.wheel.delta_x = 0;
@@ -104,9 +116,13 @@ pub const InputSnapshot = struct {
                 .pointer_button => |p| {
                     const button_idx = @intFromEnum(p.button);
                     if (p.down) {
+                        if (!self.mouse.buttons.isSet(button_idx)) {
+                            self.mouse.pressed.set(button_idx);
+                        }
                         self.mouse.buttons.set(button_idx);
                     } else {
                         self.mouse.buttons.unset(button_idx);
+                        self.mouse.released.set(button_idx);
                     }
                     self.mods = p.mods;
                 },
@@ -160,6 +176,16 @@ pub const InputSnapshot = struct {
     /// Is this mouse button currently held down?
     pub fn buttonDown(self: *const InputSnapshot, button: MouseButton) bool {
         return self.mouse.isButtonDown(button);
+    }
+
+    /// Was this mouse button just pressed this tick? (goes from up to down)
+    pub fn buttonPressed(self: *const InputSnapshot, button: MouseButton) bool {
+        return self.mouse.isButtonPressed(button);
+    }
+
+    /// Was this mouse button just released this tick? (goes from down to up)
+    pub fn buttonReleased(self: *const InputSnapshot, button: MouseButton) bool {
+        return self.mouse.isButtonReleased(button);
     }
 };
 

@@ -76,8 +76,7 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
     };
 
     // 4. Initialize timeline
-    const tick_duration_ns = 1_000_000_000 / config.tick_hz;
-    var timeline = core.FixedStepTimeline.init(tick_duration_ns);
+    var timeline = core.FixedStepTimeline.init(config.tick_hz);
 
     // 5. Initialize event bus
     var event_bus = core.Bus.init(allocator);

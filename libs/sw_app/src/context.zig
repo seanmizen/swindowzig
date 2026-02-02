@@ -54,4 +54,10 @@ pub const Context = struct {
     pub fn allocator(self: *const Context) std.mem.Allocator {
         return self.alloc;
     }
+
+    /// Enable or disable mouse capture (for FPS-style controls).
+    /// When enabled, hides cursor and provides relative mouse movement.
+    pub fn setMouseCapture(self: *Context, capture: bool) void {
+        self.backend.setMouseCapture(capture);
+    }
 };

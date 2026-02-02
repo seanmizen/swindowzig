@@ -452,7 +452,7 @@ pub const WGPUShaderStage_Compute: u32 = 0x00000004;
 pub const WGPUBufferBindingLayout = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     type: WGPUBufferBindingType = .undefined,
-    has_dynamic_offset: bool = false,
+    has_dynamic_offset: u32 = 0, // WGPUBool (uint32_t, not bool!)
     min_binding_size: u64 = 0,
 };
 

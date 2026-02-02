@@ -17,6 +17,7 @@ pub const Backend = struct {
         getTime: *const fn (ptr: *anyopaque) u64,
         getWindowInfo: *const fn (ptr: *anyopaque) WindowInfo,
         getWindow: *const fn (ptr: *anyopaque) ?*anyopaque,
+        setMouseCapture: *const fn (ptr: *anyopaque, capture: bool) void,
     };
 
     pub fn init(self: Backend) !void {
@@ -41,5 +42,9 @@ pub const Backend = struct {
 
     pub fn getWindow(self: Backend) ?*anyopaque {
         return self.vtable.getWindow(self.ptr);
+    }
+
+    pub fn setMouseCapture(self: Backend, capture: bool) void {
+        return self.vtable.setMouseCapture(self.ptr, capture);
     }
 };

@@ -29,6 +29,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("libs/sw_audio/src/audio_root.zig"),
     });
 
+    const sw_math = b.addModule("sw_math", .{
+        .root_source_file = b.path("libs/sw_math/src/math_root.zig"),
+    });
+
     const sw_app = b.addModule("sw_app", .{
         .root_source_file = b.path("libs/sw_app/src/app_root.zig"),
     });
@@ -36,6 +40,7 @@ pub fn build(b: *std.Build) void {
     sw_app.addImport("sw_platform", sw_platform);
     sw_app.addImport("sw_gpu", sw_gpu);
     sw_app.addImport("sw_audio", sw_audio);
+    sw_app.addImport("sw_math", sw_math);
 
     // Example app - WASM build
     const wasm_target = b.resolveTargetQuery(.{
@@ -66,6 +71,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     example.root_module.addImport("sw_app", sw_app);
+    example.root_module.addImport("sw_math", sw_math);
+    example.root_module.addImport("sw_gpu", sw_gpu);
+    example.root_module.addImport("sw_core", sw_core);
     example.rdynamic = true; // Export symbols for WASM
 
     const install_example = b.addInstallArtifact(example, .{});
@@ -86,6 +94,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     native_exe.root_module.addImport("sw_app", sw_app);
+    native_exe.root_module.addImport("sw_math", sw_math);
+    native_exe.root_module.addImport("sw_gpu", sw_gpu);
+    native_exe.root_module.addImport("sw_core", sw_core);
 
     // Link SDL2 for native builds
     native_exe.linkSystemLibrary("SDL2");

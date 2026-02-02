@@ -273,17 +273,20 @@ pub const GPU = struct {
             return Texture{ .handle = handle };
         } else {
             const c_desc = native.WGPUTextureDescriptor{
-                .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
+                .next_in_chain = null,
+                .label = null, // TODO: Support labels
+                .usage = native.textureUsageToFlags(desc.usage),
+                .dimension = @enumFromInt(@intFromEnum(desc.dimension)),
                 .size = .{
                     .width = desc.size.width,
                     .height = desc.size.height,
                     .depth_or_array_layers = desc.size.depth_or_array_layers,
                 },
+                .format = @enumFromInt(@intFromEnum(desc.format)),
                 .mip_level_count = desc.mip_level_count,
                 .sample_count = desc.sample_count,
-                .dimension = @enumFromInt(@intFromEnum(desc.dimension)),
-                .format = @enumFromInt(@intFromEnum(desc.format)),
-                .usage = native.textureUsageToFlags(desc.usage),
+                .view_format_count = 0,
+                .view_formats = null,
             };
             const handle = native.wgpuDeviceCreateTexture(self.device, &c_desc);
             return Texture{ .handle = handle orelse return error.TextureCreationFailed };
@@ -643,8 +646,72 @@ pub const GPU = struct {
             return BindGroupLayout{ .handle = handle };
         } else {
             // Native implementation
-            // TODO: Implement when native backend is ready
-            return error.NotImplementedYet;
+            var native_entries = try std.heap.page_allocator.alloc(native.WGPUBindGroupLayoutEntry, desc.entries.len);
+            defer std.heap.page_allocator.free(native_entries);
+
+            for (desc.entries, 0..) |entry, i| {
+                // Convert ShaderStage flags
+                var visibility: u32 = 0;
+                if (entry.visibility.vertex) {
+                    visibility |= native.WGPUShaderStage_Vertex;
+                }
+                if (entry.visibility.fragment) {
+                    visibility |= native.WGPUShaderStage_Fragment;
+                }
+                if (entry.visibility.compute) {
+                    visibility |= native.WGPUShaderStage_Compute;
+                }
+
+                native_entries[i] = .{
+                    .binding = entry.binding,
+                    .visibility = visibility,
+                    .buffer = if (entry.buffer) |buf| .{
+                        .type = switch (buf.type) {
+                            .uniform => .uniform,
+                            .storage => .storage,
+                            .read_only_storage => .read_only_storage,
+                        },
+                        .has_dynamic_offset = if (buf.has_dynamic_offset) 1 else 0,
+                        .min_binding_size = buf.min_binding_size,
+                    } else .{},
+                    .sampler = if (entry.sampler) |samp| .{
+                        .type = switch (samp.type) {
+                            .filtering => .filtering,
+                            .non_filtering => .non_filtering,
+                            .comparison => .comparison,
+                        },
+                    } else .{},
+                    .texture = if (entry.texture) |tex| .{
+                        .sample_type = switch (tex.sample_type) {
+                            .float => .float,
+                            .unfilterable_float => .unfilterable_float,
+                            .depth => .depth,
+                            .sint => .sint,
+                            .uint => .uint,
+                        },
+                        .view_dimension = @enumFromInt(@intFromEnum(tex.view_dimension)),
+                        .multisampled = tex.multisampled,
+                    } else .{},
+                    .storage_texture = if (entry.storage_texture) |st| .{
+                        .access = switch (st.access) {
+                            .write_only => .write_only,
+                            .read_only => .read_only,
+                            .read_write => .read_write,
+                        },
+                        .format = @enumFromInt(@intFromEnum(st.format)),
+                        .view_dimension = @enumFromInt(@intFromEnum(st.view_dimension)),
+                    } else .{},
+                };
+            }
+
+            const native_desc = native.WGPUBindGroupLayoutDescriptor{
+                .label = null, // TODO: Convert label to null-terminated string
+                .entry_count = @intCast(native_entries.len),
+                .entries = native_entries.ptr,
+            };
+
+            const handle = native.wgpuDeviceCreateBindGroupLayout(self.device, &native_desc);
+            return BindGroupLayout{ .handle = handle };
         }
     }
 
@@ -678,8 +745,29 @@ pub const GPU = struct {
             return BindGroup{ .handle = handle };
         } else {
             // Native implementation
-            // TODO: Implement when native backend is ready
-            return error.NotImplementedYet;
+            var native_entries = try std.heap.page_allocator.alloc(native.WGPUBindGroupEntry, desc.entries.len);
+            defer std.heap.page_allocator.free(native_entries);
+
+            for (desc.entries, 0..) |entry, i| {
+                native_entries[i] = .{
+                    .binding = entry.binding,
+                    .buffer = if (entry.buffer) |buf| buf.handle else null,
+                    .offset = entry.offset,
+                    .size = entry.size,
+                    .sampler = if (entry.sampler) |samp| samp.handle else null,
+                    .texture_view = if (entry.texture_view) |view| view.handle else null,
+                };
+            }
+
+            const native_desc = native.WGPUBindGroupDescriptor{
+                .label = null, // TODO: Convert label to null-terminated string
+                .layout = desc.layout.handle,
+                .entry_count = @intCast(native_entries.len),
+                .entries = native_entries.ptr,
+            };
+
+            const handle = native.wgpuDeviceCreateBindGroup(self.device, &native_desc);
+            return BindGroup{ .handle = handle };
         }
     }
 
@@ -704,8 +792,21 @@ pub const GPU = struct {
             return PipelineLayout{ .handle = handle };
         } else {
             // Native implementation
-            // TODO: Implement when native backend is ready
-            return error.NotImplementedYet;
+            var native_layouts = try std.heap.page_allocator.alloc(native.WGPUBindGroupLayout, desc.bind_group_layouts.len);
+            defer std.heap.page_allocator.free(native_layouts);
+
+            for (desc.bind_group_layouts, 0..) |layout, i| {
+                native_layouts[i] = layout.handle;
+            }
+
+            const native_desc = native.WGPUPipelineLayoutDescriptor{
+                .label = null, // TODO: Convert label to null-terminated string
+                .bind_group_layout_count = @intCast(native_layouts.len),
+                .bind_group_layouts = native_layouts.ptr,
+            };
+
+            const handle = native.wgpuDeviceCreatePipelineLayout(self.device, &native_desc);
+            return PipelineLayout{ .handle = handle };
         }
     }
 

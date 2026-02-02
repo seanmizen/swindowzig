@@ -75,6 +75,7 @@ pub const SDL2Backend = struct {
                 .getTime = getTime,
                 .getWindowInfo = getWindowInfo,
                 .getWindow = getWindow,
+                .setMouseCapture = setMouseCapture,
             },
         };
     }
@@ -346,5 +347,9 @@ pub const SDL2Backend = struct {
 
             else => .Unknown,
         };
+    }
+
+    fn setMouseCapture(_: *anyopaque, capture: bool) void {
+        _ = sdl.SDL_SetRelativeMouseMode(if (capture) 1 else 0);
     }
 };

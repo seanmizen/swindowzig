@@ -12,6 +12,7 @@
     "web:asteroids": "zig build web -Dexample=simple_demo && bun build backends/wasm/boot.ts --outdir=zig-out/bin && bun backends/wasm/dev-server.ts",
     "native:windows": "zig build run -Dexample=windows",
     "native:asteroids": "zig build run -Dexample=simple_demo",
+    "native:voxel": "zig build run -Dexample=voxel",
     "build:native": "zig build native",
     "test": "zig build test"
   },

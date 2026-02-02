@@ -54,6 +54,7 @@ pub const gpu_types = struct {
     pub const RenderPipelineDescriptor = gpu_mod.RenderPipelineDescriptor;
     pub const ComputePipelineDescriptor = gpu_mod.ComputePipelineDescriptor;
     pub const BindGroupLayoutDescriptor = gpu_mod.BindGroupLayoutDescriptor;
+    pub const BindGroupLayoutEntry = gpu_mod.BindGroupLayoutEntry;
     pub const BindGroupDescriptor = gpu_mod.BindGroupDescriptor;
     pub const PipelineLayoutDescriptor = gpu_mod.PipelineLayoutDescriptor;
     pub const RenderPassDescriptor = gpu_mod.RenderPassDescriptor;
