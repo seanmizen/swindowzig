@@ -59,6 +59,9 @@ const State = struct {
     depth_view: ?gpu_mod.TextureView = null,
     mesh_dirty: bool = true,
     mouse_captured: bool = false,
+    hover_block: ?Vec3 = null, // Block currently under the crosshair (null = none)
+    tas_replayer: ?core.Replayer = null,
+    tas_events: ?std.ArrayList(core.Event) = null,
 };
 
 var state: State = undefined;
@@ -76,19 +79,76 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Initialize camera
     const window_info = ctx.window();
     const aspect = @as(f32, @floatFromInt(window_info.width)) / @as(f32, @floatFromInt(window_info.height));
-    state.camera = CameraType.init(Vec3.init(8, 12, 20), aspect);
 
-    // Point camera towards the chunk (in -Z direction with slight downward tilt)
+    // Position camera for good view of the wider flat world (48x48 chunk)
+    state.camera = CameraType.init(Vec3.init(24, 14, 44), aspect);
+
+    // Point camera towards the chunk center
     state.camera.yaw = -std.math.pi / 2.0; // Look in -Z direction
-    state.camera.pitch = -0.3; // Slight downward angle
+    state.camera.pitch = -0.3; // Downward angle
 
     state.mesh_dirty = true;
     state.mouse_captured = false;
+
+    // Check for TAS script argument
+    const args = try std.process.argsAlloc(ctx.allocator());
+    defer std.process.argsFree(ctx.allocator(), args);
+
+    for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "--tas") and i + 1 < args.len) {
+            const tas_path = args[i + 1];
+            std.log.info("Loading TAS script: {s}", .{tas_path});
+
+            // Parse TAS script
+            var tas_script = core.TasScript.parseFile(ctx.allocator(), tas_path) catch |err| {
+                std.log.err("Failed to parse TAS script: {}", .{err});
+                return err;
+            };
+            defer tas_script.deinit();
+
+            // Convert to events
+            const events = try tas_script.toEvents(120); // 120 Hz tick rate
+            state.tas_events = events;
+
+            std.log.info("TAS script loaded: {} commands, {} ticks duration", .{
+                tas_script.entries.items.len,
+                tas_script.getDuration(),
+            });
+
+            // Create replayer from events
+            var replay_buffer = std.ArrayList(u8){};
+            var serializer = core.serialize.Serializer.init(replay_buffer.writer(ctx.allocator()).any());
+            try serializer.writeHeader(120);
+            for (events.items) |event| {
+                try serializer.writeEvent(event);
+            }
+
+            var fbs = std.io.fixedBufferStream(replay_buffer.items);
+            var replayer = try core.Replayer.init(ctx.allocator(), fbs.reader().any());
+            try replayer.loadAll();
+            replayer.play();
+
+            state.tas_replayer = replayer;
+
+            std.log.info("TAS replayer ready - starting playback!", .{});
+            break;
+        }
+    }
 
     std.log.info("Voxel demo ready", .{});
 }
 
 fn voxelTick(ctx: *sw.Context) !void {
+    // Feed TAS events if replaying
+    if (state.tas_replayer) |*replayer| {
+        try replayer.feedTick(ctx.tickId(), ctx.bus());
+
+        // Log playback status
+        if (ctx.tickId() % 60 == 0) {
+            std.log.info("TAS playback: tick={} state={}", .{ ctx.tickId(), replayer.state });
+        }
+    }
+
     const input = ctx.input();
 
     // Click to capture mouse
@@ -119,29 +179,21 @@ fn voxelTick(ctx: *sw.Context) !void {
     if (input.keyDown(.Space)) up += 1;
     if (input.keyDown(.Shift)) up -= 1;
 
-    // Debug: Log movement input
-    if (forward != 0 or right != 0 or up != 0) {
-        const dt_ns = ctx.dtNs();
-        std.log.info("Movement input: forward={d:.1}, right={d:.1}, up={d:.1}, dt_ns={}, dt={d:.6}", .{ forward, right, up, dt_ns, dt });
-    }
-
     state.camera.move(forward, right, up, dt);
 
-    // Mouse look (only when captured)
+    // Mouse look + block interaction (only when captured)
     if (state.mouse_captured) {
-        if (input.mouse.delta_x != 0 or input.mouse.delta_y != 0) {
-            std.log.info("Mouse delta: dx={d:.1}, dy={d:.1}", .{ input.mouse.delta_x, input.mouse.delta_y });
-        }
         state.camera.rotate(
             input.mouse.delta_x,
             -input.mouse.delta_y, // Invert Y for natural feel
         );
 
-        // Block interaction
         const cam_dir = state.camera.forward();
-        const hit = raycast(&state.chunk, state.camera.position, cam_dir, 10.0);
+        const hit = raycast(&state.chunk, state.camera.position, cam_dir, 5.0);
 
         if (hit.hit) {
+            state.hover_block = hit.block_pos;
+
             // Left click: destroy block
             if (input.buttonPressed(.left)) {
                 const bx: i32 = @intFromFloat(hit.block_pos.x);
@@ -151,9 +203,8 @@ fn voxelTick(ctx: *sw.Context) !void {
                 state.mesh_dirty = true;
             }
 
-            // Right click: place block
+            // Right click: place block on adjacent face
             if (input.buttonPressed(.right)) {
-                // Place on the face that was hit
                 const place_pos = Vec3.init(
                     hit.block_pos.x + hit.face_normal.x,
                     hit.block_pos.y + hit.face_normal.y,
@@ -165,7 +216,11 @@ fn voxelTick(ctx: *sw.Context) !void {
                 state.chunk.setBlock(px, py, pz, .stone);
                 state.mesh_dirty = true;
             }
+        } else {
+            state.hover_block = null;
         }
+    } else {
+        state.hover_block = null;
     }
 }
 
@@ -184,7 +239,7 @@ fn voxelRender(ctx: *sw.Context) !void {
 
     // Create GPU resources on first render
     if (state.pipeline == null) {
-        setupGPUResources(g) catch |err| {
+        setupGPUResources(g, window_info.width, window_info.height) catch |err| {
             std.log.err("Failed to setup GPU resources: {}", .{err});
             return;
         };
@@ -197,38 +252,44 @@ fn voxelRender(ctx: *sw.Context) !void {
             return;
         };
 
-        if (state.mesh.vertices.items.len > 0) {
-            uploadMeshToGPU(g) catch |err| {
-                std.log.err("Failed to upload mesh: {}", .{err});
-                return;
-            };
-        }
-
         state.mesh_dirty = false;
-        std.log.info("Mesh regenerated: {} vertices, {} indices", .{ state.mesh.vertices.items.len, state.mesh.indices.items.len });
+    }
+
+    // Sort mesh by depth every frame (painter's algorithm for correct rendering without depth testing)
+    if (state.mesh.vertices.items.len > 0) {
+        state.mesh.sortByDepth(.{
+            state.camera.position.x,
+            state.camera.position.y,
+            state.camera.position.z,
+        }) catch |err| {
+            std.log.err("Failed to sort mesh: {}", .{err});
+            return;
+        };
+
+        uploadMeshToGPU(g) catch |err| {
+            std.log.err("Failed to upload mesh: {}", .{err});
+            return;
+        };
     }
 
     // Update uniforms
     const view_proj = state.camera.getViewProjectionMatrix();
 
-    // Debug: log camera direction on first frame
-    if (ctx.tickId() == 1) {
-        const fwd = state.camera.forward();
-        std.log.info("Camera forward: ({d:.2}, {d:.2}, {d:.2}), yaw: {d:.2}, pitch: {d:.2}", .{
-            fwd.x, fwd.y, fwd.z, state.camera.yaw, state.camera.pitch,
-        });
-        std.log.info("ViewProj matrix [0-3]: {d:.3} {d:.3} {d:.3} {d:.3}", .{
-            view_proj.data[0], view_proj.data[1], view_proj.data[2], view_proj.data[3],
-        });
-    }
+    const hover_active: f32 = if (state.hover_block != null) 1.0 else 0.0;
+    const hover_pos = state.hover_block orelse Vec3.init(0, 0, 0);
 
     const uniforms = [_]f32{
+        // view_proj (16 floats)
         view_proj.data[0],  view_proj.data[1],  view_proj.data[2],  view_proj.data[3],
         view_proj.data[4],  view_proj.data[5],  view_proj.data[6],  view_proj.data[7],
         view_proj.data[8],  view_proj.data[9],  view_proj.data[10], view_proj.data[11],
         view_proj.data[12], view_proj.data[13], view_proj.data[14], view_proj.data[15],
-        state.camera.position.x, state.camera.position.y, state.camera.position.z, 0, // camera_pos + padding
+        // camera_pos + padding (4 floats)
+        state.camera.position.x, state.camera.position.y, state.camera.position.z, 0,
+        // hover_block + hover_active (4 floats)
+        hover_pos.x, hover_pos.y, hover_pos.z, hover_active,
     };
+
     g.writeBuffer(state.uniform_buffer.?, 0, std.mem.sliceAsBytes(&uniforms));
 
     // Render
@@ -250,7 +311,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             .store_op = .store,
             .clear_value = .{ .r = 0.5, .g = 0.7, .b = 1.0, .a = 1.0 }, // Sky blue
         }},
-        // TODO: Re-enable depth attachment
+        // WORKAROUND: Depth attachment disabled (see depth_stencil comment in pipeline creation)
         // .depth_stencil_attachment = .{
         //     .view = &state.depth_view.?,
         //     .depth_load_op = .clear,
@@ -266,9 +327,14 @@ fn voxelRender(ctx: *sw.Context) !void {
     pass.setBindGroup(0, state.bind_group.?);
 
     if (state.mesh.vertices.items.len > 0) {
-        pass.setVertexBuffer(0, state.vertex_buffer.?, 0, state.mesh.vertices.items.len * @sizeOf(VoxelVertex));
-        pass.setIndexBuffer(state.index_buffer.?, .uint32, 0, state.mesh.indices.items.len * @sizeOf(u32));
-        pass.drawIndexed(@intCast(state.mesh.indices.items.len), 1, 0, 0, 0);
+        const vertex_count = state.mesh.vertices.items.len;
+        const index_count = state.mesh.indices.items.len;
+
+        pass.setVertexBuffer(0, state.vertex_buffer.?, 0, vertex_count * @sizeOf(VoxelVertex));
+        pass.setIndexBuffer(state.index_buffer.?, .uint32, 0, index_count * @sizeOf(u32));
+
+        const index_count_u32: u32 = @intCast(index_count);
+        pass.drawIndexed(index_count_u32, 1, 0, 0, 0);
     }
 
     pass.end();
@@ -280,39 +346,36 @@ fn voxelRender(ctx: *sw.Context) !void {
 
     g.submit(&[_]gpu_mod.CommandBuffer{cmd});
     g.present();
-
-    // Print FPS occasionally
-    if (ctx.tickId() % 120 == 0) {
-        std.log.info("Camera: ({d:.1}, {d:.1}, {d:.1}) | Captured: {} | Vertices: {}", .{
-            state.camera.position.x,
-            state.camera.position.y,
-            state.camera.position.z,
-            state.mouse_captured,
-            state.mesh.vertices.items.len,
-        });
-    }
 }
 
 fn voxelShutdown(ctx: *sw.Context) !void {
-    _ = ctx;
     state.mesh.deinit();
+
+    if (state.tas_replayer) |*replayer| {
+        replayer.deinit();
+    }
+
+    if (state.tas_events) |*events| {
+        events.deinit(ctx.allocator());
+    }
+
     std.log.info("Voxel demo shutdown", .{});
 }
 
-fn setupGPUResources(g: *gpu_mod.GPU) !void {
+fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     // Load shader
     const shader_code = @embedFile("voxel.wgsl");
+    std.log.info("Loading shader: {} bytes", .{shader_code.len});
     var shader = try g.createShaderModule(.{ .code = shader_code });
 
-    // TODO: Re-enable depth texture once we fix the native WebGPU texture creation
-    // For now, skip depth testing to get the demo running
-    // const depth_tex = try g.createTexture(.{
-    //     .size = .{ .width = 1280, .height = 720, .depth_or_array_layers = 1 },
-    //     .format = .depth32float,
-    //     .usage = .{ .render_attachment = true },
-    // });
-    // state.depth_texture = depth_tex;
-    // state.depth_view = try depth_tex.createView(.{});
+    // Create depth texture (trying depth24plus for better compatibility)
+    const depth_tex = try g.createTexture(.{
+        .size = .{ .width = width, .height = height, .depth_or_array_layers = 1 },
+        .format = .depth24plus,
+        .usage = .{ .render_attachment = true },
+    });
+    state.depth_texture = depth_tex;
+    state.depth_view = try depth_tex.createView(.{});
 
     // Create uniform buffer (256 bytes for alignment)
     state.uniform_buffer = try g.createBuffer(.{
@@ -374,9 +437,10 @@ fn setupGPUResources(g: *gpu_mod.GPU) !void {
         .primitive = .{
             .topology = .triangle_list,
             .front_face = .ccw,
-            .cull_mode = .none, // Temporarily disable culling to debug
+            .cull_mode = .back, // Back-face culling
         },
-        // TODO: Re-enable depth testing
+        // WORKAROUND: Hardware depth testing crashes on Metal (wgpu-native v0.19.4.1 bug)
+        // Using software depth sorting (painter's algorithm) instead - see sortByDepth()
         // .depth_stencil = .{
         //     .format = .depth32float,
         //     .depth_write_enabled = true,
@@ -388,12 +452,15 @@ fn setupGPUResources(g: *gpu_mod.GPU) !void {
 }
 
 fn uploadMeshToGPU(g: *gpu_mod.GPU) !void {
+    const vertex_bytes = state.mesh.vertices.items.len * @sizeOf(VoxelVertex);
+    const index_bytes = state.mesh.indices.items.len * @sizeOf(u32);
+
     // Create/recreate vertex buffer
     if (state.vertex_buffer) |old_buf| {
         _ = old_buf; // TODO: release old buffer
     }
     state.vertex_buffer = try g.createBuffer(.{
-        .size = state.mesh.vertices.items.len * @sizeOf(VoxelVertex),
+        .size = vertex_bytes,
         .usage = .{ .vertex = true, .copy_dst = true },
     });
     g.writeBuffer(state.vertex_buffer.?, 0, std.mem.sliceAsBytes(state.mesh.vertices.items));
@@ -403,7 +470,7 @@ fn uploadMeshToGPU(g: *gpu_mod.GPU) !void {
         _ = old_buf; // TODO: release old buffer
     }
     state.index_buffer = try g.createBuffer(.{
-        .size = state.mesh.indices.items.len * @sizeOf(u32),
+        .size = index_bytes,
         .usage = .{ .index = true, .copy_dst = true },
     });
     g.writeBuffer(state.index_buffer.?, 0, std.mem.sliceAsBytes(state.mesh.indices.items));

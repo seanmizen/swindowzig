@@ -68,9 +68,11 @@ pub const TextureFormat = enum(u32) {
     rgba32float = 0x22,
 
     // Depth/stencil formats
-    depth32float = 0x2B,
-    depth24plus = 0x29,
-    depth24plus_stencil8 = 0x2A,
+    depth16unorm = 0x27,
+    depth24plus = 0x28, // FIXED: was 0x29 (which is depth24plus_stencil8)
+    depth24plus_stencil8 = 0x29,
+    depth32float = 0x2A,
+    depth32float_stencil8 = 0x2B,
 
     // BC compressed formats (desktop)
     bc1_rgba_unorm = 0x2C,

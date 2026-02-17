@@ -501,28 +501,25 @@ pub const GPU = struct {
             const vertex_entry = try allocator.dupeZ(u8, desc.vertex.entry_point);
             defer allocator.free(vertex_entry);
 
-            // Build vertex state
-            const vertex_state = native.WGPUVertexState{
-                .module = desc.vertex.module.handle,
-                .entry_point = vertex_entry.ptr,
-                .buffer_count = wgpu_vertex_buffers.len,
-                .buffers = if (wgpu_vertex_buffers.len > 0) wgpu_vertex_buffers.ptr else null,
-            };
+            // Build vertex state (zero-initialize to avoid undefined padding)
+            var vertex_state = std.mem.zeroes(native.WGPUVertexState);
+            vertex_state.module = desc.vertex.module.handle;
+            vertex_state.entry_point = vertex_entry.ptr;
+            vertex_state.buffer_count = wgpu_vertex_buffers.len;
+            vertex_state.buffers = if (wgpu_vertex_buffers.len > 0) wgpu_vertex_buffers.ptr else null;
 
-            // Build primitive state
-            const primitive_state = native.WGPUPrimitiveState{
-                .topology = @enumFromInt(@intFromEnum(desc.primitive.topology)),
-                .strip_index_format = if (desc.primitive.strip_index_format) |fmt| @enumFromInt(@intFromEnum(fmt)) else .undefined,
-                .front_face = @enumFromInt(@intFromEnum(desc.primitive.front_face)),
-                .cull_mode = @enumFromInt(@intFromEnum(desc.primitive.cull_mode)),
-            };
+            // Build primitive state (zero-initialize to avoid undefined padding)
+            var primitive_state = std.mem.zeroes(native.WGPUPrimitiveState);
+            primitive_state.topology = @enumFromInt(@intFromEnum(desc.primitive.topology));
+            primitive_state.strip_index_format = if (desc.primitive.strip_index_format) |fmt| @enumFromInt(@intFromEnum(fmt)) else .undefined;
+            primitive_state.front_face = @enumFromInt(@intFromEnum(desc.primitive.front_face));
+            primitive_state.cull_mode = @enumFromInt(@intFromEnum(desc.primitive.cull_mode));
 
-            // Build multisample state
-            const multisample_state = native.WGPUMultisampleState{
-                .count = desc.multisample.count,
-                .mask = desc.multisample.mask,
-                .alpha_to_coverage_enabled = if (desc.multisample.alpha_to_coverage_enabled) @as(u32, 1) else 0,
-            };
+            // Build multisample state (zero-initialize to avoid undefined padding)
+            var multisample_state = std.mem.zeroes(native.WGPUMultisampleState);
+            multisample_state.count = desc.multisample.count;
+            multisample_state.mask = desc.multisample.mask;
+            multisample_state.alpha_to_coverage_enabled = if (desc.multisample.alpha_to_coverage_enabled) @as(u32, 1) else 0;
 
             // Convert fragment state if present
             var fragment_state_storage: native.WGPUFragmentState = undefined;
@@ -538,37 +535,67 @@ pub const GPU = struct {
                 // Convert fragment entry point
                 fragment_entry = try allocator.dupeZ(u8, fragment.entry_point);
 
-                // Convert color targets
+                // Convert color targets (zero-initialize to avoid undefined padding)
                 var targets = try allocator.alloc(native.WGPUColorTargetState, fragment.targets.len);
                 wgpu_targets = targets;
 
                 for (fragment.targets, 0..) |target, i| {
-                    targets[i] = .{
-                        .format = @enumFromInt(@intFromEnum(target.format)),
-                        .blend = null, // TODO: Handle blend state if needed
-                        .write_mask = target.write_mask,
-                    };
+                    targets[i] = std.mem.zeroes(native.WGPUColorTargetState);
+                    targets[i].format = @enumFromInt(@intFromEnum(target.format));
+                    targets[i].write_mask = target.write_mask;
+                    // blend remains null from zeroes
                 }
 
-                fragment_state_storage = native.WGPUFragmentState{
-                    .module = fragment.module.handle,
-                    .entry_point = fragment_entry.?.ptr,
-                    .target_count = targets.len,
-                    .targets = targets.ptr,
-                };
+                // Zero-initialize fragment state to avoid undefined padding
+                fragment_state_storage = std.mem.zeroes(native.WGPUFragmentState);
+                fragment_state_storage.module = fragment.module.handle;
+                fragment_state_storage.entry_point = fragment_entry.?.ptr;
+                fragment_state_storage.target_count = targets.len;
+                fragment_state_storage.targets = targets.ptr;
                 fragment_ptr = &fragment_state_storage;
             }
 
-            // Build pipeline descriptor
-            var pipeline_desc = native.WGPURenderPipelineDescriptor{
-                .label = null,
-                .layout = if (desc.layout) |layout| layout.handle else null,
-                .vertex = vertex_state,
-                .primitive = primitive_state,
-                .depth_stencil = null, // TODO: Handle depth/stencil if needed
-                .multisample = multisample_state,
-                .fragment = fragment_ptr,
-            };
+            // Convert depth/stencil state if present
+            var depth_stencil_state_storage: native.WGPUDepthStencilState = undefined;
+            var depth_stencil_ptr: ?*const native.WGPUDepthStencilState = null;
+
+            if (desc.depth_stencil) |depth_stencil| {
+                // Zero-initialize depth stencil state to avoid undefined padding (CRITICAL!)
+                depth_stencil_state_storage = std.mem.zeroes(native.WGPUDepthStencilState);
+                depth_stencil_state_storage.format = @enumFromInt(@intFromEnum(depth_stencil.format));
+                depth_stencil_state_storage.depth_write_enabled = if (depth_stencil.depth_write_enabled) @as(u32, 1) else 0;
+                depth_stencil_state_storage.depth_compare = @enumFromInt(@intFromEnum(depth_stencil.depth_compare));
+
+                // Stencil front state
+                depth_stencil_state_storage.stencil_front.compare = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.compare));
+                depth_stencil_state_storage.stencil_front.fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.fail_op));
+                depth_stencil_state_storage.stencil_front.depth_fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.depth_fail_op));
+                depth_stencil_state_storage.stencil_front.pass_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.pass_op));
+
+                // Stencil back state
+                depth_stencil_state_storage.stencil_back.compare = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.compare));
+                depth_stencil_state_storage.stencil_back.fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.fail_op));
+                depth_stencil_state_storage.stencil_back.depth_fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.depth_fail_op));
+                depth_stencil_state_storage.stencil_back.pass_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.pass_op));
+
+                // Remaining fields
+                depth_stencil_state_storage.stencil_read_mask = depth_stencil.stencil_read_mask;
+                depth_stencil_state_storage.stencil_write_mask = depth_stencil.stencil_write_mask;
+                depth_stencil_state_storage.depth_bias = depth_stencil.depth_bias;
+                depth_stencil_state_storage.depth_bias_slope_scale = depth_stencil.depth_bias_slope_scale;
+                depth_stencil_state_storage.depth_bias_clamp = depth_stencil.depth_bias_clamp;
+
+                depth_stencil_ptr = &depth_stencil_state_storage;
+            }
+
+            // Build pipeline descriptor (zero-initialize to avoid undefined padding)
+            var pipeline_desc = std.mem.zeroes(native.WGPURenderPipelineDescriptor);
+            pipeline_desc.layout = if (desc.layout) |layout| layout.handle else null;
+            pipeline_desc.vertex = vertex_state;
+            pipeline_desc.primitive = primitive_state;
+            pipeline_desc.depth_stencil = depth_stencil_ptr;
+            pipeline_desc.multisample = multisample_state;
+            pipeline_desc.fragment = fragment_ptr;
 
             // Create pipeline
             const handle = native.wgpuDeviceCreateRenderPipeline(self.device, &pipeline_desc);
@@ -690,7 +717,7 @@ pub const GPU = struct {
                             .uint => .uint,
                         },
                         .view_dimension = @enumFromInt(@intFromEnum(tex.view_dimension)),
-                        .multisampled = tex.multisampled,
+                        .multisampled = if (tex.multisampled) @as(u32, 1) else 0,
                     } else .{},
                     .storage_texture = if (entry.storage_texture) |st| .{
                         .access = switch (st.access) {
@@ -1124,6 +1151,7 @@ pub const Texture = struct {
             return TextureView{ .handle = handle };
         } else {
             const c_desc = native.WGPUTextureViewDescriptor{
+                .next_in_chain = null,
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
                 .format = if (desc.format) |f| @enumFromInt(@intFromEnum(f)) else .undefined,
                 .dimension = if (desc.dimension) |d| @enumFromInt(@intFromEnum(d)) else .undefined,
@@ -1228,6 +1256,7 @@ pub const CommandEncoder = struct {
                 // Initialize each field explicitly
                 color_attachments[i].next_in_chain = null;
                 color_attachments[i].view = att.view.handle;
+                color_attachments[i].depth_slice = 0xFFFFFFFF; // WGPU_DEPTH_SLICE_UNDEFINED
                 color_attachments[i].resolve_target = if (att.resolve_target) |rt| rt.handle else null;
                 color_attachments[i].load_op = @enumFromInt(@intFromEnum(att.load_op));
                 color_attachments[i].store_op = @enumFromInt(@intFromEnum(att.store_op));
@@ -1312,7 +1341,11 @@ pub const RenderPassEncoder = struct {
         if (comptime is_wasm) {
             web.webgpuRenderPassSetIndexBuffer(self.handle, buffer.handle, @intFromEnum(format), offset, size);
         } else {
-            native.wgpuRenderPassEncoderSetIndexBuffer(self.handle, buffer.handle, @enumFromInt(@intFromEnum(format)), offset, size);
+            const native_format: native.WGPUIndexFormat = switch (format) {
+                .uint16 => .uint16,
+                .uint32 => .uint32,
+            };
+            native.wgpuRenderPassEncoderSetIndexBuffer(self.handle, buffer.handle, native_format, offset, size);
         }
     }
 

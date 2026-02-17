@@ -13,6 +13,7 @@
     "native:windows": "zig build run -Dexample=windows",
     "native:asteroids": "zig build run -Dexample=simple_demo",
     "native:voxel": "zig build run -Dexample=voxel",
+    "native:justabox": "zig build run -Dexample=justabox",
     "build:native": "zig build native",
     "test": "zig build test"
   },

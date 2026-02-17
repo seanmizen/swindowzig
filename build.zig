@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
         []const u8,
         "example",
         "Which example to build (default: windows)",
-    ) orelse "windows";
+    ) orelse "justabox";
 
     // Modules
     const sw_core = b.addModule("sw_core", .{

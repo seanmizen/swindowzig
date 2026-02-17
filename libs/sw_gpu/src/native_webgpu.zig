@@ -183,7 +183,7 @@ pub const WGPURequestAdapterOptions = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     compatible_surface: WGPUSurface = null,
     power_preference: WGPUPowerPreference = .undefined,
-    force_fallback_adapter: bool = false,
+    force_fallback_adapter: u32 = 0, // WGPUBool (uint32_t in C)
 };
 
 pub const WGPUPowerPreference = enum(u32) {
@@ -307,7 +307,7 @@ pub const WGPUTextureDescriptor = extern struct {
     format: WGPUTextureFormat,
     mip_level_count: u32 = 1,
     sample_count: u32 = 1,
-    view_format_count: u32 = 0,
+    view_format_count: usize = 0, // size_t in C
     view_formats: ?[*]const WGPUTextureFormat = null,
 };
 
@@ -334,15 +334,18 @@ pub const WGPUTextureFormat = enum(u32) {
     rgba8unorm_srgb = 0x00000013,
     bgra8unorm = 0x00000017,
     bgra8unorm_srgb = 0x00000018,
-    depth24plus = 0x00000029,
-    depth32float = 0x0000002B,
+    depth16unorm = 0x00000027,
+    depth24plus = 0x00000028, // FIXED: was 0x29 (which is depth24plus_stencil8)
+    depth24plus_stencil8 = 0x00000029,
+    depth32float = 0x0000002A,
+    depth32float_stencil8 = 0x0000002B,
     _,
 };
 
 pub const WGPUExtent3D = extern struct {
     width: u32,
-    height: u32 = 1,
-    depth_or_array_layers: u32 = 1,
+    height: u32,
+    depth_or_array_layers: u32,
 };
 
 pub const WGPUTextureViewDescriptor = extern struct {
@@ -479,7 +482,7 @@ pub const WGPUTextureBindingLayout = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     sample_type: WGPUTextureSampleType = .undefined,
     view_dimension: WGPUTextureViewDimension = .undefined,
-    multisampled: bool = false,
+    multisampled: u32 = 0, // WGPUBool (uint32_t in C)
 };
 
 pub const WGPUTextureSampleType = enum(u32) {
@@ -645,7 +648,7 @@ pub const WGPUCullMode = enum(u32) {
 pub const WGPUDepthStencilState = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     format: WGPUTextureFormat,
-    depth_write_enabled: bool,
+    depth_write_enabled: u32, // WGPUBool (uint32_t in C)
     depth_compare: WGPUCompareFunction,
     stencil_front: WGPUStencilFaceState,
     stencil_back: WGPUStencilFaceState,
@@ -898,7 +901,7 @@ pub const WGPUCompositeAlphaMode = enum(u32) {
 
 pub const WGPUSurfaceTexture = extern struct {
     texture: WGPUTexture,
-    suboptimal: bool,
+    suboptimal: u32, // WGPUBool (uint32_t in C)
     status: WGPUSurfaceGetCurrentTextureStatus,
 };
 

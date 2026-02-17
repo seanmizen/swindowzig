@@ -10,6 +10,7 @@ pub const input = @import("input.zig");
 pub const serialize = @import("serialize.zig");
 pub const record = @import("record.zig");
 pub const replay = @import("replay.zig");
+pub const tas = @import("tas.zig");
 
 // Re-export commonly used types
 pub const Event = event.Event;
@@ -23,6 +24,8 @@ pub const FixedStepTimeline = timeline.FixedStepTimeline;
 pub const InputSnapshot = input.InputSnapshot;
 pub const Recorder = record.Recorder;
 pub const Replayer = replay.Replayer;
+pub const TasScript = tas.TasScript;
+pub const TasCommand = tas.TasCommand;
 
 test {
     std.testing.refAllDecls(@This());

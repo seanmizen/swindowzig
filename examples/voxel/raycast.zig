@@ -4,7 +4,6 @@ pub fn Raycast(comptime Vec3Type: type, comptime ChunkType: type) type {
     return struct {
         const Vec3 = Vec3Type;
         const Chunk = ChunkType;
-        const CHUNK_SIZE = 16;
 
         pub const RaycastHit = struct {
             hit: bool,
@@ -51,20 +50,15 @@ pub fn Raycast(comptime Vec3Type: type, comptime ChunkType: type) type {
 
             // DDA traversal
             var iterations: u32 = 0;
-            while (iterations < 100 and distance < max_distance) : (iterations += 1) {
-                // Check current voxel
-                if (voxel_x >= 0 and voxel_x < CHUNK_SIZE and
-                    voxel_y >= 0 and voxel_y < CHUNK_SIZE and
-                    voxel_z >= 0 and voxel_z < CHUNK_SIZE)
-                {
-                    const block = chunk.getBlock(voxel_x, voxel_y, voxel_z);
-                    if (block != .air) {
-                        return .{
-                            .hit = true,
-                            .block_pos = Vec3.init(@floatFromInt(voxel_x), @floatFromInt(voxel_y), @floatFromInt(voxel_z)),
-                            .face_normal = face_normal,
-                        };
-                    }
+            while (iterations < 150 and distance < max_distance) : (iterations += 1) {
+                // Check current voxel (getBlock returns .air for out-of-bounds)
+                const block = chunk.getBlock(voxel_x, voxel_y, voxel_z);
+                if (block != .air) {
+                    return .{
+                        .hit = true,
+                        .block_pos = Vec3.init(@floatFromInt(voxel_x), @floatFromInt(voxel_y), @floatFromInt(voxel_z)),
+                        .face_normal = face_normal,
+                    };
                 }
 
                 // Step to next voxel
