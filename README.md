@@ -49,7 +49,7 @@ const GameCallbacks = struct {
 
 - **Zig 0.15.2+**
 - **SDL2**
-- **wgpu-native** v0.19.4.1
+- **wgpu-native** v22.1.0.5 (bindings are pinned to this version's header; re-diff when upgrading)
 
 ### Install Dependencies
 
@@ -57,22 +57,33 @@ const GameCallbacks = struct {
 ```bash
 sudo apt install libsdl2-dev
 
-mkdir -p ~/.local/lib ~/.local/include && cd /tmp
-wget https://github.com/gfx-rs/wgpu-native/releases/download/v0.19.4.1/wgpu-linux-x86_64-release.zip
+mkdir -p ~/.local/lib ~/.local/include/webgpu && cd /tmp
+wget https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
 unzip wgpu-linux-x86_64-release.zip
-cp libwgpu_native.so ~/.local/lib/
-cp webgpu.h wgpu.h ~/.local/include/
+cp lib/libwgpu_native.a ~/.local/lib/
+cp include/webgpu/webgpu.h ~/.local/include/webgpu/
 ```
 
-**macOS:**
+**macOS (arm64):**
 ```bash
 brew install sdl2
 
-mkdir -p ~/.local/lib ~/.local/include && cd /tmp
-wget https://github.com/gfx-rs/wgpu-native/releases/download/v0.19.4.1/wgpu-macos-x86_64-release.zip
+mkdir -p ~/.local/lib ~/.local/include/webgpu && cd /tmp
+wget https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-macos-aarch64-release.zip
+unzip wgpu-macos-aarch64-release.zip
+cp lib/libwgpu_native.a ~/.local/lib/
+cp include/webgpu/webgpu.h ~/.local/include/webgpu/
+```
+
+**macOS (x86_64):**
+```bash
+brew install sdl2
+
+mkdir -p ~/.local/lib ~/.local/include/webgpu && cd /tmp
+wget https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-macos-x86_64-release.zip
 unzip wgpu-macos-x86_64-release.zip
-cp libwgpu_native.dylib ~/.local/lib/
-cp webgpu.h wgpu.h ~/.local/include/
+cp lib/libwgpu_native.a ~/.local/lib/
+cp include/webgpu/webgpu.h ~/.local/include/webgpu/
 ```
 
 ### Run

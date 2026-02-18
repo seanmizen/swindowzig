@@ -161,10 +161,8 @@ pub const GPU = struct {
 
             // Request adapter FIRST (without surface) to avoid backend detection issues
             var adapter_result = AdapterRequestResult{};
-            const adapter_options = native.WGPURequestAdapterOptions{
-                .compatible_surface = null,
-                .power_preference = .high_performance,
-            };
+            var adapter_options = std.mem.zeroes(native.WGPURequestAdapterOptions);
+            adapter_options.power_preference = .high_performance;
             native.wgpuInstanceRequestAdapter(
                 instance,
                 &adapter_options,
@@ -181,7 +179,7 @@ pub const GPU = struct {
 
             // Request device (using callback)
             var device_result = DeviceRequestResult{};
-            const device_desc = native.WGPUDeviceDescriptor{};
+            const device_desc = std.mem.zeroes(native.WGPUDeviceDescriptor);
             native.wgpuAdapterRequestDevice(
                 adapter_result.adapter.?,
                 &device_desc,

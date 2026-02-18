@@ -179,10 +179,23 @@ pub const WGPUSType = enum(u32) {
     _,
 };
 
+pub const WGPUBackendType = enum(u32) {
+    undefined = 0x00000000,
+    @"null" = 0x00000001,
+    web_gpu = 0x00000002,
+    d3d11 = 0x00000003,
+    d3d12 = 0x00000004,
+    metal = 0x00000005,
+    vulkan = 0x00000006,
+    open_gl = 0x00000007,
+    open_gles = 0x00000008,
+};
+
 pub const WGPURequestAdapterOptions = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     compatible_surface: WGPUSurface = null,
     power_preference: WGPUPowerPreference = .undefined,
+    backend_type: WGPUBackendType = .undefined,
     force_fallback_adapter: u32 = 0, // WGPUBool (uint32_t in C)
 };
 
@@ -206,6 +219,38 @@ pub const WGPURequestAdapterStatus = enum(u32) {
     unknown = 3,
 };
 
+pub const WGPUDeviceLostReason = enum(u32) {
+    unknown = 0x00000001,
+    destroyed = 0x00000002,
+};
+
+pub const WGPUDeviceLostCallback = ?*const fn (
+    reason: WGPUDeviceLostReason,
+    message: ?[*:0]const u8,
+    userdata: ?*anyopaque,
+) callconv(.c) void;
+
+pub const WGPUErrorType = enum(u32) {
+    no_error = 0x00000000,
+    validation = 0x00000001,
+    out_of_memory = 0x00000002,
+    internal = 0x00000003,
+    unknown = 0x00000004,
+    device_lost = 0x00000005,
+};
+
+pub const WGPUErrorCallback = ?*const fn (
+    err_type: WGPUErrorType,
+    message: ?[*:0]const u8,
+    userdata: ?*anyopaque,
+) callconv(.c) void;
+
+pub const WGPUUncapturedErrorCallbackInfo = extern struct {
+    next_in_chain: ?*const WGPUChainedStruct = null,
+    callback: WGPUErrorCallback = null,
+    userdata: ?*anyopaque = null,
+};
+
 pub const WGPUDeviceDescriptor = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     label: ?[*:0]const u8 = null,
@@ -213,6 +258,9 @@ pub const WGPUDeviceDescriptor = extern struct {
     required_features: ?[*]const WGPUFeatureName = null,
     required_limits: ?*const WGPURequiredLimits = null,
     default_queue: WGPUQueueDescriptor = .{},
+    device_lost_callback: WGPUDeviceLostCallback = null,
+    device_lost_userdata: ?*anyopaque = null,
+    uncaptured_error_callback_info: WGPUUncapturedErrorCallbackInfo = .{},
 };
 
 pub const WGPUFeatureName = enum(u32) {
@@ -223,6 +271,10 @@ pub const WGPUFeatureName = enum(u32) {
     texture_compression_etc2 = 5,
     texture_compression_astc = 6,
     indirect_first_instance = 7,
+    shader_f16 = 8,
+    rg11b10_ufloat_renderable = 9,
+    bgra8unorm_storage = 10,
+    float32_filterable = 11,
     _,
 };
 
@@ -237,6 +289,8 @@ pub const WGPULimits = extern struct {
     max_texture_dimension_3d: u32 = 2048,
     max_texture_array_layers: u32 = 256,
     max_bind_groups: u32 = 4,
+    max_bind_groups_plus_vertex_buffers: u32 = 24,
+    max_bindings_per_bind_group: u32 = 1000,
     max_dynamic_uniform_buffers_per_pipeline_layout: u32 = 8,
     max_dynamic_storage_buffers_per_pipeline_layout: u32 = 4,
     max_sampled_textures_per_shader_stage: u32 = 16,
@@ -249,9 +303,13 @@ pub const WGPULimits = extern struct {
     min_uniform_buffer_offset_alignment: u32 = 256,
     min_storage_buffer_offset_alignment: u32 = 256,
     max_vertex_buffers: u32 = 8,
+    max_buffer_size: u64 = 268435456,
     max_vertex_attributes: u32 = 16,
     max_vertex_buffer_array_stride: u32 = 2048,
     max_inter_stage_shader_components: u32 = 60,
+    max_inter_stage_shader_variables: u32 = 16,
+    max_color_attachments: u32 = 8,
+    max_color_attachment_bytes_per_sample: u32 = 32,
     max_compute_workgroup_storage_size: u32 = 16384,
     max_compute_invocations_per_workgroup: u32 = 256,
     max_compute_workgroup_size_x: u32 = 256,
@@ -307,7 +365,7 @@ pub const WGPUTextureDescriptor = extern struct {
     format: WGPUTextureFormat,
     mip_level_count: u32 = 1,
     sample_count: u32 = 1,
-    view_format_count: usize = 0, // size_t in C
+    view_format_count: usize = 0,
     view_formats: ?[*]const WGPUTextureFormat = null,
 };
 
@@ -422,6 +480,8 @@ pub const WGPUCompareFunction = enum(u32) {
 pub const WGPUShaderModuleDescriptor = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     label: ?[*:0]const u8 = null,
+    hint_count: usize = 0,
+    hints: ?*const anyopaque = null, // WGPUShaderModuleCompilationHint const *
 };
 
 // Shader source is specified via chained structs
@@ -754,7 +814,7 @@ pub const WGPUComputePipelineDescriptor = extern struct {
 pub const WGPUProgrammableStageDescriptor = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     module: WGPUShaderModule,
-    entry_point: [*:0]const u8,
+    entry_point: ?[*:0]const u8 = null,
     constant_count: usize = 0,
     constants: ?[*]const WGPUConstantEntry = null,
 };
