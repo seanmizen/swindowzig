@@ -59,6 +59,7 @@ const State = struct {
     depth_view: ?gpu_mod.TextureView = null,
     mesh_dirty: bool = true,
     mouse_captured: bool = false,
+    click_locked: bool = false,
     hover_block: ?Vec3 = null, // Block currently under the crosshair (null = none)
     tas_replayer: ?core.Replayer = null,
     tas_events: ?std.ArrayList(core.Event) = null,
@@ -151,10 +152,16 @@ fn voxelTick(ctx: *sw.Context) !void {
 
     const input = ctx.input();
 
+    // Record capture state at the START of this tick (before we potentially change it).
+    // Block interaction only runs when the mouse was ALREADY captured — Minecraft's behavior:
+    // first click captures only, never also destroys.
+    const was_captured = state.mouse_captured;
+
     // Click to capture mouse
     if (!state.mouse_captured and input.buttonPressed(.left)) {
         state.mouse_captured = true;
         ctx.setMouseCapture(true);
+        state.click_locked = true; // Don't act on the capture click
         std.log.info("Mouse captured (clicked)", .{});
     }
 
@@ -181,12 +188,17 @@ fn voxelTick(ctx: *sw.Context) !void {
 
     state.camera.move(forward, right, up, dt);
 
-    // Mouse look + block interaction (only when captured)
-    if (state.mouse_captured) {
+    // Mouse look + block interaction (only when mouse was already captured this tick)
+    if (was_captured) {
         state.camera.rotate(
             input.mouse.delta_x,
             -input.mouse.delta_y, // Invert Y for natural feel
         );
+
+        // Release click lock when button is not pressed — debounce against multi-tick button events
+        if (!input.buttonPressed(.left)) {
+            state.click_locked = false;
+        }
 
         const cam_dir = state.camera.forward();
         const hit = raycast(&state.chunk, state.camera.position, cam_dir, 5.0);
@@ -194,8 +206,9 @@ fn voxelTick(ctx: *sw.Context) !void {
         if (hit.hit) {
             state.hover_block = hit.block_pos;
 
-            // Left click: destroy block
-            if (input.buttonPressed(.left)) {
+            // Left click: destroy block (one block per click)
+            if (input.buttonPressed(.left) and !state.click_locked) {
+                state.click_locked = true;
                 const bx: i32 = @intFromFloat(hit.block_pos.x);
                 const by: i32 = @intFromFloat(hit.block_pos.y);
                 const bz: i32 = @intFromFloat(hit.block_pos.z);
@@ -203,7 +216,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 state.mesh_dirty = true;
             }
 
-            // Right click: place block on adjacent face
+            // Right click: place block on adjacent face (one block per click)
             if (input.buttonPressed(.right)) {
                 const place_pos = Vec3.init(
                     hit.block_pos.x + hit.face_normal.x,
