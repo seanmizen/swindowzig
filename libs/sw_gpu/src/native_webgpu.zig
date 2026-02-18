@@ -96,7 +96,7 @@ pub extern fn wgpuCommandBufferRelease(buffer: WGPUCommandBuffer) void;
 
 // Render Pass
 pub extern fn wgpuRenderPassEncoderSetPipeline(pass: WGPURenderPassEncoder, pipeline: WGPURenderPipeline) void;
-pub extern fn wgpuRenderPassEncoderSetBindGroup(pass: WGPURenderPassEncoder, group_index: u32, group: WGPUBindGroup, dynamic_offset_count: u32, dynamic_offsets: ?[*]const u32) void;
+pub extern fn wgpuRenderPassEncoderSetBindGroup(pass: WGPURenderPassEncoder, group_index: u32, group: WGPUBindGroup, dynamic_offset_count: usize, dynamic_offsets: ?[*]const u32) void;
 pub extern fn wgpuRenderPassEncoderSetVertexBuffer(pass: WGPURenderPassEncoder, slot: u32, buffer: WGPUBuffer, offset: u64, size: u64) void;
 pub extern fn wgpuRenderPassEncoderSetIndexBuffer(pass: WGPURenderPassEncoder, buffer: WGPUBuffer, format: WGPUIndexFormat, offset: u64, size: u64) void;
 pub extern fn wgpuRenderPassEncoderDraw(pass: WGPURenderPassEncoder, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void;
@@ -106,12 +106,12 @@ pub extern fn wgpuRenderPassEncoderRelease(pass: WGPURenderPassEncoder) void;
 
 // Compute Pass
 pub extern fn wgpuComputePassEncoderSetPipeline(pass: WGPUComputePassEncoder, pipeline: WGPUComputePipeline) void;
-pub extern fn wgpuComputePassEncoderSetBindGroup(pass: WGPUComputePassEncoder, group_index: u32, group: WGPUBindGroup, dynamic_offset_count: u32, dynamic_offsets: ?[*]const u32) void;
+pub extern fn wgpuComputePassEncoderSetBindGroup(pass: WGPUComputePassEncoder, group_index: u32, group: WGPUBindGroup, dynamic_offset_count: usize, dynamic_offsets: ?[*]const u32) void;
 pub extern fn wgpuComputePassEncoderDispatchWorkgroups(pass: WGPUComputePassEncoder, workgroup_count_x: u32, workgroup_count_y: u32, workgroup_count_z: u32) void;
 pub extern fn wgpuComputePassEncoderEnd(pass: WGPUComputePassEncoder) void;
 
 // Queue
-pub extern fn wgpuQueueSubmit(queue: WGPUQueue, command_count: u32, commands: [*]const WGPUCommandBuffer) void;
+pub extern fn wgpuQueueSubmit(queue: WGPUQueue, command_count: usize, commands: [*]const WGPUCommandBuffer) void;
 pub extern fn wgpuQueueWriteBuffer(queue: WGPUQueue, buffer: WGPUBuffer, buffer_offset: u64, data: *const anyopaque, size: usize) void;
 pub extern fn wgpuQueueWriteTexture(queue: WGPUQueue, destination: *const WGPUImageCopyTexture, data: *const anyopaque, data_size: usize, data_layout: *const WGPUTextureDataLayout, write_size: *const WGPUExtent3D) void;
 
@@ -209,7 +209,7 @@ pub const WGPURequestAdapterStatus = enum(u32) {
 pub const WGPUDeviceDescriptor = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     label: ?[*:0]const u8 = null,
-    required_features_count: u32 = 0,
+    required_features_count: usize = 0,
     required_features: ?[*]const WGPUFeatureName = null,
     required_limits: ?*const WGPURequiredLimits = null,
     default_queue: WGPUQueueDescriptor = .{},
@@ -433,7 +433,7 @@ pub const WGPUShaderModuleWGSLDescriptor = extern struct {
 pub const WGPUBindGroupLayoutDescriptor = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     label: ?[*:0]const u8 = null,
-    entry_count: u32,
+    entry_count: usize,
     entries: [*]const WGPUBindGroupLayoutEntry,
 };
 
@@ -512,7 +512,7 @@ pub const WGPUBindGroupDescriptor = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     label: ?[*:0]const u8 = null,
     layout: WGPUBindGroupLayout,
-    entry_count: u32,
+    entry_count: usize,
     entries: [*]const WGPUBindGroupEntry,
 };
 
@@ -529,7 +529,7 @@ pub const WGPUBindGroupEntry = extern struct {
 pub const WGPUPipelineLayoutDescriptor = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     label: ?[*:0]const u8 = null,
-    bind_group_layout_count: u32,
+    bind_group_layout_count: usize,
     bind_group_layouts: [*]const WGPUBindGroupLayout,
 };
 
@@ -755,7 +755,7 @@ pub const WGPUProgrammableStageDescriptor = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     module: WGPUShaderModule,
     entry_point: [*:0]const u8,
-    constant_count: u32 = 0,
+    constant_count: usize = 0,
     constants: ?[*]const WGPUConstantEntry = null,
 };
 
@@ -771,8 +771,7 @@ pub const WGPURenderPassDescriptor = extern struct {
     color_attachments: [*]const WGPURenderPassColorAttachment,
     depth_stencil_attachment: ?*const WGPURenderPassDepthStencilAttachment = null,
     occlusion_query_set: WGPUQuerySet = null,
-    timestamp_write_count: usize = 0,
-    timestamp_writes: ?[*]const WGPURenderPassTimestampWrite = null,
+    timestamp_writes: ?*const WGPURenderPassTimestampWrites = null,
 };
 
 pub const WGPURenderPassColorAttachment = extern struct {
@@ -816,33 +815,22 @@ pub const WGPURenderPassDepthStencilAttachment = extern struct {
     stencil_read_only: u32 = 0,
 };
 
-pub const WGPURenderPassTimestampWrite = extern struct {
+pub const WGPURenderPassTimestampWrites = extern struct {
     query_set: WGPUQuerySet,
-    query_index: u32,
-    location: WGPURenderPassTimestampLocation,
-};
-
-pub const WGPURenderPassTimestampLocation = enum(u32) {
-    beginning = 0,
-    end = 1,
+    beginning_of_pass_write_index: u32,
+    end_of_pass_write_index: u32,
 };
 
 pub const WGPUComputePassDescriptor = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
     label: ?[*:0]const u8 = null,
-    timestamp_write_count: u32 = 0,
-    timestamp_writes: ?[*]const WGPUComputePassTimestampWrite = null,
+    timestamp_writes: ?*const WGPUComputePassTimestampWrites = null,
 };
 
-pub const WGPUComputePassTimestampWrite = extern struct {
+pub const WGPUComputePassTimestampWrites = extern struct {
     query_set: WGPUQuerySet,
-    query_index: u32,
-    location: WGPUComputePassTimestampLocation,
-};
-
-pub const WGPUComputePassTimestampLocation = enum(u32) {
-    beginning = 0,
-    end = 1,
+    beginning_of_pass_write_index: u32,
+    end_of_pass_write_index: u32,
 };
 
 pub const WGPUCommandBufferDescriptor = extern struct {

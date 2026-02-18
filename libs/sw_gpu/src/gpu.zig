@@ -689,53 +689,50 @@ pub const GPU = struct {
                     visibility |= native.WGPUShaderStage_Compute;
                 }
 
-                native_entries[i] = .{
-                    .binding = entry.binding,
-                    .visibility = visibility,
-                    .buffer = if (entry.buffer) |buf| .{
-                        .type = switch (buf.type) {
-                            .uniform => .uniform,
-                            .storage => .storage,
-                            .read_only_storage => .read_only_storage,
-                        },
-                        .has_dynamic_offset = if (buf.has_dynamic_offset) 1 else 0,
-                        .min_binding_size = buf.min_binding_size,
-                    } else .{},
-                    .sampler = if (entry.sampler) |samp| .{
-                        .type = switch (samp.type) {
-                            .filtering => .filtering,
-                            .non_filtering => .non_filtering,
-                            .comparison => .comparison,
-                        },
-                    } else .{},
-                    .texture = if (entry.texture) |tex| .{
-                        .sample_type = switch (tex.sample_type) {
-                            .float => .float,
-                            .unfilterable_float => .unfilterable_float,
-                            .depth => .depth,
-                            .sint => .sint,
-                            .uint => .uint,
-                        },
-                        .view_dimension = @enumFromInt(@intFromEnum(tex.view_dimension)),
-                        .multisampled = if (tex.multisampled) @as(u32, 1) else 0,
-                    } else .{},
-                    .storage_texture = if (entry.storage_texture) |st| .{
-                        .access = switch (st.access) {
-                            .write_only => .write_only,
-                            .read_only => .read_only,
-                            .read_write => .read_write,
-                        },
-                        .format = @enumFromInt(@intFromEnum(st.format)),
-                        .view_dimension = @enumFromInt(@intFromEnum(st.view_dimension)),
-                    } else .{},
-                };
+                native_entries[i] = std.mem.zeroes(native.WGPUBindGroupLayoutEntry);
+                native_entries[i].binding = entry.binding;
+                native_entries[i].visibility = visibility;
+                if (entry.buffer) |buf| {
+                    native_entries[i].buffer.type = switch (buf.type) {
+                        .uniform => .uniform,
+                        .storage => .storage,
+                        .read_only_storage => .read_only_storage,
+                    };
+                    native_entries[i].buffer.has_dynamic_offset = if (buf.has_dynamic_offset) 1 else 0;
+                    native_entries[i].buffer.min_binding_size = buf.min_binding_size;
+                }
+                if (entry.sampler) |samp| {
+                    native_entries[i].sampler.type = switch (samp.type) {
+                        .filtering => .filtering,
+                        .non_filtering => .non_filtering,
+                        .comparison => .comparison,
+                    };
+                }
+                if (entry.texture) |tex| {
+                    native_entries[i].texture.sample_type = switch (tex.sample_type) {
+                        .float => .float,
+                        .unfilterable_float => .unfilterable_float,
+                        .depth => .depth,
+                        .sint => .sint,
+                        .uint => .uint,
+                    };
+                    native_entries[i].texture.view_dimension = @enumFromInt(@intFromEnum(tex.view_dimension));
+                    native_entries[i].texture.multisampled = if (tex.multisampled) @as(u32, 1) else 0;
+                }
+                if (entry.storage_texture) |st| {
+                    native_entries[i].storage_texture.access = switch (st.access) {
+                        .write_only => .write_only,
+                        .read_only => .read_only,
+                        .read_write => .read_write,
+                    };
+                    native_entries[i].storage_texture.format = @enumFromInt(@intFromEnum(st.format));
+                    native_entries[i].storage_texture.view_dimension = @enumFromInt(@intFromEnum(st.view_dimension));
+                }
             }
 
-            const native_desc = native.WGPUBindGroupLayoutDescriptor{
-                .label = null, // TODO: Convert label to null-terminated string
-                .entry_count = @intCast(native_entries.len),
-                .entries = native_entries.ptr,
-            };
+            var native_desc = std.mem.zeroes(native.WGPUBindGroupLayoutDescriptor);
+            native_desc.entry_count = native_entries.len;
+            native_desc.entries = native_entries.ptr;
 
             const handle = native.wgpuDeviceCreateBindGroupLayout(self.device, &native_desc);
             return BindGroupLayout{ .handle = handle };
@@ -776,22 +773,19 @@ pub const GPU = struct {
             defer std.heap.page_allocator.free(native_entries);
 
             for (desc.entries, 0..) |entry, i| {
-                native_entries[i] = .{
-                    .binding = entry.binding,
-                    .buffer = if (entry.buffer) |buf| buf.handle else null,
-                    .offset = entry.offset,
-                    .size = entry.size,
-                    .sampler = if (entry.sampler) |samp| samp.handle else null,
-                    .texture_view = if (entry.texture_view) |view| view.handle else null,
-                };
+                native_entries[i] = std.mem.zeroes(native.WGPUBindGroupEntry);
+                native_entries[i].binding = entry.binding;
+                native_entries[i].buffer = if (entry.buffer) |buf| buf.handle else null;
+                native_entries[i].offset = entry.offset;
+                native_entries[i].size = entry.size;
+                native_entries[i].sampler = if (entry.sampler) |samp| samp.handle else null;
+                native_entries[i].texture_view = if (entry.texture_view) |view| view.handle else null;
             }
 
-            const native_desc = native.WGPUBindGroupDescriptor{
-                .label = null, // TODO: Convert label to null-terminated string
-                .layout = desc.layout.handle,
-                .entry_count = @intCast(native_entries.len),
-                .entries = native_entries.ptr,
-            };
+            var native_desc = std.mem.zeroes(native.WGPUBindGroupDescriptor);
+            native_desc.layout = desc.layout.handle;
+            native_desc.entry_count = native_entries.len;
+            native_desc.entries = native_entries.ptr;
 
             const handle = native.wgpuDeviceCreateBindGroup(self.device, &native_desc);
             return BindGroup{ .handle = handle };
@@ -826,11 +820,9 @@ pub const GPU = struct {
                 native_layouts[i] = layout.handle;
             }
 
-            const native_desc = native.WGPUPipelineLayoutDescriptor{
-                .label = null, // TODO: Convert label to null-terminated string
-                .bind_group_layout_count = @intCast(native_layouts.len),
-                .bind_group_layouts = native_layouts.ptr,
-            };
+            var native_desc = std.mem.zeroes(native.WGPUPipelineLayoutDescriptor);
+            native_desc.bind_group_layout_count = native_layouts.len;
+            native_desc.bind_group_layouts = native_layouts.ptr;
 
             const handle = native.wgpuDeviceCreatePipelineLayout(self.device, &native_desc);
             return PipelineLayout{ .handle = handle };
@@ -1025,7 +1017,7 @@ pub const GPU = struct {
             for (command_buffers[0..count], 0..) |buf, i| {
                 c_buffers[i] = buf.handle;
             }
-            native.wgpuQueueSubmit(self.queue, @intCast(count), &c_buffers);
+            native.wgpuQueueSubmit(self.queue, count, &c_buffers);
 
             // Poll device to process submitted work (wgpu-native extension)
             _ = native.wgpuDevicePoll(self.device, 1, null); // wait=true
@@ -1285,10 +1277,9 @@ pub const CommandEncoder = struct {
                 .next_in_chain = null,
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
                 .color_attachment_count = desc.color_attachments.len,
-                .color_attachments = color_attachments[0..desc.color_attachments.len].ptr,
+                .color_attachments = &color_attachments,
                 .depth_stencil_attachment = if (depth_stencil) |*ds| ds else null,
                 .occlusion_query_set = null,
-                .timestamp_write_count = 0,
                 .timestamp_writes = null,
             };
 

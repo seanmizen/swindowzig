@@ -70,6 +70,18 @@ var state: State = undefined;
 fn voxelInit(ctx: *sw.Context) !void {
     std.log.info("Voxel demo init", .{});
 
+    // Explicitly null all optional fields — `var state: State = undefined` bypasses struct defaults
+    state.pipeline = null;
+    state.vertex_buffer = null;
+    state.index_buffer = null;
+    state.uniform_buffer = null;
+    state.bind_group = null;
+    state.depth_texture = null;
+    state.depth_view = null;
+    state.hover_block = null;
+    state.tas_replayer = null;
+    state.tas_events = null;
+
     // Initialize chunk
     state.chunk = Chunk.init();
     state.chunk.generateTerrain();
