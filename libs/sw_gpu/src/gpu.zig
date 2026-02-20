@@ -524,6 +524,8 @@ pub const GPU = struct {
             var fragment_ptr: ?*const native.WGPUFragmentState = null;
             var fragment_entry: ?[:0]u8 = null;
             var wgpu_targets: ?[]native.WGPUColorTargetState = null;
+            // Blend states live on the stack alongside targets (up to 8 color attachments)
+            var wgpu_blend_states_storage: [8]native.WGPUBlendState = undefined;
             defer {
                 if (fragment_entry) |fe| allocator.free(fe);
                 if (wgpu_targets) |targets| allocator.free(targets);
@@ -541,7 +543,21 @@ pub const GPU = struct {
                     targets[i] = std.mem.zeroes(native.WGPUColorTargetState);
                     targets[i].format = @enumFromInt(@intFromEnum(target.format));
                     targets[i].write_mask = target.write_mask;
-                    // blend remains null from zeroes
+                    if (target.blend) |blend| {
+                        wgpu_blend_states_storage[i] = .{
+                            .color = .{
+                                .operation = @enumFromInt(@intFromEnum(blend.color.operation)),
+                                .src_factor = @enumFromInt(@intFromEnum(blend.color.src_factor)),
+                                .dst_factor = @enumFromInt(@intFromEnum(blend.color.dst_factor)),
+                            },
+                            .alpha = .{
+                                .operation = @enumFromInt(@intFromEnum(blend.alpha.operation)),
+                                .src_factor = @enumFromInt(@intFromEnum(blend.alpha.src_factor)),
+                                .dst_factor = @enumFromInt(@intFromEnum(blend.alpha.dst_factor)),
+                            },
+                        };
+                        targets[i].blend = &wgpu_blend_states_storage[i];
+                    }
                 }
 
                 // Zero-initialize fragment state to avoid undefined padding

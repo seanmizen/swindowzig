@@ -44,6 +44,7 @@ pub const WasmBackend = struct {
                 .getTime = getTime,
                 .getWindowInfo = getWindowInfo,
                 .getWindow = getWindow,
+                .setMouseCapture = setMouseCapture,
             },
         };
     }
@@ -84,6 +85,10 @@ pub const WasmBackend = struct {
     fn getWindow(_: *anyopaque) ?*anyopaque {
         // WASM doesn't have a window handle concept
         return null;
+    }
+
+    fn setMouseCapture(_: *anyopaque, _: bool) void {
+        // WASM: pointer lock handled via JS; no-op here
     }
 };
 

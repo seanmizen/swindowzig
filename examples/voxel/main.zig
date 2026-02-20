@@ -45,6 +45,14 @@ const CameraType = @import("camera.zig").Camera(Vec3, Mat4, math);
 const RaycastType = @import("raycast.zig").Raycast(Vec3, Chunk);
 const raycast = RaycastType.raycast;
 
+const GameState = @import("game_state.zig").GameState;
+const OverlayRenderer = @import("overlay.zig").OverlayRenderer;
+
+// Pause menu button geometry (in logical pixels)
+const RESUME_BTN_W: f32 = 200;
+const RESUME_BTN_H: f32 = 40;
+const BTN_GAP: f32 = 12; // gap between resume and quit buttons
+
 // Application state
 const State = struct {
     chunk: Chunk,
@@ -60,7 +68,12 @@ const State = struct {
     mesh_dirty: bool = true,
     mouse_captured: bool = false,
     click_locked: bool = false,
-    hover_block: ?Vec3 = null, // Block currently under the crosshair (null = none)
+    paused_with_mouse: bool = false,
+    button_resume_hovered: bool = false,
+    button_quit_hovered: bool = false,
+    hover_block: ?Vec3 = null,
+    game_state: GameState = undefined,
+    overlay: OverlayRenderer = undefined,
     tas_replayer: ?core.Replayer = null,
     tas_events: ?std.ArrayList(core.Event) = null,
 };
@@ -102,6 +115,16 @@ fn voxelInit(ctx: *sw.Context) !void {
 
     state.mesh_dirty = true;
     state.mouse_captured = false;
+    state.click_locked = false;
+    state.paused_with_mouse = false;
+    state.button_resume_hovered = false;
+    state.button_quit_hovered = false;
+
+    // Initialize game state layer stack
+    state.game_state = GameState.init();
+
+    // Initialize overlay renderer
+    state.overlay = OverlayRenderer.init(ctx.allocator());
 
     // Check for TAS script argument
     const args = try std.process.argsAlloc(ctx.allocator());
@@ -163,88 +186,163 @@ fn voxelTick(ctx: *sw.Context) !void {
     }
 
     const input = ctx.input();
-
-    // Record capture state at the START of this tick (before we potentially change it).
-    // Block interaction only runs when the mouse was ALREADY captured — Minecraft's behavior:
-    // first click captures only, never also destroys.
-    const was_captured = state.mouse_captured;
-
-    // Click to capture mouse
-    if (!state.mouse_captured and input.buttonPressed(.left)) {
-        state.mouse_captured = true;
-        ctx.setMouseCapture(true);
-        state.click_locked = true; // Don't act on the capture click
-        std.log.info("Mouse captured (clicked)", .{});
-    }
-
-    // ESC to release mouse
-    if (state.mouse_captured and input.keyPressed(.Escape)) {
-        state.mouse_captured = false;
-        ctx.setMouseCapture(false);
-        std.log.info("Mouse released (ESC)", .{});
-    }
-
     const dt = @as(f32, @floatFromInt(ctx.dtNs())) / 1_000_000_000.0;
 
-    // Movement (WASD + Space/Shift) - works always
-    var forward: f32 = 0;
-    var right: f32 = 0;
-    var up: f32 = 0;
+    // Snapshot capture state BEFORE global keys modify it.
+    // was_captured = false on the tick we resume from pause → prevents camera jump.
+    const was_captured = state.mouse_captured;
 
-    if (input.keyDown(.W)) forward += 1;
-    if (input.keyDown(.S)) forward -= 1;
-    if (input.keyDown(.D)) right += 1;
-    if (input.keyDown(.A)) right -= 1;
-    if (input.keyDown(.Space)) up += 1;
-    if (input.keyDown(.Shift)) up -= 1;
+    // =========================================================================
+    // 1. Global keys — always processed regardless of layer state
+    // =========================================================================
+    if (input.keyPressed(.Escape)) {
+        if (state.game_state.isLayerActive(.pause_menu)) {
+            // Resume: deactivate pause menu, recapture mouse if we had it before pausing
+            state.game_state.togglePauseMenu();
+            if (state.paused_with_mouse) {
+                ctx.setMouseCapture(true);
+                state.mouse_captured = true;
+                state.paused_with_mouse = false;
+            }
+            std.log.info("Resumed (ESC)", .{});
+        } else {
+            // Open menu: save mouse state, then release mouse
+            state.paused_with_mouse = state.mouse_captured;
+            state.game_state.togglePauseMenu();
+            if (state.mouse_captured) {
+                ctx.setMouseCapture(false);
+                state.mouse_captured = false;
+            }
+            std.log.info("Paused (ESC)", .{});
+        }
+    }
 
-    state.camera.move(forward, right, up, dt);
+    if (input.keyPressed(.F3)) {
+        state.game_state.toggleDebugOverlay();
+    }
 
-    // Mouse look + block interaction (only when mouse was already captured this tick)
-    if (was_captured) {
-        state.camera.rotate(
-            input.mouse.delta_x,
-            -input.mouse.delta_y, // Invert Y for natural feel
-        );
+    // =========================================================================
+    // 2. Pause menu input — only when pause menu is showing
+    // =========================================================================
+    if (state.game_state.isLayerActive(.pause_menu)) {
+        const win = ctx.window();
+        // Mouse coords from SDL are logical pixels; window width/height are drawable (physical).
+        // Divide by dpi_scale to get logical screen dimensions for hit testing.
+        const logical_w = @as(f32, @floatFromInt(win.width)) / win.dpi_scale;
+        const logical_h = @as(f32, @floatFromInt(win.height)) / win.dpi_scale;
+        const btn_x = (logical_w - RESUME_BTN_W) / 2.0;
+        // Center the button pair vertically
+        const total_btn_h = RESUME_BTN_H * 2 + BTN_GAP;
+        const resume_y = (logical_h - total_btn_h) / 2.0;
+        const quit_y = resume_y + RESUME_BTN_H + BTN_GAP;
 
-        // Release click lock when button is not pressed — debounce against multi-tick button events
-        if (!input.buttonPressed(.left)) {
-            state.click_locked = false;
+        const mx = input.mouse.x;
+        const my = input.mouse.y;
+        state.button_resume_hovered =
+            mx >= btn_x and mx <= btn_x + RESUME_BTN_W and
+            my >= resume_y and my <= resume_y + RESUME_BTN_H;
+        state.button_quit_hovered =
+            mx >= btn_x and mx <= btn_x + RESUME_BTN_W and
+            my >= quit_y and my <= quit_y + RESUME_BTN_H;
+
+        if (input.buttonPressed(.left) and state.button_resume_hovered) {
+            state.game_state.togglePauseMenu();
+            if (state.paused_with_mouse) {
+                ctx.setMouseCapture(true);
+                state.mouse_captured = true;
+                state.paused_with_mouse = false;
+            }
+            state.button_resume_hovered = false;
+            std.log.info("Resumed (button click)", .{});
         }
 
-        const cam_dir = state.camera.forward();
-        const hit = raycast(&state.chunk, state.camera.position, cam_dir, 5.0);
+        if (input.buttonPressed(.left) and state.button_quit_hovered) {
+            std.log.info("Quit (button click)", .{});
+            std.process.exit(0);
+        }
+    } else {
+        state.button_resume_hovered = false;
+        state.button_quit_hovered = false;
+    }
 
-        if (hit.hit) {
-            state.hover_block = hit.block_pos;
+    // =========================================================================
+    // 3. Gameplay input — only when no captures_all layer above gameplay
+    // =========================================================================
+    if (state.game_state.gameplayReceivesInput()) {
+        // Click to capture mouse (first click after startup / after resume)
+        if (!state.mouse_captured and input.buttonPressed(.left)) {
+            state.mouse_captured = true;
+            ctx.setMouseCapture(true);
+            state.click_locked = true;
+            std.log.info("Mouse captured (clicked)", .{});
+        }
 
-            // Left click: destroy block (one block per click)
-            if (input.buttonPressed(.left) and !state.click_locked) {
-                state.click_locked = true;
-                const bx: i32 = @intFromFloat(hit.block_pos.x);
-                const by: i32 = @intFromFloat(hit.block_pos.y);
-                const bz: i32 = @intFromFloat(hit.block_pos.z);
-                state.chunk.setBlock(bx, by, bz, .air);
-                state.mesh_dirty = true;
+        // WASD movement (only when mouse is captured)
+        if (state.mouse_captured) {
+            var forward: f32 = 0;
+            var right: f32 = 0;
+            var up: f32 = 0;
+
+            if (input.keyDown(.W)) forward += 1;
+            if (input.keyDown(.S)) forward -= 1;
+            if (input.keyDown(.D)) right += 1;
+            if (input.keyDown(.A)) right -= 1;
+            if (input.keyDown(.Space)) up += 1;
+            if (input.keyDown(.Shift)) up -= 1;
+
+            state.camera.move(forward, right, up, dt);
+        }
+
+        // Mouse look + block interaction — only when was already captured this tick
+        // (was_captured = false on resume tick prevents camera jump)
+        if (was_captured) {
+            state.camera.rotate(
+                input.mouse.delta_x,
+                -input.mouse.delta_y, // Invert Y for natural feel
+            );
+
+            // Release click lock when button is not pressed
+            if (!input.buttonPressed(.left)) {
+                state.click_locked = false;
             }
 
-            // Right click: place block on adjacent face (one block per click)
-            if (input.buttonPressed(.right)) {
-                const place_pos = Vec3.init(
-                    hit.block_pos.x + hit.face_normal.x,
-                    hit.block_pos.y + hit.face_normal.y,
-                    hit.block_pos.z + hit.face_normal.z,
-                );
-                const px: i32 = @intFromFloat(place_pos.x);
-                const py: i32 = @intFromFloat(place_pos.y);
-                const pz: i32 = @intFromFloat(place_pos.z);
-                state.chunk.setBlock(px, py, pz, .stone);
-                state.mesh_dirty = true;
+            const cam_dir = state.camera.forward();
+            const hit = raycast(&state.chunk, state.camera.position, cam_dir, 5.0);
+
+            if (hit.hit) {
+                state.hover_block = hit.block_pos;
+
+                // Left click: destroy block (one block per click)
+                if (input.buttonPressed(.left) and !state.click_locked) {
+                    state.click_locked = true;
+                    const bx: i32 = @intFromFloat(hit.block_pos.x);
+                    const by: i32 = @intFromFloat(hit.block_pos.y);
+                    const bz: i32 = @intFromFloat(hit.block_pos.z);
+                    state.chunk.setBlock(bx, by, bz, .air);
+                    state.mesh_dirty = true;
+                }
+
+                // Right click: place block on adjacent face
+                if (input.buttonPressed(.right)) {
+                    const place_pos = Vec3.init(
+                        hit.block_pos.x + hit.face_normal.x,
+                        hit.block_pos.y + hit.face_normal.y,
+                        hit.block_pos.z + hit.face_normal.z,
+                    );
+                    const px: i32 = @intFromFloat(place_pos.x);
+                    const py: i32 = @intFromFloat(place_pos.y);
+                    const pz: i32 = @intFromFloat(place_pos.z);
+                    state.chunk.setBlock(px, py, pz, .stone);
+                    state.mesh_dirty = true;
+                }
+            } else {
+                state.hover_block = null;
             }
         } else {
             state.hover_block = null;
         }
     } else {
+        // Pause menu or another captures_all layer is blocking gameplay
         state.hover_block = null;
     }
 }
@@ -259,7 +357,13 @@ fn voxelRender(ctx: *sw.Context) !void {
 
     // Update aspect ratio if window resized
     const window_info = ctx.window();
-    const aspect = @as(f32, @floatFromInt(window_info.width)) / @as(f32, @floatFromInt(window_info.height));
+    const screen_w = @as(f32, @floatFromInt(window_info.width));
+    const screen_h = @as(f32, @floatFromInt(window_info.height));
+    const aspect = screen_w / screen_h;
+    // Overlay uses logical pixels (what mouse coords and RESUME_BTN_* constants are in).
+    // Physical = logical * dpi_scale; dividing back gives consistent hit-test + draw coords.
+    const overlay_w = screen_w / window_info.dpi_scale;
+    const overlay_h = screen_h / window_info.dpi_scale;
     state.camera.aspect = aspect;
 
     // Create GPU resources on first render
@@ -362,6 +466,73 @@ fn voxelRender(ctx: *sw.Context) !void {
         pass.drawIndexed(index_count_u32, 1, 0, 0, 0);
     }
 
+    // =========================================================================
+    // Overlay rendering (2D UI on top of 3D world)
+    // =========================================================================
+    state.overlay.ensurePipeline(g) catch |err| {
+        std.log.err("Failed to ensure overlay pipeline: {}", .{err});
+    };
+
+    state.overlay.begin();
+
+    // HUD: crosshair (visible when playing, not paused)
+    if (state.game_state.isLayerActive(.hud) and !state.game_state.isWorldPaused()) {
+        const cx = overlay_w / 2.0;
+        const cy = overlay_h / 2.0;
+        const clen: f32 = 10;
+        const cthick: f32 = 2;
+        const white = [4]f32{ 1, 1, 1, 1 };
+        state.overlay.rect(cx - clen, cy - cthick / 2.0, clen * 2, cthick, white, overlay_w, overlay_h) catch {};
+        state.overlay.rect(cx - cthick / 2.0, cy - clen, cthick, clen * 2, white, overlay_w, overlay_h) catch {};
+    }
+
+    // Pause menu overlay
+    if (state.game_state.isLayerActive(.pause_menu)) {
+        // Semi-transparent dark fullscreen overlay
+        state.overlay.rect(0, 0, overlay_w, overlay_h, .{ 0.0, 0.0, 0.0, 0.55 }, overlay_w, overlay_h) catch {};
+
+        const btn_x = (overlay_w - RESUME_BTN_W) / 2.0;
+        const total_btn_h = RESUME_BTN_H * 2 + BTN_GAP;
+        const resume_y = (overlay_h - total_btn_h) / 2.0;
+        const quit_y = resume_y + RESUME_BTN_H + BTN_GAP;
+        const border: f32 = 2;
+
+        // Resume button: border then fill
+        state.overlay.rect(btn_x - border, resume_y - border, RESUME_BTN_W + border * 2, RESUME_BTN_H + border * 2, .{ 0.85, 0.85, 0.85, 1.0 }, overlay_w, overlay_h) catch {};
+        const resume_fill = if (state.button_resume_hovered)
+            [4]f32{ 0.55, 0.55, 0.55, 1.0 }
+        else
+            [4]f32{ 0.35, 0.35, 0.35, 1.0 };
+        state.overlay.rect(btn_x, resume_y, RESUME_BTN_W, RESUME_BTN_H, resume_fill, overlay_w, overlay_h) catch {};
+
+        // Quit button: border then reddish-grey fill
+        state.overlay.rect(btn_x - border, quit_y - border, RESUME_BTN_W + border * 2, RESUME_BTN_H + border * 2, .{ 0.75, 0.60, 0.60, 1.0 }, overlay_w, overlay_h) catch {};
+        const quit_fill = if (state.button_quit_hovered)
+            [4]f32{ 0.58, 0.35, 0.35, 1.0 }
+        else
+            [4]f32{ 0.42, 0.25, 0.25, 1.0 };
+        state.overlay.rect(btn_x, quit_y, RESUME_BTN_W, RESUME_BTN_H, quit_fill, overlay_w, overlay_h) catch {};
+    }
+
+    // Debug overlay: sidebar with placeholder colored bars
+    if (state.game_state.isLayerActive(.debug_overlay)) {
+        const bar_w: f32 = 180;
+        state.overlay.rect(0, 0, bar_w, overlay_h, .{ 0.0, 0.0, 0.0, 0.5 }, overlay_w, overlay_h) catch {};
+        // Placeholder colored bars (future: FPS, pos, chunk info text lines)
+        const colors = [_][4]f32{
+            .{ 0.2, 0.8, 0.2, 1.0 },
+            .{ 0.8, 0.8, 0.2, 1.0 },
+            .{ 0.2, 0.5, 0.9, 1.0 },
+            .{ 0.9, 0.4, 0.2, 1.0 },
+        };
+        for (colors, 0..) |col, idx| {
+            const bar_y = 8.0 + @as(f32, @floatFromInt(idx)) * 20.0;
+            state.overlay.rect(8, bar_y, 100, 14, col, overlay_w, overlay_h) catch {};
+        }
+    }
+
+    state.overlay.draw(g, pass);
+
     pass.end();
 
     const cmd = encoder.finish() catch |err| {
@@ -375,6 +546,7 @@ fn voxelRender(ctx: *sw.Context) !void {
 
 fn voxelShutdown(ctx: *sw.Context) !void {
     state.mesh.deinit();
+    state.overlay.deinit();
 
     if (state.tas_replayer) |*replayer| {
         replayer.deinit();
@@ -480,9 +652,9 @@ fn uploadMeshToGPU(g: *gpu_mod.GPU) !void {
     const vertex_bytes = state.mesh.vertices.items.len * @sizeOf(VoxelVertex);
     const index_bytes = state.mesh.indices.items.len * @sizeOf(u32);
 
-    // Create/recreate vertex buffer
+    // Create/recreate vertex buffer (destroy old one first to avoid leak)
     if (state.vertex_buffer) |old_buf| {
-        _ = old_buf; // TODO: release old buffer
+        old_buf.destroy();
     }
     state.vertex_buffer = try g.createBuffer(.{
         .size = vertex_bytes,
@@ -490,9 +662,9 @@ fn uploadMeshToGPU(g: *gpu_mod.GPU) !void {
     });
     g.writeBuffer(state.vertex_buffer.?, 0, std.mem.sliceAsBytes(state.mesh.vertices.items));
 
-    // Create/recreate index buffer
+    // Create/recreate index buffer (destroy old one first to avoid leak)
     if (state.index_buffer) |old_buf| {
-        _ = old_buf; // TODO: release old buffer
+        old_buf.destroy();
     }
     state.index_buffer = try g.createBuffer(.{
         .size = index_bytes,

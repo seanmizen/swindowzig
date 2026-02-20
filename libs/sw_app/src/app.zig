@@ -126,14 +126,15 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
 
         const ticks = timeline.advance(dt_ns);
 
-        // Update input snapshot from events for current tick
-        const events_for_tick = event_bus.eventsForTick(timeline.currentTick());
-        input_snapshot.updateFromEvents(events_for_tick);
-
         // Run tick callbacks
+        // Each tick gets its own input update: tick 0 gets real events, subsequent ticks
+        // get an empty update (clears pressed/released, preserves down state).
+        // This prevents keyPressed/buttonPressed from firing on every tick in a multi-tick frame.
         if (@hasDecl(callbacks, "tick")) {
+            const events_for_tick = event_bus.eventsForTick(timeline.currentTick());
             var i: u64 = 0;
             while (i < ticks) : (i += 1) {
+                input_snapshot.updateFromEvents(if (i == 0) events_for_tick else &.{});
                 try callbacks.tick(&ctx);
             }
         }
