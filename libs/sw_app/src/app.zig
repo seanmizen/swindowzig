@@ -105,13 +105,12 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
     var last_time = backend.getTime();
 
     while (running) {
-        // Poll events
+        // Poll events (platform pushes with tick_id=0 = "pending")
         try backend.pollEvents(&event_bus);
 
-        // Check for shutdown event
-        const tick_events = event_bus.eventsForTick(timeline.currentTick());
-        for (tick_events) |event| {
-            if (event.payload == .lifecycle and event.payload.lifecycle == .shutdown) {
+        // Check for shutdown by scanning all pending events directly
+        for (event_bus.events.items) |ev| {
+            if (ev.payload == .lifecycle and ev.payload.lifecycle == .shutdown) {
                 running = false;
                 break;
             }
@@ -119,22 +118,26 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
 
         if (!running) break;
 
-        // Update timeline
+        // Update timeline — advance() computes pending ticks without advancing tick_id.
         const now = backend.getTime();
         const dt_ns = now - last_time;
         last_time = now;
 
-        const ticks = timeline.advance(dt_ns);
+        _ = timeline.advance(dt_ns);
 
-        // Run tick callbacks
-        // Each tick gets its own input update: tick 0 gets real events, subsequent ticks
-        // get an empty update (clears pressed/released, preserves down state).
-        // This prevents keyPressed/buttonPressed from firing on every tick in a multi-tick frame.
+        // Assign pending (tick_id=0) platform events to the first tick of this frame.
+        // This ensures SDL input only fires once (in tick N), not in every catch-up tick.
+        event_bus.assignPendingToTick(timeline.currentTick() + 1);
+
+        // Run tick callbacks — step() advances tick_id by 1 each iteration.
+        // ctx.tickId() is always correct for the current iteration.
         if (@hasDecl(callbacks, "tick")) {
-            const events_for_tick = event_bus.eventsForTick(timeline.currentTick());
-            var i: u64 = 0;
-            while (i < ticks) : (i += 1) {
-                input_snapshot.updateFromEvents(if (i == 0) events_for_tick else &.{});
+            while (timeline.step()) {
+                if (@hasDecl(callbacks, "preTick")) {
+                    try callbacks.preTick(&ctx);
+                }
+                const events_for_tick = event_bus.eventsForTick(timeline.currentTick());
+                input_snapshot.updateFromEvents(events_for_tick);
                 try callbacks.tick(&ctx);
             }
         }

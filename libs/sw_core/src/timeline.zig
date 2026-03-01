@@ -14,13 +14,20 @@ pub const Timeline = struct {
 };
 
 /// Fixed timestep timeline with catch-up
-/// Runs 0..k ticks per frame to maintain consistent simulation speed
+/// Runs 0..k ticks per frame to maintain consistent simulation speed.
+///
+/// Usage pattern:
+///   _ = timeline.advance(dt_ns);       // compute how many ticks are due
+///   while (timeline.step()) { ... }    // advance one tick at a time
+///
+/// This ensures ctx.tickId() returns the correct per-iteration tick inside the loop.
 pub const FixedStepTimeline = struct {
     tick_id: u64,
     tick_hz: u32,
     dt_ns: u64,
     accum_ns: u64,
     max_catchup_ticks: u32,
+    pending_ticks: u32,
 
     pub fn init(tick_hz: u32) FixedStepTimeline {
         const dt_ns = @divFloor(1_000_000_000, tick_hz);
@@ -30,18 +37,19 @@ pub const FixedStepTimeline = struct {
             .dt_ns = dt_ns,
             .accum_ns = 0,
             .max_catchup_ticks = 10, // Prevent spiral of death
+            .pending_ticks = 0,
         };
     }
 
-    /// Advance the timeline by frame_ns nanoseconds
-    /// Returns number of ticks to run this frame
+    /// Compute how many ticks are due this frame and store as pending.
+    /// Does NOT advance tick_id — call step() once per tick in your loop.
+    /// Returns the number of pending ticks (same value as the first step() calls).
     pub fn advance(self: *FixedStepTimeline, frame_ns: u64) u32 {
         self.accum_ns += frame_ns;
 
         var ticks: u32 = 0;
         while (self.accum_ns >= self.dt_ns and ticks < self.max_catchup_ticks) {
             self.accum_ns -= self.dt_ns;
-            self.tick_id += 1;
             ticks += 1;
         }
 
@@ -50,7 +58,18 @@ pub const FixedStepTimeline = struct {
             self.accum_ns = 0;
         }
 
+        self.pending_ticks = ticks;
         return ticks;
+    }
+
+    /// Advance one tick. Returns true if a tick was available, false when done.
+    /// Call in a while loop after advance():
+    ///   while (timeline.step()) { /* tick_id is now current for this iteration */ }
+    pub fn step(self: *FixedStepTimeline) bool {
+        if (self.pending_ticks == 0) return false;
+        self.tick_id += 1;
+        self.pending_ticks -= 1;
+        return true;
     }
 
     /// Get current tick ID
@@ -98,20 +117,29 @@ test "FixedStepTimeline at 60hz" {
     try std.testing.expectEqual(@as(u64, 0), timeline.currentTick());
     try std.testing.expectEqual(@as(u64, 16_666_666), timeline.tickDuration());
 
-    // One frame at 60fps (16.67ms)
+    // One frame at 60fps — advance() computes pending, tick_id unchanged until step()
     const ticks1 = timeline.advance(16_666_666);
     try std.testing.expectEqual(@as(u32, 1), ticks1);
+    try std.testing.expectEqual(@as(u64, 0), timeline.currentTick()); // not yet stepped
+    try std.testing.expect(timeline.step());
     try std.testing.expectEqual(@as(u64, 1), timeline.currentTick());
+    try std.testing.expect(!timeline.step()); // no more pending
 
-    // Two frames worth of time (33.33ms)
+    // Two frames worth of time (33.33ms) — two steps required
     const ticks2 = timeline.advance(33_333_333);
     try std.testing.expectEqual(@as(u32, 2), ticks2);
+    try std.testing.expectEqual(@as(u64, 1), timeline.currentTick()); // still at 1
+    try std.testing.expect(timeline.step());
+    try std.testing.expectEqual(@as(u64, 2), timeline.currentTick());
+    try std.testing.expect(timeline.step());
     try std.testing.expectEqual(@as(u64, 3), timeline.currentTick());
+    try std.testing.expect(!timeline.step());
 
-    // Half a frame (8.33ms) - should not tick
+    // Half a frame (8.33ms) — should not tick
     const ticks3 = timeline.advance(8_333_333);
     try std.testing.expectEqual(@as(u32, 0), ticks3);
     try std.testing.expectEqual(@as(u64, 3), timeline.currentTick());
+    try std.testing.expect(!timeline.step());
 }
 
 test "FixedStepTimeline max catchup" {
@@ -120,12 +148,18 @@ test "FixedStepTimeline max catchup" {
     // Simulate massive lag (1 second = 60 ticks worth)
     const ticks = timeline.advance(1_000_000_000);
 
-    // Should only run max_catchup_ticks
+    // Should only run max_catchup_ticks, tick_id unchanged until steps
     try std.testing.expectEqual(@as(u32, 10), ticks);
-    try std.testing.expectEqual(@as(u64, 10), timeline.currentTick());
+    try std.testing.expectEqual(@as(u64, 0), timeline.currentTick());
 
     // Accumulator should be drained
     try std.testing.expectEqual(@as(u64, 0), timeline.accum_ns);
+
+    // Step through all pending
+    var stepped: u32 = 0;
+    while (timeline.step()) stepped += 1;
+    try std.testing.expectEqual(@as(u32, 10), stepped);
+    try std.testing.expectEqual(@as(u64, 10), timeline.currentTick());
 }
 
 test "VariableStepTimeline" {

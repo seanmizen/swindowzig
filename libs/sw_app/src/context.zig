@@ -60,4 +60,11 @@ pub const Context = struct {
     pub fn setMouseCapture(self: *Context, capture: bool) void {
         self.backend.setMouseCapture(capture);
     }
+
+    /// Block (or unblock) physical keyboard/mouse input from reaching the event bus.
+    /// When blocked, only TAS/replayer events and window lifecycle events are processed.
+    /// Useful for deterministic TAS runs where real input must not interfere.
+    pub fn setInputBlocked(self: *Context, blocked: bool) void {
+        self.event_bus.block_physical_input = blocked;
+    }
 };

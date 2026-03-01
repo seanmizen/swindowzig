@@ -17,6 +17,13 @@ const Callbacks = struct {
         try voxelInit(ctx);
     }
 
+    /// preTick: inject TAS events BEFORE input snapshot is computed this tick.
+    pub fn preTick(ctx: *sw.Context) !void {
+        if (state.tas_replayer) |*replayer| {
+            try replayer.feedTick(ctx.tickId(), ctx.bus());
+        }
+    }
+
     pub fn tick(ctx: *sw.Context) !void {
         try voxelTick(ctx);
     }
@@ -106,12 +113,12 @@ fn voxelInit(ctx: *sw.Context) !void {
     const window_info = ctx.window();
     const aspect = @as(f32, @floatFromInt(window_info.width)) / @as(f32, @floatFromInt(window_info.height));
 
-    // Position camera for good view of the wider flat world (48x48 chunk)
-    state.camera = CameraType.init(Vec3.init(24, 14, 44), aspect);
+    // Spawn close to the surface for TAS / framespike investigation
+    state.camera = CameraType.init(Vec3.init(24, 9, 20), aspect);
 
-    // Point camera towards the chunk center
-    state.camera.yaw = -std.math.pi / 2.0; // Look in -Z direction
-    state.camera.pitch = -0.3; // Downward angle
+    // Look in -Z direction, slight downward angle — surface blocks fill the crosshair immediately
+    state.camera.yaw = -std.math.pi / 2.0;
+    state.camera.pitch = -0.3;
 
     state.mesh_dirty = true;
     state.mouse_captured = false;
@@ -166,7 +173,12 @@ fn voxelInit(ctx: *sw.Context) !void {
 
             state.tas_replayer = replayer;
 
-            std.log.info("TAS replayer ready - starting playback!", .{});
+            // Block physical input so the TAS run is deterministic.
+            // Keyboard/mouse events from the OS are silently dropped;
+            // TAS events (with explicit tick IDs) still reach the bus normally.
+            ctx.setInputBlocked(true);
+
+            std.log.info("TAS replayer ready - starting playback (physical input blocked)!", .{});
             break;
         }
     }
@@ -175,11 +187,8 @@ fn voxelInit(ctx: *sw.Context) !void {
 }
 
 fn voxelTick(ctx: *sw.Context) !void {
-    // Feed TAS events if replaying
+    // Log TAS playback status (feedTick now happens in preTick before input is computed)
     if (state.tas_replayer) |*replayer| {
-        try replayer.feedTick(ctx.tickId(), ctx.bus());
-
-        // Log playback status
         if (ctx.tickId() % 60 == 0) {
             std.log.info("TAS playback: tick={} state={}", .{ ctx.tickId(), replayer.state });
         }
@@ -375,17 +384,23 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     // Regenerate mesh if chunk changed
+    const was_dirty = state.mesh_dirty;
+    var t_mesh_us: i128 = 0;
     if (state.mesh_dirty) {
+        const t0 = std.time.nanoTimestamp();
         mesher_mod.generateMesh(&state.chunk, &state.mesh) catch |err| {
             std.log.err("Failed to generate mesh: {}", .{err});
             return;
         };
-
+        t_mesh_us = @divTrunc(std.time.nanoTimestamp() - t0, 1000);
         state.mesh_dirty = false;
     }
 
     // Sort mesh by depth every frame (painter's algorithm for correct rendering without depth testing)
+    var t_sort_us: i128 = 0;
+    var t_upload_us: i128 = 0;
     if (state.mesh.vertices.items.len > 0) {
+        const t1 = std.time.nanoTimestamp();
         state.mesh.sortByDepth(.{
             state.camera.position.x,
             state.camera.position.y,
@@ -394,12 +409,25 @@ fn voxelRender(ctx: *sw.Context) !void {
             std.log.err("Failed to sort mesh: {}", .{err});
             return;
         };
+        t_sort_us = @divTrunc(std.time.nanoTimestamp() - t1, 1000);
 
-        uploadMeshToGPU(g) catch |err| {
+        const t2 = std.time.nanoTimestamp();
+        uploadMeshToGPU(g, was_dirty) catch |err| {
             std.log.err("Failed to upload mesh: {}", .{err});
             return;
         };
+        t_upload_us = @divTrunc(std.time.nanoTimestamp() - t2, 1000);
     }
+
+    // Per-frame timing log — always emit so we can compare normal vs spike frame
+    std.log.info("[RENDER tick={d:4}] dirty={} mesh={d:5}us sort={d:5}us upload={d:5}us  total={d:5}us", .{
+        ctx.tickId(),
+        was_dirty,
+        t_mesh_us,
+        t_sort_us,
+        t_upload_us,
+        t_mesh_us + t_sort_us + t_upload_us,
+    });
 
     // Update uniforms
     const view_proj = state.camera.getViewProjectionMatrix();
@@ -648,27 +676,27 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     std.log.info("GPU resources created", .{});
 }
 
-fn uploadMeshToGPU(g: *gpu_mod.GPU) !void {
-    const vertex_bytes = state.mesh.vertices.items.len * @sizeOf(VoxelVertex);
-    const index_bytes = state.mesh.indices.items.len * @sizeOf(u32);
+fn uploadMeshToGPU(g: *gpu_mod.GPU, mesh_rebuilt: bool) !void {
+    const vertex_count = state.mesh.vertices.items.len;
+    const index_count = state.mesh.indices.items.len;
+    const sorted = state.mesh.sort_indices[0..index_count];
 
-    // Create/recreate vertex buffer (destroy old one first to avoid leak)
-    if (state.vertex_buffer) |old_buf| {
-        old_buf.destroy();
-    }
-    state.vertex_buffer = try g.createBuffer(.{
-        .size = vertex_bytes,
-        .usage = .{ .vertex = true, .copy_dst = true },
-    });
-    g.writeBuffer(state.vertex_buffer.?, 0, std.mem.sliceAsBytes(state.mesh.vertices.items));
+    if (mesh_rebuilt) {
+        // Mesh was regenerated — vertex/index counts may have changed, recreate both buffers.
+        if (state.vertex_buffer) |old_buf| old_buf.destroy();
+        state.vertex_buffer = try g.createBuffer(.{
+            .size = vertex_count * @sizeOf(VoxelVertex),
+            .usage = .{ .vertex = true, .copy_dst = true },
+        });
+        g.writeBuffer(state.vertex_buffer.?, 0, std.mem.sliceAsBytes(state.mesh.vertices.items));
 
-    // Create/recreate index buffer (destroy old one first to avoid leak)
-    if (state.index_buffer) |old_buf| {
-        old_buf.destroy();
+        if (state.index_buffer) |old_buf| old_buf.destroy();
+        state.index_buffer = try g.createBuffer(.{
+            .size = index_count * @sizeOf(u32),
+            .usage = .{ .index = true, .copy_dst = true },
+        });
     }
-    state.index_buffer = try g.createBuffer(.{
-        .size = index_bytes,
-        .usage = .{ .index = true, .copy_dst = true },
-    });
-    g.writeBuffer(state.index_buffer.?, 0, std.mem.sliceAsBytes(state.mesh.indices.items));
+
+    // Always write sorted indices — order changes every frame as camera moves.
+    g.writeBuffer(state.index_buffer.?, 0, std.mem.sliceAsBytes(sorted));
 }

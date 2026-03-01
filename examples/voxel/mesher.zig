@@ -16,10 +16,18 @@ pub const VoxelVertex = extern struct {
     _padding: [3]f32 = [_]f32{0} ** 3, // Pad to 48 bytes (16-byte aligned)
 };
 
+const SortEntry = struct { idx: usize, dist: f32 };
+
 pub const Mesh = struct {
     allocator: std.mem.Allocator,
     vertices: std.ArrayList(VoxelVertex),
     indices: std.ArrayList(u32),
+    /// Persistent scratch buffers for sortByDepth — reallocated only when quad count grows.
+    sort_scratch: []SortEntry = &.{},
+    sort_indices: []u32 = &.{},
+    /// True once sort_scratch holds a valid sorted order from the previous frame.
+    /// False after mesh rebuild — triggers full pdqsort to establish initial order.
+    sort_valid: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Mesh {
         return .{
@@ -32,71 +40,103 @@ pub const Mesh = struct {
     pub fn deinit(self: *Mesh) void {
         self.vertices.deinit(self.allocator);
         self.indices.deinit(self.allocator);
+        if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
+        if (self.sort_indices.len > 0) self.allocator.free(self.sort_indices);
     }
 
     pub fn clear(self: *Mesh) void {
         self.vertices.clearRetainingCapacity();
         self.indices.clearRetainingCapacity();
+        self.sort_valid = false; // mesh rebuilt — scratch order is stale
     }
 
-    /// Sort faces by depth (painter's algorithm) for correct transparency rendering
-    /// without hardware depth testing. Call this before uploading to GPU.
+    /// Sort faces by depth (painter's algorithm) for correct rendering without
+    /// hardware depth testing. Reuses pre-allocated scratch buffers each frame.
     pub fn sortByDepth(self: *Mesh, camera_pos: [3]f32) !void {
         if (self.indices.items.len == 0) return;
 
-        // Each quad is 6 indices (2 triangles)
         const quad_count = self.indices.items.len / 6;
         if (quad_count == 0) return;
 
-        // Build array of (quad_index, distance) pairs
-        var quad_distances = try self.allocator.alloc(struct { idx: usize, dist: f32 }, quad_count);
-        defer self.allocator.free(quad_distances);
-
-        for (0..quad_count) |i| {
-            const base_idx = i * 6;
-            const idx0 = self.indices.items[base_idx];
-            const idx1 = self.indices.items[base_idx + 1];
-            const idx2 = self.indices.items[base_idx + 2];
-            const idx3 = self.indices.items[base_idx + 3];
-
-            // Compute quad centroid from first 4 vertices
-            const v0 = self.vertices.items[idx0].pos;
-            const v1 = self.vertices.items[idx1].pos;
-            const v2 = self.vertices.items[idx2].pos;
-            const v3 = self.vertices.items[idx3].pos;
-
-            const centroid_x = (v0[0] + v1[0] + v2[0] + v3[0]) / 4.0;
-            const centroid_y = (v0[1] + v1[1] + v2[1] + v3[1]) / 4.0;
-            const centroid_z = (v0[2] + v1[2] + v2[2] + v3[2]) / 4.0;
-
-            // Distance squared (no need for sqrt for sorting)
-            const dx = centroid_x - camera_pos[0];
-            const dy = centroid_y - camera_pos[1];
-            const dz = centroid_z - camera_pos[2];
-            const dist_sq = dx * dx + dy * dy + dz * dz;
-
-            quad_distances[i] = .{ .idx = i, .dist = dist_sq };
+        // Grow scratch buffers only when needed (never shrink)
+        if (quad_count > self.sort_scratch.len) {
+            if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
+            if (self.sort_indices.len > 0) self.allocator.free(self.sort_indices);
+            self.sort_scratch = try self.allocator.alloc(SortEntry, quad_count);
+            self.sort_indices = try self.allocator.alloc(u32, quad_count * 6);
         }
 
-        // Sort back-to-front (furthest first for painter's algorithm)
-        std.mem.sort(@TypeOf(quad_distances[0]), quad_distances, {}, struct {
-            fn lessThan(_: void, a: @TypeOf(quad_distances[0]), b: @TypeOf(quad_distances[0])) bool {
-                return a.dist > b.dist; // Descending order
+        const scratch = self.sort_scratch[0..quad_count];
+
+        if (self.sort_valid) {
+            // Scratch holds the sorted order from last frame — just update distances in place.
+            // The .idx fields still point to the correct quads; only distances changed.
+            for (scratch) |*entry| {
+                const base_idx = entry.idx * 6;
+                const idx0 = self.indices.items[base_idx];
+                const idx1 = self.indices.items[base_idx + 1];
+                const idx2 = self.indices.items[base_idx + 2];
+                const idx3 = self.indices.items[base_idx + 3];
+
+                const v0 = self.vertices.items[idx0].pos;
+                const v1 = self.vertices.items[idx1].pos;
+                const v2 = self.vertices.items[idx2].pos;
+                const v3 = self.vertices.items[idx3].pos;
+
+                const dx = (v0[0] + v1[0] + v2[0] + v3[0]) / 4.0 - camera_pos[0];
+                const dy = (v0[1] + v1[1] + v2[1] + v3[1]) / 4.0 - camera_pos[1];
+                const dz = (v0[2] + v1[2] + v2[2] + v3[2]) / 4.0 - camera_pos[2];
+                entry.dist = dx * dx + dy * dy + dz * dz;
             }
-        }.lessThan);
 
-        // Build new sorted index buffer
-        var sorted_indices = try self.allocator.alloc(u32, self.indices.items.len);
-        defer self.allocator.free(sorted_indices);
+            // Insertion sort: O(n) for nearly-sorted data (camera moved a little)
+            var i: usize = 1;
+            while (i < quad_count) : (i += 1) {
+                const key = scratch[i];
+                var j: usize = i;
+                while (j > 0 and scratch[j - 1].dist < key.dist) : (j -= 1) {
+                    scratch[j] = scratch[j - 1];
+                }
+                scratch[j] = key;
+            }
+        } else {
+            // First frame after mesh rebuild — populate scratch from scratch and use pdqsort.
+            for (0..quad_count) |i| {
+                const base_idx = i * 6;
+                const idx0 = self.indices.items[base_idx];
+                const idx1 = self.indices.items[base_idx + 1];
+                const idx2 = self.indices.items[base_idx + 2];
+                const idx3 = self.indices.items[base_idx + 3];
 
-        for (quad_distances, 0..) |qd, i| {
+                const v0 = self.vertices.items[idx0].pos;
+                const v1 = self.vertices.items[idx1].pos;
+                const v2 = self.vertices.items[idx2].pos;
+                const v3 = self.vertices.items[idx3].pos;
+
+                const dx = (v0[0] + v1[0] + v2[0] + v3[0]) / 4.0 - camera_pos[0];
+                const dy = (v0[1] + v1[1] + v2[1] + v3[1]) / 4.0 - camera_pos[1];
+                const dz = (v0[2] + v1[2] + v2[2] + v3[2]) / 4.0 - camera_pos[2];
+                scratch[i] = .{ .idx = i, .dist = dx * dx + dy * dy + dz * dz };
+            }
+
+            std.mem.sort(SortEntry, scratch, {}, struct {
+                fn lessThan(_: void, a: SortEntry, b: SortEntry) bool {
+                    return a.dist > b.dist;
+                }
+            }.lessThan);
+
+            self.sort_valid = true;
+        }
+
+        // Write sorted indices into sort_indices (the GPU upload source).
+        // Never modify self.indices — it stays as the canonical unsorted buffer so
+        // scratch[i].idx remains a stable quad identifier across frames.
+        const out = self.sort_indices[0 .. quad_count * 6];
+        for (scratch, 0..) |qd, i| {
             const src_base = qd.idx * 6;
             const dst_base = i * 6;
-            @memcpy(sorted_indices[dst_base .. dst_base + 6], self.indices.items[src_base .. src_base + 6]);
+            @memcpy(out[dst_base .. dst_base + 6], self.indices.items[src_base .. src_base + 6]);
         }
-
-        // Replace indices with sorted version
-        @memcpy(self.indices.items, sorted_indices);
     }
 };
 
