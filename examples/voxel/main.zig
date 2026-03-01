@@ -93,7 +93,6 @@ const State = struct {
     game_state: GameState = undefined,
     overlay: OverlayRenderer = undefined,
     tas_replayer: ?core.Replayer = null,
-    tas_events: ?std.ArrayList(core.Event) = null,
     headless: bool = false,
 };
 
@@ -112,7 +111,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.depth_view = null;
     state.hover_block = null;
     state.tas_replayer = null;
-    state.tas_events = null;
 
     // Initialize chunk
     state.chunk = Chunk.init();
@@ -165,28 +163,16 @@ fn voxelInit(ctx: *sw.Context) !void {
             };
             defer tas_script.deinit();
 
-            // Convert to events
-            const events = try tas_script.toEvents(120); // 120 Hz tick rate
-            state.tas_events = events;
-
             std.log.info("TAS script loaded: {} commands, {} ticks duration", .{
                 tas_script.entries.items.len,
                 tas_script.getDuration(),
             });
 
-            // Create replayer from events
-            var replay_buffer = std.ArrayList(u8){};
-            var serializer = core.serialize.Serializer.init(replay_buffer.writer(ctx.allocator()).any());
-            try serializer.writeHeader(120);
-            for (events.items) |event| {
-                try serializer.writeEvent(event);
-            }
-
-            var fbs = std.io.fixedBufferStream(replay_buffer.items);
-            var replayer = try core.Replayer.init(ctx.allocator(), fbs.reader().any());
-            try replayer.loadAll();
+            // Convert TAS entries → events, transfer ownership directly to the replayer.
+            // No serialize/deserialize roundtrip needed.
+            const events = try tas_script.toEvents(120); // 120 Hz
+            var replayer = core.Replayer.initDirect(ctx.allocator(), events);
             replayer.play();
-
             state.tas_replayer = replayer;
 
             // Block physical input so the TAS run is deterministic.
@@ -593,16 +579,12 @@ fn voxelRender(ctx: *sw.Context) !void {
     g.present();
 }
 
-fn voxelShutdown(ctx: *sw.Context) !void {
+fn voxelShutdown(_: *sw.Context) !void {
     state.mesh.deinit();
     state.overlay.deinit();
 
     if (state.tas_replayer) |*replayer| {
         replayer.deinit();
-    }
-
-    if (state.tas_events) |*events| {
-        events.deinit(ctx.allocator());
     }
 
     std.log.info("Voxel demo shutdown", .{});

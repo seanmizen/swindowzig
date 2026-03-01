@@ -36,6 +36,20 @@ pub const Replayer = struct {
         };
     }
 
+    /// Create a replayer directly from a pre-built event list (takes ownership).
+    /// Avoids the serialize→deserialize roundtrip of init()+loadAll().
+    /// The caller must NOT deinit the events list — deinit() handles it.
+    pub fn initDirect(allocator: std.mem.Allocator, events: std.ArrayList(Event)) Replayer {
+        return .{
+            .deserializer = undefined, // never called after initDirect
+            .header = Header.init(0),
+            .events = events,
+            .current_index = 0,
+            .state = .stopped,
+            .allocator = allocator,
+        };
+    }
+
     pub fn deinit(self: *Replayer) void {
         self.events.deinit(self.allocator);
     }
