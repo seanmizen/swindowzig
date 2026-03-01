@@ -67,4 +67,12 @@ pub const Context = struct {
     pub fn setInputBlocked(self: *Context, blocked: bool) void {
         self.event_bus.block_physical_input = blocked;
     }
+
+    /// Request the app to shut down cleanly after the current tick completes.
+    /// In headless/unlimited mode this terminates the simulation loop.
+    /// In windowed mode this is equivalent to the user closing the window.
+    pub fn requestShutdown(self: *Context) void {
+        // Push with tick_id=0 so the main loop's shutdown scan picks it up next iteration.
+        self.event_bus.push(0, 0, .{ .lifecycle = .shutdown }) catch {};
+    }
 };

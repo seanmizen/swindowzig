@@ -5,10 +5,21 @@ const core = @import("sw_core");
 const math = @import("sw_math");
 
 pub fn main() !void {
+    // Read --headless flag before sw.run() so we can set Config accordingly.
+    const args = try std.process.argsAlloc(std.heap.page_allocator);
+    defer std.process.argsFree(std.heap.page_allocator, args);
+
+    var headless = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--headless")) headless = true;
+    }
+
     try sw.run(.{
         .title = "Voxel Demo - Minecraft Creative Mode",
         .size = .{ .w = 1280, .h = 720 },
         .tick_hz = 120,
+        .headless = headless,
+        .tick_timing = if (headless) .unlimited else .realtime,
     }, Callbacks);
 }
 
@@ -83,6 +94,7 @@ const State = struct {
     overlay: OverlayRenderer = undefined,
     tas_replayer: ?core.Replayer = null,
     tas_events: ?std.ArrayList(core.Event) = null,
+    headless: bool = false,
 };
 
 var state: State = undefined;
@@ -126,6 +138,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.paused_with_mouse = false;
     state.button_resume_hovered = false;
     state.button_quit_hovered = false;
+    state.headless = false;
 
     // Initialize game state layer stack
     state.game_state = GameState.init();
@@ -138,6 +151,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     defer std.process.argsFree(ctx.allocator(), args);
 
     for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "--headless")) {
+            state.headless = true;
+        }
         if (std.mem.eql(u8, arg, "--tas") and i + 1 < args.len) {
             const tas_path = args[i + 1];
             std.log.info("Loading TAS script: {s}", .{tas_path});
@@ -187,10 +203,15 @@ fn voxelInit(ctx: *sw.Context) !void {
 }
 
 fn voxelTick(ctx: *sw.Context) !void {
-    // Log TAS playback status (feedTick now happens in preTick before input is computed)
+    // TAS playback status + headless auto-shutdown when script completes
     if (state.tas_replayer) |*replayer| {
         if (ctx.tickId() % 60 == 0) {
             std.log.info("TAS playback: tick={} state={}", .{ ctx.tickId(), replayer.state });
+        }
+        if (state.headless and replayer.state == .finished) {
+            std.log.info("TAS finished at tick={} — requesting headless shutdown", .{ctx.tickId()});
+            ctx.requestShutdown();
+            return;
         }
     }
 

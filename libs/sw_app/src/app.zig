@@ -5,6 +5,15 @@ const platform = @import("sw_platform");
 const gpu_mod = @import("sw_gpu");
 const Context = @import("context.zig").Context;
 
+/// Controls how the main loop advances ticks relative to wall clock time.
+pub const TickTiming = enum {
+    /// Standard fixed-timestep: ticks fire at tick_hz rate based on wall clock.
+    realtime,
+    /// Run as fast as possible: one tick per loop iteration, no sleeping.
+    /// Useful for headless simulation and TAS analysis.
+    unlimited,
+};
+
 /// Configuration for your app (window title, size, tick rate, etc).
 pub const Config = struct {
     /// Window title (web: page title, native: window title).
@@ -13,6 +22,12 @@ pub const Config = struct {
     size: struct { w: u32, h: u32 } = .{ .w = 1280, .h = 720 },
     /// Fixed timestep tick rate in Hz (120 = 8.33ms per tick).
     tick_hz: u32 = 120,
+    /// When true: no window, no GPU, render callbacks are skipped.
+    /// Useful for deterministic TAS simulation and server-side game logic.
+    headless: bool = false,
+    /// Tick timing mode. Default .realtime follows wall clock.
+    /// Use .unlimited to run as fast as possible (pairs naturally with headless).
+    tick_timing: TickTiming = .realtime,
     /// Recording options (not implemented in v0.1).
     recording: struct { enabled: bool } = .{ .enabled = false },
     /// Web-specific input options.
@@ -56,24 +71,32 @@ fn runWasm(config: Config, comptime callbacks: type, allocator: std.mem.Allocato
 
 // Native loop (for desktop builds)
 fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Allocator) !void {
-    // 1. Create SDL2 backend
-    const SDL2Backend = platform.native_sdl.SDL2Backend;
-    var backend = try SDL2Backend.create(
-        allocator,
-        config.title,
-        config.size.w,
-        config.size.h,
-    );
-    defer backend.deinit();
+    // 1. Create backend (SDL2 for windowed, NullBackend for headless)
+    var null_impl: platform.null_backend.NullBackend = .{};
+    var backend: platform.Backend = if (config.headless) blk: {
+        std.log.info("Headless mode: no window, no GPU, tick_timing={s}", .{@tagName(config.tick_timing)});
+        break :blk null_impl.backend();
+    } else blk: {
+        const sdl_backend = try platform.native_sdl.SDL2Backend.create(
+            allocator,
+            config.title,
+            config.size.w,
+            config.size.h,
+        );
+        break :blk sdl_backend;
+    };
+    defer if (!config.headless) backend.deinit();
 
     try backend.init();
 
-    // 2. Initialize GPU (will fail gracefully on native until wgpu-native is linked)
+    // 2. Initialize GPU — skipped in headless mode (isReady() stays false, render early-returns)
     var gpu_device: gpu_mod.GPU = .{};
-    const window = backend.getWindow();
-    gpu_device.init(window, config.size.w, config.size.h) catch |err| {
-        std.log.warn("GPU initialization failed: {}, running without rendering", .{err});
-    };
+    if (!config.headless) {
+        const window = backend.getWindow();
+        gpu_device.init(window, config.size.w, config.size.h) catch |err| {
+            std.log.warn("GPU initialization failed: {}, running without rendering", .{err});
+        };
+    }
 
     // 4. Initialize timeline
     var timeline = core.FixedStepTimeline.init(config.tick_hz);
@@ -110,7 +133,7 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
 
         // Check for shutdown by scanning all pending events directly
         for (event_bus.events.items) |ev| {
-            if (ev.payload == .lifecycle and ev.payload.lifecycle == .shutdown) {
+            if (std.meta.activeTag(ev.payload) == .lifecycle and ev.payload.lifecycle == .shutdown) {
                 running = false;
                 break;
             }
@@ -119,9 +142,20 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
         if (!running) break;
 
         // Update timeline — advance() computes pending ticks without advancing tick_id.
-        const now = backend.getTime();
-        const dt_ns = now - last_time;
-        last_time = now;
+        // .realtime: dt from wall clock (standard fixed-timestep).
+        // .unlimited: always inject exactly one tick's worth of time → one tick per loop.
+        const dt_ns: u64 = switch (config.tick_timing) {
+            .realtime => blk: {
+                const now = backend.getTime();
+                const dt = now - last_time;
+                last_time = now;
+                break :blk dt;
+            },
+            .unlimited => blk: {
+                null_impl.advanceTime(timeline.tickDuration());
+                break :blk timeline.tickDuration();
+            },
+        };
 
         _ = timeline.advance(dt_ns);
 
@@ -142,9 +176,19 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
             }
         }
 
-        // Render
-        if (@hasDecl(callbacks, "render")) {
-            try callbacks.render(&ctx);
+        // Render — skipped in headless mode
+        if (!config.headless) {
+            if (@hasDecl(callbacks, "render")) {
+                try callbacks.render(&ctx);
+            }
+        }
+
+        // Check if any tick/render callback requested shutdown (e.g. ctx.requestShutdown())
+        for (event_bus.events.items) |ev| {
+            if (std.meta.activeTag(ev.payload) == .lifecycle and ev.payload.lifecycle == .shutdown) {
+                running = false;
+                break;
+            }
         }
 
         // Clear event bus for next frame

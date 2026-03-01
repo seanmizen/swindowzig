@@ -94,6 +94,19 @@ zig build run -Dexample=voxel     # voxel chunk demo
 zig build run -Dexample=windows   # triangle with mouse drag
 ```
 
+### TAS / Headless
+
+```bash
+# Run a TAS script in windowed mode (physical input blocked, watch playback)
+./zig-out/bin/voxel --tas examples/voxel/framespike.tas
+
+# Run headless: no window, no GPU, ticks as fast as possible, exits when TAS finishes
+./zig-out/bin/voxel --headless --tas examples/voxel/framespike.tas
+
+# Build first if binary is stale
+zig build native && ./zig-out/bin/voxel --headless --tas examples/voxel/framespike.tas
+```
+
 ---
 
 ## Status (Feb 2026)
@@ -123,6 +136,8 @@ zig build run -Dexample=windows   # triangle with mouse drag
 | `justabox` | `zig build run` | Single colored box, slowly spinning. Default. |
 | `windows` | `zig build run -Dexample=windows` | Colored triangle, mouse-drag rotation. |
 | `voxel` | `zig build run -Dexample=voxel` | 16×16×16 voxel chunk, WASD camera. |
+| `voxel` (TAS) | `./zig-out/bin/voxel --tas examples/voxel/framespike.tas` | Voxel with TAS playback (physical input blocked). |
+| `voxel` (headless) | `./zig-out/bin/voxel --headless --tas examples/voxel/framespike.tas` | Headless TAS: no window, runs as fast as possible. |
 
 ---
 
