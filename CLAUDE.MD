@@ -14,11 +14,11 @@ zig build run
 zig build run -Dexample=voxel
 zig build run -Dexample=windows
 
-# Compile only
-zig build native
+# Compile only (default example is justabox)
+zig build native -Dexample=voxel
 
 # Clean build (fixes mysterious segfaults from stale cache)
-rm -rf zig-out zig-cache .zig-cache && zig build native
+rm -rf zig-out zig-cache .zig-cache && zig build native -Dexample=voxel
 
 # Web (WASM)
 zig build web
@@ -87,6 +87,31 @@ var list = std.ArrayList(T){};           // init (no allocator arg)
 try list.append(allocator, item);        // pass allocator per-op
 list.deinit(allocator);
 ```
+
+### Incremental mesh update (voxel/mesher.zig)
+Full `generateMesh` scans 27,648 blocks — O(chunk_volume). For block add/remove,
+only 7 blocks are affected (changed block + 6 neighbours). Use `updateForBlockChange`:
+
+```zig
+// After chunk.setBlock(bx, by, bz, .air):
+mesh.updateForBlockChange(&chunk, bx, by, bz, camera_pos) catch {
+    mesh_dirty = true; // fallback to full regen
+};
+mesh_incremental_dirty = true; // GPU buffers need recreation
+```
+
+**How it works:**
+- `quad_block: ArrayList(u32)` — parallel array tracking which block owns each quad
+- `swapRemoveQuad(qi)` — O(1) removal: moves last quad into slot `qi`, rewrites its 6 indices
+- Collects affected quads via linear scan of `quad_block` (~6k entries), removes them, re-meshes 7 blocks
+- Maintains `sort_scratch` through the update so `sortByDepth` uses insertion sort (O(n)) instead of pdqsort (O(n log n)) on the next frame. Scratch is compacted by filtering entries with `.idx >= new_quad_count`, then new entries are appended with computed distances. Scratch is grown with +64 headroom when quad count increases.
+
+**Measured improvement (48×12×48 chunk, ~6144 quads):**
+- Before: 3891µs (mesh 2308 + sort 1341 + upload 242)
+- After: ~840µs (tick update 210 + sort 565 + upload 280) — **78% reduction**
+
+**`sortByDepth` latent bug fixed:** after scratch reallocation, must set `sort_valid = false`
+(previously, growing scratch left it with garbage values but sort_valid could still be true).
 
 ---
 

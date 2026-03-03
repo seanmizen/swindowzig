@@ -84,6 +84,7 @@ const State = struct {
     depth_texture: ?gpu_mod.Texture = null,
     depth_view: ?gpu_mod.TextureView = null,
     mesh_dirty: bool = true,
+    mesh_incremental_dirty: bool = false,
     mouse_captured: bool = false,
     click_locked: bool = false,
     paused_with_mouse: bool = false,
@@ -131,6 +132,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.camera.pitch = -0.3;
 
     state.mesh_dirty = true;
+    state.mesh_incremental_dirty = false;
     state.mouse_captured = false;
     state.click_locked = false;
     state.paused_with_mouse = false;
@@ -335,7 +337,14 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const by: i32 = @intFromFloat(hit.block_pos.y);
                     const bz: i32 = @intFromFloat(hit.block_pos.z);
                     state.chunk.setBlock(bx, by, bz, .air);
-                    state.mesh_dirty = true;
+                    const t_incr0 = std.time.nanoTimestamp();
+                    state.mesh.updateForBlockChange(&state.chunk, bx, by, bz, .{ state.camera.position.x, state.camera.position.y, state.camera.position.z }) catch |err| {
+                        std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
+                        state.mesh_dirty = true;
+                    };
+                    const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
+                    std.log.info("[TICK  tick={d:4}] incremental remove ({},{},{}) update={}us", .{ ctx.tickId(), bx, by, bz, t_incr_us });
+                    state.mesh_incremental_dirty = true;
                 }
 
                 // Right click: place block on adjacent face
@@ -349,7 +358,14 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const py: i32 = @intFromFloat(place_pos.y);
                     const pz: i32 = @intFromFloat(place_pos.z);
                     state.chunk.setBlock(px, py, pz, .stone);
-                    state.mesh_dirty = true;
+                    const t_incr0 = std.time.nanoTimestamp();
+                    state.mesh.updateForBlockChange(&state.chunk, px, py, pz, .{ state.camera.position.x, state.camera.position.y, state.camera.position.z }) catch |err| {
+                        std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
+                        state.mesh_dirty = true;
+                    };
+                    const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
+                    std.log.info("[TICK  tick={d:4}] incremental place ({},{},{}) update={}us", .{ ctx.tickId(), px, py, pz, t_incr_us });
+                    state.mesh_incremental_dirty = true;
                 }
             } else {
                 state.hover_block = null;
@@ -684,8 +700,8 @@ fn uploadMeshToGPU(g: *gpu_mod.GPU, mesh_rebuilt: bool) !void {
     const index_count = state.mesh.indices.items.len;
     const sorted = state.mesh.sort_indices[0..index_count];
 
-    if (mesh_rebuilt) {
-        // Mesh was regenerated — vertex/index counts may have changed, recreate both buffers.
+    if (mesh_rebuilt or state.mesh_incremental_dirty) {
+        // Full rebuild or incremental update — vertex data changed, recreate both buffers.
         if (state.vertex_buffer) |old_buf| old_buf.destroy();
         state.vertex_buffer = try g.createBuffer(.{
             .size = vertex_count * @sizeOf(VoxelVertex),
@@ -698,6 +714,8 @@ fn uploadMeshToGPU(g: *gpu_mod.GPU, mesh_rebuilt: bool) !void {
             .size = index_count * @sizeOf(u32),
             .usage = .{ .index = true, .copy_dst = true },
         });
+
+        state.mesh_incremental_dirty = false;
     }
 
     // Always write sorted indices — order changes every frame as camera moves.

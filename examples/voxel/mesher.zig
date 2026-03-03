@@ -22,6 +22,9 @@ pub const Mesh = struct {
     allocator: std.mem.Allocator,
     vertices: std.ArrayList(VoxelVertex),
     indices: std.ArrayList(u32),
+    /// Parallel to quads: quad_block[i] = packed block idx owning quad i.
+    /// Used for O(1) incremental mesh updates — find affected quads by block.
+    quad_block: std.ArrayList(u32),
     /// Persistent scratch buffers for sortByDepth — reallocated only when quad count grows.
     sort_scratch: []SortEntry = &.{},
     sort_indices: []u32 = &.{},
@@ -34,12 +37,14 @@ pub const Mesh = struct {
             .allocator = allocator,
             .vertices = .{},
             .indices = .{},
+            .quad_block = .{},
         };
     }
 
     pub fn deinit(self: *Mesh) void {
         self.vertices.deinit(self.allocator);
         self.indices.deinit(self.allocator);
+        self.quad_block.deinit(self.allocator);
         if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
         if (self.sort_indices.len > 0) self.allocator.free(self.sort_indices);
     }
@@ -47,6 +52,7 @@ pub const Mesh = struct {
     pub fn clear(self: *Mesh) void {
         self.vertices.clearRetainingCapacity();
         self.indices.clearRetainingCapacity();
+        self.quad_block.clearRetainingCapacity();
         self.sort_valid = false; // mesh rebuilt — scratch order is stale
     }
 
@@ -64,6 +70,7 @@ pub const Mesh = struct {
             if (self.sort_indices.len > 0) self.allocator.free(self.sort_indices);
             self.sort_scratch = try self.allocator.alloc(SortEntry, quad_count);
             self.sort_indices = try self.allocator.alloc(u32, quad_count * 6);
+            self.sort_valid = false; // fresh allocation — scratch must be repopulated
         }
 
         const scratch = self.sort_scratch[0..quad_count];
@@ -138,7 +145,207 @@ pub const Mesh = struct {
             @memcpy(out[dst_base .. dst_base + 6], self.indices.items[src_base .. src_base + 6]);
         }
     }
+
+    /// Swap-remove quad at index qi. Moves the last quad into slot qi.
+    /// Updates vertices, indices (base address rewrite), and quad_block.
+    /// Caller must set sort_valid = false afterwards.
+    fn swapRemoveQuad(self: *Mesh, qi: usize) void {
+        const quad_count = self.indices.items.len / 6;
+        const last = quad_count - 1;
+
+        if (qi != last) {
+            // Copy last quad's 4 vertices into slot qi
+            const src_v = last * 4;
+            const dst_v = qi * 4;
+            @memcpy(self.vertices.items[dst_v .. dst_v + 4], self.vertices.items[src_v .. src_v + 4]);
+
+            // Rewrite the 6 index values so the moved quad references its new vertex slot
+            const base: u32 = @intCast(dst_v);
+            self.indices.items[qi * 6 + 0] = base;
+            self.indices.items[qi * 6 + 1] = base + 1;
+            self.indices.items[qi * 6 + 2] = base + 2;
+            self.indices.items[qi * 6 + 3] = base;
+            self.indices.items[qi * 6 + 4] = base + 2;
+            self.indices.items[qi * 6 + 5] = base + 3;
+
+            // Update quad_block for the moved quad
+            self.quad_block.items[qi] = self.quad_block.items[last];
+        }
+
+        // Shrink all three arrays (no allocation, just adjust len)
+        self.vertices.items.len = last * 4;
+        self.indices.items.len = last * 6;
+        self.quad_block.items.len = last;
+    }
+
+    /// Incremental mesh update for a single block change at (bx, by, bz).
+    /// Only re-meshes the changed block and its ≤6 in-bounds neighbors — O(1)
+    /// instead of the O(chunk_volume) full rebuild.
+    /// Maintains sort_scratch so the next sortByDepth uses cheap insertion sort
+    /// instead of a full pdqsort.
+    /// Call this AFTER the chunk data has been modified.
+    pub fn updateForBlockChange(
+        self: *Mesh,
+        chunk: *const Chunk,
+        bx: i32,
+        by: i32,
+        bz: i32,
+        camera_pos: [3]f32,
+    ) !void {
+        const offsets = [7][3]i32{
+            .{ 0, 0, 0 },
+            .{ 1, 0, 0 }, .{ -1, 0, 0 },
+            .{ 0, 1, 0 }, .{ 0, -1, 0 },
+            .{ 0, 0, 1 }, .{ 0, 0, -1 },
+        };
+
+        // Build the set of affected block indices (in-bounds only)
+        var affected: [7]u32 = undefined;
+        var n_affected: usize = 0;
+        for (offsets) |off| {
+            const ax = bx + off[0];
+            const ay = by + off[1];
+            const az = bz + off[2];
+            if (ax >= 0 and ax < CHUNK_W and ay >= 0 and ay < CHUNK_H and az >= 0 and az < CHUNK_W) {
+                affected[n_affected] = packBlockIdx(ax, ay, az);
+                n_affected += 1;
+            }
+        }
+
+        // Collect quad indices belonging to affected blocks (linear scan, n≈920 quads)
+        var to_remove: [7 * 6]usize = undefined;
+        var remove_count: usize = 0;
+        for (self.quad_block.items, 0..) |blk, qi| {
+            for (affected[0..n_affected]) |ab| {
+                if (blk == ab) {
+                    to_remove[remove_count] = qi;
+                    remove_count += 1;
+                    break;
+                }
+            }
+        }
+
+        const quad_count_before = self.indices.items.len / 6;
+
+        // Remove in descending order so earlier indices stay valid through each swap-remove
+        std.mem.sort(usize, to_remove[0..remove_count], {}, struct {
+            fn desc(_: void, a: usize, b: usize) bool {
+                return a > b;
+            }
+        }.desc);
+        for (to_remove[0..remove_count]) |qi| {
+            self.swapRemoveQuad(qi);
+        }
+
+        const quad_count_after_removes = self.indices.items.len / 6;
+        // = quad_count_before - remove_count
+
+        // Maintain sort_scratch so the next frame uses insertion sort (O(n)) instead
+        // of pdqsort (O(n log n)).
+        //
+        // After swap-removes in descending order, all quad positions
+        // >= quad_count_after_removes no longer exist. The scratch entries with
+        // .idx >= quad_count_after_removes are stale and must be removed.
+        // Entries with .idx < quad_count_after_removes remain valid (they reference
+        // existing positions — possibly holding different quads due to swaps, but
+        // sortByDepth recomputes distances anyway before sorting).
+        //
+        // Maintaining scratch requires the allocation to be large enough to hold the
+        // final quad count. If it's not, fall back to full pdqsort.
+        const can_maintain = self.sort_valid and
+            self.sort_scratch.len >= quad_count_before;
+
+        var scratch_count: usize = 0;
+        if (can_maintain) {
+            // One O(n) pass: compact scratch, keeping only valid entries
+            for (self.sort_scratch[0..quad_count_before]) |entry| {
+                if (entry.idx < quad_count_after_removes) {
+                    self.sort_scratch[scratch_count] = entry;
+                    scratch_count += 1;
+                }
+            }
+            // scratch_count == quad_count_after_removes at this point
+        }
+
+        // Re-mesh each affected block from the current chunk state
+        for (affected[0..n_affected]) |ab| {
+            const pos = unpackBlockIdx(ab);
+            const block = chunk.getBlock(pos.x, pos.y, pos.z);
+            if (block == .air) continue;
+            for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
+                if (shouldRenderFace(chunk, pos.x, pos.y, pos.z, face)) {
+                    try addQuad(
+                        self,
+                        @floatFromInt(pos.x),
+                        @floatFromInt(pos.y),
+                        @floatFromInt(pos.z),
+                        face,
+                        block,
+                        ab,
+                    );
+                }
+            }
+        }
+
+        const quad_count_final = self.indices.items.len / 6;
+
+        if (can_maintain) {
+            // Grow scratch if new quads push us past current capacity.
+            // Allocate with headroom (+64) to absorb future incremental adds without realloc.
+            if (quad_count_final > self.sort_scratch.len) {
+                const new_cap = quad_count_final + 64;
+                const new_scratch = try self.allocator.alloc(SortEntry, new_cap);
+                @memcpy(new_scratch[0..scratch_count], self.sort_scratch[0..scratch_count]);
+                if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
+                self.sort_scratch = new_scratch;
+                const new_indices = try self.allocator.alloc(u32, new_cap * 6);
+                if (self.sort_indices.len > 0) self.allocator.free(self.sort_indices);
+                self.sort_indices = new_indices;
+            }
+
+            // Append scratch entries for newly-added quads with fresh distances
+            for (quad_count_after_removes..quad_count_final) |qi| {
+                const base_v = qi * 4;
+                const v0 = self.vertices.items[base_v].pos;
+                const v1 = self.vertices.items[base_v + 1].pos;
+                const v2 = self.vertices.items[base_v + 2].pos;
+                const v3 = self.vertices.items[base_v + 3].pos;
+                const dx = (v0[0] + v1[0] + v2[0] + v3[0]) / 4.0 - camera_pos[0];
+                const dy = (v0[1] + v1[1] + v2[1] + v3[1]) / 4.0 - camera_pos[1];
+                const dz = (v0[2] + v1[2] + v2[2] + v3[2]) / 4.0 - camera_pos[2];
+                self.sort_scratch[scratch_count] = .{ .idx = qi, .dist = dx * dx + dy * dy + dz * dz };
+                scratch_count += 1;
+            }
+            // sort_valid stays true — next sortByDepth uses cheap insertion sort
+        } else {
+            self.sort_valid = false;
+        }
+    }
 };
+
+// ---------------------------------------------------------------------------
+// Block index packing helpers
+// ---------------------------------------------------------------------------
+
+fn packBlockIdx(x: i32, y: i32, z: i32) u32 {
+    return @as(u32, @intCast(x)) * (CHUNK_H * CHUNK_W) +
+        @as(u32, @intCast(y)) * CHUNK_W +
+        @as(u32, @intCast(z));
+}
+
+const BlockPos = struct { x: i32, y: i32, z: i32 };
+
+fn unpackBlockIdx(idx: u32) BlockPos {
+    return .{
+        .z = @intCast(idx % CHUNK_W),
+        .y = @intCast((idx / CHUNK_W) % CHUNK_H),
+        .x = @intCast(idx / (CHUNK_H * CHUNK_W)),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Face data
+// ---------------------------------------------------------------------------
 
 const Face = enum { px, nx, py, ny, pz, nz };
 
@@ -169,7 +376,7 @@ fn shouldRenderFace(chunk: *const Chunk, x: i32, y: i32, z: i32, face: Face) boo
     return chunk.getBlock(nx, ny, nz) == .air;
 }
 
-/// Add a quad face to the mesh
+/// Add a quad face to the mesh, recording its owning block via block_idx
 fn addQuad(
     mesh: *Mesh,
     x: f32,
@@ -177,6 +384,7 @@ fn addQuad(
     z: f32,
     face: Face,
     block_type: BlockType,
+    block_idx: u32,
 ) !void {
     const base_idx: u32 = @intCast(mesh.vertices.items.len);
     const normal = face_normals[@intFromEnum(face)];
@@ -231,6 +439,9 @@ fn addQuad(
     };
     try mesh.indices.appendSlice(mesh.allocator, &inds);
 
+    // Track which block owns this quad
+    try mesh.quad_block.append(mesh.allocator, block_idx);
+
     // Debug logging (gated by DEBUG constant)
     if (DEBUG and x == 8.0 and y == 8.0 and z == 10.0) {
         std.log.info("Block ({d:.0},{d:.0},{d:.0}) face={s} base_idx={}:", .{ x, y, z, @tagName(face), base_idx });
@@ -245,7 +456,7 @@ fn addQuad(
     }
 }
 
-/// Simple (non-greedy) meshing: one quad per visible face
+/// Full mesh generation from scratch. Use updateForBlockChange for incremental updates.
 pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh) !void {
     mesh.clear();
 
@@ -258,7 +469,7 @@ pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh) !void {
                 const block = chunk.getBlock(x, y, z);
                 if (block == .air) continue;
 
-                // Check each face
+                const block_idx = packBlockIdx(x, y, z);
                 for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
                     if (shouldRenderFace(chunk, x, y, z, face)) {
                         try addQuad(
@@ -268,6 +479,7 @@ pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh) !void {
                             @floatFromInt(z),
                             face,
                             block,
+                            block_idx,
                         );
                     }
                 }
