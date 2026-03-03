@@ -4,7 +4,7 @@
 #
 # Phase 1: Capture mouse (tick 1)
 # Phase 2: Slow rightward pan ticks 5-65 (3px/tick = steady camera motion)
-# Phase 3: Left click to destroy block at tick 100
+# Phase 3: Left click fires MID-PAN at tick 35 (same tick as mouse_move)
 
 # --- Capture mouse ---
 1 mouse_down left
@@ -42,7 +42,9 @@
 33 mouse_move 3 0
 34 mouse_move 3 0
 35 mouse_move 3 0
+35 mouse_down left
 36 mouse_move 3 0
+36 mouse_up left
 37 mouse_move 3 0
 38 mouse_move 3 0
 39 mouse_move 3 0
@@ -72,7 +74,3 @@
 63 mouse_move 3 0
 64 mouse_move 3 0
 65 mouse_move 3 0
-
-# --- Block removal click ---
-100 mouse_down left
-101 mouse_up left
