@@ -129,6 +129,26 @@ in `gpu.zig:setIndexBuffer`.
 
 ---
 
+## Voxel Demo — Mandatory Testing
+
+**Before handing any voxel changes back to the user, ALL three checks must pass:**
+
+```bash
+# 1. Clean compile
+zig build native -Dexample=voxel
+
+# 2. Headless TAS run — must exit 0
+./zig-out/bin/voxel --headless --tas examples/voxel/framespike.tas
+
+# 3. GPU smoke test — must not crash within 5 seconds
+timeout 5 ./zig-out/bin/voxel 2>&1 | grep -v "^\[" | head -20
+```
+
+Do **NOT** hand changes back until all three pass. The GPU smoke test catches wgpu validation
+errors (buffer overruns, bad descriptors) that only appear when the renderer actually runs.
+
+---
+
 ## Adding New WebGPU Features
 
 1. Check wgpu-native headers: `~/.local/include/webgpu/webgpu.h`

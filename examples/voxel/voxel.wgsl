@@ -22,6 +22,7 @@ struct VertexOutput {
     @location(0) world_pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
+    @location(3) alpha: f32,
 };
 
 // Block type colors
@@ -38,6 +39,9 @@ fn getBlockColor(block_type: u32) -> vec3<f32> {
         }
         case 99u: { // Debug marker
             return vec3<f32>(1.0, 0.0, 0.0);
+        }
+        case 100u: { // Player hitbox cylinder
+            return vec3<f32>(0.2, 0.85, 0.9);
         }
         default: {
             return vec3<f32>(1.0, 0.0, 1.0); // Magenta = error
@@ -65,6 +69,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     }
 
     out.color = base_color;
+    out.alpha = select(1.0, 0.2, in.block_type == 100u);
     return out;
 }
 
@@ -99,5 +104,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.6;
     let brightness = ambient + diffuse;
 
-    return vec4<f32>(in.color * brightness, 1.0);
+    return vec4<f32>(in.color * brightness, in.alpha);
 }

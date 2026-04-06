@@ -65,6 +65,8 @@ const raycast = RaycastType.raycast;
 
 const GameState = @import("game_state.zig").GameState;
 const OverlayRenderer = @import("overlay.zig").OverlayRenderer;
+const player_mod = @import("player.zig");
+const Player = player_mod.Player;
 
 // Pause menu button geometry (in logical pixels)
 const RESUME_BTN_W: f32 = 200;
@@ -76,13 +78,19 @@ const State = struct {
     chunk: Chunk,
     mesh: Mesh,
     camera: CameraType,
+    player: Player,
     pipeline: ?gpu_mod.RenderPipeline = null,
+    cylinder_pipeline: ?gpu_mod.RenderPipeline = null,
     vertex_buffer: ?gpu_mod.Buffer = null,
     index_buffer: ?gpu_mod.Buffer = null,
     uniform_buffer: ?gpu_mod.Buffer = null,
     bind_group: ?gpu_mod.BindGroup = null,
     depth_texture: ?gpu_mod.Texture = null,
     depth_view: ?gpu_mod.TextureView = null,
+    cylinder_vertex_buffer: ?gpu_mod.Buffer = null,
+    cylinder_index_buffer: ?gpu_mod.Buffer = null,
+    cylinder_verts: std.ArrayList(VoxelVertex) = undefined,
+    cylinder_indices: std.ArrayList(u32) = undefined,
     mesh_dirty: bool = true,
     mesh_incremental_dirty: bool = false,
     mouse_captured: bool = false,
@@ -95,6 +103,8 @@ const State = struct {
     overlay: OverlayRenderer = undefined,
     tas_replayer: ?core.Replayer = null,
     headless: bool = false,
+    third_person: bool = false,
+    debug_mode: bool = false,
 };
 
 var state: State = undefined;
@@ -104,12 +114,15 @@ fn voxelInit(ctx: *sw.Context) !void {
 
     // Explicitly null all optional fields — `var state: State = undefined` bypasses struct defaults
     state.pipeline = null;
+    state.cylinder_pipeline = null;
     state.vertex_buffer = null;
     state.index_buffer = null;
     state.uniform_buffer = null;
     state.bind_group = null;
     state.depth_texture = null;
     state.depth_view = null;
+    state.cylinder_vertex_buffer = null;
+    state.cylinder_index_buffer = null;
     state.hover_block = null;
     state.tas_replayer = null;
 
@@ -124,12 +137,20 @@ fn voxelInit(ctx: *sw.Context) !void {
     const window_info = ctx.window();
     const aspect = @as(f32, @floatFromInt(window_info.width)) / @as(f32, @floatFromInt(window_info.height));
 
-    // Spawn close to the surface for TAS / framespike investigation
-    state.camera = CameraType.init(Vec3.init(24, 9, 20), aspect);
+    // Spawn player with feet on terrain surface (grass top = y=8).
+    state.player = Player.init(24.0, 8.0, 20.0);
 
-    // Look in -Z direction, slight downward angle — surface blocks fill the crosshair immediately
+    // Camera tracks player eye position; yaw/pitch set for a good starting view.
+    const eye = state.player.eyePos();
+    state.camera = CameraType.init(Vec3.init(eye[0], eye[1], eye[2]), aspect);
     state.camera.yaw = -std.math.pi / 2.0;
     state.camera.pitch = -0.3;
+
+    // Cylinder scratch buffers (ArrayList new-API: no allocator at init time)
+    state.cylinder_verts = std.ArrayList(VoxelVertex){};
+    state.cylinder_indices = std.ArrayList(u32){};
+    state.third_person = false;
+    state.debug_mode = false;
 
     state.mesh_dirty = true;
     state.mesh_incremental_dirty = false;
@@ -239,6 +260,17 @@ fn voxelTick(ctx: *sw.Context) !void {
         state.game_state.toggleDebugOverlay();
     }
 
+    if (input.keyPressed(.F5)) {
+        state.third_person = !state.third_person;
+        std.log.info("Third-person: {}", .{state.third_person});
+    }
+
+    // Cmd+D (macOS) / Ctrl+D (Windows/Linux) — toggle debug mode (shows hitbox cylinder)
+    if (input.keyPressed(.D) and (input.mods.super or input.mods.ctrl)) {
+        state.debug_mode = !state.debug_mode;
+        std.log.info("Debug mode: {}", .{state.debug_mode});
+    }
+
     // =========================================================================
     // 2. Pause menu input — only when pause menu is showing
     // =========================================================================
@@ -295,20 +327,37 @@ fn voxelTick(ctx: *sw.Context) !void {
             std.log.info("Mouse captured (clicked)", .{});
         }
 
-        // WASD movement (only when mouse is captured)
+        // WASD + physics (only when mouse is captured)
         if (state.mouse_captured) {
-            var forward: f32 = 0;
-            var right: f32 = 0;
-            var up: f32 = 0;
+            var fwd: f32 = 0;
+            var rgt: f32 = 0;
 
-            if (input.keyDown(.W)) forward += 1;
-            if (input.keyDown(.S)) forward -= 1;
-            if (input.keyDown(.D)) right += 1;
-            if (input.keyDown(.A)) right -= 1;
-            if (input.keyDown(.Space)) up += 1;
-            if (input.keyDown(.Shift)) up -= 1;
+            // Suppress movement when Ctrl or Cmd/Super is held — these start a "mode"
+            // (e.g. Ctrl+D = debug toggle, Cmd+D = debug toggle on macOS).
+            if (!input.mods.ctrl and !input.mods.super) {
+                if (input.keyDown(.W)) fwd += 1;
+                if (input.keyDown(.S)) fwd -= 1;
+                if (input.keyDown(.D)) rgt += 1;
+                if (input.keyDown(.A)) rgt -= 1;
+            }
 
-            state.camera.move(forward, right, up, dt);
+            const jump = input.keyPressed(.Space);
+            const sprint = input.keyDown(.Shift);
+
+            state.player.tick(&state.chunk, dt, state.camera.yaw, fwd, rgt, jump, sprint);
+
+            // Sync camera position to player eye (or third-person offset).
+            const eye = state.player.eyePos();
+            if (state.third_person) {
+                const fwd_vec = state.camera.forward();
+                state.camera.position = Vec3.init(
+                    eye[0] - fwd_vec.x * 4.0,
+                    eye[1] - fwd_vec.y * 4.0 + 0.5,
+                    eye[2] - fwd_vec.z * 4.0,
+                );
+            } else {
+                state.camera.position = Vec3.init(eye[0], eye[1], eye[2]);
+            }
         }
 
         // Mouse look + block interaction — only when was already captured this tick
@@ -518,6 +567,31 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     // =========================================================================
+    // Player hitbox cylinder (drawn after voxels; no face culling so always visible)
+    // =========================================================================
+    if (state.debug_mode and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
+        player_mod.buildCylinderMesh(
+            state.player.feet_pos,
+            ctx.allocator(),
+            &state.cylinder_verts,
+            &state.cylinder_indices,
+        ) catch |err| {
+            std.log.err("Failed to build cylinder mesh: {}", .{err});
+        };
+
+        if (state.cylinder_verts.items.len > 0) {
+            g.writeBuffer(state.cylinder_vertex_buffer.?, 0, std.mem.sliceAsBytes(state.cylinder_verts.items));
+            g.writeBuffer(state.cylinder_index_buffer.?, 0, std.mem.sliceAsBytes(state.cylinder_indices.items));
+
+            pass.setPipeline(state.cylinder_pipeline.?);
+            pass.setBindGroup(0, state.bind_group.?);
+            pass.setVertexBuffer(0, state.cylinder_vertex_buffer.?, 0, state.cylinder_verts.items.len * @sizeOf(VoxelVertex));
+            pass.setIndexBuffer(state.cylinder_index_buffer.?, .uint32, 0, state.cylinder_indices.items.len * @sizeOf(u32));
+            pass.drawIndexed(@intCast(state.cylinder_indices.items.len), 1, 0, 0, 0);
+        }
+    }
+
+    // =========================================================================
     // Overlay rendering (2D UI on top of 3D world)
     // =========================================================================
     state.overlay.ensurePipeline(g) catch |err| {
@@ -582,6 +656,34 @@ fn voxelRender(ctx: *sw.Context) !void {
         }
     }
 
+    // Modifier key indicators — right edge, always visible, dim when inactive.
+    // Cross-platform mapping:
+    //   shift  = Shift (both)
+    //   ctrl   = Ctrl (Win/Linux) / Control ^ (Mac)
+    //   alt    = Alt (Win/Linux)  / Option ⌥ (Mac)
+    //   super  = Win key (Win)    / Cmd ⌘ (Mac)
+    {
+        const mods = ctx.input().mods;
+        const sz: f32 = 14; // square side length
+        const gap: f32 = 4;
+        const pad_right: f32 = 10;
+        const pad_top: f32 = 10;
+        const x = overlay_w - sz - pad_right;
+
+        const ModIndicator = struct { active: bool, r: f32, g: f32, b: f32 };
+        const indicators = [_]ModIndicator{
+            .{ .active = mods.shift, .r = 0.95, .g = 0.85, .b = 0.15 }, // Shift   — yellow
+            .{ .active = mods.ctrl,  .r = 0.25, .g = 0.55, .b = 1.00 }, // Ctrl/^  — blue
+            .{ .active = mods.alt,   .r = 0.20, .g = 0.85, .b = 0.45 }, // Alt/⌥   — green
+            .{ .active = mods.super, .r = 1.00, .g = 0.55, .b = 0.15 }, // Cmd/⌘ Win — orange
+        };
+        for (indicators, 0..) |ind, i| {
+            const y = pad_top + @as(f32, @floatFromInt(i)) * (sz + gap);
+            const a: f32 = if (ind.active) 1.0 else 0.18;
+            state.overlay.rect(x, y, sz, sz, .{ ind.r, ind.g, ind.b, a }, overlay_w, overlay_h) catch {};
+        }
+    }
+
     state.overlay.draw(g, pass);
 
     pass.end();
@@ -595,9 +697,11 @@ fn voxelRender(ctx: *sw.Context) !void {
     g.present();
 }
 
-fn voxelShutdown(_: *sw.Context) !void {
+fn voxelShutdown(ctx: *sw.Context) !void {
     state.mesh.deinit();
     state.overlay.deinit();
+    state.cylinder_verts.deinit(ctx.allocator());
+    state.cylinder_indices.deinit(ctx.allocator());
 
     if (state.tas_replayer) |*replayer| {
         replayer.deinit();
@@ -655,21 +759,24 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{&bg_layout},
     });
 
-    // Create render pipeline
+    // Shared vertex buffer layout used by both voxel and cylinder pipelines
+    const voxel_vbl = sw.gpu_types.VertexBufferLayout{
+        .array_stride = @sizeOf(VoxelVertex),
+        .attributes = &[_]sw.gpu_types.VertexAttribute{
+            .{ .format = .float32x3, .offset = 0, .shader_location = 0 }, // pos
+            .{ .format = .float32x3, .offset = 12, .shader_location = 1 }, // normal
+            .{ .format = .uint32, .offset = 24, .shader_location = 2 }, // block_type
+            .{ .format = .float32x2, .offset = 28, .shader_location = 3 }, // uv
+        },
+    };
+
+    // Create render pipeline (back-face culled — for opaque voxel geometry)
     state.pipeline = try g.createRenderPipeline(.{
         .layout = &pipeline_layout,
         .vertex = .{
             .module = &shader,
             .entry_point = "vs_main",
-            .buffers = &[_]sw.gpu_types.VertexBufferLayout{.{
-                .array_stride = @sizeOf(VoxelVertex),
-                .attributes = &[_]sw.gpu_types.VertexAttribute{
-                    .{ .format = .float32x3, .offset = 0, .shader_location = 0 }, // pos
-                    .{ .format = .float32x3, .offset = 12, .shader_location = 1 }, // normal
-                    .{ .format = .uint32, .offset = 24, .shader_location = 2 }, // block_type
-                    .{ .format = .float32x2, .offset = 28, .shader_location = 3 }, // uv
-                },
-            }},
+            .buffers = &[_]sw.gpu_types.VertexBufferLayout{voxel_vbl},
         },
         .fragment = .{
             .module = &shader,
@@ -681,15 +788,47 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         .primitive = .{
             .topology = .triangle_list,
             .front_face = .ccw,
-            .cull_mode = .back, // Back-face culling
+            .cull_mode = .back,
         },
         // WORKAROUND: Hardware depth testing crashes on Metal (wgpu-native v0.19.4.1 bug)
         // Using software depth sorting (painter's algorithm) instead - see sortByDepth()
-        // .depth_stencil = .{
-        //     .format = .depth32float,
-        //     .depth_write_enabled = true,
-        //     .depth_compare = .less,
-        // },
+    });
+
+    // Cylinder pipeline: no face culling + alpha blending so the hitbox is semi-transparent
+    // and visible from both inside (first-person) and outside (third-person, F5).
+    state.cylinder_pipeline = try g.createRenderPipeline(.{
+        .layout = &pipeline_layout,
+        .vertex = .{
+            .module = &shader,
+            .entry_point = "vs_main",
+            .buffers = &[_]sw.gpu_types.VertexBufferLayout{voxel_vbl},
+        },
+        .fragment = .{
+            .module = &shader,
+            .entry_point = "fs_main",
+            .targets = &[_]sw.gpu_types.ColorTargetState{.{
+                .format = .bgra8unorm,
+                .blend = .{
+                    .color = .{ .operation = .add, .src_factor = .src_alpha, .dst_factor = .one_minus_src_alpha },
+                    .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .zero },
+                },
+            }},
+        },
+        .primitive = .{
+            .topology = .triangle_list,
+            .front_face = .ccw,
+            .cull_mode = .none,
+        },
+    });
+
+    // Pre-allocate fixed-size cylinder GPU buffers (size never changes)
+    state.cylinder_vertex_buffer = try g.createBuffer(.{
+        .size = player_mod.CYLINDER_VERT_COUNT * @sizeOf(VoxelVertex),
+        .usage = .{ .vertex = true, .copy_dst = true },
+    });
+    state.cylinder_index_buffer = try g.createBuffer(.{
+        .size = player_mod.CYLINDER_IDX_COUNT * @sizeOf(u32),
+        .usage = .{ .index = true, .copy_dst = true },
     });
 
     std.log.info("GPU resources created", .{});
