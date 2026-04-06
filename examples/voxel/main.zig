@@ -67,6 +67,7 @@ const GameState = @import("game_state.zig").GameState;
 const OverlayRenderer = @import("overlay.zig").OverlayRenderer;
 const player_mod = @import("player.zig");
 const Player = player_mod.Player;
+const keyboard_hud = @import("keyboard_hud.zig");
 
 // Pause menu button geometry (in logical pixels)
 const RESUME_BTN_W: f32 = 200;
@@ -342,9 +343,10 @@ fn voxelTick(ctx: *sw.Context) !void {
             }
 
             const jump = input.keyPressed(.Space);
+            const space_held = input.keyDown(.Space);
             const sprint = input.keyDown(.Shift);
 
-            state.player.tick(&state.chunk, dt, state.camera.yaw, fwd, rgt, jump, sprint);
+            state.player.tick(&state.chunk, dt, state.camera.yaw, fwd, rgt, jump, space_held, sprint);
 
             // Sync camera position to player eye (or third-person offset).
             const eye = state.player.eyePos();
@@ -656,32 +658,9 @@ fn voxelRender(ctx: *sw.Context) !void {
         }
     }
 
-    // Modifier key indicators — right edge, always visible, dim when inactive.
-    // Cross-platform mapping:
-    //   shift  = Shift (both)
-    //   ctrl   = Ctrl (Win/Linux) / Control ^ (Mac)
-    //   alt    = Alt (Win/Linux)  / Option ⌥ (Mac)
-    //   super  = Win key (Win)    / Cmd ⌘ (Mac)
-    {
-        const mods = ctx.input().mods;
-        const sz: f32 = 14; // square side length
-        const gap: f32 = 4;
-        const pad_right: f32 = 10;
-        const pad_top: f32 = 10;
-        const x = overlay_w - sz - pad_right;
-
-        const ModIndicator = struct { active: bool, r: f32, g: f32, b: f32 };
-        const indicators = [_]ModIndicator{
-            .{ .active = mods.shift, .r = 0.95, .g = 0.85, .b = 0.15 }, // Shift   — yellow
-            .{ .active = mods.ctrl,  .r = 0.25, .g = 0.55, .b = 1.00 }, // Ctrl/^  — blue
-            .{ .active = mods.alt,   .r = 0.20, .g = 0.85, .b = 0.45 }, // Alt/⌥   — green
-            .{ .active = mods.super, .r = 1.00, .g = 0.55, .b = 0.15 }, // Cmd/⌘ Win — orange
-        };
-        for (indicators, 0..) |ind, i| {
-            const y = pad_top + @as(f32, @floatFromInt(i)) * (sz + gap);
-            const a: f32 = if (ind.active) 1.0 else 0.18;
-            state.overlay.rect(x, y, sz, sz, .{ ind.r, ind.g, ind.b, a }, overlay_w, overlay_h) catch {};
-        }
+    // Full keyboard HUD — only in debug mode
+    if (state.debug_mode) {
+        keyboard_hud.draw(&state.overlay, ctx.input(), overlay_w, overlay_h);
     }
 
     state.overlay.draw(g, pass);

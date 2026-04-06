@@ -54,7 +54,8 @@ pub const Player = struct {
         cam_yaw: f32,
         forward_input: f32,
         right_input: f32,
-        jump: bool,
+        jump: bool,       // keyPressed — one-shot (jump trigger + double-tap detection)
+        space_held: bool, // keyDown   — continuous (fly-up while held)
         sprint: bool,
     ) void {
         // Double-tap Space detection: toggle fly mode.
@@ -86,13 +87,19 @@ pub const Player = struct {
             const spd = FLY_SPEED;
             const dx = (cy * forward_input + (-sy) * right_input) * spd * dt;
             const dz = (sy * forward_input + cy * right_input) * spd * dt;
-            const dy: f32 = if (jump) spd * dt else if (sprint) -spd * dt else 0;
+            const dy: f32 = if (space_held) spd * dt else if (sprint) -spd * dt else 0;
 
             self.feet_pos[0] = resolveX(chunk, self.feet_pos, self.feet_pos[0] + dx);
             self.feet_pos[2] = resolveZ(chunk, self.feet_pos, self.feet_pos[2] + dz);
             const new_y = self.feet_pos[1] + dy;
             self.feet_pos[1] = resolveY(chunk, self.feet_pos, new_y);
             self.on_ground = isOnGround(chunk, self.feet_pos);
+
+            // Land on solid ground → exit fly mode automatically.
+            if (self.on_ground and !space_held) {
+                self.fly_mode = false;
+                self.velocity[1] = 0;
+            }
         } else {
             // Normal physics mode.
 
