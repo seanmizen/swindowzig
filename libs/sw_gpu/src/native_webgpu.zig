@@ -181,7 +181,7 @@ pub const WGPUSType = enum(u32) {
 
 pub const WGPUBackendType = enum(u32) {
     undefined = 0x00000000,
-    @"null" = 0x00000001,
+    null = 0x00000001,
     web_gpu = 0x00000002,
     d3d11 = 0x00000003,
     d3d12 = 0x00000004,
@@ -1081,7 +1081,7 @@ pub extern fn SDL_GetWindowWMInfo(window: *anyopaque, info: *SDL_SysWMinfo) c_in
 /// Create a WGPUSurface from an SDL2 window (cross-platform)
 pub fn createSurfaceFromSDLWindow(instance: WGPUInstance, sdl_window: *anyopaque) !WGPUSurface {
     const builtin = @import("builtin");
-    
+
     switch (builtin.os.tag) {
         .macos => {
             // Create Metal view from SDL window
@@ -1113,7 +1113,7 @@ pub fn createSurfaceFromSDLWindow(instance: WGPUInstance, sdl_window: *anyopaque
             // Get window manager info from SDL
             var wm_info: SDL_SysWMinfo = undefined;
             SDL_GetVersion(&wm_info.version);
-            
+
             if (SDL_GetWindowWMInfo(sdl_window, &wm_info) == 0) {
                 return error.SDLWMInfoFailed;
             }

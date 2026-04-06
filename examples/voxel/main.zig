@@ -513,14 +513,14 @@ fn voxelRender(ctx: *sw.Context) !void {
 
     const uniforms = [_]f32{
         // view_proj (16 floats)
-        view_proj.data[0],  view_proj.data[1],  view_proj.data[2],  view_proj.data[3],
-        view_proj.data[4],  view_proj.data[5],  view_proj.data[6],  view_proj.data[7],
-        view_proj.data[8],  view_proj.data[9],  view_proj.data[10], view_proj.data[11],
-        view_proj.data[12], view_proj.data[13], view_proj.data[14], view_proj.data[15],
+        view_proj.data[0],       view_proj.data[1],       view_proj.data[2],       view_proj.data[3],
+        view_proj.data[4],       view_proj.data[5],       view_proj.data[6],       view_proj.data[7],
+        view_proj.data[8],       view_proj.data[9],       view_proj.data[10],      view_proj.data[11],
+        view_proj.data[12],      view_proj.data[13],      view_proj.data[14],      view_proj.data[15],
         // camera_pos + padding (4 floats)
         state.camera.position.x, state.camera.position.y, state.camera.position.z, 0,
         // hover_block + hover_active (4 floats)
-        hover_pos.x, hover_pos.y, hover_pos.z, hover_active,
+        hover_pos.x,             hover_pos.y,             hover_pos.z,             hover_active,
     };
 
     g.writeBuffer(state.uniform_buffer.?, 0, std.mem.sliceAsBytes(&uniforms));

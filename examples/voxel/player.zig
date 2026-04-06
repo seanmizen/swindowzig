@@ -54,7 +54,7 @@ pub const Player = struct {
         cam_yaw: f32,
         forward_input: f32,
         right_input: f32,
-        jump: bool,       // keyPressed — one-shot (jump trigger + double-tap detection)
+        jump: bool, // keyPressed — one-shot (jump trigger + double-tap detection)
         space_held: bool, // keyDown   — continuous (fly-up while held)
         sprint: bool,
     ) void {

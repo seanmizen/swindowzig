@@ -194,9 +194,12 @@ pub const Mesh = struct {
     ) !void {
         const offsets = [7][3]i32{
             .{ 0, 0, 0 },
-            .{ 1, 0, 0 }, .{ -1, 0, 0 },
-            .{ 0, 1, 0 }, .{ 0, -1, 0 },
-            .{ 0, 0, 1 }, .{ 0, 0, -1 },
+            .{ 1, 0, 0 },
+            .{ -1, 0, 0 },
+            .{ 0, 1, 0 },
+            .{ 0, -1, 0 },
+            .{ 0, 0, 1 },
+            .{ 0, 0, -1 },
         };
 
         // Build the set of affected block indices (in-bounds only)

@@ -30,10 +30,10 @@ const Button = struct {
     y: f32,
     width: f32,
     height: f32,
-    
+
     fn contains(self: Button, mx: f32, my: f32) bool {
         return mx >= self.x and mx <= self.x + self.width and
-               my >= self.y and my <= self.y + self.height;
+            my >= self.y and my <= self.y + self.height;
     }
 };
 
@@ -62,9 +62,9 @@ const GameCallbacks = struct {
 
         // Triangle vertices (position + color)
         const vertices = [_]Vertex{
-            .{ .position = .{ 0.0, 0.5 }, .color = .{ 1.0, 0.0, 0.0 } },   // Top (red)
+            .{ .position = .{ 0.0, 0.5 }, .color = .{ 1.0, 0.0, 0.0 } }, // Top (red)
             .{ .position = .{ -0.5, -0.5 }, .color = .{ 0.0, 1.0, 0.0 } }, // Bottom-left (green)
-            .{ .position = .{ 0.5, -0.5 }, .color = .{ 0.0, 0.0, 1.0 } },  // Bottom-right (blue)
+            .{ .position = .{ 0.5, -0.5 }, .color = .{ 0.0, 0.0, 1.0 } }, // Bottom-right (blue)
         };
 
         // Create vertex buffer (larger to hold button vertices too)
@@ -144,15 +144,15 @@ const GameCallbacks = struct {
 
     pub fn tick(ctx: *sw.Context) !void {
         const input = ctx.input();
-        
+
         // Check button hover
         button_hovered = reset_button.contains(input.mouse.x, input.mouse.y);
-        
+
         // Check button click
         if (button_hovered and input.buttonDown(.left)) {
             rotation = 0.0;
         }
-        
+
         // Handle mouse drag for rotation (only if not over button)
         if (!button_hovered and input.buttonDown(.left)) {
             if (!is_dragging) {
@@ -166,7 +166,7 @@ const GameCallbacks = struct {
         } else {
             is_dragging = false;
         }
-        
+
         // Calculate FPS
         frame_count += 1;
         const now = std.time.milliTimestamp();
@@ -198,16 +198,16 @@ const GameCallbacks = struct {
 
         // Prepare all vertices (triangle + button)
         const base_triangle = [_]Vertex{
-            .{ .position = .{ 0.0, 0.5 }, .color = .{ 1.0, 0.0, 0.0 } },   // Top (red)
+            .{ .position = .{ 0.0, 0.5 }, .color = .{ 1.0, 0.0, 0.0 } }, // Top (red)
             .{ .position = .{ -0.5, -0.5 }, .color = .{ 0.0, 1.0, 0.0 } }, // Bottom-left (green)
-            .{ .position = .{ 0.5, -0.5 }, .color = .{ 0.0, 0.0, 1.0 } },  // Bottom-right (blue)
+            .{ .position = .{ 0.5, -0.5 }, .color = .{ 0.0, 0.0, 1.0 } }, // Bottom-right (blue)
         };
-        
+
         // Rotate triangle vertices
         var all_vertices: [9]Vertex = undefined;
         const c = @cos(rotation);
         const s = @sin(rotation);
-        
+
         for (base_triangle, 0..) |v, i| {
             all_vertices[i] = .{
                 .position = .{
@@ -217,22 +217,22 @@ const GameCallbacks = struct {
                 .color = v.color,
             };
         }
-        
+
         // Add button vertices (2 triangles = 6 vertices)
         const btn_x1 = (reset_button.x / 400.0) - 1.0;
         const btn_y1 = 1.0 - (reset_button.y / 300.0);
         const btn_x2 = ((reset_button.x + reset_button.width) / 400.0) - 1.0;
         const btn_y2 = 1.0 - ((reset_button.y + reset_button.height) / 300.0);
-        
+
         const button_color: [3]f32 = if (button_hovered) .{ 0.8, 0.8, 0.8 } else .{ 0.5, 0.5, 0.5 };
-        
+
         all_vertices[3] = .{ .position = .{ btn_x1, btn_y1 }, .color = button_color };
         all_vertices[4] = .{ .position = .{ btn_x2, btn_y1 }, .color = button_color };
         all_vertices[5] = .{ .position = .{ btn_x1, btn_y2 }, .color = button_color };
         all_vertices[6] = .{ .position = .{ btn_x2, btn_y1 }, .color = button_color };
         all_vertices[7] = .{ .position = .{ btn_x2, btn_y2 }, .color = button_color };
         all_vertices[8] = .{ .position = .{ btn_x1, btn_y2 }, .color = button_color };
-        
+
         // Upload all vertices at once
         gpu.writeBuffer(vertex_buffer.?, 0, std.mem.sliceAsBytes(&all_vertices));
 
@@ -256,13 +256,13 @@ const GameCallbacks = struct {
 
         pass.setPipeline(pipeline.?);
         pass.setVertexBuffer(0, vertex_buffer.?, 0, @sizeOf(Vertex) * 9);
-        
+
         // Draw triangle (first 3 vertices)
         pass.draw(3, 1, 0, 0);
-        
+
         // Draw button (next 6 vertices)
         pass.draw(6, 1, 3, 0);
-        
+
         pass.end();
 
         // Submit commands

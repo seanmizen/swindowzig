@@ -13,10 +13,10 @@ pub fn perspective(fov: f32, aspect: f32, near: f32, far: f32) Mat4 {
 
     // WebGPU/Vulkan-style: RH coords, [0,1] depth, column-major
     return .{ .data = [_]f32{
-        f / aspect, 0,  0,           0,
-        0,          f,  0,           0,
-        0,          0,  far * nf,    -1,
-        0,          0,  near * far * nf, 0,
+        f / aspect, 0, 0,               0,
+        0,          f, 0,               0,
+        0,          0, far * nf,        -1,
+        0,          0, near * far * nf, 0,
     } };
 }
 
@@ -30,10 +30,10 @@ pub fn lookAt(eye: Vec3, target: Vec3, up: Vec3) Mat4 {
     const up_actual = right.cross(forward);
 
     return .{ .data = [_]f32{
-        right.x,                  up_actual.x,                  -forward.x,                  0,
-        right.y,                  up_actual.y,                  -forward.y,                  0,
-        right.z,                  up_actual.z,                  -forward.z,                  0,
-        -right.dot(eye),          -up_actual.dot(eye),          forward.dot(eye),            1,
+        right.x,         up_actual.x,         -forward.x,       0,
+        right.y,         up_actual.y,         -forward.y,       0,
+        right.z,         up_actual.z,         -forward.z,       0,
+        -right.dot(eye), -up_actual.dot(eye), forward.dot(eye), 1,
     } };
 }
 

@@ -141,7 +141,7 @@ pub const GPU = struct {
                 .windows => native.WGPUInstanceBackend_DX12 | native.WGPUInstanceBackend_Vulkan,
                 else => native.WGPUInstanceBackend_Vulkan,
             };
-            
+
             const instance_extras = native.WGPUInstanceExtras{
                 .chain = .{
                     .next = null,
@@ -344,7 +344,7 @@ pub const GPU = struct {
             const allocator = std.heap.page_allocator;
             const code_z = try allocator.dupeZ(u8, desc.code);
             defer allocator.free(code_z);
-            
+
             var wgsl_desc = native.WGPUShaderModuleWGSLDescriptor{
                 .chain = .{
                     .next = null,
@@ -356,7 +356,7 @@ pub const GPU = struct {
                 .next_in_chain = @ptrCast(&wgsl_desc.chain),
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
             };
-            
+
             const handle = native.wgpuDeviceCreateShaderModule(self.device, &c_desc);
             return ShaderModule{ .handle = handle orelse return error.ShaderCreationFailed };
         }
