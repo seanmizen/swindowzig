@@ -1,16 +1,21 @@
-# framespike.tas — Investigates frame spike on block removal
-# Camera spawns at (24, 9, 20) looking in -Z, surface blocks in view immediately
-# Tick rate: 120 Hz (each tick = ~8.3ms)
+# framespike.tas — Block removal during camera pan
+# Tick rate: 120 Hz (each tick ≈ 8.3ms)
+# Player eye: (24, 9.6, 20), yaw = -π/2 (looking -Z), pitch = -0.3
 #
-# Phase 1: Capture mouse (tick 1)
-# Phase 2: Slow rightward pan ticks 5-65 (3px/tick = steady camera motion)
-# Phase 3: Left click fires MID-PAN at tick 35 (same tick as mouse_move)
+# Phase 1 (ticks 1-2):  Capture mouse via left click
+# Phase 2 (tick 3):     Look down 200px → pitch ≈ -0.7, grass surface clearly in view (~2.5u away)
+# Phase 3 (ticks 5-65): Slow rightward pan (3px/tick)
+# Phase 4 (tick 35):    Left click mid-pan — removes the block in the crosshair
+#                        This is where the framespike should appear in RENDER logs
 
 # --- Capture mouse ---
 1 mouse_down left
 2 mouse_up left
 
-# --- Slow pan right (simulate "panning while playing") ---
+# --- Look down so the grass surface is within raycast range ---
+3 mouse_move 0 200
+
+# --- Slow pan right while looking at the terrain ---
 5 mouse_move 3 0
 6 mouse_move 3 0
 7 mouse_move 3 0

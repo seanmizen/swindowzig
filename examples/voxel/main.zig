@@ -204,6 +204,8 @@ fn voxelInit(ctx: *sw.Context) !void {
             // TAS events (with explicit tick IDs) still reach the bus normally.
             ctx.setInputBlocked(true);
 
+            // Enable debug mode automatically so the keyboard HUD shows TAS input live.
+            state.debug_mode = true;
             std.log.info("TAS replayer ready - starting playback (physical input blocked)!", .{});
             break;
         }

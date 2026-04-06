@@ -129,6 +129,14 @@ in `gpu.zig:setIndexBuffer`.
 
 ---
 
+## Voxel Demo — Development Principles
+
+**No function keys.** Do not use F1–F12 for any gameplay or debug feature in the voxel demo.
+Function keys are excluded from the keyboard HUD and are not a reliable cross-platform input.
+Use letter/modifier combos (e.g. Cmd+D) or mouse buttons instead.
+
+---
+
 ## Voxel Demo — Mandatory Testing
 
 **Before handing any voxel changes back to the user, ALL three checks must pass:**
