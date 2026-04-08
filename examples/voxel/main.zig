@@ -31,7 +31,40 @@ const Callbacks = struct {
     /// preTick: inject TAS events BEFORE input snapshot is computed this tick.
     pub fn preTick(ctx: *sw.Context) !void {
         if (state.tas_replayer) |*replayer| {
-            try replayer.feedTick(ctx.tickId(), ctx.bus());
+            if (state.tas_step_mode) {
+                // Step mode: events are injected one group at a time, triggered by Right arrow.
+                // We reset tas_step_executing each preTick so it's only true for the ONE tick
+                // during which TAS events are active.
+                state.tas_step_executing = false;
+                if (state.tas_step_pending) {
+                    state.tas_step_pending = false;
+                    // Pop the next TAS event group and remap to the current sim tick_id.
+                    // This ensures eventsForTick(currentTick) picks them up correctly.
+                    if (replayer.current_index < replayer.events.items.len) {
+                        const target = replayer.events.items[replayer.current_index].tick_id;
+                        const sim_tick = ctx.tickId();
+                        while (replayer.current_index < replayer.events.items.len) {
+                            const e = replayer.events.items[replayer.current_index];
+                            if (e.tick_id != target) break;
+                            try ctx.bus().push(sim_tick, e.t_ns, e.payload);
+                            replayer.current_index += 1;
+                        }
+                        if (replayer.current_index >= replayer.events.items.len) {
+                            replayer.state = .finished;
+                        }
+                        state.tas_current_tas_tick = target;
+                        state.tas_step_executing = true;
+                        std.log.info("[STEP] TAS tick {} → sim tick {} (idx {}/{})", .{
+                            target,
+                            sim_tick,
+                            replayer.current_index,
+                            replayer.events.items.len,
+                        });
+                    }
+                }
+            } else {
+                try replayer.feedTick(ctx.tickId(), ctx.bus());
+            }
         }
     }
 
@@ -106,6 +139,17 @@ const State = struct {
     headless: bool = false,
     third_person: bool = false,
     debug_mode: bool = false,
+    tas_step_mode: bool = false,
+    /// Set by Right arrow — preTick will inject the next TAS event group on the next sim tick.
+    tas_step_pending: bool = false,
+    /// True during the one sim tick when TAS events are being executed; gates gameplay.
+    tas_step_executing: bool = false,
+    /// The TAS tick_id of the last injected step group (shown in HUD instead of sim tick).
+    tas_current_tas_tick: u64 = 0,
+    /// GPU debug mode — scaffold for future mesh-rebuild highlighting.
+    /// When true (future): quads rebuilt this tick will be tinted a warning colour.
+    /// Currently unused; set by Cmd+G or a future CLI flag.
+    gpu_debug: bool = false,
 };
 
 var state: State = undefined;
@@ -152,6 +196,11 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.cylinder_indices = std.ArrayList(u32){};
     state.third_person = false;
     state.debug_mode = false;
+    state.tas_step_mode = false;
+    state.tas_step_pending = false;
+    state.tas_step_executing = false;
+    state.tas_current_tas_tick = 0;
+    state.gpu_debug = false;
 
     state.mesh_dirty = true;
     state.mesh_incremental_dirty = false;
@@ -172,10 +221,14 @@ fn voxelInit(ctx: *sw.Context) !void {
     const args = try std.process.argsAlloc(ctx.allocator());
     defer std.process.argsFree(ctx.allocator(), args);
 
+    // Pre-scan: collect all flags before processing --tas, so flag order doesn't matter.
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--headless")) state.headless = true;
+        if (std.mem.eql(u8, arg, "--tas-step")) state.tas_step_mode = true;
+        if (std.mem.eql(u8, arg, "--gpu-debug")) state.gpu_debug = true;
+    }
+
     for (args, 0..) |arg, i| {
-        if (std.mem.eql(u8, arg, "--headless")) {
-            state.headless = true;
-        }
         if (std.mem.eql(u8, arg, "--tas") and i + 1 < args.len) {
             const tas_path = args[i + 1];
             std.log.info("Loading TAS script: {s}", .{tas_path});
@@ -199,13 +252,20 @@ fn voxelInit(ctx: *sw.Context) !void {
             replayer.play();
             state.tas_replayer = replayer;
 
-            // Block physical input so the TAS run is deterministic.
-            // Keyboard/mouse events from the OS are silently dropped;
-            // TAS events (with explicit tick IDs) still reach the bus normally.
-            ctx.setInputBlocked(true);
+            if (state.tas_step_mode) {
+                // Step mode: start paused so the user advances one tick at a time.
+                // Physical input is NOT blocked — we need arrow keys for stepping.
+                state.tas_replayer.?.pause();
+                std.log.info("TAS step mode: press Right arrow to advance one tick", .{});
+            } else {
+                // Normal TAS: block physical input for deterministic replay.
+                ctx.setInputBlocked(true);
+            }
 
             // Enable debug mode automatically so the keyboard HUD shows TAS input live.
             state.debug_mode = true;
+            // Auto-enable GPU debug in step mode so rebuilt faces are highlighted.
+            if (state.tas_step_mode) state.gpu_debug = true;
             std.log.info("TAS replayer ready - starting playback (physical input blocked)!", .{});
             break;
         }
@@ -274,6 +334,29 @@ fn voxelTick(ctx: *sw.Context) !void {
         std.log.info("Debug mode: {}", .{state.debug_mode});
     }
 
+    // Cmd+G (macOS) / Ctrl+G (Windows/Linux) — toggle GPU debug (highlight rebuilt faces)
+    if (input.keyPressed(.G) and (input.mods.super or input.mods.ctrl)) {
+        state.gpu_debug = !state.gpu_debug;
+        std.log.info("GPU debug: {}", .{state.gpu_debug});
+    }
+
+    // TAS step mode: Right arrow = queue next step (executed in preTick next tick).
+    // Events are remapped to the current sim tick_id so eventsForTick() picks them up.
+    if (state.tas_step_mode) {
+        if (state.tas_replayer) |*replayer| {
+            if (input.keyPressed(.Right)) {
+                if (replayer.state != .finished) {
+                    state.tas_step_pending = true;
+                } else {
+                    std.log.info("[STEP] TAS finished — no more ticks to step", .{});
+                }
+            }
+            if (input.keyPressed(.Left)) {
+                std.log.info("[STEP] Rewind not supported yet", .{});
+            }
+        }
+    }
+
     // =========================================================================
     // 2. Pause menu input — only when pause menu is showing
     // =========================================================================
@@ -321,7 +404,11 @@ fn voxelTick(ctx: *sw.Context) !void {
     // =========================================================================
     // 3. Gameplay input — only when no captures_all layer above gameplay
     // =========================================================================
-    if (state.game_state.gameplayReceivesInput()) {
+    // In TAS step mode, only allow gameplay during the ONE tick when TAS events are executing.
+    // All other ticks: game is frozen (no physics, no input) until next Right arrow press.
+    const gameplay_ok = state.game_state.gameplayReceivesInput() and
+        (!state.tas_step_mode or state.tas_step_executing);
+    if (gameplay_ok) {
         // Click to capture mouse (first click after startup / after resume)
         if (!state.mouse_captured and input.buttonPressed(.left)) {
             state.mouse_captured = true;
@@ -421,14 +508,132 @@ fn voxelTick(ctx: *sw.Context) !void {
                     state.mesh_incremental_dirty = true;
                 }
             } else {
-                state.hover_block = null;
+                if (!state.tas_step_mode or state.tas_step_executing) state.hover_block = null;
             }
         } else {
-            state.hover_block = null;
+            if (!state.tas_step_mode or state.tas_step_executing) state.hover_block = null;
         }
     } else {
-        // Pause menu or another captures_all layer is blocking gameplay
-        state.hover_block = null;
+        // Pause menu or another captures_all layer is blocking gameplay.
+        // In TAS step mode between steps, preserve the last hover_block so the outline persists.
+        if (!state.tas_step_mode or state.tas_step_executing) state.hover_block = null;
+    }
+
+    // GPU debug: decay highlight intensity each tick so rebuilt faces fade out over ~0.5s.
+    // In TAS step mode, only decay on executing ticks (preserves highlights between steps).
+    if (state.gpu_debug and (!state.tas_step_mode or state.tas_step_executing)) {
+        state.mesh.decayHighlights(4);
+    }
+}
+
+// ─── Step-mode HUD ───────────────────────────────────────────────────────────
+// 5×7 bitmap font for digits 0–9. Each digit is 7 rows of 5 bits (MSB = left).
+const DIGIT_W: f32 = 5;
+const DIGIT_H: f32 = 7;
+const DIGIT_SCALE: f32 = 3; // each "pixel" is 3×3 screen pixels
+const DIGIT_STEP: f32 = (DIGIT_W + 1) * DIGIT_SCALE; // advance per character
+
+const digit_bitmaps = [10][7]u5{
+    .{ 0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110 }, // 0
+    .{ 0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 }, // 1
+    .{ 0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111 }, // 2
+    .{ 0b11111, 0b00010, 0b00100, 0b00110, 0b00001, 0b10001, 0b01110 }, // 3
+    .{ 0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010 }, // 4
+    .{ 0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110 }, // 5
+    .{ 0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110 }, // 6
+    .{ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000 }, // 7
+    .{ 0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110 }, // 8
+    .{ 0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110 }, // 9
+};
+
+fn drawDigit(overlay: *OverlayRenderer, digit: u8, x: f32, y: f32, col: [4]f32, ow: f32, oh: f32) !void {
+    if (digit > 9) return;
+    const bm = digit_bitmaps[digit];
+    for (bm, 0..) |row, ry| {
+        for (0..5) |cx| {
+            const bit: u3 = @intCast(4 - cx);
+            if ((row >> bit) & 1 == 1) {
+                const px = x + @as(f32, @floatFromInt(cx)) * DIGIT_SCALE;
+                const py = y + @as(f32, @floatFromInt(ry)) * DIGIT_SCALE;
+                try overlay.rect(px, py, DIGIT_SCALE, DIGIT_SCALE, col, ow, oh);
+            }
+        }
+    }
+}
+
+fn drawNumber(overlay: *OverlayRenderer, n: u64, x: f32, y: f32, col: [4]f32, ow: f32, oh: f32) !void {
+    // Write digits right-to-left into a small fixed buffer, then draw L-to-R.
+    var buf: [20]u8 = undefined;
+    var len: usize = 0;
+    var val = n;
+    if (val == 0) {
+        buf[0] = 0;
+        len = 1;
+    } else {
+        while (val > 0) {
+            buf[len] = @intCast(val % 10);
+            len += 1;
+            val /= 10;
+        }
+        // Reverse
+        var lo: usize = 0;
+        var hi: usize = len - 1;
+        while (lo < hi) {
+            const tmp = buf[lo];
+            buf[lo] = buf[hi];
+            buf[hi] = tmp;
+            lo += 1;
+            hi -= 1;
+        }
+    }
+    for (buf[0..len], 0..) |d, i| {
+        try drawDigit(overlay, d, x + @as(f32, @floatFromInt(i)) * DIGIT_STEP, y, col, ow, oh);
+    }
+}
+
+fn drawStepHud(
+    overlay: *OverlayRenderer,
+    tas_tick: u64,
+    is_executing: bool,
+    is_finished: bool,
+    current_index: usize,
+    total_events: usize,
+    ow: f32,
+    oh: f32,
+) !void {
+    const pad: f32 = 8;
+    const bar_h: f32 = DIGIT_H * DIGIT_SCALE + pad * 2;
+    const bar_w: f32 = 260;
+    const bx = (ow - bar_w) / 2.0;
+    const by: f32 = 6;
+
+    // Background
+    try overlay.rect(bx, by, bar_w, bar_h, .{ 0.04, 0.04, 0.08, 0.88 }, ow, oh);
+
+    // State pill: green = executing step, amber = waiting for Right arrow, grey = finished
+    const pill_col: [4]f32 = if (is_finished)
+        .{ 0.55, 0.55, 0.55, 1.0 }
+    else if (is_executing)
+        .{ 0.25, 0.92, 0.35, 1.0 }
+    else
+        .{ 0.95, 0.72, 0.10, 1.0 };
+    try overlay.rect(bx + pad, by + pad, 16, DIGIT_H * DIGIT_SCALE, pill_col, ow, oh);
+
+    // "TICK" label — four small squares in a row, colour matches state
+    const lbl_x = bx + pad + 16 + 6;
+    const digit_y = by + pad;
+
+    // Draw TAS tick number
+    const white = [4]f32{ 0.95, 0.95, 0.95, 1.0 };
+    try drawNumber(overlay, tas_tick, lbl_x, digit_y, white, ow, oh);
+
+    // Progress bar (events consumed / total) at the bottom of the panel
+    const prog_y = by + bar_h - 5;
+    const prog_w = bar_w - pad * 2;
+    try overlay.rect(bx + pad, prog_y, prog_w, 3, .{ 0.2, 0.2, 0.25, 0.9 }, ow, oh);
+    if (total_events > 0) {
+        const frac = @as(f32, @floatFromInt(current_index)) / @as(f32, @floatFromInt(total_events));
+        try overlay.rect(bx + pad, prog_y, prog_w * frac, 3, pill_col, ow, oh);
     }
 }
 
@@ -665,6 +870,22 @@ fn voxelRender(ctx: *sw.Context) !void {
         keyboard_hud.draw(&state.overlay, ctx.input(), overlay_w, overlay_h);
     }
 
+    // TAS step mode HUD — tick counter + replayer state bar at top-centre
+    if (state.tas_step_mode) {
+        if (state.tas_replayer) |*replayer| {
+            drawStepHud(
+                &state.overlay,
+                state.tas_current_tas_tick,
+                state.tas_step_executing,
+                replayer.state == .finished,
+                replayer.current_index,
+                replayer.events.items.len,
+                overlay_w,
+                overlay_h,
+            ) catch {};
+        }
+    }
+
     state.overlay.draw(g, pass);
 
     pass.end();
@@ -819,15 +1040,15 @@ fn uploadMeshToGPU(g: *gpu_mod.GPU, mesh_rebuilt: bool) !void {
     const vertex_count = state.mesh.vertices.items.len;
     const index_count = state.mesh.indices.items.len;
     const sorted = state.mesh.sort_indices[0..index_count];
+    const structure_changed = mesh_rebuilt or state.mesh_incremental_dirty;
 
-    if (mesh_rebuilt or state.mesh_incremental_dirty) {
-        // Full rebuild or incremental update — vertex data changed, recreate both buffers.
+    if (structure_changed) {
+        // Vertex/index count changed — recreate GPU buffers.
         if (state.vertex_buffer) |old_buf| old_buf.destroy();
         state.vertex_buffer = try g.createBuffer(.{
             .size = vertex_count * @sizeOf(VoxelVertex),
             .usage = .{ .vertex = true, .copy_dst = true },
         });
-        g.writeBuffer(state.vertex_buffer.?, 0, std.mem.sliceAsBytes(state.mesh.vertices.items));
 
         if (state.index_buffer) |old_buf| old_buf.destroy();
         state.index_buffer = try g.createBuffer(.{
@@ -836,6 +1057,41 @@ fn uploadMeshToGPU(g: *gpu_mod.GPU, mesh_rebuilt: bool) !void {
         });
 
         state.mesh_incremental_dirty = false;
+    }
+
+    // Write vertex data when structure changed, or every frame when gpu_debug
+    // (highlight values decay each tick, so block_type upper bits change).
+    if (structure_changed or state.gpu_debug) {
+        if (state.gpu_debug) {
+            // Temporarily encode highlight intensity into upper 8 bits of block_type.
+            const quad_count = vertex_count / 4;
+            for (0..quad_count) |qi| {
+                const hl = state.mesh.quad_highlight.items[qi];
+                if (hl > 0) {
+                    const hl32 = @as(u32, hl) << 16;
+                    const base = qi * 4;
+                    for (base..base + 4) |vi| {
+                        state.mesh.vertices.items[vi].block_type |= hl32;
+                    }
+                }
+            }
+        }
+
+        g.writeBuffer(state.vertex_buffer.?, 0, std.mem.sliceAsBytes(state.mesh.vertices.items));
+
+        if (state.gpu_debug) {
+            // Restore block_type — remove highlight bits so mesh data stays clean.
+            const quad_count = vertex_count / 4;
+            for (0..quad_count) |qi| {
+                const hl = state.mesh.quad_highlight.items[qi];
+                if (hl > 0) {
+                    const base = qi * 4;
+                    for (base..base + 4) |vi| {
+                        state.mesh.vertices.items[vi].block_type &= 0xFFFF;
+                    }
+                }
+            }
+        }
     }
 
     // Always write sorted indices — order changes every frame as camera moves.

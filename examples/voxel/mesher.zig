@@ -25,6 +25,9 @@ pub const Mesh = struct {
     /// Parallel to quads: quad_block[i] = packed block idx owning quad i.
     /// Used for O(1) incremental mesh updates — find affected quads by block.
     quad_block: std.ArrayList(u32),
+    /// Parallel to quads: highlight intensity 0–255. Freshly rebuilt quads start at 255
+    /// and decay each tick. Used by GPU debug mode to tint recently-changed faces.
+    quad_highlight: std.ArrayList(u8),
     /// Persistent scratch buffers for sortByDepth — reallocated only when quad count grows.
     sort_scratch: []SortEntry = &.{},
     sort_indices: []u32 = &.{},
@@ -38,6 +41,7 @@ pub const Mesh = struct {
             .vertices = .{},
             .indices = .{},
             .quad_block = .{},
+            .quad_highlight = .{},
         };
     }
 
@@ -45,6 +49,7 @@ pub const Mesh = struct {
         self.vertices.deinit(self.allocator);
         self.indices.deinit(self.allocator);
         self.quad_block.deinit(self.allocator);
+        self.quad_highlight.deinit(self.allocator);
         if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
         if (self.sort_indices.len > 0) self.allocator.free(self.sort_indices);
     }
@@ -53,6 +58,7 @@ pub const Mesh = struct {
         self.vertices.clearRetainingCapacity();
         self.indices.clearRetainingCapacity();
         self.quad_block.clearRetainingCapacity();
+        self.quad_highlight.clearRetainingCapacity();
         self.sort_valid = false; // mesh rebuilt — scratch order is stale
     }
 
@@ -168,14 +174,16 @@ pub const Mesh = struct {
             self.indices.items[qi * 6 + 4] = base + 2;
             self.indices.items[qi * 6 + 5] = base + 3;
 
-            // Update quad_block for the moved quad
+            // Update quad_block + quad_highlight for the moved quad
             self.quad_block.items[qi] = self.quad_block.items[last];
+            self.quad_highlight.items[qi] = self.quad_highlight.items[last];
         }
 
-        // Shrink all three arrays (no allocation, just adjust len)
+        // Shrink all four arrays (no allocation, just adjust len)
         self.vertices.items.len = last * 4;
         self.indices.items.len = last * 6;
         self.quad_block.items.len = last;
+        self.quad_highlight.items.len = last;
     }
 
     /// Incremental mesh update for a single block change at (bx, by, bz).
@@ -285,6 +293,7 @@ pub const Mesh = struct {
                         face,
                         block,
                         ab,
+                        255, // freshly rebuilt — max highlight
                     );
                 }
             }
@@ -322,6 +331,14 @@ pub const Mesh = struct {
             // sort_valid stays true — next sortByDepth uses cheap insertion sort
         } else {
             self.sort_valid = false;
+        }
+    }
+
+    /// Reduce all quad highlight intensities by `amount` (saturating at 0).
+    /// Call once per tick when gpu_debug is active.
+    pub fn decayHighlights(self: *Mesh, amount: u8) void {
+        for (self.quad_highlight.items) |*hl| {
+            hl.* = hl.* -| amount; // saturating subtract
         }
     }
 };
@@ -379,7 +396,8 @@ fn shouldRenderFace(chunk: *const Chunk, x: i32, y: i32, z: i32, face: Face) boo
     return chunk.getBlock(nx, ny, nz) == .air;
 }
 
-/// Add a quad face to the mesh, recording its owning block via block_idx
+/// Add a quad face to the mesh, recording its owning block via block_idx.
+/// highlight: initial highlight intensity (255 = freshly rebuilt, 0 = normal).
 fn addQuad(
     mesh: *Mesh,
     x: f32,
@@ -388,6 +406,7 @@ fn addQuad(
     face: Face,
     block_type: BlockType,
     block_idx: u32,
+    highlight: u8,
 ) !void {
     const base_idx: u32 = @intCast(mesh.vertices.items.len);
     const normal = face_normals[@intFromEnum(face)];
@@ -442,8 +461,9 @@ fn addQuad(
     };
     try mesh.indices.appendSlice(mesh.allocator, &inds);
 
-    // Track which block owns this quad
+    // Track which block owns this quad + its highlight intensity
     try mesh.quad_block.append(mesh.allocator, block_idx);
+    try mesh.quad_highlight.append(mesh.allocator, highlight);
 
     // Debug logging (gated by DEBUG constant)
     if (DEBUG and x == 8.0 and y == 8.0 and z == 10.0) {
@@ -483,6 +503,7 @@ pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh) !void {
                             face,
                             block,
                             block_idx,
+                            255, // full rebuild — all quads highlighted
                         );
                     }
                 }

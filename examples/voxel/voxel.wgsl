@@ -23,6 +23,7 @@ struct VertexOutput {
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
     @location(3) alpha: f32,
+    @location(4) highlight: f32,
 };
 
 // Block type colors
@@ -57,19 +58,24 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.clip_position = uniforms.view_proj * vec4<f32>(in.position, 1.0);
     out.normal = in.normal;
 
-    var base_color = getBlockColor(in.block_type);
+    // Upper 16 bits = highlight intensity (0–255), lower 16 bits = actual block type.
+    // GPU debug mode encodes highlight at upload time; when off, upper bits are 0.
+    let block_type = in.block_type & 0xFFFFu;
+    out.highlight = f32((in.block_type >> 16u) & 0xFFu) / 255.0;
+
+    var base_color = getBlockColor(block_type);
 
     // Grass: green on top, dirt color on sides
-    if (in.block_type == 1u && in.normal.y < 0.5) {
+    if (block_type == 1u && in.normal.y < 0.5) {
         base_color = vec3<f32>(0.6, 0.4, 0.2);
     }
 
-    if (in.block_type == 99u) {
+    if (block_type == 99u) {
         base_color = vec3<f32>(1.0, 0.0, 0.0);
     }
 
     out.color = base_color;
-    out.alpha = select(1.0, 0.2, in.block_type == 100u);
+    out.alpha = select(1.0, 0.2, block_type == 100u);
     return out;
 }
 
@@ -104,5 +110,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.6;
     let brightness = ambient + diffuse;
 
-    return vec4<f32>(in.color * brightness, in.alpha);
+    // GPU debug: mix in orange tint for freshly rebuilt quads
+    let base = in.color * brightness;
+    let highlighted = mix(base, vec3<f32>(1.0, 0.5, 0.1), in.highlight * 0.6);
+
+    return vec4<f32>(highlighted, in.alpha);
 }
