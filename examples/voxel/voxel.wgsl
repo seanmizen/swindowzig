@@ -38,6 +38,9 @@ fn getBlockColor(block_type: u32) -> vec3<f32> {
         case 3u: { // Stone
             return vec3<f32>(0.5, 0.5, 0.5);
         }
+        case 4u: { // Bedrock
+            return vec3<f32>(0.3, 0.3, 0.3);
+        }
         case 99u: { // Debug marker
             return vec3<f32>(1.0, 0.0, 0.0);
         }

@@ -1,6 +1,6 @@
 # framespike.tas — Block removal during camera pan
 # Tick rate: 120 Hz (each tick ≈ 8.3ms)
-# Player eye: (24, 9.6, 20), yaw = -π/2 (looking -Z), pitch = -0.3
+# Player eye: (24, 66.6, 20), yaw = -π/2 (looking -Z), pitch = -0.3
 #
 # Phase 1 (ticks 1-2):  Capture mouse via left click
 # Phase 2 (tick 3):     Look down 200px → pitch ≈ -0.7, grass surface clearly in view (~2.5u away)

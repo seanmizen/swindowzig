@@ -214,7 +214,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     const aspect = @as(f32, @floatFromInt(window_info.width)) / @as(f32, @floatFromInt(window_info.height));
 
     // Spawn player with feet on terrain surface (grass top = y=8).
-    state.player = Player.init(24.0, 8.0, 20.0);
+    state.player = Player.init(24.0, 64.0, 20.0);
 
     // Camera tracks player eye position; yaw/pitch set for a good starting view.
     const eye = state.player.eyePos();

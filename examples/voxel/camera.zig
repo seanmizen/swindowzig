@@ -22,7 +22,7 @@ pub fn Camera(comptime Vec3Type: type, comptime Mat4Type: type, comptime math_fu
                 .fov = std.math.pi / 3.0, // 60 degrees
                 .aspect = aspect,
                 .near = 0.1,
-                .far = 100.0,
+                .far = 500.0,
             };
         }
 
