@@ -137,6 +137,36 @@ Use letter/modifier combos (e.g. Cmd+D) or mouse buttons instead.
 
 ---
 
+## Voxel Demo — CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--tas <path>` | Load and play a TAS script. Physical input blocked during playback. |
+| `--headless` | No window, no GPU. Ticks unlimited speed. Exits when TAS finishes. |
+| `--tas-step` | Frame-by-frame TAS stepping. Right arrow = advance one TAS tick. Implies `--gpu-debug`. |
+| `--gpu-debug` | Highlight freshly rebuilt mesh faces (orange tint, fades ~0.5s). Also toggled with Cmd+G / Ctrl+G at runtime. |
+
+---
+
+## Voxel Demo — GPU Debug System
+
+Tracks which mesh quads were rebuilt and visualises them with an orange tint.
+
+**Data path:**
+- `mesher.zig: quad_highlight: ArrayList(u8)` — parallel to `quad_block`, intensity 0–255 per quad
+- `addQuad(..., highlight)` — new quads start at 255 (incremental rebuild and full rebuild)
+- `swapRemoveQuad` — keeps `quad_highlight` in sync with other parallel arrays
+- `decayHighlights(amount)` — saturating subtract each tick (amount=4 → ~60 ticks / 0.5s fade)
+- `uploadMeshToGPU` — encodes highlight into upper 8 bits of `block_type` u32 at GPU upload time, restores after
+- `voxel.wgsl` — shader extracts `(block_type >> 16) & 0xFF`, mixes orange `vec3(1.0, 0.5, 0.1)` with base colour
+
+**Key design choices:**
+- Piggybacks on existing `block_type: u32` (only uses lower 8 bits) — no vertex layout changes
+- Zero overhead when off: highlights are 0, shader multiplies by 0, vertex re-upload skipped
+- In TAS step mode, highlights only decay on executing ticks (persists between steps)
+
+---
+
 ## Voxel Demo — Mandatory Testing
 
 **Before handing any voxel changes back to the user, ALL three checks must pass:**

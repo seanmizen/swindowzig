@@ -94,22 +94,59 @@ zig build run -Dexample=voxel     # voxel chunk demo
 zig build run -Dexample=windows   # triangle with mouse drag
 ```
 
-### TAS / Headless
+### Voxel Demo — CLI Flags
+
+All flags below apply to the voxel example binary (`./zig-out/bin/voxel`).
+Build first with `zig build native -Dexample=voxel`.
+
+| Flag | Description |
+|------|-------------|
+| `--tas <path>` | Load and play a TAS script. Physical input is blocked during playback. |
+| `--headless` | No window, no GPU. Ticks as fast as possible. Exits when TAS finishes. |
+| `--tas-step` | Frame-by-frame TAS mode. Press Right arrow to advance one TAS tick. Implies `--gpu-debug`. |
+| `--gpu-debug` | Highlight freshly rebuilt mesh faces with an orange tint that fades over ~0.5s. |
+
+### Useful Setups
 
 ```bash
-# Run a TAS script in windowed mode (physical input blocked, watch playback)
+# Normal play
+./zig-out/bin/voxel
+
+# TAS playback — watch a script run in real time
 ./zig-out/bin/voxel --tas examples/voxel/framespike.tas
 
-# Run headless: no window, no GPU, ticks as fast as possible, exits when TAS finishes
+# Headless TAS — deterministic simulation, no rendering, exits on completion
 ./zig-out/bin/voxel --headless --tas examples/voxel/framespike.tas
 
-# Build first if binary is stale
-zig build native && ./zig-out/bin/voxel --headless --tas examples/voxel/framespike.tas
+# Frame-by-frame TAS debugging — step with Right arrow, GPU debug auto-enabled
+./zig-out/bin/voxel --tas examples/voxel/framespike.tas --tas-step
+
+# GPU debug in normal play — see mesh rebuild blast radius when placing/removing blocks
+./zig-out/bin/voxel --gpu-debug
+
+# Build + run (one-liner)
+zig build native -Dexample=voxel && ./zig-out/bin/voxel --tas examples/voxel/framespike.tas --tas-step
 ```
+
+### Runtime Keyboard Shortcuts (Voxel Demo)
+
+| Shortcut | Action |
+|----------|--------|
+| WASD | Move (when mouse captured) |
+| Mouse | Look (when mouse captured) |
+| Left click | Capture mouse / destroy block |
+| Right click | Place block |
+| Space | Jump / fly up (in fly mode) |
+| Space (double-tap) | Toggle fly mode |
+| Shift | Sprint / fly down (in fly mode) |
+| Escape | Pause menu |
+| Cmd+D / Ctrl+D | Toggle debug mode (hitbox cylinder, keyboard HUD) |
+| Cmd+G / Ctrl+G | Toggle GPU debug (highlight rebuilt faces) |
+| Right arrow | Advance one TAS tick (in `--tas-step` mode) |
 
 ---
 
-## Status (Feb 2026)
+## Status (Apr 2026)
 
 ### Working
 - Window management (SDL2)
@@ -135,9 +172,7 @@ zig build native && ./zig-out/bin/voxel --headless --tas examples/voxel/framespi
 |---------|---------|-------------|
 | `justabox` | `zig build run` | Single colored box, slowly spinning. Default. |
 | `windows` | `zig build run -Dexample=windows` | Colored triangle, mouse-drag rotation. |
-| `voxel` | `zig build run -Dexample=voxel` | 16×16×16 voxel chunk, WASD camera. |
-| `voxel` (TAS) | `./zig-out/bin/voxel --tas examples/voxel/framespike.tas` | Voxel with TAS playback (physical input blocked). |
-| `voxel` (headless) | `./zig-out/bin/voxel --headless --tas examples/voxel/framespike.tas` | Headless TAS: no window, runs as fast as possible. |
+| `voxel` | `zig build run -Dexample=voxel` | 16x16x16 voxel chunk, Minecraft creative mode. |
 
 ---
 
