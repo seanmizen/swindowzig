@@ -142,7 +142,7 @@ zig build native -Dexample=voxel && ./zig-out/bin/voxel --tas examples/voxel/fra
 | Escape | Pause menu |
 | Cmd+D / Ctrl+D | Toggle debug mode (hitbox cylinder, keyboard HUD) |
 | Cmd+G / Ctrl+G | Toggle GPU debug (highlight rebuilt faces) |
-| Cmd+T / Ctrl+T | Toggle third-person camera |
+| Cmd+V / Ctrl+V | Cycle camera view: first-person → back → front |
 | Right arrow | Advance one TAS tick (in `--tas-step` mode) |
 
 ---

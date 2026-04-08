@@ -102,6 +102,29 @@ const player_mod = @import("player.zig");
 const Player = player_mod.Player;
 const keyboard_hud = @import("keyboard_hud.zig");
 
+/// Camera perspective: cycles first → back → front via Cmd+V / Ctrl+V.
+const CameraView = enum {
+    first_person,
+    third_person_back,
+    third_person_front,
+
+    fn next(self: CameraView) CameraView {
+        return switch (self) {
+            .first_person => .third_person_back,
+            .third_person_back => .third_person_front,
+            .third_person_front => .first_person,
+        };
+    }
+
+    fn label(self: CameraView) []const u8 {
+        return switch (self) {
+            .first_person => "first-person",
+            .third_person_back => "third-person (back)",
+            .third_person_front => "third-person (front)",
+        };
+    }
+};
+
 // Pause menu button geometry (in logical pixels)
 const RESUME_BTN_W: f32 = 200;
 const RESUME_BTN_H: f32 = 40;
@@ -137,7 +160,7 @@ const State = struct {
     overlay: OverlayRenderer = undefined,
     tas_replayer: ?core.Replayer = null,
     headless: bool = false,
-    third_person: bool = false,
+    camera_view: CameraView = .first_person,
     debug_mode: bool = false,
     tas_step_mode: bool = false,
     /// Set by Right arrow — preTick will inject the next TAS event group on the next sim tick.
@@ -194,7 +217,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Cylinder scratch buffers (ArrayList new-API: no allocator at init time)
     state.cylinder_verts = std.ArrayList(VoxelVertex){};
     state.cylinder_indices = std.ArrayList(u32){};
-    state.third_person = false;
+    state.camera_view = .first_person;
     state.debug_mode = false;
     state.tas_step_mode = false;
     state.tas_step_pending = false;
@@ -319,10 +342,10 @@ fn voxelTick(ctx: *sw.Context) !void {
         }
     }
 
-    // Cmd+T (macOS) / Ctrl+T (Windows/Linux) — toggle third-person camera
-    if (input.keyPressed(.T) and (input.mods.super or input.mods.ctrl)) {
-        state.third_person = !state.third_person;
-        std.log.info("Third-person: {}", .{state.third_person});
+    // Cmd+V (macOS) / Ctrl+V (Windows/Linux) — cycle camera view
+    if (input.keyPressed(.V) and (input.mods.super or input.mods.ctrl)) {
+        state.camera_view = state.camera_view.next();
+        std.log.info("Camera: {s}", .{state.camera_view.label()});
     }
 
     // Cmd+D (macOS) / Ctrl+D (Windows/Linux) — toggle debug mode (shows hitbox cylinder)
@@ -434,17 +457,28 @@ fn voxelTick(ctx: *sw.Context) !void {
 
             state.player.tick(&state.chunk, dt, state.camera.yaw, fwd, rgt, jump, space_held, sprint);
 
-            // Sync camera position to player eye (or third-person offset).
+            // Sync camera position to player eye, offset by camera view.
             const eye = state.player.eyePos();
-            if (state.third_person) {
-                const fwd_vec = state.camera.forward();
-                state.camera.position = Vec3.init(
-                    eye[0] - fwd_vec.x * 4.0,
-                    eye[1] - fwd_vec.y * 4.0 + 0.5,
-                    eye[2] - fwd_vec.z * 4.0,
-                );
-            } else {
-                state.camera.position = Vec3.init(eye[0], eye[1], eye[2]);
+            const fwd_vec = state.camera.forward();
+            const cam_dist: f32 = 4.0;
+            switch (state.camera_view) {
+                .first_person => {
+                    state.camera.position = Vec3.init(eye[0], eye[1], eye[2]);
+                },
+                .third_person_back => {
+                    state.camera.position = Vec3.init(
+                        eye[0] - fwd_vec.x * cam_dist,
+                        eye[1] - fwd_vec.y * cam_dist,
+                        eye[2] - fwd_vec.z * cam_dist,
+                    );
+                },
+                .third_person_front => {
+                    state.camera.position = Vec3.init(
+                        eye[0] + fwd_vec.x * cam_dist,
+                        eye[1] + fwd_vec.y * cam_dist,
+                        eye[2] + fwd_vec.z * cam_dist,
+                    );
+                },
             }
         }
 
@@ -461,8 +495,12 @@ fn voxelTick(ctx: *sw.Context) !void {
                 state.click_locked = false;
             }
 
+            // Raycast from player eye (not camera) — in third-person the camera is
+            // pulled back, but interaction should always be from the player's perspective.
             const cam_dir = state.camera.forward();
-            const hit = raycast(&state.chunk, state.camera.position, cam_dir, 5.0);
+            const eye_pos = state.player.eyePos();
+            const ray_origin = Vec3.init(eye_pos[0], eye_pos[1], eye_pos[2]);
+            const hit = raycast(&state.chunk, ray_origin, cam_dir, 5.0);
 
             if (hit.hit) {
                 state.hover_block = hit.block_pos;
@@ -707,8 +745,13 @@ fn voxelRender(ctx: *sw.Context) !void {
         t_mesh_us + t_sort_us + t_upload_us,
     });
 
-    // Update uniforms
-    const view_proj = state.camera.getViewProjectionMatrix();
+    // Update uniforms — front-facing view needs a flipped lookAt direction.
+    const view_proj = if (state.camera_view == .third_person_front) blk: {
+        const fwd = state.camera.forward();
+        const target = state.camera.position.add(Vec3.init(-fwd.x, -fwd.y, -fwd.z));
+        const view = math.lookAt(state.camera.position, target, Vec3.init(0, 1, 0));
+        break :blk state.camera.getProjectionMatrix().mul(view);
+    } else state.camera.getViewProjectionMatrix();
 
     const hover_active: f32 = if (state.hover_block != null) 1.0 else 0.0;
     const hover_pos = state.hover_block orelse Vec3.init(0, 0, 0);
@@ -806,7 +849,35 @@ fn voxelRender(ctx: *sw.Context) !void {
 
     state.overlay.begin();
 
-    // HUD: crosshair (visible when playing, not paused)
+    // Inside-block overlay: dark purple with animated wavy strips
+    {
+        const cam_bx: i32 = @intFromFloat(@floor(state.camera.position.x));
+        const cam_by: i32 = @intFromFloat(@floor(state.camera.position.y));
+        const cam_bz: i32 = @intFromFloat(@floor(state.camera.position.z));
+        if (state.chunk.getBlock(cam_bx, cam_by, cam_bz) != .air) {
+            // Dark purple base
+            state.overlay.rect(0, 0, overlay_w, overlay_h, .{ 0.08, 0.02, 0.12, 1 }, overlay_w, overlay_h) catch {};
+
+            // Animated wavy strips — sine-driven horizontal bands that drift upward
+            const t = @as(f32, @floatFromInt(ctx.tickId())) * 0.04;
+            const strip_count: usize = 24;
+            const strip_h = overlay_h / @as(f32, @floatFromInt(strip_count));
+            for (0..strip_count) |i| {
+                const fi = @as(f32, @floatFromInt(i));
+                // Two sine waves at different frequencies for organic movement
+                const wave = @sin(fi * 0.7 + t) * 0.5 + @sin(fi * 1.3 - t * 0.6) * 0.3;
+                const alpha: f32 = 0.04 + @max(0.0, wave) * 0.12;
+                // Slight purple hue shift per strip
+                const r: f32 = 0.25 + wave * 0.08;
+                const b: f32 = 0.45 + @sin(fi * 0.5 + t * 0.3) * 0.1;
+                const y_offset = @mod(fi * strip_h - t * 12.0, overlay_h);
+                state.overlay.rect(0, y_offset, overlay_w, strip_h, .{ r, 0.05, b, alpha }, overlay_w, overlay_h) catch {};
+            }
+        }
+    }
+
+    // HUD: crosshair — always at screen centre. Camera and player share yaw/pitch,
+    // so screen centre is always the aim direction in both first and third person.
     if (state.game_state.isLayerActive(.hud) and !state.game_state.isWorldPaused()) {
         const cx = overlay_w / 2.0;
         const cy = overlay_h / 2.0;
