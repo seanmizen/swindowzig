@@ -148,6 +148,10 @@ const State = struct {
     cylinder_index_buffer: ?gpu_mod.Buffer = null,
     cylinder_verts: std.ArrayList(VoxelVertex) = undefined,
     cylinder_indices: std.ArrayList(u32) = undefined,
+    border_vertex_buffer: ?gpu_mod.Buffer = null,
+    border_index_buffer: ?gpu_mod.Buffer = null,
+    border_vert_count: usize = 0,
+    border_idx_count: usize = 0,
     mesh_dirty: bool = true,
     mesh_incremental_dirty: bool = false,
     mouse_captured: bool = false,
@@ -191,6 +195,10 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.depth_view = null;
     state.cylinder_vertex_buffer = null;
     state.cylinder_index_buffer = null;
+    state.border_vertex_buffer = null;
+    state.border_index_buffer = null;
+    state.border_vert_count = 0;
+    state.border_idx_count = 0;
     state.hover_block = null;
     state.tas_replayer = null;
 
@@ -672,6 +680,92 @@ fn drawStepHud(
     }
 }
 
+/// Build chunk border wireframe: 12 edges of the bounding box, each as two
+/// perpendicular thin quads (cross shape) so they're visible from any angle.
+fn buildChunkBorderMesh(g: *gpu_mod.GPU) void {
+    const W: f32 = @floatFromInt(chunk_mod.CHUNK_W);
+    const H: f32 = @floatFromInt(chunk_mod.CHUNK_H);
+    const t: f32 = 0.02; // half-thickness of each line
+    const bt: u32 = 101; // block_type for borders
+    const n_zero = [3]f32{ 0, 0, 0 }; // normal unused for unlit wireframe
+
+    var verts: [12 * 2 * 4]VoxelVertex = undefined; // 12 edges × 2 quads × 4 verts
+    var idxs: [12 * 2 * 6]u32 = undefined; // 12 edges × 2 quads × 6 indices
+    var vi: u32 = 0;
+    var ii: usize = 0;
+
+    // Helper: append one quad (4 verts, 6 indices)
+    const addQ = struct {
+        fn f(v: *[12 * 2 * 4]VoxelVertex, idx: *[12 * 2 * 6]u32, base: *u32, iptr: *usize, p0: [3]f32, p1: [3]f32, p2: [3]f32, p3: [3]f32, block_type: u32, normal: [3]f32) void {
+            const b = base.*;
+            v[b + 0] = .{ .pos = p0, .normal = normal, .block_type = block_type, .uv = .{ 0, 0 } };
+            v[b + 1] = .{ .pos = p1, .normal = normal, .block_type = block_type, .uv = .{ 0, 1 } };
+            v[b + 2] = .{ .pos = p2, .normal = normal, .block_type = block_type, .uv = .{ 1, 1 } };
+            v[b + 3] = .{ .pos = p3, .normal = normal, .block_type = block_type, .uv = .{ 1, 0 } };
+            idx[iptr.*] = b;
+            idx[iptr.* + 1] = b + 1;
+            idx[iptr.* + 2] = b + 2;
+            idx[iptr.* + 3] = b;
+            idx[iptr.* + 4] = b + 2;
+            idx[iptr.* + 5] = b + 3;
+            base.* += 4;
+            iptr.* += 6;
+        }
+    }.f;
+
+    // Vertical edges (4 corners, each a cross of XZ-perpendicular quads)
+    const corners = [_][2]f32{ .{ 0, 0 }, .{ W, 0 }, .{ 0, W }, .{ W, W } };
+    for (corners) |c| {
+        const cx = c[0];
+        const cz = c[1];
+        // Quad facing ±Z
+        addQ(&verts, &idxs, &vi, &ii, .{ cx - t, 0, cz }, .{ cx - t, H, cz }, .{ cx + t, H, cz }, .{ cx + t, 0, cz }, bt, n_zero);
+        // Quad facing ±X
+        addQ(&verts, &idxs, &vi, &ii, .{ cx, 0, cz - t }, .{ cx, H, cz - t }, .{ cx, H, cz + t }, .{ cx, 0, cz + t }, bt, n_zero);
+    }
+
+    // Horizontal edges along X (4: bottom + top, at Z=0 and Z=W)
+    const y_levels = [_]f32{ 0, H };
+    const z_edges = [_]f32{ 0, W };
+    for (y_levels) |y| {
+        for (z_edges) |z| {
+            // Quad facing ±Y
+            addQ(&verts, &idxs, &vi, &ii, .{ 0, y, z - t }, .{ W, y, z - t }, .{ W, y, z + t }, .{ 0, y, z + t }, bt, n_zero);
+            // Quad facing ±Z
+            addQ(&verts, &idxs, &vi, &ii, .{ 0, y - t, z }, .{ W, y - t, z }, .{ W, y + t, z }, .{ 0, y + t, z }, bt, n_zero);
+        }
+    }
+
+    // Horizontal edges along Z (4: bottom + top, at X=0 and X=W)
+    const x_edges = [_]f32{ 0, W };
+    for (y_levels) |y| {
+        for (x_edges) |x| {
+            // Quad facing ±Y
+            addQ(&verts, &idxs, &vi, &ii, .{ x - t, y, 0 }, .{ x + t, y, 0 }, .{ x + t, y, W }, .{ x - t, y, W }, bt, n_zero);
+            // Quad facing ±X
+            addQ(&verts, &idxs, &vi, &ii, .{ x, y - t, 0 }, .{ x, y + t, 0 }, .{ x, y + t, W }, .{ x, y - t, W }, bt, n_zero);
+        }
+    }
+
+    state.border_vert_count = vi;
+    state.border_idx_count = ii;
+
+    // Create or reuse GPU buffers (static — only built once)
+    if (state.border_vertex_buffer == null) {
+        state.border_vertex_buffer = g.createBuffer(.{
+            .size = verts.len * @sizeOf(VoxelVertex),
+            .usage = .{ .vertex = true, .copy_dst = true },
+        }) catch return;
+        state.border_index_buffer = g.createBuffer(.{
+            .size = idxs.len * @sizeOf(u32),
+            .usage = .{ .index = true, .copy_dst = true },
+        }) catch return;
+    }
+
+    g.writeBuffer(state.border_vertex_buffer.?, 0, std.mem.sliceAsBytes(&verts));
+    g.writeBuffer(state.border_index_buffer.?, 0, std.mem.sliceAsBytes(&idxs));
+}
+
 fn voxelRender(ctx: *sw.Context) !void {
     const g = ctx.gpu();
 
@@ -837,6 +931,20 @@ fn voxelRender(ctx: *sw.Context) !void {
             pass.setVertexBuffer(0, state.cylinder_vertex_buffer.?, 0, state.cylinder_verts.items.len * @sizeOf(VoxelVertex));
             pass.setIndexBuffer(state.cylinder_index_buffer.?, .uint32, 0, state.cylinder_indices.items.len * @sizeOf(u32));
             pass.drawIndexed(@intCast(state.cylinder_indices.items.len), 1, 0, 0, 0);
+        }
+    }
+
+    // =========================================================================
+    // Chunk border wireframe (debug mode only; uses cylinder pipeline for alpha + no culling)
+    // =========================================================================
+    if (state.debug_mode and state.cylinder_pipeline != null) {
+        buildChunkBorderMesh(g);
+        if (state.border_vertex_buffer != null and state.border_idx_count > 0) {
+            pass.setPipeline(state.cylinder_pipeline.?);
+            pass.setBindGroup(0, state.bind_group.?);
+            pass.setVertexBuffer(0, state.border_vertex_buffer.?, 0, state.border_vert_count * @sizeOf(VoxelVertex));
+            pass.setIndexBuffer(state.border_index_buffer.?, .uint32, 0, state.border_idx_count * @sizeOf(u32));
+            pass.drawIndexed(@intCast(state.border_idx_count), 1, 0, 0, 0);
         }
     }
 
