@@ -133,7 +133,7 @@ in `gpu.zig:setIndexBuffer`.
 
 **No function keys.** Do not use F1–F12 for any gameplay or debug feature in the voxel demo.
 Function keys are excluded from the keyboard HUD and are not a reliable cross-platform input.
-Use letter/modifier combos (e.g. Cmd+D) or mouse buttons instead.
+Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 
 ---
 

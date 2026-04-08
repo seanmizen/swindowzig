@@ -319,11 +319,8 @@ fn voxelTick(ctx: *sw.Context) !void {
         }
     }
 
-    if (input.keyPressed(.F3)) {
-        state.game_state.toggleDebugOverlay();
-    }
-
-    if (input.keyPressed(.F5)) {
+    // Cmd+T (macOS) / Ctrl+T (Windows/Linux) — toggle third-person camera
+    if (input.keyPressed(.T) and (input.mods.super or input.mods.ctrl)) {
         state.third_person = !state.third_person;
         std.log.info("Third-person: {}", .{state.third_person});
     }
