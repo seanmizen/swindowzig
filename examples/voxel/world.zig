@@ -1,6 +1,7 @@
 const std = @import("std");
 const chunk_mod = @import("chunk.zig");
 const mesher_mod = @import("mesher.zig");
+const world_gen = @import("world_gen.zig");
 const Chunk = chunk_mod.Chunk;
 const Mesh = mesher_mod.Mesh;
 
@@ -97,12 +98,17 @@ pub const World = struct {
     /// Pre-computed (dx, dz) offsets sorted by distance from origin (innermost first).
     /// Built once at init; reused every tick.
     spiral_offsets: []ChunkOffset,
+    /// World generation config. Determined at init from ACTIVE_PRESET; passed to
+    /// every chunk's generateTerrain call. Override individual fields after init
+    /// to tweak generation without changing the preset.
+    gen_config: world_gen.WorldGenConfig,
 
     pub fn init(allocator: std.mem.Allocator) !World {
         return .{
             .allocator = allocator,
             .chunks = ChunkMap.init(allocator),
             .spiral_offsets = try buildSpiralOffsets(allocator, RENDER_DISTANCE),
+            .gen_config = world_gen.presetConfig(world_gen.ACTIVE_PRESET),
         };
     }
 
@@ -137,7 +143,7 @@ pub const World = struct {
                 if (!self.chunks.contains(key)) {
                     const lc = try self.allocator.create(LoadedChunk);
                     lc.* = LoadedChunk.init(self.allocator, key.cx, key.cz);
-                    lc.chunk.generateTerrain();
+                    lc.chunk.generateTerrain(key.cx, key.cz, self.gen_config);
                     try self.chunks.put(key, lc);
                     loaded_this_tick += 1;
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const world_gen = @import("world_gen.zig");
 
 pub const CHUNK_W = 48; // X and Z dimension
 pub const CHUNK_H = 256; // Y dimension (matches classic Minecraft build height)
@@ -39,26 +40,43 @@ pub const Chunk = struct {
         self.blocks[@intCast(x)][@intCast(y)][@intCast(z)] = block;
     }
 
-    /// Flat terrain matching Minecraft superflat layout:
-    ///   Y=0       bedrock
-    ///   Y=1–59    stone
-    ///   Y=60–62   dirt
-    ///   Y=63      grass (surface — Minecraft sea level)
-    pub fn generateTerrain(self: *Chunk) void {
+    /// Generate terrain for this chunk at chunk grid position (cx, cz).
+    ///
+    /// Layout per column (surface = noise-sampled height):
+    ///   Y=0             bedrock
+    ///   Y=1..(surface-4) stone
+    ///   Y=(surface-3)..(surface-1) dirt (3 layers)
+    ///   Y=surface       grass
+    ///
+    /// For the flatland preset (noise_octaves=0), surface is always
+    /// terrain_height_min=63, reproducing the original Minecraft superflat layout.
+    pub fn generateTerrain(self: *Chunk, cx: i32, cz: i32, config: world_gen.WorldGenConfig) void {
         var x: i32 = 0;
         while (x < CHUNK_W) : (x += 1) {
             var z: i32 = 0;
             while (z < CHUNK_W) : (z += 1) {
+                const wx = cx * CHUNK_W + x;
+                const wz = cz * CHUNK_W + z;
+                const surface = world_gen.sampleHeight(wx, wz, config);
+
                 self.setBlock(x, 0, z, .bedrock);
+
+                // Stone fills from Y=1 up to (but not including) the 3-dirt band.
                 var y: i32 = 1;
-                while (y <= 59) : (y += 1) {
+                while (y < surface - 3) : (y += 1) {
                     self.setBlock(x, y, z, .stone);
                 }
-                y = 60;
-                while (y <= 62) : (y += 1) {
+
+                // Three dirt layers immediately below the surface.
+                y = @max(1, surface - 3);
+                while (y < surface) : (y += 1) {
                     self.setBlock(x, y, z, .dirt);
                 }
-                self.setBlock(x, 63, z, .grass);
+
+                // Grass cap.
+                if (surface >= 1 and surface < CHUNK_H) {
+                    self.setBlock(x, surface, z, .grass);
+                }
             }
         }
     }
