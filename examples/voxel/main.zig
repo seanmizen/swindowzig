@@ -162,7 +162,6 @@ const State = struct {
     border_vert_count: usize = 0,
     border_idx_count: usize = 0,
     mouse_captured: bool = false,
-    click_locked: bool = false,
     paused_with_mouse: bool = false,
     button_resume_hovered: bool = false,
     button_quit_hovered: bool = false,
@@ -236,7 +235,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.gpu_debug = false;
 
     state.mouse_captured = false;
-    state.click_locked = false;
     state.paused_with_mouse = false;
     state.button_resume_hovered = false;
     state.button_quit_hovered = false;
@@ -515,7 +513,6 @@ fn voxelTick(ctx: *sw.Context) !void {
         if (!state.mouse_captured and input.buttonPressed(.left)) {
             state.mouse_captured = true;
             ctx.setMouseCapture(true);
-            state.click_locked = true;
             std.log.info("Mouse captured (clicked)", .{});
         }
 
@@ -572,11 +569,6 @@ fn voxelTick(ctx: *sw.Context) !void {
                 -input.mouse.delta_y, // Invert Y for natural feel
             );
 
-            // Release click lock when button is not pressed
-            if (!input.buttonPressed(.left)) {
-                state.click_locked = false;
-            }
-
             // Raycast from player eye (not camera) — in third-person the camera is
             // pulled back, but interaction should always be from the player's perspective.
             const cam_dir = state.camera.forward();
@@ -587,9 +579,9 @@ fn voxelTick(ctx: *sw.Context) !void {
             if (hit.hit) {
                 state.hover_block = hit.block_pos;
 
-                // Left click: destroy block (one block per click)
-                if (input.buttonPressed(.left) and !state.click_locked) {
-                    state.click_locked = true;
+                // Left click: destroy block — buttonPressed fires only on the down edge,
+                // so exactly one block is destroyed per click no matter how fast you click.
+                if (input.buttonPressed(.left)) {
                     const bx: i32 = @intFromFloat(hit.block_pos.x);
                     const by: i32 = @intFromFloat(hit.block_pos.y);
                     const bz: i32 = @intFromFloat(hit.block_pos.z);
