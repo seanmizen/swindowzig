@@ -6,6 +6,8 @@ struct Uniforms {
     _padding: f32,
     hover_block: vec3<f32>,
     hover_active: f32, // 1.0 if a block is hovered, 0.0 otherwise
+    fog_start: f32,    // distance at which fog begins
+    fog_end: f32,      // distance at which fog is fully opaque (sky colour)
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -120,5 +122,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base = in.color * brightness;
     let highlighted = mix(base, vec3<f32>(1.0, 0.5, 0.1), in.highlight * 0.6);
 
-    return vec4<f32>(highlighted, in.alpha);
+    // Distance fog: fade to sky colour before the render distance cutoff.
+    let sky = vec3<f32>(0.5, 0.7, 1.0);
+    let dist = length(in.world_pos - uniforms.camera_pos);
+    let fog_t = clamp((dist - uniforms.fog_start) / (uniforms.fog_end - uniforms.fog_start), 0.0, 1.0);
+    let final_color = mix(highlighted, sky, fog_t);
+
+    return vec4<f32>(final_color, in.alpha);
 }

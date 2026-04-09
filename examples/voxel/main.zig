@@ -98,8 +98,9 @@ const CameraType = @import("camera.zig").Camera(Vec3, Mat4, math);
 const WorldRaycastType = @import("raycast.zig").Raycast(Vec3, world_mod.World);
 const worldRaycast = WorldRaycastType.raycast;
 
-/// Max mesh generations per render frame (keeps frame time bounded during chunk loading).
-const MESH_GENS_PER_FRAME: usize = 1;
+/// Max mesh generations per tick (keeps tick time bounded during chunk loading).
+/// Mesh gen runs in tick so render frames stay smooth.
+const MESH_GENS_PER_TICK: usize = 1;
 
 const GameState = @import("game_state.zig").GameState;
 const OverlayRenderer = @import("overlay.zig").OverlayRenderer;
@@ -304,12 +305,80 @@ fn voxelInit(ctx: *sw.Context) !void {
     std.log.info("Voxel demo ready", .{});
 }
 
+/// After a block is placed/destroyed at world (wx, wy, wz), check if it sits on a
+/// chunk boundary. If so, call updateForBlockChange on the block just across that
+/// boundary in the neighbouring chunk — otherwise that block's face toward the
+/// changed block will remain stale (visible gap or missing face).
+fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, camera_pos: [3]f32) void {
+    const cx = world_mod.chunkCoordOf(wx);
+    const cz = world_mod.chunkCoordOf(wz);
+    const lx = wx - cx * chunk_mod.CHUNK_W;
+    const lz = wz - cz * chunk_mod.CHUNK_W;
+
+    // Four horizontal neighbours; Y never crosses a chunk boundary.
+    const checks = [_]struct { coord: i32, at_min: bool, dx: i32, dz: i32 }{
+        .{ .coord = lx, .at_min = true,  .dx = -1, .dz =  0 }, // −X edge
+        .{ .coord = lx, .at_min = false, .dx =  1, .dz =  0 }, // +X edge
+        .{ .coord = lz, .at_min = true,  .dx =  0, .dz = -1 }, // −Z edge
+        .{ .coord = lz, .at_min = false, .dx =  0, .dz =  1 }, // +Z edge
+    };
+    for (checks) |c| {
+        const at_boundary = if (c.at_min) c.coord == 0 else c.coord == chunk_mod.CHUNK_W - 1;
+        if (!at_boundary) continue;
+
+        const nb_wx = wx + c.dx;
+        const nb_wz = wz + c.dz;
+        const nb_lc = world.getChunkAtBlock(nb_wx, nb_wz) orelse continue;
+        const nb_cx = world_mod.chunkCoordOf(nb_wx);
+        const nb_cz = world_mod.chunkCoordOf(nb_wz);
+        const nb_lx = nb_wx - nb_cx * chunk_mod.CHUNK_W;
+        const nb_lz = nb_wz - nb_cz * chunk_mod.CHUNK_W;
+
+        nb_lc.mesh.updateForBlockChange(
+            &nb_lc.chunk, nb_lx, wy, nb_lz,
+            camera_pos,
+            nb_lc.worldX(), nb_lc.worldZ(),
+            world.asBlockGetter(),
+        ) catch {
+            nb_lc.mesh_dirty = true;
+        };
+        nb_lc.mesh_incremental_dirty = true;
+    }
+}
+
 fn voxelTick(ctx: *sw.Context) !void {
     // Update world: load chunks progressively around active region anchors.
     // The player is currently the only anchor.
     try state.world.update(&[_]world_mod.RegionAnchor{
         .{ .position = state.player.feet_pos },
     });
+
+    // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
+    {
+        var mesh_gens: usize = 0;
+        var it = state.world.chunks.iterator();
+        while (it.next()) |entry| {
+            if (mesh_gens >= MESH_GENS_PER_TICK) break;
+            const lc = entry.value_ptr.*;
+            if (!lc.mesh_dirty) continue;
+            const t0 = std.time.nanoTimestamp();
+            mesher_mod.generateMesh(
+                &lc.chunk,
+                &lc.mesh,
+                lc.worldX(),
+                lc.worldZ(),
+                state.world.asBlockGetter(),
+            ) catch |err| {
+                std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
+                continue;
+            };
+            const t_us = @divTrunc(std.time.nanoTimestamp() - t0, 1000);
+            std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
+            lc.mesh_dirty = false;
+            lc.mesh_incremental_dirty = true;
+            mesh_gens += 1;
+        }
+    }
 
     // TAS playback status + headless auto-shutdown when script completes
     if (state.tas_replayer) |*replayer| {
@@ -525,6 +594,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const by: i32 = @intFromFloat(hit.block_pos.y);
                     const bz: i32 = @intFromFloat(hit.block_pos.z);
                     _ = state.world.setBlock(bx, by, bz, .air);
+                    const cam_pos_arr = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
                     if (state.world.getChunkAtBlock(bx, bz)) |lc| {
                         const lcx = world_mod.chunkCoordOf(bx);
                         const lcz = world_mod.chunkCoordOf(bz);
@@ -533,17 +603,18 @@ fn voxelTick(ctx: *sw.Context) !void {
                         const t_incr0 = std.time.nanoTimestamp();
                         lc.mesh.updateForBlockChange(
                             &lc.chunk, lbx, by, lbz,
-                            .{ state.camera.position.x, state.camera.position.y, state.camera.position.z },
+                            cam_pos_arr,
                             lc.worldX(), lc.worldZ(),
                             state.world.asBlockGetter(),
                         ) catch |err| {
                             std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
                             lc.mesh_dirty = true;
                         };
+                        lc.mesh_incremental_dirty = true;
                         const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
                         std.log.info("[TICK  tick={d:4}] incremental remove ({},{},{}) update={}us", .{ ctx.tickId(), bx, by, bz, t_incr_us });
-                        lc.mesh_incremental_dirty = true;
                     }
+                    updateBoundaryNeighbors(&state.world, bx, by, bz, cam_pos_arr);
                 }
 
                 // Right click: place block on adjacent face
@@ -557,6 +628,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const py: i32 = @intFromFloat(place_pos.y);
                     const pz: i32 = @intFromFloat(place_pos.z);
                     _ = state.world.setBlock(px, py, pz, .stone);
+                    const cam_pos_arr2 = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
                     if (state.world.getChunkAtBlock(px, pz)) |lc| {
                         const lcx = world_mod.chunkCoordOf(px);
                         const lcz = world_mod.chunkCoordOf(pz);
@@ -565,17 +637,18 @@ fn voxelTick(ctx: *sw.Context) !void {
                         const t_incr0 = std.time.nanoTimestamp();
                         lc.mesh.updateForBlockChange(
                             &lc.chunk, lpx, py, lpz,
-                            .{ state.camera.position.x, state.camera.position.y, state.camera.position.z },
+                            cam_pos_arr2,
                             lc.worldX(), lc.worldZ(),
                             state.world.asBlockGetter(),
                         ) catch |err| {
                             std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
                             lc.mesh_dirty = true;
                         };
+                        lc.mesh_incremental_dirty = true;
                         const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
                         std.log.info("[TICK  tick={d:4}] incremental place ({},{},{}) update={}us", .{ ctx.tickId(), px, py, pz, t_incr_us });
-                        lc.mesh_incremental_dirty = true;
                     }
+                    updateBoundaryNeighbors(&state.world, px, py, pz, cam_pos_arr2);
                 }
             } else {
                 if (!state.tas_step_mode or state.tas_step_executing) state.hover_block = null;
@@ -824,33 +897,6 @@ fn voxelRender(ctx: *sw.Context) !void {
         };
     }
 
-    // Regenerate dirty meshes — limit to MESH_GENS_PER_FRAME to keep frame time bounded.
-    var mesh_gens_this_frame: usize = 0;
-    {
-        var it = state.world.chunks.iterator();
-        while (it.next()) |entry| {
-            if (mesh_gens_this_frame >= MESH_GENS_PER_FRAME) break;
-            const lc = entry.value_ptr.*;
-            if (!lc.mesh_dirty) continue;
-            const t0 = std.time.nanoTimestamp();
-            mesher_mod.generateMesh(
-                &lc.chunk,
-                &lc.mesh,
-                lc.worldX(),
-                lc.worldZ(),
-                state.world.asBlockGetter(),
-            ) catch |err| {
-                std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
-                continue;
-            };
-            const t_us = @divTrunc(std.time.nanoTimestamp() - t0, 1000);
-            std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
-            lc.mesh_dirty = false;
-            lc.mesh_incremental_dirty = true;
-            mesh_gens_this_frame += 1;
-        }
-    }
-
     // Sort and upload each chunk's mesh.
     {
         var it = state.world.chunks.iterator();
@@ -889,6 +935,11 @@ fn voxelRender(ctx: *sw.Context) !void {
     const hover_active: f32 = if (state.hover_block != null) 1.0 else 0.0;
     const hover_pos = state.hover_block orelse Vec3.init(0, 0, 0);
 
+    // Fog distances derived from render distance so fog always matches the loaded world.
+    const render_dist_blocks: f32 = @as(f32, @floatFromInt(world_mod.RENDER_DISTANCE)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
+    const fog_start: f32 = render_dist_blocks * 0.50;
+    const fog_end: f32   = render_dist_blocks * 0.85;
+
     const uniforms = [_]f32{
         // view_proj (16 floats)
         view_proj.data[0],       view_proj.data[1],       view_proj.data[2],       view_proj.data[3],
@@ -899,6 +950,8 @@ fn voxelRender(ctx: *sw.Context) !void {
         state.camera.position.x, state.camera.position.y, state.camera.position.z, 0,
         // hover_block + hover_active (4 floats)
         hover_pos.x,             hover_pos.y,             hover_pos.z,             hover_active,
+        // fog (2 floats)
+        fog_start,               fog_end,
     };
 
     g.writeBuffer(state.uniform_buffer.?, 0, std.mem.sliceAsBytes(&uniforms));

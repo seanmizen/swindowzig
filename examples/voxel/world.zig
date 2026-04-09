@@ -6,7 +6,7 @@ const Mesh = mesher_mod.Mesh;
 
 /// Render distance in chunks (circular radius).
 /// TODO: expose as an in-game setting via the HUD.
-pub const RENDER_DISTANCE: i32 = 6;
+pub const RENDER_DISTANCE: i32 = 4;
 
 /// Terrain-generation passes per tick. Keeps tick time bounded while loading.
 const CHUNKS_PER_TICK: usize = 2;
