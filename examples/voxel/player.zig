@@ -1,6 +1,7 @@
 const std = @import("std");
 const chunk_mod = @import("chunk.zig");
 const Chunk = chunk_mod.Chunk;
+const BlockGetter = chunk_mod.BlockGetter;
 const mesher_mod = @import("mesher.zig");
 const VoxelVertex = mesher_mod.VoxelVertex;
 
@@ -49,7 +50,7 @@ pub const Player = struct {
     /// cam_yaw is the camera yaw so horizontal movement aligns with where you're looking.
     pub fn tick(
         self: *Player,
-        chunk: *const Chunk,
+        getter: BlockGetter,
         dt: f32,
         cam_yaw: f32,
         forward_input: f32,
@@ -89,11 +90,11 @@ pub const Player = struct {
             const dz = (sy * forward_input + cy * right_input) * spd * dt;
             const dy: f32 = if (space_held) spd * dt else if (sprint) -spd * dt else 0;
 
-            self.feet_pos[0] = resolveX(chunk, self.feet_pos, self.feet_pos[0] + dx);
-            self.feet_pos[2] = resolveZ(chunk, self.feet_pos, self.feet_pos[2] + dz);
+            self.feet_pos[0] = resolveX(getter, self.feet_pos, self.feet_pos[0] + dx);
+            self.feet_pos[2] = resolveZ(getter, self.feet_pos, self.feet_pos[2] + dz);
             const new_y = self.feet_pos[1] + dy;
-            self.feet_pos[1] = resolveY(chunk, self.feet_pos, new_y);
-            self.on_ground = isOnGround(chunk, self.feet_pos);
+            self.feet_pos[1] = resolveY(getter, self.feet_pos, new_y);
+            self.on_ground = isOnGround(getter, self.feet_pos);
 
             // Land on solid ground → exit fly mode automatically.
             if (self.on_ground and !space_held) {
@@ -127,16 +128,16 @@ pub const Player = struct {
 
             // Resolve Y first (ground/ceiling), then X/Z.
             const new_y = self.feet_pos[1] + dy;
-            const resolved_y = resolveY(chunk, self.feet_pos, new_y);
+            const resolved_y = resolveY(getter, self.feet_pos, new_y);
             if (dy > 0 and resolved_y < new_y - 0.001) {
                 self.velocity[1] = 0; // hit ceiling
             }
             self.feet_pos[1] = resolved_y;
 
-            self.feet_pos[0] = resolveX(chunk, self.feet_pos, self.feet_pos[0] + dx);
-            self.feet_pos[2] = resolveZ(chunk, self.feet_pos, self.feet_pos[2] + dz);
+            self.feet_pos[0] = resolveX(getter, self.feet_pos, self.feet_pos[0] + dx);
+            self.feet_pos[2] = resolveZ(getter, self.feet_pos, self.feet_pos[2] + dz);
 
-            self.on_ground = isOnGround(chunk, self.feet_pos);
+            self.on_ground = isOnGround(getter, self.feet_pos);
         }
     }
 };
@@ -148,7 +149,7 @@ pub const Player = struct {
 const EPS: f32 = 0.001;
 
 /// True when there is a solid block in the column directly below the player's feet.
-fn isOnGround(chunk: *const Chunk, pos: [3]f32) bool {
+fn isOnGround(getter: BlockGetter, pos: [3]f32) bool {
     const x0: i32 = @intFromFloat(std.math.floor(pos[0] - PLAYER_RADIUS + EPS));
     const x1: i32 = @intFromFloat(std.math.floor(pos[0] + PLAYER_RADIUS - EPS));
     const z0: i32 = @intFromFloat(std.math.floor(pos[2] - PLAYER_RADIUS + EPS));
@@ -160,14 +161,14 @@ fn isOnGround(chunk: *const Chunk, pos: [3]f32) bool {
     while (xi <= x1) : (xi += 1) {
         var zi = z0;
         while (zi <= z1) : (zi += 1) {
-            if (chunk.getBlock(xi, by, zi) != .air) return true;
+            if (getter.getBlock(xi, by, zi) != .air) return true;
         }
     }
     return false;
 }
 
 /// Resolve Y movement: sweep feet (moving down) or head (moving up) against blocks.
-fn resolveY(chunk: *const Chunk, pos: [3]f32, new_y: f32) f32 {
+fn resolveY(getter: BlockGetter, pos: [3]f32, new_y: f32) f32 {
     if (new_y == pos[1]) return new_y;
 
     const x0: i32 = @intFromFloat(std.math.floor(pos[0] - PLAYER_RADIUS + EPS));
@@ -182,7 +183,7 @@ fn resolveY(chunk: *const Chunk, pos: [3]f32, new_y: f32) f32 {
         while (xi <= x1) : (xi += 1) {
             var zi = z0;
             while (zi <= z1) : (zi += 1) {
-                if (chunk.getBlock(xi, by, zi) != .air) {
+                if (getter.getBlock(xi, by, zi) != .air) {
                     // Block top is at by+1; stand feet there.
                     return @as(f32, @floatFromInt(by)) + 1.0;
                 }
@@ -195,7 +196,7 @@ fn resolveY(chunk: *const Chunk, pos: [3]f32, new_y: f32) f32 {
         while (xi <= x1) : (xi += 1) {
             var zi = z0;
             while (zi <= z1) : (zi += 1) {
-                if (chunk.getBlock(xi, head_y, zi) != .air) {
+                if (getter.getBlock(xi, head_y, zi) != .air) {
                     // Block bottom is at head_y; feet go to head_y - HEIGHT.
                     return @as(f32, @floatFromInt(head_y)) - PLAYER_HEIGHT;
                 }
@@ -206,7 +207,7 @@ fn resolveY(chunk: *const Chunk, pos: [3]f32, new_y: f32) f32 {
 }
 
 /// Resolve X movement: sweep the leading edge against blocks.
-fn resolveX(chunk: *const Chunk, pos: [3]f32, new_x: f32) f32 {
+fn resolveX(getter: BlockGetter, pos: [3]f32, new_x: f32) f32 {
     if (new_x == pos[0]) return new_x;
 
     const y0: i32 = @intFromFloat(std.math.floor(pos[1] + EPS));
@@ -220,7 +221,7 @@ fn resolveX(chunk: *const Chunk, pos: [3]f32, new_x: f32) f32 {
         while (yi <= y1) : (yi += 1) {
             var zi = z0;
             while (zi <= z1) : (zi += 1) {
-                if (chunk.getBlock(bx, yi, zi) != .air) {
+                if (getter.getBlock(bx, yi, zi) != .air) {
                     return @as(f32, @floatFromInt(bx)) - PLAYER_RADIUS;
                 }
             }
@@ -231,7 +232,7 @@ fn resolveX(chunk: *const Chunk, pos: [3]f32, new_x: f32) f32 {
         while (yi <= y1) : (yi += 1) {
             var zi = z0;
             while (zi <= z1) : (zi += 1) {
-                if (chunk.getBlock(bx, yi, zi) != .air) {
+                if (getter.getBlock(bx, yi, zi) != .air) {
                     return @as(f32, @floatFromInt(bx + 1)) + PLAYER_RADIUS;
                 }
             }
@@ -241,7 +242,7 @@ fn resolveX(chunk: *const Chunk, pos: [3]f32, new_x: f32) f32 {
 }
 
 /// Resolve Z movement: sweep the leading edge against blocks.
-fn resolveZ(chunk: *const Chunk, pos: [3]f32, new_z: f32) f32 {
+fn resolveZ(getter: BlockGetter, pos: [3]f32, new_z: f32) f32 {
     if (new_z == pos[2]) return new_z;
 
     const y0: i32 = @intFromFloat(std.math.floor(pos[1] + EPS));
@@ -255,7 +256,7 @@ fn resolveZ(chunk: *const Chunk, pos: [3]f32, new_z: f32) f32 {
         while (yi <= y1) : (yi += 1) {
             var xi = x0;
             while (xi <= x1) : (xi += 1) {
-                if (chunk.getBlock(xi, yi, bz) != .air) {
+                if (getter.getBlock(xi, yi, bz) != .air) {
                     return @as(f32, @floatFromInt(bz)) - PLAYER_RADIUS;
                 }
             }
@@ -266,7 +267,7 @@ fn resolveZ(chunk: *const Chunk, pos: [3]f32, new_z: f32) f32 {
         while (yi <= y1) : (yi += 1) {
             var xi = x0;
             while (xi <= x1) : (xi += 1) {
-                if (chunk.getBlock(xi, yi, bz) != .air) {
+                if (getter.getBlock(xi, yi, bz) != .air) {
                     return @as(f32, @floatFromInt(bz + 1)) + PLAYER_RADIUS;
                 }
             }

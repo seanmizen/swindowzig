@@ -89,12 +89,17 @@ const mesher_mod = @import("mesher.zig");
 const Mesh = mesher_mod.Mesh;
 const VoxelVertex = mesher_mod.VoxelVertex;
 
+const world_mod = @import("world.zig");
+
 const Vec3 = math.Vec3;
 const Mat4 = math.Mat4;
 
 const CameraType = @import("camera.zig").Camera(Vec3, Mat4, math);
-const RaycastType = @import("raycast.zig").Raycast(Vec3, Chunk);
-const raycast = RaycastType.raycast;
+const WorldRaycastType = @import("raycast.zig").Raycast(Vec3, world_mod.World);
+const worldRaycast = WorldRaycastType.raycast;
+
+/// Max mesh generations per render frame (keeps frame time bounded during chunk loading).
+const MESH_GENS_PER_FRAME: usize = 1;
 
 const GameState = @import("game_state.zig").GameState;
 const OverlayRenderer = @import("overlay.zig").OverlayRenderer;
@@ -130,16 +135,19 @@ const RESUME_BTN_W: f32 = 200;
 const RESUME_BTN_H: f32 = 40;
 const BTN_GAP: f32 = 12; // gap between resume and quit buttons
 
+const ChunkGPU = struct {
+    vertex_buffer: ?gpu_mod.Buffer = null,
+    index_buffer: ?gpu_mod.Buffer = null,
+};
+
 // Application state
 const State = struct {
-    chunk: Chunk,
-    mesh: Mesh,
+    world: world_mod.World,
+    chunk_gpu: std.HashMap(world_mod.ChunkKey, ChunkGPU, world_mod.ChunkKey.HashContext, std.hash_map.default_max_load_percentage),
     camera: CameraType,
     player: Player,
     pipeline: ?gpu_mod.RenderPipeline = null,
     cylinder_pipeline: ?gpu_mod.RenderPipeline = null,
-    vertex_buffer: ?gpu_mod.Buffer = null,
-    index_buffer: ?gpu_mod.Buffer = null,
     uniform_buffer: ?gpu_mod.Buffer = null,
     bind_group: ?gpu_mod.BindGroup = null,
     depth_texture: ?gpu_mod.Texture = null,
@@ -152,8 +160,6 @@ const State = struct {
     border_index_buffer: ?gpu_mod.Buffer = null,
     border_vert_count: usize = 0,
     border_idx_count: usize = 0,
-    mesh_dirty: bool = true,
-    mesh_incremental_dirty: bool = false,
     mouse_captured: bool = false,
     click_locked: bool = false,
     paused_with_mouse: bool = false,
@@ -187,8 +193,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Explicitly null all optional fields — `var state: State = undefined` bypasses struct defaults
     state.pipeline = null;
     state.cylinder_pipeline = null;
-    state.vertex_buffer = null;
-    state.index_buffer = null;
     state.uniform_buffer = null;
     state.bind_group = null;
     state.depth_texture = null;
@@ -202,12 +206,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.hover_block = null;
     state.tas_replayer = null;
 
-    // Initialize chunk
-    state.chunk = Chunk.init();
-    state.chunk.generateTerrain();
-
-    // Initialize mesh
-    state.mesh = Mesh.init(ctx.allocator());
+    // Initialize world (replaces single chunk + mesh)
+    state.world = try world_mod.World.init(ctx.allocator());
+    state.chunk_gpu = std.HashMap(world_mod.ChunkKey, ChunkGPU, world_mod.ChunkKey.HashContext, std.hash_map.default_max_load_percentage).init(ctx.allocator());
 
     // Initialize camera
     const window_info = ctx.window();
@@ -233,8 +234,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.tas_current_tas_tick = 0;
     state.gpu_debug = false;
 
-    state.mesh_dirty = true;
-    state.mesh_incremental_dirty = false;
     state.mouse_captured = false;
     state.click_locked = false;
     state.paused_with_mouse = false;
@@ -306,6 +305,12 @@ fn voxelInit(ctx: *sw.Context) !void {
 }
 
 fn voxelTick(ctx: *sw.Context) !void {
+    // Update world: load chunks progressively around active region anchors.
+    // The player is currently the only anchor.
+    try state.world.update(&[_]world_mod.RegionAnchor{
+        .{ .position = state.player.feet_pos },
+    });
+
     // TAS playback status + headless auto-shutdown when script completes
     if (state.tas_replayer) |*replayer| {
         if (ctx.tickId() % 60 == 0) {
@@ -463,7 +468,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             const space_held = input.keyDown(.Space);
             const sprint = input.keyDown(.Shift);
 
-            state.player.tick(&state.chunk, dt, state.camera.yaw, fwd, rgt, jump, space_held, sprint);
+            state.player.tick(state.world.asBlockGetter(), dt, state.camera.yaw, fwd, rgt, jump, space_held, sprint);
 
             // Sync camera position to player eye, offset by camera view.
             const eye = state.player.eyePos();
@@ -508,7 +513,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             const cam_dir = state.camera.forward();
             const eye_pos = state.player.eyePos();
             const ray_origin = Vec3.init(eye_pos[0], eye_pos[1], eye_pos[2]);
-            const hit = raycast(&state.chunk, ray_origin, cam_dir, 5.0);
+            const hit = worldRaycast(&state.world, ray_origin, cam_dir, 5.0);
 
             if (hit.hit) {
                 state.hover_block = hit.block_pos;
@@ -519,15 +524,26 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const bx: i32 = @intFromFloat(hit.block_pos.x);
                     const by: i32 = @intFromFloat(hit.block_pos.y);
                     const bz: i32 = @intFromFloat(hit.block_pos.z);
-                    state.chunk.setBlock(bx, by, bz, .air);
-                    const t_incr0 = std.time.nanoTimestamp();
-                    state.mesh.updateForBlockChange(&state.chunk, bx, by, bz, .{ state.camera.position.x, state.camera.position.y, state.camera.position.z }) catch |err| {
-                        std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
-                        state.mesh_dirty = true;
-                    };
-                    const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
-                    std.log.info("[TICK  tick={d:4}] incremental remove ({},{},{}) update={}us", .{ ctx.tickId(), bx, by, bz, t_incr_us });
-                    state.mesh_incremental_dirty = true;
+                    _ = state.world.setBlock(bx, by, bz, .air);
+                    if (state.world.getChunkAtBlock(bx, bz)) |lc| {
+                        const lcx = world_mod.chunkCoordOf(bx);
+                        const lcz = world_mod.chunkCoordOf(bz);
+                        const lbx = bx - lcx * chunk_mod.CHUNK_W;
+                        const lbz = bz - lcz * chunk_mod.CHUNK_W;
+                        const t_incr0 = std.time.nanoTimestamp();
+                        lc.mesh.updateForBlockChange(
+                            &lc.chunk, lbx, by, lbz,
+                            .{ state.camera.position.x, state.camera.position.y, state.camera.position.z },
+                            lc.worldX(), lc.worldZ(),
+                            state.world.asBlockGetter(),
+                        ) catch |err| {
+                            std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
+                            lc.mesh_dirty = true;
+                        };
+                        const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
+                        std.log.info("[TICK  tick={d:4}] incremental remove ({},{},{}) update={}us", .{ ctx.tickId(), bx, by, bz, t_incr_us });
+                        lc.mesh_incremental_dirty = true;
+                    }
                 }
 
                 // Right click: place block on adjacent face
@@ -540,15 +556,26 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const px: i32 = @intFromFloat(place_pos.x);
                     const py: i32 = @intFromFloat(place_pos.y);
                     const pz: i32 = @intFromFloat(place_pos.z);
-                    state.chunk.setBlock(px, py, pz, .stone);
-                    const t_incr0 = std.time.nanoTimestamp();
-                    state.mesh.updateForBlockChange(&state.chunk, px, py, pz, .{ state.camera.position.x, state.camera.position.y, state.camera.position.z }) catch |err| {
-                        std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
-                        state.mesh_dirty = true;
-                    };
-                    const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
-                    std.log.info("[TICK  tick={d:4}] incremental place ({},{},{}) update={}us", .{ ctx.tickId(), px, py, pz, t_incr_us });
-                    state.mesh_incremental_dirty = true;
+                    _ = state.world.setBlock(px, py, pz, .stone);
+                    if (state.world.getChunkAtBlock(px, pz)) |lc| {
+                        const lcx = world_mod.chunkCoordOf(px);
+                        const lcz = world_mod.chunkCoordOf(pz);
+                        const lpx = px - lcx * chunk_mod.CHUNK_W;
+                        const lpz = pz - lcz * chunk_mod.CHUNK_W;
+                        const t_incr0 = std.time.nanoTimestamp();
+                        lc.mesh.updateForBlockChange(
+                            &lc.chunk, lpx, py, lpz,
+                            .{ state.camera.position.x, state.camera.position.y, state.camera.position.z },
+                            lc.worldX(), lc.worldZ(),
+                            state.world.asBlockGetter(),
+                        ) catch |err| {
+                            std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
+                            lc.mesh_dirty = true;
+                        };
+                        const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
+                        std.log.info("[TICK  tick={d:4}] incremental place ({},{},{}) update={}us", .{ ctx.tickId(), px, py, pz, t_incr_us });
+                        lc.mesh_incremental_dirty = true;
+                    }
                 }
             } else {
                 if (!state.tas_step_mode or state.tas_step_executing) state.hover_block = null;
@@ -565,7 +592,10 @@ fn voxelTick(ctx: *sw.Context) !void {
     // GPU debug: decay highlight intensity each tick so rebuilt faces fade out over ~0.5s.
     // In TAS step mode, only decay on executing ticks (preserves highlights between steps).
     if (state.gpu_debug and (!state.tas_step_mode or state.tas_step_executing)) {
-        state.mesh.decayHighlights(4);
+        var it = state.world.chunks.valueIterator();
+        while (it.next()) |lc_ptr| {
+            lc_ptr.*.mesh.decayHighlights(4);
+        }
     }
 }
 
@@ -682,7 +712,8 @@ fn drawStepHud(
 
 /// Build chunk border wireframe: 12 edges of the bounding box, each as two
 /// perpendicular thin quads (cross shape) so they're visible from any angle.
-fn buildChunkBorderMesh(g: *gpu_mod.GPU) void {
+/// ox/oz are the world-space X/Z origin of the chunk to draw the border for.
+fn buildChunkBorderMesh(g: *gpu_mod.GPU, ox: f32, oz: f32) void {
     const W: f32 = @floatFromInt(chunk_mod.CHUNK_W);
     const H: f32 = @floatFromInt(chunk_mod.CHUNK_H);
     const t: f32 = 0.02; // half-thickness of each line
@@ -716,8 +747,8 @@ fn buildChunkBorderMesh(g: *gpu_mod.GPU) void {
     // Vertical edges (4 corners, each a cross of XZ-perpendicular quads)
     const corners = [_][2]f32{ .{ 0, 0 }, .{ W, 0 }, .{ 0, W }, .{ W, W } };
     for (corners) |c| {
-        const cx = c[0];
-        const cz = c[1];
+        const cx = ox + c[0];
+        const cz = oz + c[1];
         // Quad facing ±Z
         addQ(&verts, &idxs, &vi, &ii, .{ cx - t, 0, cz }, .{ cx - t, H, cz }, .{ cx + t, H, cz }, .{ cx + t, 0, cz }, bt, n_zero);
         // Quad facing ±X
@@ -726,31 +757,31 @@ fn buildChunkBorderMesh(g: *gpu_mod.GPU) void {
 
     // Horizontal edges along X (4: bottom + top, at Z=0 and Z=W)
     const y_levels = [_]f32{ 0, H };
-    const z_edges = [_]f32{ 0, W };
+    const z_edges = [_]f32{ oz, oz + W };
     for (y_levels) |y| {
         for (z_edges) |z| {
             // Quad facing ±Y
-            addQ(&verts, &idxs, &vi, &ii, .{ 0, y, z - t }, .{ W, y, z - t }, .{ W, y, z + t }, .{ 0, y, z + t }, bt, n_zero);
+            addQ(&verts, &idxs, &vi, &ii, .{ ox, y, z - t }, .{ ox + W, y, z - t }, .{ ox + W, y, z + t }, .{ ox, y, z + t }, bt, n_zero);
             // Quad facing ±Z
-            addQ(&verts, &idxs, &vi, &ii, .{ 0, y - t, z }, .{ W, y - t, z }, .{ W, y + t, z }, .{ 0, y + t, z }, bt, n_zero);
+            addQ(&verts, &idxs, &vi, &ii, .{ ox, y - t, z }, .{ ox + W, y - t, z }, .{ ox + W, y + t, z }, .{ ox, y + t, z }, bt, n_zero);
         }
     }
 
     // Horizontal edges along Z (4: bottom + top, at X=0 and X=W)
-    const x_edges = [_]f32{ 0, W };
+    const x_edges = [_]f32{ ox, ox + W };
     for (y_levels) |y| {
         for (x_edges) |x| {
             // Quad facing ±Y
-            addQ(&verts, &idxs, &vi, &ii, .{ x - t, y, 0 }, .{ x + t, y, 0 }, .{ x + t, y, W }, .{ x - t, y, W }, bt, n_zero);
+            addQ(&verts, &idxs, &vi, &ii, .{ x - t, y, oz }, .{ x + t, y, oz }, .{ x + t, y, oz + W }, .{ x - t, y, oz + W }, bt, n_zero);
             // Quad facing ±X
-            addQ(&verts, &idxs, &vi, &ii, .{ x, y - t, 0 }, .{ x, y + t, 0 }, .{ x, y + t, W }, .{ x, y - t, W }, bt, n_zero);
+            addQ(&verts, &idxs, &vi, &ii, .{ x, y - t, oz }, .{ x, y + t, oz }, .{ x, y + t, oz + W }, .{ x, y - t, oz + W }, bt, n_zero);
         }
     }
 
     state.border_vert_count = vi;
     state.border_idx_count = ii;
 
-    // Create or reuse GPU buffers (static — only built once)
+    // Create GPU buffers if needed; always re-upload since ox/oz can change frame to frame.
     if (state.border_vertex_buffer == null) {
         state.border_vertex_buffer = g.createBuffer(.{
             .size = verts.len * @sizeOf(VoxelVertex),
@@ -793,51 +824,59 @@ fn voxelRender(ctx: *sw.Context) !void {
         };
     }
 
-    // Regenerate mesh if chunk changed
-    const was_dirty = state.mesh_dirty;
-    var t_mesh_us: i128 = 0;
-    if (state.mesh_dirty) {
-        const t0 = std.time.nanoTimestamp();
-        mesher_mod.generateMesh(&state.chunk, &state.mesh) catch |err| {
-            std.log.err("Failed to generate mesh: {}", .{err});
-            return;
-        };
-        t_mesh_us = @divTrunc(std.time.nanoTimestamp() - t0, 1000);
-        state.mesh_dirty = false;
+    // Regenerate dirty meshes — limit to MESH_GENS_PER_FRAME to keep frame time bounded.
+    var mesh_gens_this_frame: usize = 0;
+    {
+        var it = state.world.chunks.iterator();
+        while (it.next()) |entry| {
+            if (mesh_gens_this_frame >= MESH_GENS_PER_FRAME) break;
+            const lc = entry.value_ptr.*;
+            if (!lc.mesh_dirty) continue;
+            const t0 = std.time.nanoTimestamp();
+            mesher_mod.generateMesh(
+                &lc.chunk,
+                &lc.mesh,
+                lc.worldX(),
+                lc.worldZ(),
+                state.world.asBlockGetter(),
+            ) catch |err| {
+                std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
+                continue;
+            };
+            const t_us = @divTrunc(std.time.nanoTimestamp() - t0, 1000);
+            std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
+            lc.mesh_dirty = false;
+            lc.mesh_incremental_dirty = true;
+            mesh_gens_this_frame += 1;
+        }
     }
 
-    // Sort mesh by depth every frame (painter's algorithm for correct rendering without depth testing)
-    var t_sort_us: i128 = 0;
-    var t_upload_us: i128 = 0;
-    if (state.mesh.vertices.items.len > 0) {
-        const t1 = std.time.nanoTimestamp();
-        state.mesh.sortByDepth(.{
-            state.camera.position.x,
-            state.camera.position.y,
-            state.camera.position.z,
-        }) catch |err| {
-            std.log.err("Failed to sort mesh: {}", .{err});
-            return;
-        };
-        t_sort_us = @divTrunc(std.time.nanoTimestamp() - t1, 1000);
+    // Sort and upload each chunk's mesh.
+    {
+        var it = state.world.chunks.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const lc = entry.value_ptr.*;
+            if (lc.mesh.vertices.items.len == 0) continue;
 
-        const t2 = std.time.nanoTimestamp();
-        uploadMeshToGPU(g, was_dirty) catch |err| {
-            std.log.err("Failed to upload mesh: {}", .{err});
-            return;
-        };
-        t_upload_us = @divTrunc(std.time.nanoTimestamp() - t2, 1000);
+            lc.mesh.sortByDepth(.{
+                state.camera.position.x,
+                state.camera.position.y,
+                state.camera.position.z,
+            }) catch |err| {
+                std.log.err("Sort failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
+                continue;
+            };
+
+            const gop = state.chunk_gpu.getOrPut(key) catch continue;
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.mesh_incremental_dirty) catch |err| {
+                std.log.err("Upload failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
+                continue;
+            };
+            if (lc.mesh_incremental_dirty) lc.mesh_incremental_dirty = false;
+        }
     }
-
-    // Per-frame timing log — always emit so we can compare normal vs spike frame
-    std.log.info("[RENDER tick={d:4}] dirty={} mesh={d:5}us sort={d:5}us upload={d:5}us  total={d:5}us", .{
-        ctx.tickId(),
-        was_dirty,
-        t_mesh_us,
-        t_sort_us,
-        t_upload_us,
-        t_mesh_us + t_sort_us + t_upload_us,
-    });
 
     // Update uniforms — front-facing view needs a flipped lookAt direction.
     const view_proj = if (state.camera_view == .third_person_front) blk: {
@@ -895,18 +934,38 @@ fn voxelRender(ctx: *sw.Context) !void {
         return;
     };
 
+    // Draw chunks back-to-front (painter's algorithm at chunk level).
+    // Build a temporary sorted list of chunks by distance from camera.
+    var sorted_chunks = std.ArrayList(*world_mod.LoadedChunk){};
+    defer sorted_chunks.deinit(ctx.allocator());
+    {
+        var it = state.world.chunks.valueIterator();
+        while (it.next()) |lc_ptr| {
+            if (lc_ptr.*.mesh.vertices.items.len == 0) continue;
+            sorted_chunks.append(ctx.allocator(), lc_ptr.*) catch continue;
+        }
+    }
+    const cam_pos = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
+    std.mem.sort(*world_mod.LoadedChunk, sorted_chunks.items, cam_pos, struct {
+        fn lt(cam: [3]f32, a: *world_mod.LoadedChunk, b: *world_mod.LoadedChunk) bool {
+            const half: f32 = @as(f32, @floatFromInt(chunk_mod.CHUNK_W)) * 0.5;
+            const ax = a.worldXf() + half - cam[0];
+            const az = a.worldZf() + half - cam[2];
+            const bx = b.worldXf() + half - cam[0];
+            const bz = b.worldZf() + half - cam[2];
+            return (ax * ax + az * az) > (bx * bx + bz * bz); // far-first
+        }
+    }.lt);
+
     pass.setPipeline(state.pipeline.?);
     pass.setBindGroup(0, state.bind_group.?);
-
-    if (state.mesh.vertices.items.len > 0) {
-        const vertex_count = state.mesh.vertices.items.len;
-        const index_count = state.mesh.indices.items.len;
-
-        pass.setVertexBuffer(0, state.vertex_buffer.?, 0, vertex_count * @sizeOf(VoxelVertex));
-        pass.setIndexBuffer(state.index_buffer.?, .uint32, 0, index_count * @sizeOf(u32));
-
-        const index_count_u32: u32 = @intCast(index_count);
-        pass.drawIndexed(index_count_u32, 1, 0, 0, 0);
+    for (sorted_chunks.items) |lc| {
+        const key = world_mod.ChunkKey{ .cx = lc.cx, .cz = lc.cz };
+        const cg = state.chunk_gpu.get(key) orelse continue;
+        if (cg.vertex_buffer == null or cg.index_buffer == null) continue;
+        pass.setVertexBuffer(0, cg.vertex_buffer.?, 0, lc.mesh.vertices.items.len * @sizeOf(VoxelVertex));
+        pass.setIndexBuffer(cg.index_buffer.?, .uint32, 0, lc.mesh.indices.items.len * @sizeOf(u32));
+        pass.drawIndexed(@intCast(lc.mesh.indices.items.len), 1, 0, 0, 0);
     }
 
     // =========================================================================
@@ -938,7 +997,12 @@ fn voxelRender(ctx: *sw.Context) !void {
     // Chunk border wireframe (debug mode only; uses cylinder pipeline for alpha + no culling)
     // =========================================================================
     if (state.debug_mode and state.cylinder_pipeline != null) {
-        buildChunkBorderMesh(g);
+        // Draw border for the chunk the player is currently in.
+        const pcx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
+        const pcz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
+        const border_ox: f32 = @as(f32, @floatFromInt(pcx)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
+        const border_oz: f32 = @as(f32, @floatFromInt(pcz)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
+        buildChunkBorderMesh(g, border_ox, border_oz);
         if (state.border_vertex_buffer != null and state.border_idx_count > 0) {
             pass.setPipeline(state.cylinder_pipeline.?);
             pass.setBindGroup(0, state.bind_group.?);
@@ -962,7 +1026,7 @@ fn voxelRender(ctx: *sw.Context) !void {
         const cam_bx: i32 = @intFromFloat(@floor(state.camera.position.x));
         const cam_by: i32 = @intFromFloat(@floor(state.camera.position.y));
         const cam_bz: i32 = @intFromFloat(@floor(state.camera.position.z));
-        if (state.chunk.getBlock(cam_bx, cam_by, cam_bz) != .air) {
+        if (state.world.getBlock(cam_bx, cam_by, cam_bz) != .air) {
             // Dark purple base
             state.overlay.rect(0, 0, overlay_w, overlay_h, .{ 0.08, 0.02, 0.12, 1 }, overlay_w, overlay_h) catch {};
 
@@ -1076,7 +1140,15 @@ fn voxelRender(ctx: *sw.Context) !void {
 }
 
 fn voxelShutdown(ctx: *sw.Context) !void {
-    state.mesh.deinit();
+    // Destroy per-chunk GPU buffers
+    var it = state.chunk_gpu.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.vertex_buffer) |buf| buf.destroy();
+        if (entry.value_ptr.index_buffer) |buf| buf.destroy();
+    }
+    state.chunk_gpu.deinit();
+    state.world.deinit();
+
     state.overlay.deinit();
     state.cylinder_verts.deinit(ctx.allocator());
     state.cylinder_indices.deinit(ctx.allocator());
@@ -1212,64 +1284,53 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     std.log.info("GPU resources created", .{});
 }
 
-fn uploadMeshToGPU(g: *gpu_mod.GPU, mesh_rebuilt: bool) !void {
-    const vertex_count = state.mesh.vertices.items.len;
-    const index_count = state.mesh.indices.items.len;
-    const sorted = state.mesh.sort_indices[0..index_count];
-    const structure_changed = mesh_rebuilt or state.mesh_incremental_dirty;
+fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, structure_changed: bool) !void {
+    const vertex_count = lc.mesh.vertices.items.len;
+    const index_count = lc.mesh.indices.items.len;
+    if (index_count == 0) return;
+    const sorted = lc.mesh.sort_indices[0..index_count];
 
-    if (structure_changed) {
-        // Vertex/index count changed — recreate GPU buffers.
-        if (state.vertex_buffer) |old_buf| old_buf.destroy();
-        state.vertex_buffer = try g.createBuffer(.{
+    if (structure_changed or cg.vertex_buffer == null) {
+        if (cg.vertex_buffer) |old| old.destroy();
+        cg.vertex_buffer = try g.createBuffer(.{
             .size = vertex_count * @sizeOf(VoxelVertex),
             .usage = .{ .vertex = true, .copy_dst = true },
         });
-
-        if (state.index_buffer) |old_buf| old_buf.destroy();
-        state.index_buffer = try g.createBuffer(.{
+        if (cg.index_buffer) |old| old.destroy();
+        cg.index_buffer = try g.createBuffer(.{
             .size = index_count * @sizeOf(u32),
             .usage = .{ .index = true, .copy_dst = true },
         });
-
-        state.mesh_incremental_dirty = false;
     }
 
-    // Write vertex data when structure changed, or every frame when gpu_debug
-    // (highlight values decay each tick, so block_type upper bits change).
     if (structure_changed or state.gpu_debug) {
         if (state.gpu_debug) {
-            // Temporarily encode highlight intensity into upper 8 bits of block_type.
             const quad_count = vertex_count / 4;
             for (0..quad_count) |qi| {
-                const hl = state.mesh.quad_highlight.items[qi];
+                const hl = lc.mesh.quad_highlight.items[qi];
                 if (hl > 0) {
                     const hl32 = @as(u32, hl) << 16;
                     const base = qi * 4;
                     for (base..base + 4) |vi| {
-                        state.mesh.vertices.items[vi].block_type |= hl32;
+                        lc.mesh.vertices.items[vi].block_type |= hl32;
                     }
                 }
             }
         }
-
-        g.writeBuffer(state.vertex_buffer.?, 0, std.mem.sliceAsBytes(state.mesh.vertices.items));
-
+        g.writeBuffer(cg.vertex_buffer.?, 0, std.mem.sliceAsBytes(lc.mesh.vertices.items));
         if (state.gpu_debug) {
-            // Restore block_type — remove highlight bits so mesh data stays clean.
             const quad_count = vertex_count / 4;
             for (0..quad_count) |qi| {
-                const hl = state.mesh.quad_highlight.items[qi];
+                const hl = lc.mesh.quad_highlight.items[qi];
                 if (hl > 0) {
                     const base = qi * 4;
                     for (base..base + 4) |vi| {
-                        state.mesh.vertices.items[vi].block_type &= 0xFFFF;
+                        lc.mesh.vertices.items[vi].block_type &= 0xFFFF;
                     }
                 }
             }
         }
     }
 
-    // Always write sorted indices — order changes every frame as camera moves.
-    g.writeBuffer(state.index_buffer.?, 0, std.mem.sliceAsBytes(sorted));
+    g.writeBuffer(cg.index_buffer.?, 0, std.mem.sliceAsBytes(sorted));
 }

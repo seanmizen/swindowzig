@@ -63,3 +63,14 @@ pub const Chunk = struct {
         }
     }
 };
+
+/// Type-erased block source. Allows player physics and raycasting to work with
+/// either a single Chunk (local coords) or a World (world coords).
+pub const BlockGetter = struct {
+    ctx: *const anyopaque,
+    getFn: *const fn (ctx: *const anyopaque, x: i32, y: i32, z: i32) BlockType,
+
+    pub fn getBlock(self: BlockGetter, x: i32, y: i32, z: i32) BlockType {
+        return self.getFn(self.ctx, x, y, z);
+    }
+};
