@@ -1,1 +1,5 @@
 .docs
+
+# compiled example binaries dropped in project root during dev
+test_sdl
+voxel
