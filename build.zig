@@ -98,9 +98,14 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_gpu", sw_gpu);
     native_exe.root_module.addImport("sw_core", sw_core);
 
-    // Link SDL2 for native builds
+    // Link SDL2 for native builds.
+    // sw_platform's @cImport needs the SDL2 headers to be visible.
+    // In Zig 0.15.x the include paths added to the exe are not automatically
+    // propagated to separately-compiled modules, so we add them explicitly here.
     native_exe.linkSystemLibrary("SDL2");
     native_exe.linkLibC();
+    // Ensure SDL2 headers are available to the sw_platform module's @cImport.
+    sw_platform.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
 
     // Link wgpu-native from ~/.local
     const home = std.process.getEnvVarOwned(b.allocator, "HOME") catch unreachable;

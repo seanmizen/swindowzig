@@ -2,6 +2,7 @@ const std = @import("std");
 const chunk_mod = @import("chunk.zig");
 const Chunk = chunk_mod.Chunk;
 const BlockType = chunk_mod.BlockType;
+const BlockGetter = chunk_mod.BlockGetter;
 const CHUNK_W = chunk_mod.CHUNK_W;
 const CHUNK_H = chunk_mod.CHUNK_H;
 
@@ -199,6 +200,9 @@ pub const Mesh = struct {
         by: i32,
         bz: i32,
         camera_pos: [3]f32,
+        world_ox: i32,
+        world_oz: i32,
+        getter: BlockGetter,
     ) !void {
         const offsets = [7][3]i32{
             .{ 0, 0, 0 },
@@ -283,13 +287,15 @@ pub const Mesh = struct {
             const pos = unpackBlockIdx(ab);
             const block = chunk.getBlock(pos.x, pos.y, pos.z);
             if (block == .air) continue;
+            const wpx = world_ox + pos.x;
+            const wpz = world_oz + pos.z;
             for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
-                if (shouldRenderFace(chunk, pos.x, pos.y, pos.z, face)) {
+                if (shouldRenderFace(chunk, getter, pos.x, pos.y, pos.z, world_ox, world_oz, face)) {
                     try addQuad(
                         self,
-                        @floatFromInt(pos.x),
+                        @floatFromInt(wpx),
                         @floatFromInt(pos.y),
-                        @floatFromInt(pos.z),
+                        @floatFromInt(wpz),
                         face,
                         block,
                         ab,
@@ -387,13 +393,20 @@ const face_offsets = [_][3]i32{
     .{ 0, 0, -1 }, // -Z
 };
 
-/// Check if a face should be rendered (neighbor is air or out of bounds)
-fn shouldRenderFace(chunk: *const Chunk, x: i32, y: i32, z: i32, face: Face) bool {
+/// Fast face-render check. For neighbours within this chunk's bounds (~92% of cases),
+/// uses direct array access. Only falls back to the world getter for out-of-bounds
+/// neighbours (chunk boundaries), enabling correct cross-chunk face culling.
+fn shouldRenderFace(chunk: *const Chunk, getter: BlockGetter, lx: i32, ly: i32, lz: i32, world_ox: i32, world_oz: i32, face: Face) bool {
     const offset = face_offsets[@intFromEnum(face)];
-    const nx = x + offset[0];
-    const ny = y + offset[1];
-    const nz = z + offset[2];
-    return chunk.getBlock(nx, ny, nz) == .air;
+    const nx = lx + offset[0];
+    const ny = ly + offset[1];
+    const nz = lz + offset[2];
+    // Fast path: neighbour is within this chunk (direct array access, no HashMap)
+    if (nx >= 0 and nx < CHUNK_W and ny >= 0 and ny < CHUNK_H and nz >= 0 and nz < CHUNK_W) {
+        return chunk.blocks[@intCast(nx)][@intCast(ny)][@intCast(nz)] == .air;
+    }
+    // Slow path: neighbour in adjacent chunk — world HashMap lookup
+    return getter.getBlock(world_ox + nx, ny, world_oz + nz) == .air;
 }
 
 /// Add a quad face to the mesh, recording its owning block via block_idx.
@@ -480,7 +493,9 @@ fn addQuad(
 }
 
 /// Full mesh generation from scratch. Use updateForBlockChange for incremental updates.
-pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh) !void {
+/// world_ox/world_oz are the world-space block origin of this chunk.
+/// getter is used for cross-chunk face culling at chunk boundaries.
+pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i32, getter: BlockGetter) !void {
     mesh.clear();
 
     var x: i32 = 0;
@@ -492,14 +507,16 @@ pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh) !void {
                 const block = chunk.getBlock(x, y, z);
                 if (block == .air) continue;
 
+                const block_wx = world_ox + x;
+                const block_wz = world_oz + z;
                 const block_idx = packBlockIdx(x, y, z);
                 for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
-                    if (shouldRenderFace(chunk, x, y, z, face)) {
+                    if (shouldRenderFace(chunk, getter, x, y, z, world_ox, world_oz, face)) {
                         try addQuad(
                             mesh,
-                            @floatFromInt(x),
+                            @floatFromInt(block_wx),
                             @floatFromInt(y),
-                            @floatFromInt(z),
+                            @floatFromInt(block_wz),
                             face,
                             block,
                             block_idx,
