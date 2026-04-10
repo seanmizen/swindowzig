@@ -711,43 +711,182 @@ fn voxelTick(ctx: *sw.Context) !void {
     }
 }
 
-// ─── Step-mode HUD ───────────────────────────────────────────────────────────
-// 5×7 bitmap font for digits 0–9. Each digit is 7 rows of 5 bits (MSB = left).
-const DIGIT_W: f32 = 5;
-const DIGIT_H: f32 = 7;
-const DIGIT_SCALE: f32 = 3; // each "pixel" is 3×3 screen pixels
-const DIGIT_STEP: f32 = (DIGIT_W + 1) * DIGIT_SCALE; // advance per character
+// ─── Bitmap font + text rendering ────────────────────────────────────────────
+// 5×7 pixel bitmap font covering ASCII 0x20 (space) to 0x5A (Z).
+// Each glyph is 7 rows of 5 bits; MSB is the leftmost column.
+// Lowercase a–z are automatically promoted to uppercase in drawChar.
+// Entries for unused punctuation are all-zero (invisible placeholder).
 
-const digit_bitmaps = [10][7]u5{
-    .{ 0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110 }, // 0
-    .{ 0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 }, // 1
-    .{ 0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111 }, // 2
-    .{ 0b11111, 0b00010, 0b00100, 0b00110, 0b00001, 0b10001, 0b01110 }, // 3
-    .{ 0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010 }, // 4
-    .{ 0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110 }, // 5
-    .{ 0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110 }, // 6
-    .{ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000 }, // 7
-    .{ 0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110 }, // 8
-    .{ 0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110 }, // 9
+const GLYPH_W: f32 = 5; // glyph width  in bitmap pixels
+const GLYPH_H: f32 = 7; // glyph height in bitmap pixels
+const GLYPH_GAP: f32 = 1; // horizontal gap between characters
+
+// Scale used by the legacy step-mode HUD (kept for drawStepHud compatibility).
+const DIGIT_SCALE: f32 = 3;
+const DIGIT_STEP: f32 = (GLYPH_W + GLYPH_GAP) * DIGIT_SCALE;
+
+const CHAR_FIRST: u8 = 0x20; // ' '
+const CHAR_LAST: u8 = 0x5A; //  'Z'
+
+// 59 entries: 0x20 … 0x5A
+const char_bitmaps = [59][7]u5{
+    // 0x20 ' '
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    // 0x21 '!'
+    .{ 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100 },
+    // 0x22–0x27  (unused punctuation — invisible)
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    // 0x28 '('
+    .{ 0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010 },
+    // 0x29 ')'
+    .{ 0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000 },
+    // 0x2A '*'  (unused)
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    // 0x2B '+'
+    .{ 0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000 },
+    // 0x2C ','
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b00100, 0b01000 },
+    // 0x2D '-'
+    .{ 0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000 },
+    // 0x2E '.'
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100 },
+    // 0x2F '/'
+    .{ 0b00001, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b10000 },
+    // 0x30 '0'
+    .{ 0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110 },
+    // 0x31 '1'
+    .{ 0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 },
+    // 0x32 '2'
+    .{ 0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111 },
+    // 0x33 '3'
+    .{ 0b11111, 0b00010, 0b00100, 0b00110, 0b00001, 0b10001, 0b01110 },
+    // 0x34 '4'
+    .{ 0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010 },
+    // 0x35 '5'
+    .{ 0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110 },
+    // 0x36 '6'
+    .{ 0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110 },
+    // 0x37 '7'
+    .{ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000 },
+    // 0x38 '8'
+    .{ 0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110 },
+    // 0x39 '9'
+    .{ 0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110 },
+    // 0x3A ':'
+    .{ 0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000 },
+    // 0x3B ';'  (unused)
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    // 0x3C '<'  (unused)
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    // 0x3D '='
+    .{ 0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000 },
+    // 0x3E '>'  (unused)
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    // 0x3F '?'
+    .{ 0b01110, 0b10001, 0b00001, 0b00110, 0b00100, 0b00000, 0b00100 },
+    // 0x40 '@'  (unused)
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+    // 0x41 'A'
+    .{ 0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001 },
+    // 0x42 'B'
+    .{ 0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110 },
+    // 0x43 'C'
+    .{ 0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110 },
+    // 0x44 'D'
+    .{ 0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110 },
+    // 0x45 'E'
+    .{ 0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111 },
+    // 0x46 'F'
+    .{ 0b11111, 0b10000, 0b10000, 0b11100, 0b10000, 0b10000, 0b10000 },
+    // 0x47 'G'
+    .{ 0b01110, 0b10001, 0b10000, 0b10011, 0b10001, 0b10001, 0b01111 },
+    // 0x48 'H'
+    .{ 0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001 },
+    // 0x49 'I'
+    .{ 0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 },
+    // 0x4A 'J'
+    .{ 0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100 },
+    // 0x4B 'K'
+    .{ 0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001 },
+    // 0x4C 'L'
+    .{ 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111 },
+    // 0x4D 'M'
+    .{ 0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001 },
+    // 0x4E 'N'
+    .{ 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001 },
+    // 0x4F 'O'
+    .{ 0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110 },
+    // 0x50 'P'
+    .{ 0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000 },
+    // 0x51 'Q'
+    .{ 0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101 },
+    // 0x52 'R'
+    .{ 0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001 },
+    // 0x53 'S'
+    .{ 0b01110, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b01110 },
+    // 0x54 'T'
+    .{ 0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100 },
+    // 0x55 'U'
+    .{ 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110 },
+    // 0x56 'V'
+    .{ 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100 },
+    // 0x57 'W'
+    .{ 0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001 },
+    // 0x58 'X'
+    .{ 0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001 },
+    // 0x59 'Y'
+    .{ 0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100 },
+    // 0x5A 'Z'
+    .{ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111 },
 };
 
-fn drawDigit(overlay: *OverlayRenderer, digit: u8, x: f32, y: f32, col: [4]f32, ow: f32, oh: f32) !void {
-    if (digit > 9) return;
-    const bm = digit_bitmaps[digit];
+/// Draw one character from the bitmap font at pixel position (x, y).
+/// `scale` is the size in screen pixels of each bitmap pixel.
+/// Lowercase a–z are automatically mapped to their uppercase equivalents.
+/// Characters outside 0x20–0x5A are silently skipped (rendered blank).
+fn drawChar(overlay: *OverlayRenderer, c: u8, x: f32, y: f32, col: [4]f32, scale: f32, ow: f32, oh: f32) !void {
+    const ch = if (c >= 'a' and c <= 'z') c - 0x20 else c;
+    if (ch < CHAR_FIRST or ch > CHAR_LAST) return;
+    const bm = char_bitmaps[ch - CHAR_FIRST];
     for (bm, 0..) |row, ry| {
         for (0..5) |cx| {
             const bit: u3 = @intCast(4 - cx);
             if ((row >> bit) & 1 == 1) {
-                const px = x + @as(f32, @floatFromInt(cx)) * DIGIT_SCALE;
-                const py = y + @as(f32, @floatFromInt(ry)) * DIGIT_SCALE;
-                try overlay.rect(px, py, DIGIT_SCALE, DIGIT_SCALE, col, ow, oh);
+                const px = x + @as(f32, @floatFromInt(cx)) * scale;
+                const py = y + @as(f32, @floatFromInt(ry)) * scale;
+                try overlay.rect(px, py, scale, scale, col, ow, oh);
             }
         }
     }
 }
 
+/// Draw a string at pixel position (x, y).
+/// Each character cell advances `(GLYPH_W + GLYPH_GAP) * scale` pixels.
+fn drawText(overlay: *OverlayRenderer, text: []const u8, x: f32, y: f32, col: [4]f32, scale: f32, ow: f32, oh: f32) !void {
+    const advance = (GLYPH_W + GLYPH_GAP) * scale;
+    for (text, 0..) |c, i| {
+        try drawChar(overlay, c, x + @as(f32, @floatFromInt(i)) * advance, y, col, scale, ow, oh);
+    }
+}
+
+/// Draw a string horizontally centred on the screen at pixel row y.
+fn drawCenteredText(overlay: *OverlayRenderer, text: []const u8, y: f32, col: [4]f32, scale: f32, ow: f32, oh: f32) !void {
+    const text_w = @as(f32, @floatFromInt(text.len)) * (GLYPH_W + GLYPH_GAP) * scale;
+    try drawText(overlay, text, (ow - text_w) / 2.0, y, col, scale, ow, oh);
+}
+
+// Legacy wrappers used by the step-mode HUD — draw at DIGIT_SCALE (3×).
+fn drawDigit(overlay: *OverlayRenderer, digit: u8, x: f32, y: f32, col: [4]f32, ow: f32, oh: f32) !void {
+    if (digit > 9) return;
+    try drawChar(overlay, '0' + digit, x, y, col, DIGIT_SCALE, ow, oh);
+}
+
 fn drawNumber(overlay: *OverlayRenderer, n: u64, x: f32, y: f32, col: [4]f32, ow: f32, oh: f32) !void {
-    // Write digits right-to-left into a small fixed buffer, then draw L-to-R.
     var buf: [20]u8 = undefined;
     var len: usize = 0;
     var val = n;
@@ -760,7 +899,6 @@ fn drawNumber(overlay: *OverlayRenderer, n: u64, x: f32, y: f32, col: [4]f32, ow
             len += 1;
             val /= 10;
         }
-        // Reverse
         var lo: usize = 0;
         var hi: usize = len - 1;
         while (lo < hi) {
@@ -787,7 +925,7 @@ fn drawStepHud(
     oh: f32,
 ) !void {
     const pad: f32 = 8;
-    const bar_h: f32 = DIGIT_H * DIGIT_SCALE + pad * 2;
+    const bar_h: f32 = GLYPH_H * DIGIT_SCALE + pad * 2;
     const bar_w: f32 = 260;
     const bx = (ow - bar_w) / 2.0;
     const by: f32 = 6;
@@ -802,7 +940,7 @@ fn drawStepHud(
         .{ 0.25, 0.92, 0.35, 1.0 }
     else
         .{ 0.95, 0.72, 0.10, 1.0 };
-    try overlay.rect(bx + pad, by + pad, 16, DIGIT_H * DIGIT_SCALE, pill_col, ow, oh);
+    try overlay.rect(bx + pad, by + pad, 16, GLYPH_H * DIGIT_SCALE, pill_col, ow, oh);
 
     // "TICK" label — four small squares in a row, colour matches state
     const lbl_x = bx + pad + 16 + 6;
@@ -1207,22 +1345,103 @@ fn voxelRender(ctx: *sw.Context) !void {
         else
             [4]f32{ 0.42, 0.25, 0.25, 1.0 };
         state.overlay.rect(btn_x, quit_y, RESUME_BTN_W, RESUME_BTN_H, quit_fill, overlay_w, overlay_h) catch {};
+
+        // Button text labels — scale 2, centred on each button
+        const btn_text_scale: f32 = 2.0;
+        const btn_text_h = GLYPH_H * btn_text_scale;
+        const white = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+
+        const resume_label = "RESUME GAME";
+        const resume_label_w = @as(f32, @floatFromInt(resume_label.len)) * (GLYPH_W + GLYPH_GAP) * btn_text_scale;
+        const resume_text_x = btn_x + (RESUME_BTN_W - resume_label_w) / 2.0;
+        const resume_text_y = resume_y + (RESUME_BTN_H - btn_text_h) / 2.0;
+        drawText(&state.overlay, resume_label, resume_text_x, resume_text_y, white, btn_text_scale, overlay_w, overlay_h) catch {};
+
+        const quit_label = "EXIT GAME";
+        const quit_label_w = @as(f32, @floatFromInt(quit_label.len)) * (GLYPH_W + GLYPH_GAP) * btn_text_scale;
+        const quit_text_x = btn_x + (RESUME_BTN_W - quit_label_w) / 2.0;
+        const quit_text_y = quit_y + (RESUME_BTN_H - btn_text_h) / 2.0;
+        drawText(&state.overlay, quit_label, quit_text_x, quit_text_y, white, btn_text_scale, overlay_w, overlay_h) catch {};
     }
 
-    // Debug overlay: sidebar with placeholder colored bars
+    // Debug overlay: sidebar with live game state values
     if (state.game_state.isLayerActive(.debug_overlay)) {
-        const bar_w: f32 = 180;
-        state.overlay.rect(0, 0, bar_w, overlay_h, .{ 0.0, 0.0, 0.0, 0.5 }, overlay_w, overlay_h) catch {};
-        // Placeholder colored bars (future: FPS, pos, chunk info text lines)
-        const colors = [_][4]f32{
-            .{ 0.2, 0.8, 0.2, 1.0 },
-            .{ 0.8, 0.8, 0.2, 1.0 },
-            .{ 0.2, 0.5, 0.9, 1.0 },
-            .{ 0.9, 0.4, 0.2, 1.0 },
-        };
-        for (colors, 0..) |col, idx| {
-            const bar_y = 8.0 + @as(f32, @floatFromInt(idx)) * 20.0;
-            state.overlay.rect(8, bar_y, 100, 14, col, overlay_w, overlay_h) catch {};
+        const dbg_scale: f32 = 2.0;
+        const dbg_line_h: f32 = (GLYPH_H + 2) * dbg_scale; // 18 px per line
+        const dbg_margin_x: f32 = 10;
+        const dbg_margin_y: f32 = 10;
+        const dbg_bar_w: f32 = 210;
+        const dbg_col = [4]f32{ 0.9, 0.9, 0.9, 1.0 };
+
+        state.overlay.rect(0, 0, dbg_bar_w, overlay_h, .{ 0.0, 0.0, 0.0, 0.55 }, overlay_w, overlay_h) catch {};
+
+        var dbg_buf: [64]u8 = undefined;
+        var line_y: f32 = dbg_margin_y;
+
+        // Player position (eye height = feet + 1.6)
+        {
+            const s = std.fmt.bufPrint(&dbg_buf, "X: {d:.1}", .{state.player.feet_pos[0]}) catch "X: ?";
+            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+        {
+            const s = std.fmt.bufPrint(&dbg_buf, "Y: {d:.1}", .{state.player.feet_pos[1] + 1.6}) catch "Y: ?";
+            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+        {
+            const s = std.fmt.bufPrint(&dbg_buf, "Z: {d:.1}", .{state.player.feet_pos[2]}) catch "Z: ?";
+            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+
+        // Chunk coordinates
+        {
+            const pcx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
+            const pcz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
+            const s = std.fmt.bufPrint(&dbg_buf, "CHUNK: {},{}", .{ pcx, pcz }) catch "CHUNK: ?";
+            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+
+        // Tick count
+        {
+            const s = std.fmt.bufPrint(&dbg_buf, "TICK: {}", .{ctx.tickId()}) catch "TICK: ?";
+            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+
+        // Facing direction (yaw and pitch in integer degrees)
+        {
+            const yaw_deg = @as(i32, @intFromFloat(std.math.round(state.camera.yaw * (180.0 / std.math.pi))));
+            const s = std.fmt.bufPrint(&dbg_buf, "YAW: {}", .{yaw_deg}) catch "YAW: ?";
+            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+        {
+            const pitch_deg = @as(i32, @intFromFloat(std.math.round(state.camera.pitch * (180.0 / std.math.pi))));
+            const s = std.fmt.bufPrint(&dbg_buf, "PITCH: {}", .{pitch_deg}) catch "PITCH: ?";
+            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+
+        // Target block (from raycast hover)
+        {
+            const target_str: []const u8 = if (state.hover_block) |hb| blk: {
+                const bx: i32 = @intFromFloat(@floor(hb.x));
+                const by: i32 = @intFromFloat(@floor(hb.y));
+                const bz: i32 = @intFromFloat(@floor(hb.z));
+                const bt = state.world.getBlock(bx, by, bz);
+                break :blk switch (bt) {
+                    .air => "TARGET: AIR",
+                    .grass => "TARGET: GRASS",
+                    .dirt => "TARGET: DIRT",
+                    .stone => "TARGET: STONE",
+                    .bedrock => "TARGET: BEDROCK",
+                    .debug_marker => "TARGET: DEBUG",
+                };
+            } else "TARGET: NONE";
+            drawText(&state.overlay, target_str, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
         }
     }
 

@@ -9,6 +9,7 @@ const UIVertex = struct {
 pub const OverlayRenderer = struct {
     pipeline: ?gpu.RenderPipeline,
     vertex_buffer: ?gpu.Buffer,
+    buffer_byte_capacity: usize,
     vertices: std.ArrayList(UIVertex),
     allocator: std.mem.Allocator,
 
@@ -16,6 +17,7 @@ pub const OverlayRenderer = struct {
         return .{
             .pipeline = null,
             .vertex_buffer = null,
+            .buffer_byte_capacity = 0,
             .vertices = std.ArrayList(UIVertex){},
             .allocator = allocator,
         };
@@ -23,6 +25,7 @@ pub const OverlayRenderer = struct {
 
     pub fn deinit(self: *OverlayRenderer) void {
         self.vertices.deinit(self.allocator);
+        if (self.vertex_buffer) |buf| buf.destroy();
     }
 
     pub fn ensurePipeline(self: *OverlayRenderer, g: *gpu.GPU) !void {
@@ -86,12 +89,6 @@ pub const OverlayRenderer = struct {
                 .cull_mode = .none,
             },
         });
-
-        // Pre-allocate vertex buffer for 256 quads = 1536 verts
-        self.vertex_buffer = try g.createBuffer(.{
-            .size = @sizeOf(UIVertex) * 1536,
-            .usage = .{ .vertex = true, .copy_dst = true },
-        });
     }
 
     pub fn begin(self: *OverlayRenderer) void {
@@ -116,11 +113,28 @@ pub const OverlayRenderer = struct {
     }
 
     /// Upload vertices and draw all rects in the current frame.
+    /// GPU buffer is grown automatically when vertex data exceeds current capacity.
     pub fn draw(self: *OverlayRenderer, g: *gpu.GPU, pass: gpu.RenderPassEncoder) void {
         if (self.vertices.items.len == 0) return;
-        if (self.pipeline == null or self.vertex_buffer == null) return;
+        if (self.pipeline == null) return;
 
         const bytes = std.mem.sliceAsBytes(self.vertices.items);
+
+        // Grow GPU buffer if the current frame's vertex data exceeds capacity.
+        if (bytes.len > self.buffer_byte_capacity) {
+            if (self.vertex_buffer) |buf| buf.destroy();
+            const new_cap = bytes.len * 2; // 2× headroom to amortise future growth
+            self.vertex_buffer = g.createBuffer(.{
+                .size = new_cap,
+                .usage = .{ .vertex = true, .copy_dst = true },
+            }) catch {
+                self.vertex_buffer = null;
+                self.buffer_byte_capacity = 0;
+                return;
+            };
+            self.buffer_byte_capacity = new_cap;
+        }
+
         g.writeBuffer(self.vertex_buffer.?, 0, bytes);
 
         pass.setPipeline(self.pipeline.?);
