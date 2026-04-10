@@ -280,11 +280,13 @@ fn resolveZ(getter: BlockGetter, pos: [3]f32, new_z: f32) f32 {
 // Cylinder mesh generation
 // ---------------------------------------------------------------------------
 
-/// Write the player's hitbox cylinder into scratch ArrayList buffers.
+/// Write a cylinder into scratch ArrayList buffers, centred on `feet`.
 /// Uses clearRetainingCapacity so after the first frame there are no allocations.
-/// block_type=100 maps to a distinct cyan color in the shader.
+/// `block_type` controls the shader colour:
+///   100 = cyan (player hitbox), 102 = bright red (spawn marker).
 pub fn buildCylinderMesh(
     feet: [3]f32,
+    block_type: u32,
     allocator: std.mem.Allocator,
     verts: *std.ArrayList(VoxelVertex),
     idx: *std.ArrayList(u32),
@@ -298,7 +300,7 @@ pub fn buildCylinderMesh(
     const cz = feet[2];
     const cy_bot = feet[1];
     const cy_top = feet[1] + PLAYER_HEIGHT;
-    const bt: u32 = 100; // player hitbox block type → cyan in shader
+    const bt: u32 = block_type;
     const tau = 2.0 * std.math.pi;
 
     // Side panels: N quads

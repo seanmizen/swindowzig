@@ -53,6 +53,9 @@ fn getBlockColor(block_type: u32) -> vec3<f32> {
         case 101u: { // Chunk border wireframe
             return vec3<f32>(0.9, 0.9, 1.0);
         }
+        case 102u: { // Spawn point marker
+            return vec3<f32>(1.0, 0.1, 0.1);
+        }
         default: {
             return vec3<f32>(1.0, 0.0, 1.0); // Magenta = error
         }
@@ -84,7 +87,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     }
 
     out.color = base_color;
-    out.alpha = select(1.0, 0.2, block_type == 100u || block_type == 101u);
+    out.alpha = select(1.0, 0.2, block_type == 100u || block_type == 101u || block_type == 102u);
     out.uv = in.uv;
     return out;
 }

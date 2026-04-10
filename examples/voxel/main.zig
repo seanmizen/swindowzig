@@ -171,6 +171,10 @@ const State = struct {
     tas_replayer: ?core.Replayer = null,
     headless: bool = false,
     camera_view: CameraView = .first_person,
+    spawn_point: [3]f32 = .{ 24.0, 64.0, 20.0 },
+    /// True once the spawn chunk has loaded and the player has been placed at
+    /// the resolved (terrain-safe) position for the current spawn_point.
+    spawn_resolved: bool = false,
     debug_mode: bool = false,
     tas_step_mode: bool = false,
     /// Set by Right arrow — preTick will inject the next TAS event group on the next sim tick.
@@ -226,6 +230,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Cylinder scratch buffers (ArrayList new-API: no allocator at init time)
     state.cylinder_verts = std.ArrayList(VoxelVertex){};
     state.cylinder_indices = std.ArrayList(u32){};
+    state.spawn_point = .{ 24.0, 64.0, 20.0 };
+    state.spawn_resolved = false;
     state.camera_view = .first_person;
     state.debug_mode = false;
     state.tas_step_mode = false;
@@ -344,12 +350,45 @@ fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, c
     }
 }
 
+/// Scan upward from spawn[Y] to find the first 1×2 (width×height) air column.
+/// Returns a feet position that puts the player clear of any terrain.
+/// Must only be called once the chunk at (spawn[0], spawn[2]) is loaded;
+/// unloaded chunks look like air and would give a bogus result.
+fn resolveSpawnPos(world: *const world_mod.World, spawn: [3]f32) [3]f32 {
+    const bx: i32 = @intFromFloat(@floor(spawn[0]));
+    const bz: i32 = @intFromFloat(@floor(spawn[2]));
+    // Start at the block the spawn point sits in (minimum y=1 to avoid bedrock floor).
+    const start_y: i32 = @max(1, @as(i32, @intFromFloat(@floor(spawn[1]))));
+    var y: i32 = start_y;
+    while (y < 254) : (y += 1) {
+        if (world.getBlock(bx, y, bz) == .air and
+            world.getBlock(bx, y + 1, bz) == .air)
+        {
+            return .{ spawn[0], @as(f32, @floatFromInt(y)), spawn[2] };
+        }
+    }
+    return spawn; // already above terrain (or chunk not generating normally)
+}
+
 fn voxelTick(ctx: *sw.Context) !void {
     // Update world: load chunks progressively around active region anchors.
     // The player is currently the only anchor.
     try state.world.update(&[_]world_mod.RegionAnchor{
         .{ .position = state.player.feet_pos },
     });
+
+    // Once the spawn chunk loads, snap the player to a terrain-safe position.
+    if (!state.spawn_resolved) {
+        const bx: i32 = @intFromFloat(@floor(state.spawn_point[0]));
+        const bz: i32 = @intFromFloat(@floor(state.spawn_point[2]));
+        if (state.world.getChunkAtBlock(bx, bz) != null) {
+            state.player.feet_pos = resolveSpawnPos(&state.world, state.spawn_point);
+            state.spawn_resolved = true;
+            std.log.info("Spawned at ({d:.1}, {d:.1}, {d:.1})", .{
+                state.player.feet_pos[0], state.player.feet_pos[1], state.player.feet_pos[2],
+            });
+        }
+    }
 
     // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
     {
@@ -438,6 +477,14 @@ fn voxelTick(ctx: *sw.Context) !void {
     if (input.keyPressed(.G) and (input.mods.super or input.mods.ctrl)) {
         state.gpu_debug = !state.gpu_debug;
         std.log.info("GPU debug: {}", .{state.gpu_debug});
+    }
+
+    // Cmd+S (macOS) / Ctrl+S (Windows/Linux) — set spawn point to current position
+    if (input.keyPressed(.S) and (input.mods.super or input.mods.ctrl)) {
+        state.spawn_point = state.player.feet_pos;
+        std.log.info("Spawn point set to ({d:.1}, {d:.1}, {d:.1})", .{
+            state.spawn_point[0], state.spawn_point[1], state.spawn_point[2],
+        });
     }
 
     // TAS step mode: Right arrow = queue next step (executed in preTick next tick).
@@ -1019,11 +1066,40 @@ fn voxelRender(ctx: *sw.Context) !void {
     if (state.debug_mode and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
         player_mod.buildCylinderMesh(
             state.player.feet_pos,
+            100, // cyan
             ctx.allocator(),
             &state.cylinder_verts,
             &state.cylinder_indices,
         ) catch |err| {
             std.log.err("Failed to build cylinder mesh: {}", .{err});
+        };
+
+        if (state.cylinder_verts.items.len > 0) {
+            g.writeBuffer(state.cylinder_vertex_buffer.?, 0, std.mem.sliceAsBytes(state.cylinder_verts.items));
+            g.writeBuffer(state.cylinder_index_buffer.?, 0, std.mem.sliceAsBytes(state.cylinder_indices.items));
+
+            pass.setPipeline(state.cylinder_pipeline.?);
+            pass.setBindGroup(0, state.bind_group.?);
+            pass.setVertexBuffer(0, state.cylinder_vertex_buffer.?, 0, state.cylinder_verts.items.len * @sizeOf(VoxelVertex));
+            pass.setIndexBuffer(state.cylinder_index_buffer.?, .uint32, 0, state.cylinder_indices.items.len * @sizeOf(u32));
+            pass.drawIndexed(@intCast(state.cylinder_indices.items.len), 1, 0, 0, 0);
+        }
+    }
+
+    // =========================================================================
+    // Spawn point debug marker (debug mode; red translucent cylinder)
+    // Reuses the same scratch buffers and GPU buffers as the player hitbox —
+    // they're drawn sequentially so there's no overlap.
+    // =========================================================================
+    if (state.debug_mode and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
+        player_mod.buildCylinderMesh(
+            state.spawn_point,
+            102, // bright red
+            ctx.allocator(),
+            &state.cylinder_verts,
+            &state.cylinder_indices,
+        ) catch |err| {
+            std.log.err("Failed to build spawn marker mesh: {}", .{err});
         };
 
         if (state.cylinder_verts.items.len > 0) {
