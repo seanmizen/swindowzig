@@ -299,7 +299,7 @@ on flat walls). Multiplicative composition is the only correct option here.
 
 ## 5. What ships in phase 1 vs later phases
 
-**Phase 1 (this PR / branch `voxel/skylight-phase-1`):**
+**Phase 1 (branch `voxel/skylight-phase-1`):**
 - `Chunk.skylight` storage
 - `Chunk.computeSkylight` (column seed + BFS), called from `generateTerrain`
 - `mesher.computeFaceSkylight` and `VoxelVertex.skylight`
@@ -307,15 +307,33 @@ on flat walls). Multiplicative composition is the only correct option here.
 - `--lighting=` CLI flag and settings-menu entry
 - Cave dump-frame regression test
 - Cross-chunk seams left as visible artifact
+- **No relight on dig** — digging exposed the bug immediately: the new
+  air cell retained its as-solid `skylight = 0`, and the floor of the
+  pit read that 0 via the mesher's outward-slab sample and rendered at
+  the `0.05` floor. This was fixed in the next patch, see below.
+
+**Phase 1.1 (branch `voxel/skylight-fixes`, dig relight):**
+- `World.setBlock` now calls `Chunk.computeSkylight()` and marks the chunk
+  `mesh_dirty = true` after any block mutation. The next tick rebuilds the
+  whole chunk mesh, picking up fresh per-vertex skylight values everywhere.
+- Cost: ~30–65 ms per dig (dominated by the chunk-wide BFS), plus the
+  usual ~30 ms full chunk re-mesh. Invisible against the macOS trackpad's
+  80–120 ms tap-to-click latency, and acceptable versus the correctness
+  payoff. A bounded local BFS would be cheaper but is easy to get wrong;
+  revisit if dig latency becomes user-visible.
+- Regression: `examples/voxel/tests/dig_relight.tas`. Diff vs. a local
+  branch that disables the relight call shows ~22% of frame pixels change
+  (the pit interior) with mean Δ ~25/255, max Δ ~52/255; buggy interior
+  is ~(2,2,1), fixed interior is a (15..38)-ish gradient that matches the
+  expected skylight fall-off as the camera looks into the shaft.
 
 **Phase 2 (next session, do not attempt now):**
 - Cross-chunk skylight seam fixing — re-BFS into adjacent chunks when a new
-  chunk loads, mirror of the existing `mesh_dirty` wiring.
-- Per-block skylight invalidation on `setBlock` so digging out a tunnel
-  actually relights it. (Phase 1 only relights on full chunk regen, which
-  doesn't happen on dig — hilltop dig changes nothing, tunnel dig leaves
-  the new tunnel dark.) This should reuse the heightmap optimisation
-  Minecraft uses: cache topmost solid Y per column.
+  chunk loads, mirror of the existing `mesh_dirty` wiring. Digs right at a
+  chunk edge still won't push light into the neighbouring chunk.
+- Heightmap-cached incremental relight — cache topmost solid Y per column
+  and only re-BFS the affected neighbourhood on dig, instead of full
+  chunk recompute. Needed once dig latency becomes user-visible.
 
 **Phase 3 (future):**
 - Block light: torches/lava/glowstone with their own BFS channel.

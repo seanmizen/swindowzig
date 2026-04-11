@@ -258,6 +258,28 @@ pub const World = struct {
     }
 
     /// Set a block at world-space coordinates. Returns false if the chunk is unloaded.
+    ///
+    /// After the mutation, recompute the owning chunk's skylight grid from
+    /// scratch and mark the chunk `mesh_dirty` so it is fully re-meshed on the
+    /// next tick. Without this step, digging a hole leaves the air cell with
+    /// its previous-as-solid `skylight = 0`, and the per-vertex skylight
+    /// sampling in the mesher reads that stale 0 — rendering the exposed
+    /// floor of the pit nearly black even under direct sunlight. This
+    /// replaces the phase-1 "no relight on dig" limitation documented in
+    /// `docs/lighting.md`.
+    ///
+    /// The full-chunk `computeSkylight()` call costs on the order of 30–65 ms
+    /// per mutation. We accept that cost here in exchange for guaranteed
+    /// correctness — a bounded local BFS would be cheaper but is easy to get
+    /// wrong, and click-to-dig is already bottlenecked by the macOS trackpad
+    /// latency (80–120 ms) so the extra cost is invisible in practice.
+    ///
+    /// Cross-chunk skylight seams are still out of scope (phase-1 limitation):
+    /// a dig right at a chunk edge will update the owning chunk's grid but
+    /// will not propagate light into the neighbouring chunk. The mesher's
+    /// `skylightSample` falls back to the neighbour chunk's own grid via
+    /// `BlockGetter.getSkylight`, so the neighbour renders with its existing
+    /// (stale from its own last computeSkylight) values.
     pub fn setBlock(self: *World, wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) bool {
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
@@ -265,6 +287,8 @@ pub const World = struct {
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
         lc_ptr.*.chunk.setBlock(lx, wy, lz, block);
+        lc_ptr.*.chunk.computeSkylight();
+        lc_ptr.*.mesh_dirty = true;
         return true;
     }
 

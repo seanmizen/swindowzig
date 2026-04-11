@@ -161,7 +161,7 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 | `--msaa=N` | MSAA sample count. Accepted: `none`/`0` (no AA), `1`, `2`, `4` (default), `8`. The `bgra8unorm` surface format supports [1, 2, 4] on native and [1, 4] on WebGPU; values outside that range are clamped (e.g. `--msaa=8` → 4×). |
 | `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (default — per-vertex Mojang face-plane AO), `moore` (extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
-| `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation; caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. See `examples/voxel/docs/lighting.md` for the algorithm and the phase-1 known limitations (no cross-chunk seam fixing, no relight on dig). |
+| `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation; caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block triggers a full-chunk `computeSkylight()` + mesh regen (safe fallback for dig relight; bounded local BFS is still a future optimisation). See `examples/voxel/docs/lighting.md` for the algorithm and the phase-1 known limitations (no cross-chunk seam fixing). |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish (so MSAA comparison runs capture the same deterministic state). |
 
 ---
@@ -211,6 +211,13 @@ TAS scripts for regression live under `examples/voxel/`:
   affected pixels are exactly the cave interior; sky region unchanged).
   Hilly → 97.5% pixels differ, mean Δ 19.78/255, max Δ 105/255 (almost
   every face shifts because hilly terrain has overhangs everywhere).
+- `tests/dig_relight.tas` — flatland small pit (4 dig clicks from a
+  steep pitch-clamped look-down), used to verify `World.setBlock` now
+  recomputes chunk skylight on dig. Diff vs. a local branch that
+  disables the relight call: ~22% pixels differ, mean Δ ~25/255, max
+  Δ ~52/255 — the affected pixels are exactly the pit interior, which
+  goes from RGB ~(2,2,1) to a ~(15..38) gradient matching the skylight
+  fall-off as the camera looks into the shaft.
 
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
 block at the top documenting the purpose, usage, and baseline numbers.
