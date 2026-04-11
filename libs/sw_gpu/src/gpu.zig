@@ -115,6 +115,13 @@ pub const GPU = struct {
     msaa_color_texture: ?Texture = null,
     msaa_color_view: ?TextureView = null,
 
+    // FXAA state — populated by configureFXAA(); null if FXAA is off
+    fxaa_color_texture: ?Texture = null,
+    fxaa_color_view: ?TextureView = null,
+    fxaa_sampler: ?Sampler = null,
+    fxaa_bind_group: ?BindGroup = null,
+    fxaa_pipeline: ?RenderPipeline = null,
+
     // Current-frame surface texture (native only) — set by getCurrentTextureView,
     // consumed by captureFrame, cleared by present().
     current_surface_texture: if (!is_wasm) ?native.WGPUTexture else void =
@@ -156,7 +163,11 @@ pub const GPU = struct {
                     break :blk @as(u32, 2);
                 }
             },
-            .fxaa, .smaa, .ssaa, .taa => blk: {
+            .fxaa => blk: {
+                // FXAA is a post-process pass set up via configureFXAA() — no MSAA texture needed.
+                break :blk 1;
+            },
+            .smaa, .ssaa, .taa => blk: {
                 std.log.warn("sw_gpu: AA method '{s}' not yet implemented — no anti-aliasing applied", .{@tagName(config.method)});
                 break :blk 1;
             },
@@ -198,6 +209,141 @@ pub const GPU = struct {
     /// Returns the active MSAA sample count (1 means no MSAA).
     pub fn getSampleCount(self: *const GPU) u32 {
         return self.msaa_sample_count;
+    }
+
+    /// Set up FXAA resources.  Call after init() and before creating render pipelines.
+    ///
+    /// Creates an offscreen colour texture matching the swapchain size (bgra8unorm,
+    /// render_attachment + texture_binding), a linear sampler, a bind group, and the
+    /// FXAA fullscreen-triangle render pipeline.
+    ///
+    /// The main render pass should target `fxaa_color_view` instead of the swapchain
+    /// view.  After the main pass, call `runFXAAPass` to blit the FXAA result to the
+    /// swapchain.  Calling `configureFXAA` again destroys the previous resources.
+    pub fn configureFXAA(self: *GPU, width: u32, height: u32) !void {
+        if (!self.isReady()) return error.GPUNotReady;
+
+        // Destroy existing FXAA resources (safe to call even if null)
+        if (self.fxaa_color_texture) |tex| tex.destroy();
+        self.fxaa_color_texture = null;
+        self.fxaa_color_view = null;
+        // sampler / bind_group / pipeline: no destroy() in the current wrapper;
+        // they are cleaned up by the GPU driver on shutdown or re-creation.
+        // This follows the same pattern as bind groups in setupGPUResources.
+
+        // Offscreen colour texture — same format as the swapchain, but with
+        // texture_binding so FXAA can sample it in a subsequent pass.
+        const tex_w = if (comptime !is_wasm) self.width else width;
+        const tex_h = if (comptime !is_wasm) self.height else height;
+
+        const fxaa_tex = try self.createTexture(.{
+            .label = "fxaa_color",
+            .size = .{ .width = tex_w, .height = tex_h, .depth_or_array_layers = 1 },
+            .format = .bgra8unorm,
+            .usage = .{ .render_attachment = true, .texture_binding = true },
+        });
+        self.fxaa_color_texture = fxaa_tex;
+        self.fxaa_color_view = try fxaa_tex.createView(.{});
+
+        // Linear sampler (bilinear filtering for smooth blending at edges)
+        const fxaa_sampler = try self.createSampler(.{
+            .label = "fxaa_sampler",
+            .mag_filter = .linear,
+            .min_filter = .linear,
+            .mipmap_filter = .nearest,
+            .address_mode_u = .clamp_to_edge,
+            .address_mode_v = .clamp_to_edge,
+        });
+        self.fxaa_sampler = fxaa_sampler;
+
+        // Bind group layout: texture_2d<f32> at binding 0, sampler at binding 1
+        var bg_layout = try self.createBindGroupLayout(.{
+            .label = "fxaa_bgl",
+            .entries = &[_]types.BindGroupLayoutEntry{
+                .{
+                    .binding = 0,
+                    .visibility = .{ .fragment = true },
+                    .texture = .{ .sample_type = .float, .view_dimension = .@"2d" },
+                },
+                .{
+                    .binding = 1,
+                    .visibility = .{ .fragment = true },
+                    .sampler = .{ .type = .filtering },
+                },
+            },
+        });
+
+        // Bind group: wire up the FXAA colour view and sampler
+        self.fxaa_bind_group = try self.createBindGroup(.{
+            .layout = &bg_layout,
+            .entries = &[_]BindGroupEntry{
+                .{ .binding = 0, .texture_view = &self.fxaa_color_view.? },
+                .{ .binding = 1, .sampler = &self.fxaa_sampler.? },
+            },
+        });
+
+        // Pipeline layout
+        var pipe_layout = try self.createPipelineLayout(.{
+            .bind_group_layouts = &[_]*BindGroupLayout{&bg_layout},
+        });
+
+        // FXAA shader module
+        const fxaa_wgsl = @embedFile("fxaa.wgsl");
+        var fxaa_shader = try self.createShaderModule(.{
+            .label = "fxaa_shader",
+            .code = fxaa_wgsl,
+        });
+
+        // Render pipeline: no vertex buffers, one colour target (swapchain format)
+        self.fxaa_pipeline = try self.createRenderPipeline(.{
+            .layout = &pipe_layout,
+            .vertex = .{
+                .module = &fxaa_shader,
+                .entry_point = "vs_main",
+                .buffers = &[_]types.VertexBufferLayout{},
+            },
+            .fragment = .{
+                .module = &fxaa_shader,
+                .entry_point = "fs_main",
+                .targets = &[_]types.ColorTargetState{.{
+                    .format = .bgra8unorm,
+                }},
+            },
+            .primitive = .{
+                .topology = .triangle_list,
+                .front_face = .ccw,
+                .cull_mode = .none,
+            },
+            .multisample = .{ .count = 1 },
+        });
+
+        std.log.info("sw_gpu: configureFXAA → {}×{} bgra8unorm offscreen target", .{ tex_w, tex_h });
+    }
+
+    /// Record an FXAA post-process pass into `encoder`.
+    ///
+    /// Reads from `self.fxaa_color_view` (populated by a preceding render pass) and
+    /// writes to `swap_view` (the current swapchain texture view).  The pass clears
+    /// the swapchain before writing, so `swap_view` must not have been used yet this
+    /// frame.  Call this after the main render pass ends but before `encoder.finish`.
+    pub fn runFXAAPass(self: *GPU, encoder: CommandEncoder, swap_view: *TextureView) !void {
+        const pipeline  = self.fxaa_pipeline  orelse return error.FXAANotConfigured;
+        const bind_group = self.fxaa_bind_group orelse return error.FXAANotConfigured;
+
+        const pass = try encoder.beginRenderPass(.{
+            .label = "fxaa_pass",
+            .color_attachments = &[_]RenderPassColorAttachment{.{
+                .view       = swap_view,
+                .load_op    = .clear,
+                .store_op   = .store,
+                .clear_value = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+            }},
+        });
+
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bind_group);
+        pass.draw(3, 1, 0, 0);   // fullscreen triangle — no vertex buffer
+        pass.end();
     }
 
     /// Returns the swapchain/surface width in pixels (matches wgpu texture dimensions).
@@ -828,7 +974,17 @@ pub const GPU = struct {
                         .sint => .sint,
                         .uint => .uint,
                     };
-                    native_entries[i].texture.view_dimension = @enumFromInt(@intFromEnum(tex.view_dimension));
+                    // Explicit mapping: types.TextureViewDimension starts at 0 (no 'undefined'),
+                    // but WGPUTextureViewDimension has undefined=0, 1d=1, 2d=2, etc.
+                    // Raw @intFromEnum would map .@"2d"→1 (WGPUTextureViewDimension.1d) — wrong.
+                    native_entries[i].texture.view_dimension = switch (tex.view_dimension) {
+                        .@"1d"       => .@"1d",
+                        .@"2d"       => .@"2d",
+                        .@"2d-array" => .@"2d_array",
+                        .cube        => .cube,
+                        .cube_array  => .cube_array,
+                        .@"3d"       => .@"3d",
+                    };
                     native_entries[i].texture.multisampled = if (tex.multisampled) @as(u32, 1) else 0;
                 }
                 if (entry.storage_texture) |st| {
@@ -838,7 +994,14 @@ pub const GPU = struct {
                         .read_write => .read_write,
                     };
                     native_entries[i].storage_texture.format = @enumFromInt(@intFromEnum(st.format));
-                    native_entries[i].storage_texture.view_dimension = @enumFromInt(@intFromEnum(st.view_dimension));
+                    native_entries[i].storage_texture.view_dimension = switch (st.view_dimension) {
+                        .@"1d"       => .@"1d",
+                        .@"2d"       => .@"2d",
+                        .@"2d-array" => .@"2d_array",
+                        .cube        => .cube,
+                        .cube_array  => .cube_array,
+                        .@"3d"       => .@"3d",
+                    };
                 }
             }
 

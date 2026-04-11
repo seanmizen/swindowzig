@@ -148,8 +148,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.6;
     let brightness = ambient + diffuse;
 
-    // Ambient occlusion: map 0..1 → 0.4..1.0 so dark corners stay visible
-    let ao_brightness = 0.4 + in.ao * 0.6;
+    // Ambient occlusion: map 0..1 → 0.55..1.0 (raised floor reduces harsh MSAA blends)
+    let ao_brightness = 0.55 + in.ao * 0.45;
 
     // GPU debug: mix in orange tint for freshly rebuilt quads
     let base = in.color * brightness * texel_brightness * ao_brightness;

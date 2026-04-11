@@ -324,8 +324,24 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.process.exit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--aa=")) {
+            const val = arg["--aa=".len..];
+            if (std.mem.eql(u8, val, "none")) {
+                state.msaa_config = .{ .method = .none, .msaa_samples = 1 };
+            } else if (std.mem.eql(u8, val, "msaa")) {
+                // Keep the sample count from --msaa=N if set earlier, default 4×.
+                if (state.msaa_config.method != .msaa) {
+                    state.msaa_config = .{ .method = .msaa, .msaa_samples = 4 };
+                }
+            } else if (std.mem.eql(u8, val, "fxaa")) {
+                state.msaa_config = .{ .method = .fxaa, .msaa_samples = 1 };
+            } else {
+                std.log.err("--aa: invalid value '{s}'. Accepted: none, msaa, fxaa", .{val});
+                std.process.exit(1);
+            }
+        }
     }
-    std.log.info("MSAA config (post-parse): method={s} requested_samples={}", .{
+    std.log.info("AA config (post-parse): method={s} requested_samples={}", .{
         @tagName(state.msaa_config.method), state.msaa_config.msaa_samples,
     });
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
@@ -934,14 +950,18 @@ fn renderLoadingScreen(ctx: *sw.Context, g: *gpu_mod.GPU, overlay_w: f32, overla
     var swap_view = try g.getCurrentTextureView();
     defer swap_view.release();
 
-    // Match the main render path's MSAA setup so the loading screen looks identical
-    // whether MSAA is on or off.
-    const use_msaa = g.msaa_color_view != null;
+    // Match the main render path's AA setup so the loading screen is consistent.
+    const use_fxaa = g.fxaa_color_view != null;
+    const use_msaa = !use_fxaa and g.msaa_color_view != null;
+    var fxaa_cv: gpu_mod.TextureView = undefined;
+    if (use_fxaa) fxaa_cv = g.fxaa_color_view.?;
     var msaa_cv: gpu_mod.TextureView = undefined;
     if (use_msaa) msaa_cv = g.msaa_color_view.?;
-    const color_view: *gpu_mod.TextureView = if (use_msaa) &msaa_cv else &swap_view;
+    const color_view: *gpu_mod.TextureView =
+        if (use_fxaa) &fxaa_cv else if (use_msaa) &msaa_cv else &swap_view;
     const resolve_target: ?*gpu_mod.TextureView = if (use_msaa) &swap_view else null;
-    const color_store: gpu_mod.StoreOp = if (use_msaa) .discard else .store;
+    const color_store: gpu_mod.StoreOp =
+        if (use_fxaa) .store else if (use_msaa) .discard else .store;
 
     const pass = try encoder.beginRenderPass(.{
         .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
@@ -992,6 +1012,12 @@ fn renderLoadingScreen(ctx: *sw.Context, g: *gpu_mod.GPU, overlay_w: f32, overla
 
     state.overlay.draw(g, pass);
     pass.end();
+
+    if (use_fxaa) {
+        g.runFXAAPass(encoder, &swap_view) catch |err| {
+            std.log.err("FXAA pass (loading screen) failed: {}", .{err});
+        };
+    }
 
     const cmd = try encoder.finish();
     g.submit(&[_]gpu_mod.CommandBuffer{cmd});
@@ -1106,14 +1132,21 @@ fn voxelRender(ctx: *sw.Context) !void {
     };
     defer swap_view.release();
 
-    // MSAA: render into the multisampled target and resolve to the swapchain texture.
-    // When MSAA is off (sample_count == 1) the swapchain view is used directly.
-    const use_msaa = g.msaa_color_view != null;
+    // AA render target selection:
+    //   FXAA — render to offscreen texture; a second pass blits FXAA to swapchain.
+    //   MSAA — render to multisampled target and resolve directly to swapchain.
+    //   none — render directly to swapchain.
+    const use_fxaa = g.fxaa_color_view != null;
+    const use_msaa = !use_fxaa and g.msaa_color_view != null;
+    var fxaa_cv: gpu_mod.TextureView = undefined;
+    if (use_fxaa) fxaa_cv = g.fxaa_color_view.?;
     var msaa_cv: gpu_mod.TextureView = undefined;
     if (use_msaa) msaa_cv = g.msaa_color_view.?;
-    const color_view: *gpu_mod.TextureView = if (use_msaa) &msaa_cv else &swap_view;
+    const color_view: *gpu_mod.TextureView =
+        if (use_fxaa) &fxaa_cv else if (use_msaa) &msaa_cv else &swap_view;
     const resolve_target: ?*gpu_mod.TextureView = if (use_msaa) &swap_view else null;
-    const color_store: gpu_mod.StoreOp = if (use_msaa) .discard else .store;
+    const color_store: gpu_mod.StoreOp =
+        if (use_fxaa) .store else if (use_msaa) .discard else .store;
 
     const pass = encoder.beginRenderPass(.{
         .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
@@ -1441,6 +1474,13 @@ fn voxelRender(ctx: *sw.Context) !void {
 
     pass.end();
 
+    // FXAA post-process pass: blit the offscreen scene texture to the swapchain.
+    if (use_fxaa) {
+        g.runFXAAPass(encoder, &swap_view) catch |err| {
+            std.log.err("FXAA pass failed: {}", .{err});
+        };
+    }
+
     const cmd = encoder.finish() catch |err| {
         std.log.err("Failed to finish encoder: {}", .{err});
         return;
@@ -1531,8 +1571,11 @@ fn voxelShutdown(ctx: *sw.Context) !void {
 }
 
 fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
-    // Configure MSAA from CLI --msaa flag (default: 4× MSAA)
+    // Configure AA from CLI --msaa / --aa flags (default: 4× MSAA)
     try g.configureMSAA(state.msaa_config, width, height);
+    if (state.msaa_config.method == .fxaa) {
+        try g.configureFXAA(width, height);
+    }
     const sample_count = g.getSampleCount();
 
     // Load shader

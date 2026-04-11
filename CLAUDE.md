@@ -70,6 +70,14 @@ desc.field = value;
 `uint16=1`, `uint32=2`. The `setIndexBuffer` wrapper now uses an explicit switch
 to map correctly. Do not use raw `@intFromEnum` for this conversion.
 
+### TextureViewDimension enum mismatch (fixed in gpu.zig — createBindGroupLayout)
+`types.TextureViewDimension` starts at 0 (`@"1d"=0, @"2d"=1`), but native
+`WGPUTextureViewDimension` has `undefined=0, 1d=1, 2d=2`. Raw `@intFromEnum`
+would map `.@"2d"→1` which is `WGPUTextureViewDimension.1d` — wrong, crashes
+with "Texture binding N expects dimension = D1, but given a view with dimension = D2".
+`createBindGroupLayout` now uses explicit switch maps for both `.texture.view_dimension`
+and `.storage_texture.view_dimension`. Do not use raw `@intFromEnum` for these.
+
 ### Hardware depth testing (macOS/Metal)
 `wgpuDeviceCreateRenderPipeline` crashes (bus error at 0x29) when depth stencil
 is enabled — wgpu-native v0.19.4.1 bug on Metal. **Workaround: painter's
@@ -145,6 +153,7 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 | `--headless` | No window, no GPU. Ticks unlimited speed. Exits when TAS finishes. |
 | `--tas-step` | Frame-by-frame TAS stepping. Right arrow = advance one TAS tick. Implies `--gpu-debug`. |
 | `--gpu-debug` | Highlight freshly rebuilt mesh faces (orange tint, fades ~0.5s). Also toggled with Cmd+G / Ctrl+G at runtime. |
+| `--aa=<mode>` | Anti-aliasing method. Accepted: `none`, `msaa` (default, 4× MSAA), `fxaa` (FXAA 3.11 post-process). `--aa=fxaa` renders the scene to an offscreen bgra8unorm texture then runs a fullscreen FXAA pass to the swapchain. Can be combined with `--msaa=N` to control the MSAA sample count when `--aa=msaa` is active. |
 | `--msaa=N` | MSAA sample count. Accepted: `none`/`0` (no AA), `1`, `2`, `4` (default), `8`. The `bgra8unorm` surface format supports [1, 2, 4] on native and [1, 4] on WebGPU; values outside that range are clamped (e.g. `--msaa=8` → 4×). |
 | `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish (so MSAA comparison runs capture the same deterministic state). |
@@ -264,6 +273,32 @@ MSAA and FXAA can coexist: render to an MSAA texture (for geometry silhouette
 quality), resolve to an intermediate texture, then FXAA over that. For most
 voxel scenes the FXAA-only route gives a bigger visible win per GPU cost.
 
+### FXAA Implementation Notes (2026-04-11)
+
+**Architecture:** `--aa=fxaa` activates a two-pass pipeline. The voxel scene renders
+to an offscreen `bgra8unorm` texture (`fxaa_color_texture`, usage `render_attachment |
+texture_binding`). After `pass.end()`, `runFXAAPass` blits that texture to the swapchain
+via a fullscreen triangle (3 vertices from `@builtin(vertex_index)`, no vertex buffer).
+The FXAA shader is embedded via `@embedFile("fxaa.wgsl")` in `sw_gpu/src/gpu.zig`.
+
+**Pixel-diff results (flatland scene, 1280×720, same camera/TAS state):**
+
+| Comparison | Differing pixels | % of frame | Max channel Δ | Channels Δ≥5 |
+|------------|-----------------|------------|---------------|--------------|
+| none → fxaa | 110,990 / 921,600 | **12.04%** | 95 | 44,283 |
+| none → msaa4 | 31,544 / 921,600 | **3.42%** | 67 | 13,530 |
+
+FXAA touches **3.5× more pixels** than 4× MSAA in a typical voxel scene. In the
+terrain region alone (rows 250–450, cols 100–500) FXAA covered 7.3% vs MSAA's 1.1% —
+**6.6× more coverage** where it matters most.
+
+**Visual verdict:** Block-on-block tile transitions are visibly softer under FXAA;
+the horizon silhouette is cleanly smoothed; no ghosting artefacts; no interior texture
+blur (the procedural texel noise is meant to look coarse, so slight softening is
+acceptable). The crosshair (thin 2px white lines) is also anti-aliased — expected for
+a luminance-based method. FXAA is the recommended choice for voxel scenes where
+block-on-block interior edges dominate over geometry silhouettes.
+
 ---
 
 ## Voxel Demo — GPU Debug System
@@ -358,5 +393,6 @@ Chunk dimensions: **CHUNK_W = 48** (X/Z), **CHUNK_H = 256** (Y).
 | `game_state.zig` | Pure-state struct (no GPU deps); shared across files |
 | `keyboard_hud.zig` | On-screen keyboard layout diagram |
 | `voxel.wgsl` | Voxel vertex+fragment shader; GPU debug highlight decode |
+| `libs/sw_gpu/src/fxaa.wgsl` | FXAA 3.11 post-process shader; fullscreen triangle VS + luminance-based edge search FS |
 | `framespike.tas` | TAS script used by the mandatory headless regression test |
 | `tests/msaa_flatland.tas` | MSAA regression test — flatland, block-remove, camera pan |
