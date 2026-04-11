@@ -110,9 +110,70 @@ pub const GPU = struct {
     width: if (!is_wasm) u32 else void = if (!is_wasm) 0 else {},
     height: if (!is_wasm) u32 else void = if (!is_wasm) 0 else {},
 
+    // MSAA state — populated by configureMSAA(); null if MSAA is off (sample_count == 1)
+    msaa_sample_count: u32 = 1,
+    msaa_color_texture: ?Texture = null,
+    msaa_color_view: ?TextureView = null,
+
     /// Check if GPU is ready for use
     pub fn isReady(self: *const GPU) bool {
         return self.state == .ready;
+    }
+
+    /// Configure anti-aliasing.  Call after init() and before creating render pipelines.
+    ///
+    /// Only MSAA is currently implemented.  For FXAA/SMAA/SSAA/TAA the method logs a
+    /// warning and leaves MSAA disabled (sample count stays at 1).
+    ///
+    /// WebGPU requires all implementations to support sample counts 1 and 4; any other
+    /// value is rounded up to 4.  Calling configureMSAA again replaces the existing
+    /// MSAA texture (the old one is destroyed).
+    ///
+    /// `fallback_width`/`fallback_height` are used only on WASM (native reads the
+    /// surface size from the GPU struct, which always matches the swapchain).
+    pub fn configureMSAA(self: *GPU, config: types.AntiAliasingConfig, fallback_width: u32, fallback_height: u32) !void {
+        if (!self.isReady()) return error.GPUNotReady;
+
+        const sample_count: u32 = switch (config.method) {
+            .none => 1,
+            .msaa => blk: {
+                // WebGPU mandates 1 and 4; round anything in between up to 4.
+                if (config.msaa_samples <= 1) break :blk 1;
+                break :blk 4;
+            },
+            .fxaa, .smaa, .ssaa, .taa => blk: {
+                std.log.warn("sw_gpu: AA method '{s}' not yet implemented — no anti-aliasing applied", .{@tagName(config.method)});
+                break :blk 1;
+            },
+        };
+
+        // Destroy any existing MSAA texture
+        if (self.msaa_color_texture) |tex| tex.destroy();
+        self.msaa_color_texture = null;
+        self.msaa_color_view = null;
+        self.msaa_sample_count = sample_count;
+
+        if (sample_count <= 1) return;
+
+        // Use the surface dimensions recorded at GPU.init() time — these are guaranteed
+        // to match the swapchain texture size.  On WASM we fall back to caller-supplied values.
+        const tex_w = if (comptime !is_wasm) self.width else fallback_width;
+        const tex_h = if (comptime !is_wasm) self.height else fallback_height;
+
+        // Create the multisampled color render target (same format as the swapchain)
+        const msaa_tex = try self.createTexture(.{
+            .size = .{ .width = tex_w, .height = tex_h, .depth_or_array_layers = 1 },
+            .format = .bgra8unorm,
+            .sample_count = sample_count,
+            .usage = .{ .render_attachment = true },
+        });
+        self.msaa_color_texture = msaa_tex;
+        self.msaa_color_view = try msaa_tex.createView(.{});
+    }
+
+    /// Returns the active MSAA sample count (1 means no MSAA).
+    pub fn getSampleCount(self: *const GPU) u32 {
+        return self.msaa_sample_count;
     }
 
     /// Initialize WebGPU (call once at startup)

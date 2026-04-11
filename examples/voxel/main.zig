@@ -1139,17 +1139,27 @@ fn voxelRender(ctx: *sw.Context) !void {
         return;
     };
 
-    var view = g.getCurrentTextureView() catch |err| {
+    var swap_view = g.getCurrentTextureView() catch |err| {
         std.log.err("Failed to get texture view: {}", .{err});
         return;
     };
-    defer view.release();
+    defer swap_view.release();
+
+    // MSAA: render into the multisampled target and resolve to the swapchain texture.
+    // When MSAA is off (sample_count == 1) the swapchain view is used directly.
+    const use_msaa = g.msaa_color_view != null;
+    var msaa_cv: gpu_mod.TextureView = undefined;
+    if (use_msaa) msaa_cv = g.msaa_color_view.?;
+    const color_view: *gpu_mod.TextureView = if (use_msaa) &msaa_cv else &swap_view;
+    const resolve_target: ?*gpu_mod.TextureView = if (use_msaa) &swap_view else null;
+    const color_store: gpu_mod.StoreOp = if (use_msaa) .discard else .store;
 
     const pass = encoder.beginRenderPass(.{
         .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
-            .view = &view,
+            .view = color_view,
+            .resolve_target = resolve_target,
             .load_op = .clear,
-            .store_op = .store,
+            .store_op = color_store,
             .clear_value = .{ .r = 0.5, .g = 0.7, .b = 1.0, .a = 1.0 }, // Sky blue
         }},
         // WORKAROUND: Depth attachment disabled (see depth_stencil comment in pipeline creation)
@@ -1274,7 +1284,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     // =========================================================================
     // Overlay rendering (2D UI on top of 3D world)
     // =========================================================================
-    state.overlay.ensurePipeline(g) catch |err| {
+    state.overlay.ensurePipeline(g, g.getSampleCount()) catch |err| {
         std.log.err("Failed to ensure overlay pipeline: {}", .{err});
     };
 
@@ -1501,6 +1511,10 @@ fn voxelShutdown(ctx: *sw.Context) !void {
 }
 
 fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
+    // Enable 4× MSAA for smoother geometry edges
+    try g.configureMSAA(.{ .method = .msaa, .msaa_samples = 4 }, width, height);
+    const sample_count = g.getSampleCount();
+
     // Load shader
     const shader_code = @embedFile("voxel.wgsl");
     std.log.info("Loading shader: {} bytes", .{shader_code.len});
@@ -1580,6 +1594,7 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             .front_face = .ccw,
             .cull_mode = .back,
         },
+        .multisample = .{ .count = sample_count },
         // WORKAROUND: Hardware depth testing crashes on Metal (wgpu-native v0.19.4.1 bug)
         // Using software depth sorting (painter's algorithm) instead - see sortByDepth()
     });
@@ -1609,6 +1624,7 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             .front_face = .ccw,
             .cull_mode = .none,
         },
+        .multisample = .{ .count = sample_count },
     });
 
     // Pre-allocate fixed-size cylinder GPU buffers (size never changes)

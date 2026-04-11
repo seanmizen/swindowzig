@@ -482,6 +482,30 @@ pub const MultisampleState = struct {
     alpha_to_coverage_enabled: bool = false,
 };
 
+/// Which anti-aliasing technique to use.
+/// Currently only `msaa` is implemented. All other variants are accepted
+/// by the config struct but fall back to no-AA (with a log warning).
+pub const AAMethod = enum { none, msaa, fxaa, smaa, ssaa, taa };
+
+/// Anti-aliasing configuration for the engine renderer.
+///
+/// Implemented:
+///   - `none` — no anti-aliasing (default)
+///   - `msaa` — hardware multi-sample AA; WebGPU mandates support for 1 and 4 samples
+///
+/// Planned / not yet implemented (accepted but fall back to no-AA):
+///   - `fxaa`, `smaa` — post-process AA (need fullscreen shader pass)
+///   - `ssaa`         — supersample AA (uses `ssaa_scale`; needs scaled render target)
+///   - `taa`          — temporal AA (needs motion vectors / history buffer)
+pub const AntiAliasingConfig = struct {
+    method: AAMethod = .none,
+    /// Sample count for MSAA. Must be 1 or 4 (WebGPU guarantee).
+    /// Values other than 1 and 4 are clamped: 2 → 4, >4 → 4.
+    msaa_samples: u32 = 1,
+    /// Render scale for SSAA (e.g. 2.0 = 4× pixels). Currently unused.
+    ssaa_scale: f32 = 1.0,
+};
+
 // NOTE: RenderPipelineDescriptor, ComputePipelineDescriptor, ComputeState,
 // RenderPassColorAttachment, RenderPassDepthStencilAttachment, and
 // RenderPassDescriptor are defined in gpu.zig to reference concrete handle types

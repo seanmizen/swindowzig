@@ -28,7 +28,7 @@ pub const OverlayRenderer = struct {
         if (self.vertex_buffer) |buf| buf.destroy();
     }
 
-    pub fn ensurePipeline(self: *OverlayRenderer, g: *gpu.GPU) !void {
+    pub fn ensurePipeline(self: *OverlayRenderer, g: *gpu.GPU, sample_count: u32) !void {
         if (self.pipeline != null) return;
 
         const shader_code =
@@ -88,6 +88,7 @@ pub const OverlayRenderer = struct {
                 .topology = .triangle_list,
                 .cull_mode = .none,
             },
+            .multisample = .{ .count = sample_count },
         });
     }
 
