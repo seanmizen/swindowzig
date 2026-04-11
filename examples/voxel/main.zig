@@ -576,6 +576,21 @@ const State = struct {
     /// executed with world_loading == false. Used to report "first-paint
     /// time" in the investigation doc.
     first_paint_tick: ?u64 = null,
+
+    // ─── Hotbar (10-slot creative-mode block selector) ───────────────────
+    // Per-slot block assignment. `.air` means the slot is empty (no
+    // placement allowed when selected). Number keys 1..9 map to slots
+    // 0..8; the 0 key maps to slot 9 — matching Minecraft's layout so
+    // muscle memory carries over. Defaults are wired in voxelInit
+    // because `var state: State = undefined` bypasses field defaults.
+    hotbar_slots: [10]chunk_mod.BlockType = .{ .air, .air, .air, .air, .air, .air, .air, .air, .air, .air },
+    /// Currently selected slot (0..9). Drives right-click placement and
+    /// the brighter border in the overlay.
+    hotbar_selected: u8 = 0,
+    /// CLI --hotbar=<on|off>. When false the overlay is not drawn but the
+    /// number keys still select slots and right-click still places — the
+    /// flag is purely cosmetic so screenshots can be taken without the bar.
+    hotbar_visible: bool = true,
 };
 
 var state: State = undefined;
@@ -675,6 +690,14 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.golden_max_diff_pct = 0.5;
     state.golden_max_channel_delta = 2;
 
+    // Hotbar defaults: slot 1 = stone, slot 2 = grass, slot 3 = dirt.
+    // Slot 4 was reserved for glowstone but `voxel/block-light` has not been
+    // merged yet (no glowstone BlockType to assign), so it stays empty —
+    // TODO: switch to .glowstone once block-light lands. Slots 5-10 empty.
+    state.hotbar_slots = .{ .stone, .grass, .dirt, .air, .air, .air, .air, .air, .air, .air };
+    state.hotbar_selected = 0;
+    state.hotbar_visible = true;
+
     // CLI flag parsing — native only. WASM builds never have process args;
     // they use the hardcoded defaults set above (hilly world, skylight,
     // classic AO, 4× MSAA) which is exactly what the browser should show.
@@ -769,6 +792,17 @@ fn voxelInit(ctx: *sw.Context) !void {
             } else {
                 std.log.err("--ao: invalid value '{s}'. Accepted: none, classic, moore", .{val});
                 fatalExit(1);
+            }
+        }
+        if (std.mem.startsWith(u8, arg, "--hotbar=")) {
+            const val = arg["--hotbar=".len..];
+            if (std.mem.eql(u8, val, "on")) {
+                state.hotbar_visible = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.hotbar_visible = false;
+            } else {
+                std.log.err("--hotbar: invalid value '{s}'. Accepted: on, off", .{val});
+                std.process.exit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--lighting=")) {
@@ -1038,6 +1072,61 @@ fn resolveSpawnPos(world: *const world_mod.World, spawn: [3]f32) [3]f32 {
 /// embedded in rock on hilly preset spawns.
 fn surfaceFeetY(world: *const world_mod.World, wx: i32, wz: i32) i32 {
     return world_gen.sampleHeight(wx, wz, world.gen_config) + 1;
+}
+
+/// True iff placing a 1×1×1 block at world (px, py, pz) would intersect the
+/// player's AABB. Used to refuse hotbar right-click placements that would
+/// embed the player inside their own block. Block AABB is [px,px+1)³;
+/// player AABB is the cylinder's bounding box: ±PLAYER_RADIUS in X/Z and
+/// [feet_y, feet_y + PLAYER_HEIGHT] in Y.
+fn placementIntersectsPlayer(px: i32, py: i32, pz: i32, feet: [3]f32) bool {
+    const min_x = feet[0] - player_mod.PLAYER_RADIUS;
+    const max_x = feet[0] + player_mod.PLAYER_RADIUS;
+    const min_y = feet[1];
+    const max_y = feet[1] + player_mod.PLAYER_HEIGHT;
+    const min_z = feet[2] - player_mod.PLAYER_RADIUS;
+    const max_z = feet[2] + player_mod.PLAYER_RADIUS;
+
+    const bx0 = @as(f32, @floatFromInt(px));
+    const bx1 = bx0 + 1.0;
+    const by0 = @as(f32, @floatFromInt(py));
+    const by1 = by0 + 1.0;
+    const bz0 = @as(f32, @floatFromInt(pz));
+    const bz1 = bz0 + 1.0;
+
+    return min_x < bx1 and max_x > bx0 and
+        min_y < by1 and max_y > by0 and
+        min_z < bz1 and max_z > bz0;
+}
+
+/// CPU-side base block colour matching `voxel.wgsl:getBlockColor`. Used by
+/// the hotbar overlay to draw thumbnails that visually match the in-world
+/// blocks. Grass intentionally returns its top-face green so the slot icon
+/// reads as "grass" at a glance, not "dirt".
+fn hotbarBlockColor(bt: chunk_mod.BlockType) [3]f32 {
+    return switch (bt) {
+        .grass => .{ 0.4, 0.8, 0.2 },
+        .dirt => .{ 0.6, 0.4, 0.2 },
+        .stone => .{ 0.5, 0.5, 0.5 },
+        .bedrock => .{ 0.3, 0.3, 0.3 },
+        .debug_marker => .{ 1.0, 0.0, 0.0 },
+        .air => .{ 0.0, 0.0, 0.0 },
+    };
+}
+
+/// CPU port of `voxel.wgsl:texelHash`. Returns a deterministic [0,1] hash
+/// for an integer texel coordinate so the hotbar thumbnails use the exact
+/// same noise pattern as the in-world block faces. The constants and
+/// rotations must stay in sync with the WGSL version — if either drifts,
+/// the hotbar icons stop matching their world textures.
+fn texelHashCpu(px: u32, py: u32) f32 {
+    var h: u32 = px *% 1664525 +% py *% 1013904223 +% 0xDEADBEEF;
+    h ^= h >> 16;
+    h *%= 2246822519;
+    h ^= h >> 13;
+    h *%= 3266489917;
+    h ^= h >> 16;
+    return @as(f32, @floatFromInt(h & 0xFF)) / 255.0;
 }
 
 /// Sync the camera position to the player's eye position. Call this any time
@@ -1688,6 +1777,35 @@ fn voxelTick(ctx: *sw.Context) !void {
     const gameplay_ok = state.game_state.gameplayReceivesInput() and
         (!state.tas_step_mode or state.tas_step_executing);
     if (gameplay_ok) {
+        // Hotbar selection — number keys 1..9 select slots 0..8, 0 selects
+        // slot 9 (matches Minecraft's bottom-row layout). Done before the
+        // mouse-capture gate so the player can change slot even while still
+        // in "click to capture" state. Modifier-held presses are ignored so
+        // Cmd+1 / Ctrl+1 stay free for future shortcuts.
+        if (!input.mods.ctrl and !input.mods.super) {
+            const num_keys = [_]struct { k: core.KeyCode, slot: u8 }{
+                .{ .k = .Num1, .slot = 0 },
+                .{ .k = .Num2, .slot = 1 },
+                .{ .k = .Num3, .slot = 2 },
+                .{ .k = .Num4, .slot = 3 },
+                .{ .k = .Num5, .slot = 4 },
+                .{ .k = .Num6, .slot = 5 },
+                .{ .k = .Num7, .slot = 6 },
+                .{ .k = .Num8, .slot = 7 },
+                .{ .k = .Num9, .slot = 8 },
+                .{ .k = .Num0, .slot = 9 },
+            };
+            for (num_keys) |nk| {
+                if (input.keyPressed(nk.k)) {
+                    state.hotbar_selected = nk.slot;
+                    std.log.info("Hotbar: slot {} selected ({s})", .{
+                        nk.slot + 1,
+                        @tagName(state.hotbar_slots[nk.slot]),
+                    });
+                }
+            }
+        }
+
         // Click to capture mouse (first click after startup / after resume)
         if (!state.mouse_captured and input.buttonPressed(.left)) {
             state.mouse_captured = true;
@@ -1843,8 +1961,18 @@ fn voxelTick(ctx: *sw.Context) !void {
                     updateBoundaryNeighbors(&state.world, bx, by, bz, cam_pos_arr);
                 }
 
-                // Right click: place block on adjacent face
-                if (input.buttonPressed(.right)) {
+                // Right click: place the currently-selected hotbar block on
+                // the adjacent face. Skipped silently if the slot is empty
+                // (.air) or if the placement position would intersect the
+                // player's own AABB — we never want to embed the player
+                // inside their own block since the next collision pass
+                // would resolve them in an unpredictable direction.
+                if (input.buttonPressed(.right)) place_blk: {
+                    const sel_block = state.hotbar_slots[state.hotbar_selected];
+                    if (sel_block == .air) {
+                        std.log.info("Hotbar: slot {} is empty — nothing to place", .{state.hotbar_selected + 1});
+                        break :place_blk;
+                    }
                     const place_pos = Vec3.init(
                         hit.block_pos.x + hit.face_normal.x,
                         hit.block_pos.y + hit.face_normal.y,
@@ -1853,7 +1981,13 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const px: i32 = @intFromFloat(place_pos.x);
                     const py: i32 = @intFromFloat(place_pos.y);
                     const pz: i32 = @intFromFloat(place_pos.z);
-                    _ = try state.world.setBlock(px, py, pz, state.place_block);
+
+                    if (placementIntersectsPlayer(px, py, pz, state.player.feet_pos)) {
+                        std.log.info("Hotbar: refused place at ({},{},{}) — would clip player AABB", .{ px, py, pz });
+                        break :place_blk;
+                    }
+
+                    _ = try state.world.setBlock(px, py, pz, sel_block);
                     const cam_pos_arr2 = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
                     if (state.world.getChunkAtBlock(px, pz)) |lc| {
                         const lcx = world_mod.chunkCoordOf(px);
@@ -1996,6 +2130,105 @@ fn buildChunkBorderMesh(g: *gpu_mod.GPU, ox: f32, oz: f32) void {
 
     g.writeBuffer(state.border_vertex_buffer.?, 0, std.mem.sliceAsBytes(&verts));
     g.writeBuffer(state.border_index_buffer.?, 0, std.mem.sliceAsBytes(&idxs));
+}
+
+/// Per-slot constants for the hotbar overlay. Tuned by eye on a 1280×720
+/// window: slots are big enough to read the texel pattern but the bar
+/// stays out of the way of the crosshair.
+const HOTBAR_SLOT_SIZE: f32 = 44.0;
+const HOTBAR_SLOT_PAD: f32 = 4.0;
+const HOTBAR_BOTTOM_MARGIN: f32 = 18.0;
+const HOTBAR_THUMB_GRID: u32 = 16; // matches voxel.wgsl 16×16 face texel grid
+
+/// Draw the persistent 10-slot hotbar centred along the bottom of the
+/// screen. Each slot has:
+///   - a dark semi-transparent background panel
+///   - a 16×16 grid of brightness-varied rects matching the in-world
+///     block colour, so the icon visually reads as the block it places
+///   - a digit label (1..9, then 0) under the slot
+///   - a brighter border around the currently-selected slot
+fn drawHotbar(overlay: *OverlayRenderer, screen_w: f32, screen_h: f32) void {
+    const slot_count: u32 = 10;
+    const total_w: f32 = @as(f32, @floatFromInt(slot_count)) * HOTBAR_SLOT_SIZE +
+        @as(f32, @floatFromInt(slot_count - 1)) * HOTBAR_SLOT_PAD;
+    const start_x: f32 = (screen_w - total_w) / 2.0;
+    // Account for the digit label below each slot when computing the
+    // bottom margin so the labels don't fall off the screen.
+    const label_scale: f32 = 2.0;
+    const label_h: f32 = GLYPH_H * label_scale;
+    const label_gap: f32 = 4.0;
+    const slot_y: f32 = screen_h - HOTBAR_BOTTOM_MARGIN - label_h - label_gap - HOTBAR_SLOT_SIZE;
+
+    const panel_bg = [4]f32{ 0.0, 0.0, 0.0, 0.55 };
+    const border_dim = [4]f32{ 0.55, 0.55, 0.6, 0.9 };
+    const border_sel = [4]f32{ 1.0, 0.95, 0.4, 1.0 };
+    const label_dim = [4]f32{ 0.7, 0.7, 0.75, 1.0 };
+    const label_sel = [4]f32{ 1.0, 0.95, 0.4, 1.0 };
+
+    var i: u32 = 0;
+    while (i < slot_count) : (i += 1) {
+        const slot_x = start_x + @as(f32, @floatFromInt(i)) * (HOTBAR_SLOT_SIZE + HOTBAR_SLOT_PAD);
+        const is_selected = i == state.hotbar_selected;
+
+        // Background panel.
+        overlay.rect(slot_x, slot_y, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE, panel_bg, screen_w, screen_h) catch {};
+
+        // Border (thicker + brighter when selected). 4 thin rects = top,
+        // bottom, left, right outline. The selected border is drawn at
+        // 3 px to read clearly against the slot panel.
+        const bw: f32 = if (is_selected) 3.0 else 1.5;
+        const bcol = if (is_selected) border_sel else border_dim;
+        // top
+        overlay.rect(slot_x, slot_y, HOTBAR_SLOT_SIZE, bw, bcol, screen_w, screen_h) catch {};
+        // bottom
+        overlay.rect(slot_x, slot_y + HOTBAR_SLOT_SIZE - bw, HOTBAR_SLOT_SIZE, bw, bcol, screen_w, screen_h) catch {};
+        // left
+        overlay.rect(slot_x, slot_y, bw, HOTBAR_SLOT_SIZE, bcol, screen_w, screen_h) catch {};
+        // right
+        overlay.rect(slot_x + HOTBAR_SLOT_SIZE - bw, slot_y, bw, HOTBAR_SLOT_SIZE, bcol, screen_w, screen_h) catch {};
+
+        // Block thumbnail — only when slot is non-empty. Drawn inset so
+        // the border is visible all the way around. We render a 16×16
+        // grid of small rects, each modulated by the same texelHash the
+        // shader uses; the resulting square reads as the block's face.
+        const sel_block = state.hotbar_slots[i];
+        if (sel_block != .air) {
+            const inset: f32 = 5.0;
+            const icon_x = slot_x + inset;
+            const icon_y = slot_y + inset;
+            const icon_w = HOTBAR_SLOT_SIZE - inset * 2.0;
+            const cell = icon_w / @as(f32, @floatFromInt(HOTBAR_THUMB_GRID));
+            const base = hotbarBlockColor(sel_block);
+            var ty: u32 = 0;
+            while (ty < HOTBAR_THUMB_GRID) : (ty += 1) {
+                var tx: u32 = 0;
+                while (tx < HOTBAR_THUMB_GRID) : (tx += 1) {
+                    const noise = texelHashCpu(tx, ty);
+                    // Same 0.875..1.125 mapping as voxel.wgsl.
+                    const tb: f32 = 0.875 + noise * 0.25;
+                    const rgba = [4]f32{
+                        @min(1.0, base[0] * tb),
+                        @min(1.0, base[1] * tb),
+                        @min(1.0, base[2] * tb),
+                        1.0,
+                    };
+                    const px = icon_x + @as(f32, @floatFromInt(tx)) * cell;
+                    const py = icon_y + @as(f32, @floatFromInt(ty)) * cell;
+                    // +1 px overdraw avoids subpixel seams between cells.
+                    overlay.rect(px, py, cell + 1.0, cell + 1.0, rgba, screen_w, screen_h) catch {};
+                }
+            }
+        }
+
+        // Digit label centred under the slot. Slots 1..9 show "1".."9",
+        // slot 10 (index 9) shows "0" — matches the keyboard layout.
+        const digit_char: u8 = if (i == 9) '0' else @as(u8, @intCast('1' + i));
+        const lcol = if (is_selected) label_sel else label_dim;
+        const label_w = GLYPH_W * label_scale;
+        const label_x = slot_x + (HOTBAR_SLOT_SIZE - label_w) / 2.0;
+        const label_y = slot_y + HOTBAR_SLOT_SIZE + label_gap;
+        bitmap_font.drawChar(overlay, digit_char, label_x, label_y, lcol, label_scale, screen_w, screen_h) catch {};
+    }
 }
 
 /// Render the "WORLD LOADING" screen: dark purple background with animated wavy
@@ -2470,6 +2703,15 @@ fn voxelRender(ctx: *sw.Context) !void {
         const white = [4]f32{ 1, 1, 1, 1 };
         state.overlay.rect(cx - clen, cy - cthick / 2.0, clen * 2, cthick, white, overlay_w, overlay_h) catch {};
         state.overlay.rect(cx - cthick / 2.0, cy - clen, cthick, clen * 2, white, overlay_w, overlay_h) catch {};
+    }
+
+    // Hotbar — persistent 10-slot bar centred along the bottom edge.
+    // Hidden during pause and when --hotbar=off. The slot icons are drawn
+    // as a 16×16 grid of texel rects so they share the same procedural
+    // brightness pattern as the in-world block faces (see hotbarBlockColor
+    // / texelHashCpu — both ported from voxel.wgsl).
+    if (state.hotbar_visible and state.game_state.isLayerActive(.hud) and !state.game_state.isWorldPaused()) {
+        drawHotbar(&state.overlay, overlay_w, overlay_h);
     }
 
     // Pause menu overlay — multi-screen state machine (main / settings / exit_confirm).

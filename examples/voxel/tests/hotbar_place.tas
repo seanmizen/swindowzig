@@ -1,0 +1,75 @@
+# hotbar_place.tas — Hotbar selection + right-click place regression.
+#
+# Purpose: Verify that
+#   (1) the hotbar UI is rendered persistently along the bottom of the
+#       screen on the HUD layer (default slot 1=stone, 2=grass, 3=dirt),
+#   (2) pressing a number key (1..0) updates `state.hotbar_selected`,
+#   (3) right-clicking with a non-empty selected slot calls
+#       `World.setBlock` at the face the player is looking at, and
+#   (4) the placement guard refuses to drop a block inside the player's
+#       AABB (verified manually — see notes below; this script focuses on
+#       the happy path because TAS scripts can't easily assert "no block
+#       was placed").
+#
+# Scene layout (flatland, deterministic spawn):
+#   - Player spawns standing on the flat Y=63 plane.
+#   - We look down ~30° so the raycast first hits the ground a few blocks
+#     in front of the player. The placement face is the +Y face of that
+#     ground block, so the new block lands on top of the floor a couple
+#     blocks ahead — well outside the player AABB.
+#   - With slot 1 = stone (default), the placed block has the stone
+#     palette colour and a procedural texel-hash pattern. A pixel diff
+#     against a baseline run captured BEFORE the right-click (or against
+#     a `--hotbar=off` run that simply skips the right-click) shows the
+#     newly added stone block as a small contiguous patch in front of the
+#     crosshair.
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --world=flatland --aa=none \
+#     --tas examples/voxel/tests/hotbar_place.tas \
+#     --dump-frame=/tmp/hotbar_place.ppm
+#
+#   # Baseline — same scene WITHOUT firing the right-click. Compare the
+#   # two PPMs; the diff should be the stone block appearing on top of
+#   # the floor in front of the player and the hotbar's selected-border
+#   # highlight shifting to slot 1 (which it already is by default).
+#   #
+#   # The simplest baseline is a copy of this script with the
+#   # `mouse_down right` / `mouse_up right` lines removed; or render the
+#   # exact same TAS with `--hotbar=off` AND comment out the right-click
+#   # to confirm the hotbar UI itself is what's drawn at the bottom.
+#
+# Player-AABB guard verification (manual): edit the look-down magnitude
+# below to a near-vertical pitch (`mouse_move 0 400` like dig_relight),
+# then add a `mouse_down right` / `mouse_up right` pair and the engine
+# logs `Hotbar: refused place at (...) — would clip player AABB` instead
+# of mutating the world.
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look down ~30° so the raycast hits the ground a few blocks ahead.
+#     180 mouse-delta-y ≈ 30° at the default 0.0033 rad/pixel sensitivity.
+#     Same value used by ao_corners.tas. ---
+3 mouse_move 0 180
+
+# --- Select slot 1 (stone). It's already the default selection but we
+#     press the key explicitly so the test exercises the keybind path. ---
+8 keydown 1
+9 keyup 1
+
+# --- Right-click to place a stone block on top of the targeted ground
+#     block. The press edge fires the placement; the release edge is a
+#     no-op for the place handler but kept for symmetry with how SDL
+#     surfaces real trackpad clicks. ---
+14 mouse_down right
+15 mouse_up right
+
+# --- Hold steady so --dump-frame lands on a stable view. The mesh-dirty
+#     pass after the place takes one tick to flush; we leave a generous
+#     window so the dumped frame includes the new block. ---
+30 mouse_move 0 0
