@@ -157,19 +157,96 @@ Ranked by (expected reduction) / (engineering hours). Top of list first. None
 of these should land in this PR — this is a session-end write-up to seed
 follow-up work.
 
-### Rank 1 — Mesh eviction outside view distance
+### Rank 1 — Mesh eviction outside view distance — **LANDED Apr 2026**
 
-- **Effort**: tiny. One tick pass: "if chunk is outside RENDER_DISTANCE + 1,
-  call `mesh.clear()`, deinit ChunkGPU buffers, leave `chunk.blocks` alone."
-- **Payoff**: big. The VRAM tables above assume all 49 loaded chunks are
-  meshed; today's code has no eviction, so running a TAS that wanders causes
-  unbounded mesh accumulation. This also cleans up `host-side scratch`.
-- **Risk**: very low — `ChunkState` now exists, so dropping to `.generated`
-  is a first-class state and the mesh loop already handles `.generated` as
-  "needs meshing".
-- **Savings on a walking session**: reduces RAM growth from O(chunks ever
-  visited) to O(view disc) — worst case shrinks 10× or more for long
-  sessions.
+Implemented in `voxel/mesh-eviction`. Per-tick pass walks every loaded
+chunk; any whose chunk-grid distance² from the player exceeds
+`EVICT_RADIUS_SQ` is downgraded back to `.generated`:
+
+- `Mesh.freeHostBuffers()` releases the four parallel `ArrayList`s + the
+  `sort_scratch`/`sort_indices` slices back to the allocator (capacity
+  drops to zero, not just `len`).
+- The owning `chunk_gpu` entry is removed and both vertex + index
+  `wgpu_native` buffers are `destroy()`ed.
+- `chunk.blocks` and `chunk.skylight` are intentionally retained — they
+  are deterministic from the seed but expensive to recompute, and the
+  whole point of eviction is to drop *mesh* storage, not block data.
+
+Hysteresis (`world.zig: EVICT_RADIUS_SQ` doc-block):
+- `MESH_RADIUS_SQ`  = 16   — distance² inside which a chunk may be meshed
+- `EVICT_RADIUS_SQ` = 25   — distance² beyond which a meshed chunk is dropped
+- 17..25 dead zone — meshed chunks here are kept but no longer regenerated.
+  A chunk that wobbles between 16 and 17 (the natural border-flicker case)
+  stays meshed because eviction only fires above 25; a chunk that wobbles
+  between 25 and 26 stays evicted because re-meshing only fires at ≤ 16.
+  The minimum round-trip cost across the boundary is therefore 9 chunk
+  units of travel (5² → 4²), which is huge compared to a single tick of
+  player wobble at the boundary.
+
+Re-entry path: an evicted chunk has `state = .generated` and
+`mesh_dirty = true`. The existing per-tick mesh loop already handles
+`.generated → .meshed` for any chunk that (a) is dirty, (b) is inside
+`MESH_RADIUS_SQ`, and (c) has all four neighbours generated. No separate
+re-meshing path was needed.
+
+#### Measured savings — flatland walk + walk-back TAS
+
+Test script: `tests/mesh_eviction_walk.tas` — capture mouse, sprint W
+forward 5 chunks (~3200 sim ticks), sprint S backward 5 chunks, settle.
+Run with `--headless --world=flatland`. Per-chunk flatland mesh: 4608
+quads × 216 B = **0.95 MB GPU** (from `[MESH] gen ... quads=4608` log).
+
+The `[CHUNK_STATS]` line is logged every 240 ticks; numbers below are
+read directly from those lines.
+
+| Phase                            | No eviction | With eviction |
+|----------------------------------|------------:|--------------:|
+| Spawn (49 disc loaded)           | 29 meshed   | 29 meshed     |
+| Walking forward, peak            | 64 meshed   | 47 meshed     |
+| Walking back, peak               | 64 meshed   | 54 meshed     |
+| End of TAS (94 chunks ever loaded) | 64 meshed | 47 meshed     |
+
+(`64` is not `94` because the outer ring of the loaded disc never has all
+four neighbours generated, so `hasAllNeighborsGenerated` keeps it at
+`.generated` regardless of whether eviction is on. That's an existing
+gate, not a new one.)
+
+End-of-TAS GPU mesh memory:
+- No eviction:    64 × 0.95 MB = **60.8 MB**
+- With eviction:  47 × 0.95 MB = **44.7 MB**
+- **Saved: 16.1 MB GPU on a 5-chunk round trip** (~26 % reduction)
+
+Peak savings during walk:
+- No eviction:   64 × 0.95 MB = **60.8 MB**
+- With eviction: 54 × 0.95 MB = **51.3 MB**
+- **Saved: 9.5 MB GPU at peak**
+
+Host-side mesh scratch goes with it: `freeHostBuffers` returns the four
+parallel `ArrayList`s + sort scratch to the allocator. Per-quad host
+overhead is ~250 B (vs 216 B GPU), so the host RAM saved is roughly
+**`16.1 MB × (250/216) ≈ 18.6 MB`** on the same round-trip.
+
+#### Extrapolation to hilly + longer sessions
+
+Per-chunk **hilly** mesh (from existing measurements): ~5500 quads ×
+216 B ≈ **1.19 MB GPU**. Same chunk-count delta gives:
+- End-of-TAS saved: 17 × 1.19 ≈ **20.2 MB GPU** (hilly)
+- Peak saved:       10 × 1.19 ≈ **11.9 MB GPU** (hilly)
+
+The savings grow ~linearly with traversed distance: each additional chunk
+the player walks past the eviction boundary frees one more chunk's worth
+of mesh storage, indefinitely. The 5-chunk round trip is a deliberately
+short sample — a 30-minute session that wanders ~200 chunks would save
+roughly `200 × 1.19 ≈ 240 MB` GPU on hilly without eviction holding all
+of those meshes hostage.
+
+What this number does **not** include:
+- Block data (`Chunk.blocks` / `Chunk.skylight`) — left in RAM by design.
+  That's `94 × 576 KB ≈ 54 MB` and is the same with or without eviction.
+  Trimming it is Rank 2 (palette compression), Rank 3 (uniform
+  shortcuts), and Rank 4 (Y-section subdivision).
+- Stats logging cost: one map walk every 240 ticks. Negligible
+  (~50 chunk lookups, no allocations).
 
 ### Rank 2 — Palette compression (Minecraft's trick)
 

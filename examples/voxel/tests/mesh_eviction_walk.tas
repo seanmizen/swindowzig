@@ -1,0 +1,54 @@
+# mesh_eviction_walk.tas — Walk far enough to evict, then walk back.
+#
+# Purpose: validate that the per-tick mesh eviction pass keeps the meshed
+# chunk count bounded as the player traverses the world, AND that walking
+# back into the disc re-meshes the previously evicted chunks.
+#
+# Default spawn:
+#   feet ≈ (24, 64, 20), yaw = -π/2 (forward = -Z)
+#
+# Plan:
+#   t=1..2     Click left to capture mouse (gameplay input gates on this).
+#   t=3        keydown W + Shift — start sprinting forward (-Z).
+#   t=3203     keyup W + Shift — stop after ~200 sim ticks * sprint 9 u/s
+#              * dt 1/120s ≈ 240 blocks ≈ 5 chunks. The player has now
+#              crossed five chunk boundaries; chunks at the trailing edge
+#              should be > render_distance + 1 away and have been evicted.
+#   t=3205     keydown S + Shift — sprint backward (+Z) for the same
+#              duration. Re-enters the chunks that were just evicted.
+#   t=6405     keyup S + Shift — stop. Player back near spawn.
+#   t=6600     Hold steady so the headless shutdown captures a clean state.
+#
+# Sprint maths (sanity check):
+#   dt = 1/120 s   spd = SPRINT_SPEED = 9 u/s
+#   movement per tick = 9 / 120 = 0.075 blocks
+#   3200 ticks → 240 blocks → 240/48 = 5 chunks
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --headless --world=flatland \
+#     --tas examples/voxel/tests/mesh_eviction_walk.tas 2>&1 | grep CHUNK_STATS
+#
+# Expected log shape — meshed-count should stay bounded by the disc area
+# (49 for R=4 + a few hysteresis stragglers, never the unbounded growth
+# you'd see without eviction).
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Sprint forward (-Z) for ~3200 sim ticks ---
+3 keydown W
+3 keydown Shift
+3203 keyup W
+
+# --- Sprint backward (+Z) for ~3200 sim ticks ---
+3205 keydown S
+6405 keyup S
+6405 keyup Shift
+
+# --- Hold steady so the mesher can catch up on any backlog and the final
+#     stats lines land on a stable position. Without this tail the
+#     "without eviction" baseline is bottlenecked by MESH_GENS_PER_TICK = 1
+#     and undercounts the actual chunk-meshed peak. ---
+9000 mouse_move 0 0
