@@ -160,6 +160,7 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 | `--aa=<mode>` | Anti-aliasing method. Accepted: `none`, `msaa` (default, 4× MSAA), `fxaa` (FXAA 3.11 post-process). `--aa=fxaa` renders the scene to an offscreen bgra8unorm texture then runs a fullscreen FXAA pass to the swapchain. Can be combined with `--msaa=N` to control the MSAA sample count when `--aa=msaa` is active. |
 | `--msaa=N` | MSAA sample count. Accepted: `none`/`0` (no AA), `1`, `2`, `4` (default), `8`. The `bgra8unorm` surface format supports [1, 2, 4] on native and [1, 4] on WebGPU; values outside that range are clamped (e.g. `--msaa=8` → 4×). |
 | `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
+| `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (default — per-vertex Mojang face-plane AO), `moore` (extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish (so MSAA comparison runs capture the same deterministic state). |
 
 ---
@@ -197,6 +198,12 @@ TAS scripts for regression live under `examples/voxel/`:
 - `tests/msaa_flatland.tas` — deterministic flatland scene used by the AA
   regression. Runner: `./examples/voxel/tests/aa_regression.sh` (captures
   none/fxaa/msaa4, writes both normalized and amplified diffs, prints coverage).
+- `tests/ao_corners.tas` — flatland 1×4×1 shaft, used to verify
+  `--ao=none|classic|moore` strategies darken the indoor wall faces of the
+  shaft progressively. The Moore-vs-classic diff is small in this scene
+  (~0.7% of frame, max delta ~8) because the shaft is small; on the hilly
+  default world Moore differs from classic across ~70% of pixels with a
+  mean channel delta of ~5/255 — that's the "more grounded" look.
 
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
 block at the top documenting the purpose, usage, and baseline numbers.

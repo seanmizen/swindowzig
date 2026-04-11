@@ -47,6 +47,7 @@ pub const DepthStencilState = types_mod.DepthStencilState;
 pub const MultisampleState = types_mod.MultisampleState;
 pub const AAMethod = types_mod.AAMethod;
 pub const AntiAliasingConfig = types_mod.AntiAliasingConfig;
+pub const AOStrategy = types_mod.AOStrategy;
 pub const VertexBufferLayout = types_mod.VertexBufferLayout;
 pub const VertexAttribute = types_mod.VertexAttribute;
 pub const VertexFormat = types_mod.VertexFormat;

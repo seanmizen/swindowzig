@@ -1,10 +1,12 @@
 const std = @import("std");
 const chunk_mod = @import("chunk.zig");
+const gpu_mod = @import("sw_gpu");
 const Chunk = chunk_mod.Chunk;
 const BlockType = chunk_mod.BlockType;
 const BlockGetter = chunk_mod.BlockGetter;
 const CHUNK_W = chunk_mod.CHUNK_W;
 const CHUNK_H = chunk_mod.CHUNK_H;
+pub const AOStrategy = gpu_mod.AOStrategy;
 
 const DEBUG = false; // Enable for mesh generation debug logging
 
@@ -204,6 +206,7 @@ pub const Mesh = struct {
         world_ox: i32,
         world_oz: i32,
         getter: BlockGetter,
+        ao_strategy: AOStrategy,
     ) !void {
         const offsets = [7][3]i32{
             .{ 0, 0, 0 },
@@ -305,6 +308,7 @@ pub const Mesh = struct {
                         getter,
                         world_ox,
                         world_oz,
+                        ao_strategy,
                     );
                 }
             }
@@ -435,10 +439,90 @@ fn aoValue(s1: bool, s2: bool, c: bool) f32 {
     return (3.0 - @as(f32, @floatFromInt(blocked))) / 3.0;
 }
 
+/// Moore-extended per-vertex AO formula.
+///
+/// Combines the classic 3 face-plane samples (s1, s2, c — at outward+1) with
+/// the corresponding 3 samples from the *deeper* slab (ds1, ds2, dc — at
+/// outward+2). Both layers contribute equally — picking 0.5 for the far weight
+/// gave correctly-localized but visually subtle darkening; equal weight makes
+/// the indoor-corner contribution actually visible without affecting flat
+/// outdoor faces (where both slabs read all-air anyway).
+///
+///   occlusion = (s1 + s2 + c) + (ds1 + ds2 + dc)
+///   max_occ   = 3 + 3 = 6
+///   ao        = (max_occ - occlusion) / max_occ   ∈ [0, 1]
+///
+/// The classic hard-zero on `s1 ∧ s2` (face-touching contact corner) is kept
+/// — those vertices stay maximally dark regardless of the deeper layer. This
+/// prevents Moore from making concave hard corners *brighter* than classic.
+fn aoMooreValue(s1: bool, s2: bool, c: bool, ds1: bool, ds2: bool, dc: bool) f32 {
+    if (s1 and s2) return 0.0;
+    const near: f32 = @floatFromInt(@as(u32, @intFromBool(s1)) + @as(u32, @intFromBool(s2)) + @as(u32, @intFromBool(c)));
+    const far: f32 = @floatFromInt(@as(u32, @intFromBool(ds1)) + @as(u32, @intFromBool(ds2)) + @as(u32, @intFromBool(dc)));
+    const occlusion = near + far;
+    const max_occlusion: f32 = 6.0;
+    return std.math.clamp((max_occlusion - occlusion) / max_occlusion, 0.0, 1.0);
+}
+
 /// Compute per-vertex AO brightness (0..1) for a face quad.
 /// Returns [4]f32 — one brightness per vertex in the same order addQuad emits them.
-/// Samples the 3 neighbor blocks around each corner in the plane of the face.
-fn computeFaceAO(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
+///
+/// Strategy dispatch:
+///   - .none           — returns [1.0]*4 (no occlusion at all)
+///   - .classic        — face-plane 8-neighbour Mojang AO (3 samples per vertex)
+///   - .moore          — extended outward sampling; falls back to classic in
+///                       commit A (this file), implemented in commit B
+///   - .propagated     — TODO; falls back to classic with a runtime warning
+///   - .ssao           — TODO; falls back to classic with a runtime warning
+fn computeFaceAOForStrategy(
+    chunk: *const Chunk,
+    getter: BlockGetter,
+    world_ox: i32,
+    world_oz: i32,
+    wx: i32,
+    wy: i32,
+    wz: i32,
+    face: Face,
+    strategy: AOStrategy,
+) [4]f32 {
+    return switch (strategy) {
+        .none => .{ 1.0, 1.0, 1.0, 1.0 },
+        .classic => computeFaceAOClassic(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
+        .moore => computeFaceAOMoore(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
+        .propagated, .ssao => blk: {
+            // Lazily warn once per process about unimplemented strategies.
+            unimplemented_warned.warn(strategy);
+            break :blk computeFaceAOClassic(chunk, getter, world_ox, world_oz, wx, wy, wz, face);
+        },
+    };
+}
+
+/// One-shot warning state for strategies that fall back to classic.
+const UnimplementedWarn = struct {
+    propagated: bool = false,
+    ssao: bool = false,
+
+    fn warn(self: *UnimplementedWarn, strat: AOStrategy) void {
+        switch (strat) {
+            .propagated => if (!self.propagated) {
+                self.propagated = true;
+                std.log.warn("AO strategy '.propagated' not yet implemented — falling back to .classic", .{});
+            },
+            .ssao => if (!self.ssao) {
+                self.ssao = true;
+                std.log.warn("AO strategy '.ssao' not yet implemented — falling back to .classic", .{});
+            },
+            else => {},
+        }
+    }
+};
+
+var unimplemented_warned: UnimplementedWarn = .{};
+
+/// Classic per-vertex Mojang/Minecraft AO.
+/// Samples the 8 face-plane neighbours one cell beyond the face plane and
+/// picks 3 (side1, side2, corner) per vertex via `aoValue`.
+fn computeFaceAOClassic(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
     return switch (face) {
         .px => blk: {
             // +X face at x+1 plane — corners vary in Y and Z
@@ -545,6 +629,177 @@ fn computeFaceAO(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_
     };
 }
 
+/// Extended-Moore per-vertex AO.
+///
+/// Samples both the classic outward+1 face-plane (8 cells) and the
+/// outward+2 slab (8 cells), then per vertex picks 3 from each and feeds
+/// them to `aoMooreValue`. Where classic only sees the slice immediately
+/// beyond the face, Moore can also detect:
+///   - distant walls just behind the face plane (overhang shadows)
+///   - long crevices where the deeper slab is occluded
+///   - 2-cell-deep concave corners (e.g. a 1×N×1 vertical shaft) — the
+///     middle-row vertices on the wall faces darken because both near and
+///     far slabs are partially solid.
+///
+/// Cost: 16 isSolid samples per face (vs 8 for classic). Mesh-time only,
+/// no GPU cost — the result is baked into the per-vertex `ao` field as
+/// usual. Indoor corners and overhang vertices come out visibly darker;
+/// flat unoccluded faces are unchanged because both slabs read all-air.
+fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
+    return switch (face) {
+        .px => blk: {
+            // Near plane: x = wx + 1   |   Far plane: x = wx + 2
+            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
+            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
+            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
+            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const s_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const s_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const s_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const s_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const d_ym    = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy - 1, wz    );
+            const d_yp    = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz    );
+            const d_zm    = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy,     wz - 1);
+            const d_zp    = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy,     wz + 1);
+            const d_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy - 1, wz - 1);
+            const d_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz - 1);
+            const d_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz + 1);
+            const d_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy - 1, wz + 1);
+            break :blk .{
+                aoMooreValue(s_ym, s_zm, s_ym_zm, d_ym, d_zm, d_ym_zm), // v0
+                aoMooreValue(s_yp, s_zm, s_yp_zm, d_yp, d_zm, d_yp_zm), // v1
+                aoMooreValue(s_yp, s_zp, s_yp_zp, d_yp, d_zp, d_yp_zp), // v2
+                aoMooreValue(s_ym, s_zp, s_ym_zp, d_ym, d_zp, d_ym_zp), // v3
+            };
+        },
+        .nx => blk: {
+            // Near plane: x = wx - 1   |   Far plane: x = wx - 2
+            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
+            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
+            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
+            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
+            const s_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const s_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const s_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const s_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const d_ym    = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy - 1, wz    );
+            const d_yp    = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz    );
+            const d_zm    = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy,     wz - 1);
+            const d_zp    = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy,     wz + 1);
+            const d_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy - 1, wz - 1);
+            const d_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz - 1);
+            const d_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz + 1);
+            const d_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy - 1, wz + 1);
+            break :blk .{
+                aoMooreValue(s_ym, s_zp, s_ym_zp, d_ym, d_zp, d_ym_zp),
+                aoMooreValue(s_yp, s_zp, s_yp_zp, d_yp, d_zp, d_yp_zp),
+                aoMooreValue(s_yp, s_zm, s_yp_zm, d_yp, d_zm, d_yp_zm),
+                aoMooreValue(s_ym, s_zm, s_ym_zm, d_ym, d_zm, d_ym_zm),
+            };
+        },
+        .py => blk: {
+            // Near plane: y = wy + 1   |   Far plane: y = wy + 2
+            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
+            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
+            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const s_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const s_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const s_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const s_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const d_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz    );
+            const d_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 2, wz    );
+            const d_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 2, wz - 1);
+            const d_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 2, wz + 1);
+            const d_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz - 1);
+            const d_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz + 1);
+            const d_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 2, wz + 1);
+            const d_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 2, wz - 1);
+            break :blk .{
+                aoMooreValue(s_xm, s_zm, s_xm_zm, d_xm, d_zm, d_xm_zm),
+                aoMooreValue(s_xm, s_zp, s_xm_zp, d_xm, d_zp, d_xm_zp),
+                aoMooreValue(s_xp, s_zp, s_xp_zp, d_xp, d_zp, d_xp_zp),
+                aoMooreValue(s_xp, s_zm, s_xp_zm, d_xp, d_zm, d_xp_zm),
+            };
+        },
+        .ny => blk: {
+            // Near plane: y = wy - 1   |   Far plane: y = wy - 2
+            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
+            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
+            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
+            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const s_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const s_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const s_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const s_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const d_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz    );
+            const d_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 2, wz    );
+            const d_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 2, wz - 1);
+            const d_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 2, wz + 1);
+            const d_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz - 1);
+            const d_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz + 1);
+            const d_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 2, wz - 1);
+            const d_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 2, wz + 1);
+            break :blk .{
+                aoMooreValue(s_xm, s_zp, s_xm_zp, d_xm, d_zp, d_xm_zp),
+                aoMooreValue(s_xm, s_zm, s_xm_zm, d_xm, d_zm, d_xm_zm),
+                aoMooreValue(s_xp, s_zm, s_xp_zm, d_xp, d_zm, d_xp_zm),
+                aoMooreValue(s_xp, s_zp, s_xp_zp, d_xp, d_zp, d_xp_zp),
+            };
+        },
+        .pz => blk: {
+            // Near plane: z = wz + 1   |   Far plane: z = wz + 2
+            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
+            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const s_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const s_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const s_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const s_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const d_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 2);
+            const d_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 2);
+            const d_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 2);
+            const d_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 2);
+            const d_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 2);
+            const d_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 2);
+            const d_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 2);
+            const d_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 2);
+            break :blk .{
+                aoMooreValue(s_xm, s_ym, s_xm_ym, d_xm, d_ym, d_xm_ym),
+                aoMooreValue(s_xp, s_ym, s_xp_ym, d_xp, d_ym, d_xp_ym),
+                aoMooreValue(s_xp, s_yp, s_xp_yp, d_xp, d_yp, d_xp_yp),
+                aoMooreValue(s_xm, s_yp, s_xm_yp, d_xm, d_yp, d_xm_yp),
+            };
+        },
+        .nz => blk: {
+            // Near plane: z = wz - 1   |   Far plane: z = wz - 2
+            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
+            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
+            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
+            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const s_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const s_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const s_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const s_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const d_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 2);
+            const d_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 2);
+            const d_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 2);
+            const d_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 2);
+            const d_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 2);
+            const d_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 2);
+            const d_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 2);
+            const d_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 2);
+            break :blk .{
+                aoMooreValue(s_xp, s_ym, s_xp_ym, d_xp, d_ym, d_xp_ym),
+                aoMooreValue(s_xm, s_ym, s_xm_ym, d_xm, d_ym, d_xm_ym),
+                aoMooreValue(s_xm, s_yp, s_xm_yp, d_xm, d_yp, d_xm_yp),
+                aoMooreValue(s_xp, s_yp, s_xp_yp, d_xp, d_yp, d_xp_yp),
+            };
+        },
+    };
+}
+
 /// Add a quad face to the mesh, recording its owning block via block_idx.
 /// highlight: initial highlight intensity (255 = freshly rebuilt, 0 = normal).
 fn addQuad(
@@ -560,16 +815,20 @@ fn addQuad(
     getter: BlockGetter,
     world_ox: i32,
     world_oz: i32,
+    ao_strategy: AOStrategy,
 ) !void {
     const base_idx: u32 = @intCast(mesh.vertices.items.len);
     const normal = face_normals[@intFromEnum(face)];
     const block_u32: u32 = @intFromEnum(block_type);
 
-    // Compute per-vertex ambient occlusion for this face
+    // Compute per-vertex ambient occlusion for this face according to the
+    // selected strategy. The dispatch is centralized in computeFaceAOForStrategy
+    // so future strategies (propagated, ssao) plug in there without touching
+    // every quad-emit site.
     const wx: i32 = @intFromFloat(x);
     const wy: i32 = @intFromFloat(y);
     const wz: i32 = @intFromFloat(z);
-    const ao = computeFaceAO(chunk, getter, world_ox, world_oz, wx, wy, wz, face);
+    const ao = computeFaceAOForStrategy(chunk, getter, world_ox, world_oz, wx, wy, wz, face, ao_strategy);
 
     // Define quad vertices based on face direction
     const verts = switch (face) {
@@ -641,7 +900,14 @@ fn addQuad(
 /// Full mesh generation from scratch. Use updateForBlockChange for incremental updates.
 /// world_ox/world_oz are the world-space block origin of this chunk.
 /// getter is used for cross-chunk face culling at chunk boundaries.
-pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i32, getter: BlockGetter) !void {
+/// ao_strategy selects which ambient-occlusion sampler each emitted face uses.
+///
+/// TODO (in-game settings menu): if ao_strategy changes at runtime, every loaded
+/// chunk needs to re-run generateMesh — the AO is baked into the vertex stream
+/// and no shader switch will recover it. The render loop already remeshes on
+/// `mesh_dirty`; setting that flag on every chunk after a strategy change is
+/// the entry point.
+pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i32, getter: BlockGetter, ao_strategy: AOStrategy) !void {
     mesh.clear();
 
     var x: i32 = 0;
@@ -671,6 +937,7 @@ pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i
                             getter,
                             world_ox,
                             world_oz,
+                            ao_strategy,
                         );
                     }
                 }

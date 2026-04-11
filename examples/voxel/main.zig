@@ -215,6 +215,11 @@ const State = struct {
     gpu_debug: bool = false,
     /// MSAA config parsed from --msaa=N CLI flag. Default: 4× MSAA.
     msaa_config: gpu_mod.AntiAliasingConfig = .{ .method = .msaa, .msaa_samples = 4 },
+    /// Ambient-occlusion sampling strategy parsed from --ao=<none|classic|moore>.
+    /// Default: classic (preserves prior behaviour). The future in-game settings
+    /// menu reads/writes this same field; changing it at runtime requires marking
+    /// every loaded chunk's mesh dirty so they get remeshed with the new sampler.
+    ao_strategy: gpu_mod.AOStrategy = .classic,
     /// --dump-frame=<path>: capture first rendered frame to a PPM file then exit.
     dump_frame_path: ?[]const u8 = null,
     dump_frame_done: bool = false,
@@ -296,6 +301,8 @@ fn voxelInit(ctx: *sw.Context) !void {
 
     // Default MSAA config (var state = undefined bypasses struct field defaults)
     state.msaa_config = .{ .method = .msaa, .msaa_samples = 4 };
+    // Default AO strategy: classic (matches behaviour pre-strategy-enum).
+    state.ao_strategy = .classic;
     state.dump_frame_path = null;
     state.dump_frame_done = false;
 
@@ -358,10 +365,24 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.process.exit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--ao=")) {
+            const val = arg["--ao=".len..];
+            if (std.mem.eql(u8, val, "none")) {
+                state.ao_strategy = .none;
+            } else if (std.mem.eql(u8, val, "classic")) {
+                state.ao_strategy = .classic;
+            } else if (std.mem.eql(u8, val, "moore")) {
+                state.ao_strategy = .moore;
+            } else {
+                std.log.err("--ao: invalid value '{s}'. Accepted: none, classic, moore", .{val});
+                std.process.exit(1);
+            }
+        }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={}", .{
         @tagName(state.msaa_config.method), state.msaa_config.msaa_samples,
     });
+    std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
 
     // Initialize world with the selected preset (deferred until here so --world= works).
@@ -450,6 +471,7 @@ fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, c
             nb_lc.worldX(),
             nb_lc.worldZ(),
             world.asBlockGetter(),
+            state.ao_strategy,
         ) catch {
             nb_lc.mesh_dirty = true;
         };
@@ -531,6 +553,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 lc.worldX(),
                 lc.worldZ(),
                 state.world.asBlockGetter(),
+                state.ao_strategy,
             ) catch |err| {
                 std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
@@ -893,6 +916,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                             lc.worldX(),
                             lc.worldZ(),
                             state.world.asBlockGetter(),
+                            state.ao_strategy,
                         ) catch |err| {
                             std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
                             lc.mesh_dirty = true;
@@ -931,6 +955,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                             lc.worldX(),
                             lc.worldZ(),
                             state.world.asBlockGetter(),
+                            state.ao_strategy,
                         ) catch |err| {
                             std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
                             lc.mesh_dirty = true;

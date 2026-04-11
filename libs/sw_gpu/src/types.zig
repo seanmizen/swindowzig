@@ -487,6 +487,38 @@ pub const MultisampleState = struct {
 /// by the config struct but fall back to no-AA (with a log warning).
 pub const AAMethod = enum { none, msaa, fxaa, smaa, ssaa, taa };
 
+/// Ambient-occlusion sampling strategy for voxel meshing.
+///
+/// Implemented:
+///   - `none`    — disable AO entirely (all vertices receive full brightness)
+///   - `classic` — per-vertex Mojang/Minecraft-style AO. For each face vertex,
+///     samples the 3 face-plane neighbours (side1, side2, corner) one cell
+///     beyond the face. Cheap, computed at mesh time, ships per-vertex `ao`.
+///   - `moore`   — extended sampling that adds the corresponding cells in
+///     the slab one further outward (outward+2 plane), weighted at half. This
+///     darkens indoor corners and overhang shadows that classic AO misses
+///     because classic only sees the single outward slice.
+///
+/// Planned / not yet implemented (accepted but fall back to `classic` with
+/// a runtime warning log):
+///   - `propagated` — multi-step flood-fill darkness propagation per block,
+///     would let light reach into open areas naturally. Needs chunk-wide
+///     remeshing on update and cross-chunk awareness.
+///   - `ssao`       — screen-space ambient occlusion as a post-process pass
+///     against the depth buffer. Would decouple AO from mesh time entirely
+///     (zero mesher cost) and give smooth analog gradients, but is non-trivial
+///     to implement and needs a depth target the voxel example does not yet
+///     keep around.
+pub const AOStrategy = enum {
+    none,
+    classic,
+    moore,
+    /// TODO: not yet implemented; runtime falls back to classic with a warning.
+    propagated,
+    /// TODO: not yet implemented; runtime falls back to classic with a warning.
+    ssao,
+};
+
 /// Anti-aliasing configuration for the engine renderer.
 ///
 /// Implemented:
