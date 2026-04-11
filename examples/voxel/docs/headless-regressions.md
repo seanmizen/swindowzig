@@ -1,9 +1,136 @@
 # Headless TAS / Frame-Dump Regressions — State, Gap, Plan
 
-> Research doc. Captures the current state of headless rendering, identifies the
-> gap between "works on a mac with a visible window" and "works on a Linux CI
-> box with no display server", and proposes a tiered implementation path.
-> No code changes are landed by this doc.
+> Research doc. Originally captured the current state of headless rendering,
+> identified the gap between "works on a mac with a visible window" and "works
+> on a Linux CI box with no display server", and proposed a tiered implementation
+> path. **Tier 2 has now landed** — see the "Status: Tier 2 landed" section
+> below for the reproducible commands. The rest of the document is kept as the
+> record of why the design looks the way it does.
+
+## Status: Tier 2 landed
+
+**Branch:** `voxel/headless-offscreen`
+
+The headless-offscreen GPU path is implemented. `--headless --dump-frame=<path>`
+now auto-promotes to a no-surface GPU init: wgpu-native allocates a persistent
+`bgra8unorm` offscreen texture sized to the config resolution and all render
+passes target that texture instead of a swapchain. `captureFrame()` reads the
+offscreen texture directly. `present()` becomes a no-op (the `submit()` path
+already `wgpuDevicePoll`s on `wait=true` so work is flushed between frames).
+No SDL window is created, so the path is viable on a CI box with no display
+server as soon as lavapipe (or another Vulkan ICD) is installed.
+
+Concretely landed:
+
+- `Config.headless_gpu: bool` in `libs/sw_app/src/app.zig`. When both
+  `headless` and `headless_gpu` are set, `runNative` uses `NullBackend` for
+  platform events but still calls `gpu_device.init(null, w, h)` and fires
+  the `render` callback.
+- `GPU.init(null, w, h)` branch in `libs/sw_gpu/src/gpu.zig`: skip
+  `createSurfaceFromSDLWindow`, skip `wgpuSurfaceConfigure`, allocate
+  `offscreen_color_texture` with usage
+  `RenderAttachment | CopySrc | TextureBinding` so the existing FXAA pass
+  can still sample it.
+- `getCurrentTextureView` / `captureFrame` / `present` fall back to the
+  offscreen texture when `self.surface == null`.
+- `examples/voxel/main.zig` auto-promotes `--headless --dump-frame=` (and
+  `--headless --compare-golden=`) to `headless_gpu = true`. Adds a new
+  `--compare-golden=<path>` CLI flag with `--golden-max-diff-pct` and
+  `--golden-max-channel-delta` tolerances; prints a one-line `PASS:` /
+  `FAIL:` summary and exits with `0` / `1`.
+- `examples/voxel/assets/goldens/<backend>/` directory convention.
+  Initial `metal/` set generated from this machine and checked in.
+  `lavapipe/` is intentionally empty and will be populated by running
+  `./examples/voxel/scripts/run_headless_regressions.sh --update` on a
+  Linux box (local Docker or a CI job). The expectation per section 5 of
+  this doc is that lavapipe pixels will diverge from metal and need their
+  own goldens — that divergence is not a regression.
+- `examples/voxel/scripts/run_headless_regressions.sh` walks an enumerated
+  regression table (the 4 existing TAS files × their meaningful CLI-flag
+  combinations, 10 runs total), runs each under
+  `--headless --dump-frame --compare-golden`, and pretty-prints `PASS` /
+  `FAIL` / `MISSING` / `ERROR` with a summary line. Detects backend from
+  `uname -s` (Darwin → metal, Linux → lavapipe). `--update` regenerates
+  goldens for the active backend.
+
+Not yet done (deliberately, per the task scope): no `zig build test-voxel`
+step, no GitHub Actions workflow, no `aa_regression.sh` promotion, and no
+build-time `-Dheadless_only` option to strip libsdl2-dev from the CI image.
+All Tier 3 / Tier 4 work.
+
+### Reproducing locally (mac)
+
+From `utils/swindowzig`:
+
+```bash
+# 1. Build
+zig build native -Dexample=voxel
+
+# 2. Quick sanity: the mandatory headless regression still exits 0
+./zig-out/bin/voxel --headless --tas examples/voxel/framespike.tas
+
+# 3. Smoke test the new headless-offscreen path with a frame dump
+./zig-out/bin/voxel --headless \
+  --tas examples/voxel/framespike.tas \
+  --dump-frame=/tmp/framespike.ppm \
+  --aa=none
+
+# 4. Run the full regression suite against checked-in metal goldens
+./examples/voxel/scripts/run_headless_regressions.sh
+
+# 5. Regenerate goldens for this backend (after a deliberate visual change)
+./examples/voxel/scripts/run_headless_regressions.sh --update
+```
+
+Compare mode prints a table like:
+
+```
+== headless voxel regressions — backend: metal ==
+
+TEST                         STATUS    NOTES
+----                         ------    -----
+framespike                   PASS
+msaa_flatland_none           PASS
+msaa_flatland_fxaa           PASS
+msaa_flatland_msaa4          PASS
+ao_corners_none              PASS
+ao_corners_classic           PASS
+ao_corners_moore             PASS
+cave_skylight_none           PASS
+cave_skylight_skylight       PASS
+dig_relight                  PASS
+
+Summary: 10 passed, 0 failed, 0 missing (backend=metal)
+```
+
+### Verified backends
+
+- **mac / Metal** — all 10 regression entries pass against freshly generated
+  metal goldens. Headless-offscreen captures are bit-deterministic across
+  consecutive runs on the same binary (verified by `cmp` on two
+  back-to-back `--dump-frame` outputs). As predicted in section 5 of this
+  doc, the headless-offscreen capture is **not** bit-identical to the
+  windowed capture on the same machine — the two runs converge on the same
+  TAS state but the render sequence differs in ways that leak into the
+  pixel output. The windowed path remains available for interactive
+  debugging; the headless path is the one the regression runner uses.
+- **Linux / lavapipe** — not verified. No Linux dev box in the loop yet.
+  The `lavapipe/` golden directory exists but is empty. Running the script
+  on a Linux box with `mesa-vulkan-drivers` installed should produce
+  a matching set of goldens via `--update`; nothing in the Zig code paths
+  is macOS-specific.
+
+### Missing goldens
+
+| path | reason |
+|------|--------|
+| `examples/voxel/assets/goldens/lavapipe/*.ppm` | No Linux box in the loop at this commit. Run `./examples/voxel/scripts/run_headless_regressions.sh --update` on a Linux host (with `mesa-vulkan-drivers` installed so lavapipe is visible via `vulkaninfo --summary`) to populate these. The set should be a full 10 files mirroring `metal/`. |
+
+---
+
+> The rest of this doc is the original research content and is preserved as
+> the record of why Tier 2 looks the way it does. Operationally, the section
+> above is the source of truth.
 
 ## TL;DR
 

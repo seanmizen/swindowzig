@@ -25,6 +25,13 @@ pub const Config = struct {
     /// When true: no window, no GPU, render callbacks are skipped.
     /// Useful for deterministic TAS simulation and server-side game logic.
     headless: bool = false,
+    /// When true (and `headless` is also true): no window, but GPU is still
+    /// initialised against an offscreen bgra8unorm texture sized to `size`.
+    /// Render callbacks fire normally and `captureFrame()` reads the offscreen
+    /// target. This is the headless-offscreen path used by the TAS frame-dump
+    /// regression runner — see `examples/voxel/docs/headless-regressions.md`.
+    /// On its own does nothing; must be combined with `headless = true`.
+    headless_gpu: bool = false,
     /// Tick timing mode. Default .realtime follows wall clock.
     /// Use .unlimited to run as fast as possible (pairs naturally with headless).
     tick_timing: TickTiming = .realtime,
@@ -71,10 +78,12 @@ fn runWasm(config: Config, comptime callbacks: type, allocator: std.mem.Allocato
 
 // Native loop (for desktop builds)
 fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Allocator) !void {
-    // 1. Create backend (SDL2 for windowed, NullBackend for headless)
+    // 1. Create backend (SDL2 for windowed, NullBackend for headless/headless_gpu)
     var null_impl: platform.null_backend.NullBackend = .{};
     var backend: platform.Backend = if (config.headless) blk: {
-        std.log.info("Headless mode: no window, no GPU, tick_timing={s}", .{@tagName(config.tick_timing)});
+        std.log.info("Headless mode: no window, headless_gpu={}, tick_timing={s}", .{
+            config.headless_gpu, @tagName(config.tick_timing),
+        });
         break :blk null_impl.backend();
     } else blk: {
         const sdl_backend = try platform.native_sdl.SDL2Backend.create(
@@ -89,12 +98,20 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
 
     try backend.init();
 
-    // 2. Initialize GPU — skipped in headless mode (isReady() stays false, render early-returns)
+    // 2. Initialize GPU:
+    //   - windowed      → GPU binds to the SDL window's surface
+    //   - headless_gpu  → GPU inits with a null surface and allocates an offscreen
+    //                     bgra8unorm texture sized to config.size
+    //   - headless only → GPU is skipped entirely (isReady() stays false, render early-returns)
     var gpu_device: gpu_mod.GPU = .{};
     if (!config.headless) {
         const window = backend.getWindow();
         gpu_device.init(window, config.size.w, config.size.h) catch |err| {
             std.log.warn("GPU initialization failed: {}, running without rendering", .{err});
+        };
+    } else if (config.headless_gpu) {
+        gpu_device.init(null, config.size.w, config.size.h) catch |err| {
+            std.log.warn("Headless GPU initialization failed: {}, running without rendering", .{err});
         };
     }
 
@@ -176,8 +193,9 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
             }
         }
 
-        // Render — skipped in headless mode
-        if (!config.headless) {
+        // Render — skipped in pure headless mode (no GPU). Runs in headless_gpu
+        // mode because we initialised the GPU against an offscreen texture.
+        if (!config.headless or config.headless_gpu) {
             if (@hasDecl(callbacks, "render")) {
                 try callbacks.render(&ctx);
             }
