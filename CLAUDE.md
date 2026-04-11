@@ -1,6 +1,10 @@
 # swindowzig - Claude Guide
 
-> **Docs policy: CLAUDE.md and README.md only. Never create additional markdown files.**
+> **Docs policy.** Operational command sequences (>5 steps) → executable script under
+> `examples/voxel/tests/*.sh`. Deep reference material (>20 lines on one topic) →
+> `docs/<topic>.md`. Both cases: leave a ≤3-line breadcrumb in CLAUDE.md pointing
+> at the real artifact. Do NOT inline heavy reference or long command runs directly
+> into CLAUDE.md — it is loaded into every agent's context and the budget is finite.
 
 ---
 
@@ -190,114 +194,21 @@ tick, regardless of how long loading took.
 TAS scripts for regression live under `examples/voxel/`:
 - `framespike.tas` — block-removal during camera pan (hilly world). Mandatory
   headless test (see below).
-- `tests/msaa_flatland.tas` — MSAA regression test on flatland. Usage:
-  ```bash
-  ./zig-out/bin/voxel --world=flatland --msaa=none \
-    --tas examples/voxel/tests/msaa_flatland.tas --dump-frame=/tmp/a.ppm
-  ./zig-out/bin/voxel --world=flatland --msaa=4 \
-    --tas examples/voxel/tests/msaa_flatland.tas --dump-frame=/tmp/b.ppm
-  ```
-  Then pixel-diff `a.ppm` vs `b.ppm`. Baseline (2026-04-11): 3.42% differing pixels,
-  max channel delta = 67, 13,570 channels with diff ≥ 5 — the MSAA signature is
-  unambiguous (vs hilly's max delta = 1).
+- `tests/msaa_flatland.tas` — deterministic flatland scene used by the AA
+  regression. Runner: `./examples/voxel/tests/aa_regression.sh` (captures
+  none/fxaa/msaa4, writes both normalized and amplified diffs, prints coverage).
 
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
 block at the top documenting the purpose, usage, and baseline numbers.
 
 ---
 
-## Voxel Demo — Anti-Aliasing Analysis
+## Voxel Demo — Anti-Aliasing
 
-### What MSAA can and cannot do for voxel worlds
-
-MSAA (multi-sample anti-aliasing) works at the **rasterizer** level: it fires
-multiple sub-pixel samples per pixel and averages them. It only produces
-intermediate colours at **geometry silhouette edges** — pixels that straddle
-two different triangles. This means:
-
-- ✅ **Outer silhouette edges** (block geometry vs sky/fog): MSAA averages the
-  block colour with the background. Visible as a 1-pixel-wide blend strip.
-- ❌ **Block-on-block interior edges** (two adjacent opaque blocks touching):
-  both triangle sides are solid geometry at the same/close depth. All 4× sub-
-  samples hit geometry, so the coverage fraction is 0% or 100%. No blending.
-
-For a voxel world, the vast majority of visible edges are block-on-block
-interior edges (flat terrain faces, cliff faces, etc.). Only the outermost
-silhouette edges get smoothed. In practice, 4× MSAA on a voxel world affects
-**~3% of pixels** in a typical scene.
-
-### Why the edge looks olive/green ("green through the gaps")
-
-The specific effect Sean noticed (2026-04-11) is **correct MSAA behaviour**,
-not a bug:
-
-- The test scene has grass-top blocks (bright green, ~`RGB(102, 131, 36)` in
-  sRGB) next to a dug hole. The hole's side faces are near-black due to
-  maximum AO: `RGB(38, 4, 4)`.
-- At the diagonal silhouette of the terrain edge, a pixel at the boundary row
-  has 2/4 sub-samples hitting the grass-top and 2/4 hitting the dark side face.
-  The blend is `(102+38)/2, (131+4)/2, (36+4)/2` ≈ `(72, 71, 21)` — olive.
-- Without MSAA, the centre sample decides: one side gets solid green, the other
-  solid near-black, with a hard aliased step between them.
-- The olive/muddy blend looks garish because the AO floor (`0.4 + ao * 0.6`)
-  combined with ambient+diffuse lighting drops occluded side faces to near-black
-  while the lit grass top is fully saturated green. The extreme contrast makes
-  the sub-pixel blend traverse a wide colour space.
-
-**This is not a mesh gap.** The mesher uses `@floatFromInt(world_coord)` for
-all vertex positions; IEEE 754 f32 is exact for integers ≤ 2²³, so adjacent
-faces share mathematically identical coordinates. No subpixel cracks exist.
-
-### Recommendation: FXAA for broader coverage
-
-For voxel graphics, **FXAA** (Fast Approximate Anti-Aliasing) gives a much
-more visible improvement than MSAA:
-
-- Works as a post-process pass on the final colour image.
-- Detects luminance discontinuities in screen space — catches ALL colour edges,
-  including block-on-block interior edges that MSAA cannot touch.
-- Cost: one extra screen-space pass (cheap; runs at 1 sample/pixel).
-- Downside: blurs fine details (text, thin lines, crisp texel noise). For a
-  voxel world with procedural texel noise this is acceptable — the noise is
-  meant to look low-res anyway.
-
-FXAA implementation sketch:
-1. Render voxel scene to an offscreen `TextureView` (not the swapchain surface).
-2. Run a FXAA fullscreen-quad pass that reads from step 1's texture and writes
-   to the swapchain surface.
-3. FXAA WGSL implementation: use the public-domain FXAA 3.11 GLSL → WGSL port,
-   or implement the simpler but effective "FXAA lite" (4-tap neighbourhood
-   luminance gradient → conditional pixel shift).
-
-MSAA and FXAA can coexist: render to an MSAA texture (for geometry silhouette
-quality), resolve to an intermediate texture, then FXAA over that. For most
-voxel scenes the FXAA-only route gives a bigger visible win per GPU cost.
-
-### FXAA Implementation Notes (2026-04-11)
-
-**Architecture:** `--aa=fxaa` activates a two-pass pipeline. The voxel scene renders
-to an offscreen `bgra8unorm` texture (`fxaa_color_texture`, usage `render_attachment |
-texture_binding`). After `pass.end()`, `runFXAAPass` blits that texture to the swapchain
-via a fullscreen triangle (3 vertices from `@builtin(vertex_index)`, no vertex buffer).
-The FXAA shader is embedded via `@embedFile("fxaa.wgsl")` in `sw_gpu/src/gpu.zig`.
-
-**Pixel-diff results (flatland scene, 1280×720, same camera/TAS state):**
-
-| Comparison | Differing pixels | % of frame | Max channel Δ | Channels Δ≥5 |
-|------------|-----------------|------------|---------------|--------------|
-| none → fxaa | 110,990 / 921,600 | **12.04%** | 95 | 44,283 |
-| none → msaa4 | 31,544 / 921,600 | **3.42%** | 67 | 13,530 |
-
-FXAA touches **3.5× more pixels** than 4× MSAA in a typical voxel scene. In the
-terrain region alone (rows 250–450, cols 100–500) FXAA covered 7.3% vs MSAA's 1.1% —
-**6.6× more coverage** where it matters most.
-
-**Visual verdict:** Block-on-block tile transitions are visibly softer under FXAA;
-the horizon silhouette is cleanly smoothed; no ghosting artefacts; no interior texture
-blur (the procedural texel noise is meant to look coarse, so slight softening is
-acceptable). The crosshair (thin 2px white lines) is also anti-aliased — expected for
-a luminance-based method. FXAA is the recommended choice for voxel scenes where
-block-on-block interior edges dominate over geometry silhouettes.
+Theory (MSAA vs FXAA for voxels, olive-edge explanation, FXAA impl architecture,
+pixel-diff baselines): [`docs/antialiasing.md`](docs/antialiasing.md).
+Regenerating the diffs / refreshing the doc's embedded PNGs:
+`./examples/voxel/tests/aa_regression.sh [--output-dir docs/assets]`.
 
 ---
 

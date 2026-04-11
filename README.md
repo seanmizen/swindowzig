@@ -201,4 +201,38 @@ Call functions, things happen. No ECS. No magic. Never hide the GPU.
 
 ---
 
+## Docs
+
+Heavy reference material lives in [`docs/`](docs/) — not in CLAUDE.md — so
+agents only pay for what they open.
+
+| File | Contents |
+|------|----------|
+| [`docs/antialiasing.md`](docs/antialiasing.md) | MSAA vs FXAA for voxel worlds; olive-edge explanation; FXAA impl architecture; embedded pixel-diff PNGs; regeneration commands |
+
+Regression runners live under [`examples/voxel/tests/`](examples/voxel/tests/).
+Current:
+
+- [`aa_regression.sh`](examples/voxel/tests/aa_regression.sh) — captures
+  none/fxaa/msaa4 on `msaa_flatland.tas`, emits normalized + amplified diffs,
+  prints coverage stats.
+
+---
+
+## TODOs
+
+- **MSAA edge surface bleed-through.** 4× MSAA currently shows unwanted
+  colour bleed across block-on-block silhouette edges (neighbouring surface
+  colour leaks into the foreground sample). FXAA does not exhibit this.
+  Investigate: sample-shading, depth-resolve interaction with the painter's-
+  algorithm sort order, and whether bgra8unorm MSAA resolve is averaging
+  samples from behind the silhouette. Tracked as a defect against `--aa=msaa`;
+  see [`docs/antialiasing.md`](docs/antialiasing.md) for context.
+- **Headless AA regression.** `aa_regression.sh` requires a display + GPU and
+  so is not yet part of the mandatory pre-handback checklist. Resolve by
+  finding a headless GPU path (offscreen surface creation without a platform
+  window) so it can run in CI.
+
+---
+
 **See [CLAUDE.md](CLAUDE.md) for build instructions, known bugs, and technical details.**
