@@ -44,7 +44,7 @@ swindowzig/
 ├── examples/
 │   ├── justabox/       # Default: single spinning colored box
 │   ├── windows/        # Triangle with mouse drag
-│   └── voxel/          # Voxel chunk demo (16×16×16)
+│   └── voxel/          # Voxel chunk demo (48×256×48)
 └── backends/
     └── wasm/           # Web platform boot + dev server
 ```
@@ -106,7 +106,7 @@ mesh_incremental_dirty = true; // GPU buffers need recreation
 - Collects affected quads via linear scan of `quad_block` (~6k entries), removes them, re-meshes 7 blocks
 - Maintains `sort_scratch` through the update so `sortByDepth` uses insertion sort (O(n)) instead of pdqsort (O(n log n)) on the next frame. Scratch is compacted by filtering entries with `.idx >= new_quad_count`, then new entries are appended with computed distances. Scratch is grown with +64 headroom when quad count increases.
 
-**Measured improvement (48×12×48 chunk, ~6144 quads):**
+**Measured improvement (48×256×48 chunk, ~6144 quads):**
 - Before: 3891µs (mesh 2308 + sort 1341 + upload 242)
 - After: ~840µs (tick update 210 + sort 565 + upload 280) — **78% reduction**
 
@@ -194,3 +194,50 @@ errors (buffer overruns, bad descriptors) that only appear when the renderer act
 3. Add Zig wrapper in `gpu.zig`
 4. Add corresponding web path in `web_bridge.zig`
 5. Release anything you create (wgpu uses reference counting)
+
+---
+
+## File Map
+
+Key files and what they do — read this before opening anything.
+
+### Core libraries (`libs/`)
+
+| File | Purpose |
+|------|---------|
+| `libs/sw_app/src/app.zig` | `sw.run()` entry point; owns the main loop |
+| `libs/sw_app/src/context.zig` | `Context` passed to every callback; holds allocator, bus, tick info |
+| `libs/sw_core/src/event.zig` | `Event` union — all input/system event variants |
+| `libs/sw_core/src/bus.zig` | Event bus: push/subscribe per tick |
+| `libs/sw_core/src/input.zig` | Keyboard/mouse snapshot, edge detection |
+| `libs/sw_core/src/record.zig` | Record events to a TAS file |
+| `libs/sw_core/src/replay.zig` | Replay events from a TAS file |
+| `libs/sw_core/src/tas.zig` | TAS file format (parse/write) |
+| `libs/sw_gpu/src/gpu.zig` | Main GPU API — `GPU` struct, all `create*` / `begin*` / `submit` methods |
+| `libs/sw_gpu/src/native_webgpu.zig` | Raw C bindings for wgpu-native (`WGPUFoo` types) |
+| `libs/sw_gpu/src/types.zig` | Shared descriptor types used by both native and WASM paths |
+| `libs/sw_gpu/src/web_bridge.zig` | WASM/JS extern bindings |
+| `libs/sw_platform/src/native_sdl.zig` | SDL2 window + event pump (native path) |
+| `libs/sw_math/src/mat4.zig` | 4×4 matrix: `perspective()`, `lookAt()`, multiply |
+| `libs/sw_math/src/vec3.zig` | Vec3 ops |
+
+### Voxel example (`examples/voxel/`)
+
+Chunk dimensions: **CHUNK_W = 48** (X/Z), **CHUNK_H = 256** (Y).
+
+| File | Purpose |
+|------|---------|
+| `main.zig` | Entry point, TAS wiring, render loop, pause menu, debug overlay |
+| `chunk.zig` | `Chunk` struct; `BlockType` enum; `setBlock`/`getBlock`; world-gen call |
+| `world.zig` | Multi-chunk world; chunk map; load/unload |
+| `world_gen.zig` | Procedural terrain (height-map noise → block placement) |
+| `mesher.zig` | Greedy quad mesher; incremental `updateForBlockChange`; `sortByDepth` |
+| `camera.zig` | FPS camera; view/projection matrices |
+| `player.zig` | Movement, gravity, collision |
+| `raycast.zig` | Block-face hit test for place/destroy |
+| `overlay.zig` | `OverlayRenderer` — 2D alpha-blended quad pipeline for HUD |
+| `bitmap_font.zig` | 5×7 glyph table + `drawText`/`drawStepHud` helpers |
+| `game_state.zig` | Pure-state struct (no GPU deps); shared across files |
+| `keyboard_hud.zig` | On-screen keyboard layout diagram |
+| `voxel.wgsl` | Voxel vertex+fragment shader; GPU debug highlight decode |
+| `framespike.tas` | TAS script used by the mandatory headless regression test |
