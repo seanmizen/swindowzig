@@ -163,6 +163,8 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (default — per-vertex Mojang face-plane AO), `moore` (extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
 | `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation; caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block triggers a full-chunk `computeSkylight()` + mesh regen (safe fallback for dig relight; bounded local BFS is still a future optimisation). See `examples/voxel/docs/lighting.md` for the algorithm and the phase-1 known limitations (no cross-chunk seam fixing). |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish (so MSAA comparison runs capture the same deterministic state). |
+| `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none` (default — opt-in feature, draw every loaded chunk), `sphere` (radial cutoff at render_distance + slack; cheap sanity backstop), `cone` (sphere-vs-cone test against the camera forward, fov controlled by `--frustum-fov-deg`). The chunk the camera sits in plus its 8 horizontal neighbours are NEVER culled regardless of strategy — see `examples/voxel/frustum.zig` for the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
+| `--frustum-fov-deg=<degrees>` | Total fov of the cone strategy in degrees. Default 180° (a deliberate no-op short-circuit so an accidental `--frustum=cone` cannot drop chunks before the user tightens the fov). Range [0, 360]. Half-angle ≥ 90° always returns true. |
 
 ---
 
@@ -211,6 +213,13 @@ TAS scripts for regression live under `examples/voxel/`:
   affected pixels are exactly the cave interior; sky region unchanged).
   Hilly → 97.5% pixels differ, mean Δ 19.78/255, max Δ 105/255 (almost
   every face shifts because hilly terrain has overhangs everywhere).
+- `tests/frustum_look_down.tas` — flatland, pitches the camera into the
+  -π/2 + 0.01 clamp, used to verify the frustum cull never blanks the
+  ground when looking straight down. Pass criterion is that
+  `--frustum=cone --frustum-fov-deg=30` and `--frustum=none` produce
+  byte-identical PPMs (the camera-inside-bounding-sphere shortcut and the
+  3×3 camera-neighbourhood safety net both fire). Mean brightness ≈ 103/255
+  on the default flatland scene; "black" would be < 5/255.
 - `tests/dig_relight.tas` — flatland small pit (4 dig clicks from a
   steep pitch-clamped look-down), used to verify `World.setBlock` now
   recomputes chunk skylight on dig. Diff vs. a local branch that

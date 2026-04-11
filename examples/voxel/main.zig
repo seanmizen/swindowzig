@@ -99,6 +99,7 @@ const CameraType = @import("camera.zig").Camera(Vec3, Mat4, math);
 const WorldRaycastType = @import("raycast.zig").Raycast(Vec3, world_mod.World);
 const worldRaycast = WorldRaycastType.raycast;
 const camera_clip = @import("camera_clip.zig");
+const frustum_mod = @import("frustum.zig");
 
 /// 3PV camera-clip skin: distance to keep between the camera origin and the
 /// nearest solid voxel face. Must exceed the near-plane half-diagonal so the
@@ -197,15 +198,16 @@ const MenuScreen = enum { main, settings, exit_confirm };
 
 // Per-screen entry counts. Kept here so nav wraparound has a single source of truth.
 const MENU_MAIN_COUNT: u8 = 3;
-const MENU_SETTINGS_COUNT: u8 = 5;
+const MENU_SETTINGS_COUNT: u8 = 6;
 const MENU_EXIT_COUNT: u8 = 2;
 
 // Settings entry indices (matches the rendered order).
 const SETTINGS_IDX_AA: u8 = 0;
 const SETTINGS_IDX_AO: u8 = 1;
 const SETTINGS_IDX_LIGHTING: u8 = 2;
-const SETTINGS_IDX_RENDER_DIST: u8 = 3;
-const SETTINGS_IDX_BACK: u8 = 4;
+const SETTINGS_IDX_FRUSTUM: u8 = 3;
+const SETTINGS_IDX_RENDER_DIST: u8 = 4;
+const SETTINGS_IDX_BACK: u8 = 5;
 
 fn menuEntryCount(screen: MenuScreen) u8 {
     return switch (screen) {
@@ -276,6 +278,17 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
                 lc_ptr.*.mesh_dirty = true;
             }
             std.log.info("Settings: Lighting -> {s} (every loaded chunk marked dirty)", .{@tagName(next_mode)});
+        },
+        SETTINGS_IDX_FRUSTUM => {
+            // Cycle: none → sphere → cone → none …
+            // Live: writes through to state.frustum_strategy. The freeze
+            // toggle (Cmd+F) is intentionally NOT cleared on cycle so the
+            // user can A/B strategies against the same frozen viewpoint.
+            state.frustum_strategy = state.frustum_strategy.cycle(dir);
+            std.log.info("Settings: Frustum -> {s} (live; fov={d:.0}°)", .{
+                state.frustum_strategy.label(),
+                state.frustum_fov_deg,
+            });
         },
         SETTINGS_IDX_RENDER_DIST => {
             const min_rd: i32 = 1;
@@ -376,6 +389,25 @@ const State = struct {
     world_loading: bool = true,
     /// Selected world generation preset. Parsed from --world=<flatland|hilly>.
     world_preset: world_gen.Preset = .hilly,
+    /// Frustum-cull strategy parsed from --frustum=<none|sphere|cone>.
+    /// Default is `.none` so the feature is opt-in — see frustum.zig header
+    /// for the rationale and the cone-vs-sphere math notes.
+    frustum_strategy: frustum_mod.Strategy = .none,
+    /// Total fov in degrees for the cone strategy. Parsed from
+    /// --frustum-fov-deg=<degrees>; default 180 (a no-op short-circuit
+    /// chosen so an accidental `--frustum=cone` cannot drop chunks the
+    /// player can still see).
+    frustum_fov_deg: f32 = 180.0,
+    /// When non-null, render reuses this snapshot every frame instead of
+    /// rebuilding from the live camera. Toggled by Cmd+F (Ctrl+F on
+    /// Win/Linux). Diagnostic only — lets the player fly around and watch
+    /// what their previous viewpoint thinks is visible.
+    frozen_frustum: ?frustum_mod.Frustum = null,
+    /// Diagnostic counters for the debug overlay. Reset every frame at the
+    /// top of the chunk-draw loop, written by the cull. NOT used for any
+    /// game logic.
+    frustum_drawn: u32 = 0,
+    frustum_culled: u32 = 0,
 };
 
 var state: State = undefined;
@@ -454,6 +486,14 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.ao_strategy = .classic;
     // Default lighting: skylight (caves dark). `--lighting=none` overrides.
     state.lighting_mode = .skylight;
+    // Frustum-cull defaults: opt-in (.none) and a 180° fov no-op so any
+    // future user toggling on .cone via the menu without changing fov gets
+    // a safe identity cull until they tighten it.
+    state.frustum_strategy = .none;
+    state.frustum_fov_deg = 180.0;
+    state.frozen_frustum = null;
+    state.frustum_drawn = 0;
+    state.frustum_culled = 0;
     state.dump_frame_path = null;
     state.dump_frame_done = false;
 
@@ -540,6 +580,27 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.process.exit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--frustum=")) {
+            const val = std.mem.sliceTo(arg["--frustum=".len..], 0);
+            if (frustum_mod.Strategy.fromString(val)) |s| {
+                state.frustum_strategy = s;
+            } else {
+                std.log.err("--frustum: invalid value '{s}'. Accepted: none, sphere, cone", .{val});
+                std.process.exit(1);
+            }
+        }
+        if (std.mem.startsWith(u8, arg, "--frustum-fov-deg=")) {
+            const val = std.mem.sliceTo(arg["--frustum-fov-deg=".len..], 0);
+            const parsed = std.fmt.parseFloat(f32, val) catch {
+                std.log.err("--frustum-fov-deg: not a number: '{s}'", .{val});
+                std.process.exit(1);
+            };
+            if (parsed < 0.0 or parsed > 360.0) {
+                std.log.err("--frustum-fov-deg: must be in [0, 360], got {d}", .{parsed});
+                std.process.exit(1);
+            }
+            state.frustum_fov_deg = parsed;
+        }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={}", .{
         @tagName(state.msaa_config.method), state.msaa_config.msaa_samples,
@@ -547,6 +608,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
     std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
+    std.log.info("Frustum cull: strategy={s} fov={d:.0}°", .{
+        state.frustum_strategy.label(), state.frustum_fov_deg,
+    });
 
     // Initialize world with the selected preset (deferred until here so --world= works).
     state.world = try world_mod.World.init(ctx.allocator(), state.world_preset);
@@ -1045,6 +1109,38 @@ fn voxelTick(ctx: *sw.Context) !void {
         std.log.info("GPU debug: {}", .{state.gpu_debug});
     }
 
+    // Cmd+F (macOS) / Ctrl+F (Windows/Linux) — freeze / un-freeze the cull
+    // frustum at the current camera transform. Pressing Cmd+F while the
+    // frustum is already frozen un-freezes it.
+    //
+    // Note: the spec sketch suggested F3 for this toggle, but the voxel-demo
+    // CLAUDE.md forbids function keys (they're not on the keyboard HUD and
+    // not reliable cross-platform). Cmd+F slots in next to the existing
+    // Cmd+D / Cmd+G / Cmd+S / Cmd+V combos.
+    if (input.keyPressed(.F) and (input.mods.super or input.mods.ctrl)) {
+        if (state.frozen_frustum) |_| {
+            state.frozen_frustum = null;
+            std.log.info("Frustum freeze: OFF (live frustum)", .{});
+        } else {
+            const eye = [3]f32{
+                state.camera.position.x,
+                state.camera.position.y,
+                state.camera.position.z,
+            };
+            const fwd_v = state.camera.forward();
+            const fwd = [3]f32{ fwd_v.x, fwd_v.y, fwd_v.z };
+            state.frozen_frustum = frustum_mod.Frustum.capture(
+                eye,
+                fwd,
+                state.frustum_fov_deg,
+                world_mod.RENDER_DISTANCE,
+            );
+            std.log.info("Frustum freeze: ON @ ({d:.1},{d:.1},{d:.1}) fwd=({d:.2},{d:.2},{d:.2})", .{
+                eye[0], eye[1], eye[2], fwd[0], fwd[1], fwd[2],
+            });
+        }
+    }
+
     // Cmd+S (macOS) / Ctrl+S (Windows/Linux) — set spawn point to current position (debug override)
     if (input.keyPressed(.S) and (input.mods.super or input.mods.ctrl)) {
         state.spawn_point = state.player.feet_pos;
@@ -1146,6 +1242,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     SETTINGS_IDX_AA => cycleSettingsValue(SETTINGS_IDX_AA, 1),
                     SETTINGS_IDX_AO => cycleSettingsValue(SETTINGS_IDX_AO, 1),
                     SETTINGS_IDX_LIGHTING => cycleSettingsValue(SETTINGS_IDX_LIGHTING, 1),
+                    SETTINGS_IDX_FRUSTUM => cycleSettingsValue(SETTINGS_IDX_FRUSTUM, 1),
                     SETTINGS_IDX_RENDER_DIST => cycleSettingsValue(SETTINGS_IDX_RENDER_DIST, 1),
                     else => {},
                 },
@@ -1707,14 +1804,43 @@ fn voxelRender(ctx: *sw.Context) !void {
         return;
     };
 
+    // Build the live frustum from the current camera (or use the frozen
+    // snapshot if Cmd+F is active). When the freeze is held we still update
+    // the chunk-grid origin to the *frozen* eye, NOT the live camera, so
+    // moving around does not silently re-enable nearby chunks via the 3×3
+    // safety net — that would defeat the diagnostic.
+    const live_frustum: frustum_mod.Frustum = if (state.frozen_frustum) |fz| fz else blk: {
+        const eye = [3]f32{
+            state.camera.position.x,
+            state.camera.position.y,
+            state.camera.position.z,
+        };
+        const fwd_v = state.camera.forward();
+        const fwd = [3]f32{ fwd_v.x, fwd_v.y, fwd_v.z };
+        break :blk frustum_mod.Frustum.capture(
+            eye,
+            fwd,
+            state.frustum_fov_deg,
+            world_mod.RENDER_DISTANCE,
+        );
+    };
+
     // Draw chunks back-to-front (painter's algorithm at chunk level).
-    // Build a temporary sorted list of chunks by distance from camera.
+    // Build a temporary sorted list of chunks by distance from camera,
+    // filtering out chunks rejected by the configured cull strategy.
+    state.frustum_drawn = 0;
+    state.frustum_culled = 0;
     var sorted_chunks = std.ArrayList(*world_mod.LoadedChunk){};
     defer sorted_chunks.deinit(ctx.allocator());
     {
         var it = state.world.chunks.valueIterator();
         while (it.next()) |lc_ptr| {
             if (lc_ptr.*.mesh.vertices.items.len == 0) continue;
+            if (!frustum_mod.keepChunk(state.frustum_strategy, live_frustum, lc_ptr.*.cx, lc_ptr.*.cz)) {
+                state.frustum_culled += 1;
+                continue;
+            }
+            state.frustum_drawn += 1;
             sorted_chunks.append(ctx.allocator(), lc_ptr.*) catch continue;
         }
     }
@@ -1936,6 +2062,12 @@ fn voxelRender(ctx: *sw.Context) !void {
                         const s = std.fmt.bufPrint(&entry_buf, "Lighting: {s}", .{light_label}) catch "Lighting: ?";
                         break :blk s;
                     },
+                    SETTINGS_IDX_FRUSTUM => blk: {
+                        const s = std.fmt.bufPrint(&entry_buf, "Frustum: {s} ({d:.0}°)", .{
+                            state.frustum_strategy.label(), state.frustum_fov_deg,
+                        }) catch "Frustum: ?";
+                        break :blk s;
+                    },
                     SETTINGS_IDX_RENDER_DIST => blk: {
                         const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {} (no live effect)", .{state.render_distance_stub}) catch "Render Distance: ?";
                         break :blk s;
@@ -2036,6 +2168,31 @@ fn voxelRender(ctx: *sw.Context) !void {
             const pitch_deg = @as(i32, @intFromFloat(std.math.round(state.camera.pitch * (180.0 / std.math.pi))));
             const s = std.fmt.bufPrint(&dbg_buf, "PITCH: {}", .{pitch_deg}) catch "PITCH: ?";
             drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+
+        // Frustum cull strategy + drawn/culled chunk counts. The freeze
+        // indicator goes on its own line in red so the user notices the
+        // diagnostic mode is engaged.
+        {
+            const s = std.fmt.bufPrint(&dbg_buf, "FRUSTUM: {s} {d:.0}d", .{
+                state.frustum_strategy.label(),
+                state.frustum_fov_deg,
+            }) catch "FRUSTUM: ?";
+            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+        {
+            const s = std.fmt.bufPrint(&dbg_buf, "CHUNKS: {}/{}", .{
+                state.frustum_drawn,
+                state.frustum_drawn + state.frustum_culled,
+            }) catch "CHUNKS: ?";
+            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            line_y += dbg_line_h;
+        }
+        if (state.frozen_frustum != null) {
+            const red = [4]f32{ 1.0, 0.4, 0.4, 1.0 };
+            drawText(&state.overlay, "FRUSTUM FROZEN", dbg_margin_x, line_y, red, dbg_scale, overlay_w, overlay_h) catch {};
             line_y += dbg_line_h;
         }
 
