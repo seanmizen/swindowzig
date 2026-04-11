@@ -32,15 +32,24 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
 @group(0) @binding(1) var s_scene: sampler;
 
 // ── FXAA constants ────────────────────────────────────────────────────────────
+//
+// EDGE_THRESHOLD, SUBPIX_CAP, and SEARCH_STEPS are QUALITY-TIER KNOBS.
+// The engine substitutes the `__FXAA_*__` placeholder tokens at pipeline
+// create time (see `configureFXAA` in `gpu.zig`) based on the selected
+// `FxaaQuality` — low/medium/high maps to roughly FXAA 3.11 preset 12/25/39.
+//
+// Keep the placeholder strings unique; they are substituted via plain
+// text replacement, not a real preprocessor. Do not rename without also
+// updating `configureFXAA`.
 
 // Minimum local contrast below which FXAA is skipped (protects dark areas).
 const EDGE_THRESHOLD_MIN: f32 = 0.0312;
 // Fraction of local maximum luma — skip pixels with contrast below this.
-const EDGE_THRESHOLD: f32 = 0.125;
+const EDGE_THRESHOLD: f32 = __FXAA_EDGE_THRESHOLD__;
 // Cap on the subpixel blend contribution (0.75 = 75 % of a pixel).
-const SUBPIX_CAP: f32 = 0.75;
+const SUBPIX_CAP: f32 = __FXAA_SUBPIX_CAP__;
 // Maximum steps to search along the detected edge in each direction.
-const SEARCH_STEPS: i32 = 12;
+const SEARCH_STEPS: i32 = __FXAA_SEARCH_STEPS__;
 // Fraction of the edge gradient used as the end-of-edge luminance threshold.
 const SEARCH_THRESHOLD: f32 = 0.25;
 

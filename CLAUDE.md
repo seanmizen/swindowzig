@@ -151,16 +151,25 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 
 ## Voxel Demo — CLI Flags
 
+**Default changes (April 2026):** `--ao=moore`, `--aa=fxaa` (quality=medium),
+and `--render-distance=4` are now the startup defaults when no CLI flags are
+given. Existing regression tests that captured frames under the old defaults
+(classic AO, no AA) continue to pass the previous flags explicitly — see the
+comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
+`cave_skylight.tas`, and `tests/aa_regression.sh`.
+
 | Flag | Description |
 |------|-------------|
 | `--tas <path>` | Load and play a TAS script. Physical input blocked during playback. |
 | `--headless` | No window, no GPU. Ticks unlimited speed. Exits when TAS finishes. |
 | `--tas-step` | Frame-by-frame TAS stepping. Right arrow = advance one TAS tick. Implies `--gpu-debug`. |
 | `--gpu-debug` | Highlight freshly rebuilt mesh faces (orange tint, fades ~0.5s). Also toggled with Cmd+G / Ctrl+G at runtime. |
-| `--aa=<mode>` | Anti-aliasing method. Accepted: `none`, `msaa` (default, 4× MSAA), `fxaa` (FXAA 3.11 post-process). `--aa=fxaa` renders the scene to an offscreen bgra8unorm texture then runs a fullscreen FXAA pass to the swapchain. Can be combined with `--msaa=N` to control the MSAA sample count when `--aa=msaa` is active. |
-| `--msaa=N` | MSAA sample count. Accepted: `none`/`0` (no AA), `1`, `2`, `4` (default), `8`. The `bgra8unorm` surface format supports [1, 2, 4] on native and [1, 4] on WebGPU; values outside that range are clamped (e.g. `--msaa=8` → 4×). |
+| `--aa=<mode>` | Anti-aliasing method. Accepted: `none`, `msaa` (hardware multisample), `fxaa` (FXAA 3.11 post-process, **default at `medium` quality**). `--aa=fxaa` renders the scene to an offscreen bgra8unorm texture then runs a fullscreen FXAA pass to the swapchain. Can be combined with `--msaa=N` / `--fxaa-quality=<tier>` to control the per-method quality knob. |
+| `--msaa=N` | MSAA sample count. Accepted: `none`/`0` (no AA), `1`, `2`, `4`, `8`. Implies `--aa=msaa` when given. The `bgra8unorm` surface format supports [1, 2, 4] on native and [1, 4] on WebGPU; values outside that range are clamped (e.g. `--msaa=8` → 4×). |
+| `--fxaa-quality=<tier>` | FXAA 3.11 quality tier. Accepted: `low` (4-step edge search, 0.5 subpix cap, 0.166 edge threshold), `medium` (12-step, 0.75, 0.125 — **default**; matches the pre-quality-tier baseline so old FXAA diffs stay valid), `high` (32-step, 0.85, 0.063). Tiers map to roughly FXAA 3.11 presets 12/25/39. Toggling at runtime via the Settings menu rebuilds the FXAA shader + pipeline (WGSL has no specialisation constants, so the tier is substituted into `fxaa.wgsl` by text replacement at `configureFXAA` time). |
+| `--render-distance=N` | Chunk-radius circular cull distance. Accepted: integer in [1, 32]. **Default: 4.** Frozen for the lifetime of the World; the in-game Settings picker is display-only until live spiral-offset rebuild lands. See `world.zig: DEFAULT_RENDER_DISTANCE`. |
 | `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
-| `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (default — per-vertex Mojang face-plane AO), `moore` (extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
+| `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (per-vertex Mojang face-plane AO), `moore` (**default** — extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
 | `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation; caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block triggers a full-chunk `computeSkylight()` + `computeBlockLight()` + mesh regen. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
 | `--meshing=<mode>` | Mesher strategy. Accepted: `naive` (one quad per visible block face — preserves the `quad_block` parallel-array invariant used by `updateForBlockChange`) and `greedy` (default — coplanar same-material + uniform-AO/skylight faces merged into larger rectangles, ~35× reduction on flatland, ~3× on hilly). Greedy quads span multiple blocks so `updateForBlockChange` can't patch them; dig/place events flag the chunk `mesh_dirty = true` for next-tick full regen. Merge dimension capped at 6 blocks to stay within the painter's-algorithm sort tolerance (see `examples/voxel/docs/memory.md` §Rank 5). |
 | `--place-block=<type>` | Block type emitted by right-click placement. Accepted: `stone` (default) and `glowstone`. Added with phase-3 block light so `tests/glowstone_cave.tas` can place an emitter from a TAS without needing an in-game block picker UI. |

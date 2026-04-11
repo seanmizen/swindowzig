@@ -555,8 +555,38 @@ pub const AntiAliasingConfig = struct {
     /// Native (wgpu-native): 1, 2, 4, 8 are supported; other values round down
     /// to the nearest power of two ≤ 8.
     msaa_samples: u32 = 1,
+    /// FXAA 3.11 quality tier. Affects `SEARCH_STEPS`, `EDGE_THRESHOLD`, and
+    /// `SUBPIX_CAP` in `fxaa.wgsl` via source-level substitution at pipeline
+    /// create time. Only meaningful when `method == .fxaa`; ignored otherwise.
+    fxaa_quality: FxaaQuality = .medium,
     /// Render scale for SSAA (e.g. 2.0 = 4× pixels). Currently unused.
     ssaa_scale: f32 = 1.0,
+};
+
+/// Quality tier for the FXAA 3.11 post-process pass. Maps to the three
+/// reference presets of Timothy Lottes' FXAA 3.11 (roughly preset 12/25/39):
+///
+///   - `low`    — 4-step edge search, SUBPIX_CAP=0.5,  EDGE_THRESHOLD=0.166
+///                Fastest; visibly misses long diagonals but catches most
+///                short sub-pixel edges. Good for budget mobile/integrated
+///                GPUs or for sanity-checking "is FXAA the slow part?"
+///   - `medium` — 12-step edge search, SUBPIX_CAP=0.75, EDGE_THRESHOLD=0.125
+///                Matches the previous hard-coded constants, so pre-quality
+///                diff baselines remain valid. Engine default.
+///   - `high`   — 32-step edge search, SUBPIX_CAP=0.85, EDGE_THRESHOLD=0.063
+///                Catches long diagonals on aliased geometry at the cost of
+///                ~3× longer edge-search loops. Still dramatically cheaper
+///                than MSAA on high-resolution surfaces.
+///
+/// Switching tiers at runtime forces a shader re-compile and pipeline
+/// rebuild — WGSL has no specialisation constants the same way that
+/// SPIR-V does, so the wrapper performs plain text substitution on the
+/// embedded shader source before calling `createShaderModule`. See the
+/// `configureFXAA` docs in `gpu.zig`.
+pub const FxaaQuality = enum {
+    low,
+    medium,
+    high,
 };
 
 // NOTE: RenderPipelineDescriptor, ComputePipelineDescriptor, ComputeState,

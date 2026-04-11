@@ -229,7 +229,14 @@ pub const GPU = struct {
     /// The main render pass should target `fxaa_color_view` instead of the swapchain
     /// view.  After the main pass, call `runFXAAPass` to blit the FXAA result to the
     /// swapchain.  Calling `configureFXAA` again destroys the previous resources.
-    pub fn configureFXAA(self: *GPU, width: u32, height: u32) !void {
+    ///
+    /// `quality` selects the FXAA 3.11 preset tier. Each tier substitutes three
+    /// tokens in `fxaa.wgsl` at shader-module create time — WGSL has no
+    /// specialisation constants, so plain text substitution is the cheapest way
+    /// to get per-quality pipelines. To change quality at runtime, call
+    /// `configureFXAA` again from the render loop (see the `aa_dirty` flag in
+    /// the voxel example).
+    pub fn configureFXAA(self: *GPU, width: u32, height: u32, quality: types.FxaaQuality) !void {
         if (!self.isReady()) return error.GPUNotReady;
 
         // Destroy existing FXAA resources (safe to call even if null)
@@ -296,11 +303,46 @@ pub const GPU = struct {
             .bind_group_layouts = &[_]*BindGroupLayout{&bg_layout},
         });
 
-        // FXAA shader module
-        const fxaa_wgsl = @embedFile("fxaa.wgsl");
+        // FXAA shader module — substitute the three quality-tier placeholders
+        // in the embedded WGSL source. The substituted buffer lives on the
+        // stack for the duration of this function; createShaderModule copies
+        // it out before we return.
+        //
+        // Preset values roughly match FXAA 3.11 reference presets 12/25/39:
+        //   low    — 4 search steps, 0.5 subpix cap, 0.166 edge threshold
+        //   medium — 12 search steps, 0.75 subpix cap, 0.125 edge threshold (prior behaviour)
+        //   high   — 32 search steps, 0.85 subpix cap, 0.063 edge threshold
+        const search_steps: []const u8 = switch (quality) {
+            .low => "4",
+            .medium => "12",
+            .high => "32",
+        };
+        const subpix_cap: []const u8 = switch (quality) {
+            .low => "0.5",
+            .medium => "0.75",
+            .high => "0.85",
+        };
+        const edge_threshold: []const u8 = switch (quality) {
+            .low => "0.166",
+            .medium => "0.125",
+            .high => "0.063",
+        };
+
+        const fxaa_wgsl_src = @embedFile("fxaa.wgsl");
+        // Stack buffer: the shader is ~7 KB today; 16 KB gives ample headroom
+        // for three tokens that each grow the source by at most ~4 bytes.
+        var substituted_buf: [16 * 1024]u8 = undefined;
+        const substituted = try substituteFxaaTokens(
+            fxaa_wgsl_src,
+            substituted_buf[0..],
+            search_steps,
+            subpix_cap,
+            edge_threshold,
+        );
+
         var fxaa_shader = try self.createShaderModule(.{
             .label = "fxaa_shader",
-            .code = fxaa_wgsl,
+            .code = substituted,
         });
 
         // Render pipeline: no vertex buffers, one colour target (swapchain format)
@@ -326,7 +368,53 @@ pub const GPU = struct {
             .multisample = .{ .count = 1 },
         });
 
-        std.log.info("sw_gpu: configureFXAA → {}×{} bgra8unorm offscreen target", .{ tex_w, tex_h });
+        std.log.info("sw_gpu: configureFXAA → {}×{} bgra8unorm offscreen target (quality={s}, search_steps={s}, subpix_cap={s}, edge_threshold={s})", .{
+            tex_w, tex_h, @tagName(quality), search_steps, subpix_cap, edge_threshold,
+        });
+    }
+
+    /// Substitute the three `__FXAA_*__` placeholder tokens in `src` into
+    /// `dest`, returning a slice of `dest` containing the substituted source.
+    /// Linear time in `src.len`. Returns `error.FxaaSourceBufferTooSmall` if
+    /// `dest` cannot hold the substituted result.
+    fn substituteFxaaTokens(
+        src: []const u8,
+        dest: []u8,
+        search_steps: []const u8,
+        subpix_cap: []const u8,
+        edge_threshold: []const u8,
+    ) ![]const u8 {
+        const Repl = struct {
+            needle: []const u8,
+            replacement: []const u8,
+        };
+        const repls = [_]Repl{
+            .{ .needle = "__FXAA_SEARCH_STEPS__", .replacement = search_steps },
+            .{ .needle = "__FXAA_SUBPIX_CAP__", .replacement = subpix_cap },
+            .{ .needle = "__FXAA_EDGE_THRESHOLD__", .replacement = edge_threshold },
+        };
+
+        var write: usize = 0;
+        var read: usize = 0;
+        outer: while (read < src.len) {
+            // Try each replacement at the current cursor.
+            for (repls) |r| {
+                if (read + r.needle.len <= src.len and
+                    std.mem.eql(u8, src[read .. read + r.needle.len], r.needle))
+                {
+                    if (write + r.replacement.len > dest.len) return error.FxaaSourceBufferTooSmall;
+                    @memcpy(dest[write .. write + r.replacement.len], r.replacement);
+                    write += r.replacement.len;
+                    read += r.needle.len;
+                    continue :outer;
+                }
+            }
+            if (write + 1 > dest.len) return error.FxaaSourceBufferTooSmall;
+            dest[write] = src[read];
+            write += 1;
+            read += 1;
+        }
+        return dest[0..write];
     }
 
     /// Record an FXAA post-process pass into `encoder`.

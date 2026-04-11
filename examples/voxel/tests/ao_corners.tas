@@ -8,13 +8,17 @@
 #
 # Usage (from utils/swindowzig):
 #   zig build native -Dexample=voxel
-#   ./zig-out/bin/voxel --world=flatland --ao=none \
+#   # NOTE: --aa=none and --render-distance=4 are passed explicitly so the
+#   # post-default-change world defaults (AA=fxaa, AO=moore) don't contaminate
+#   # the AO diff. The --ao= flag is the ONE variable that should move between
+#   # these three captures.
+#   ./zig-out/bin/voxel --world=flatland --aa=none --render-distance=4 --ao=none \
 #     --tas examples/voxel/tests/ao_corners.tas \
 #     --dump-frame=/tmp/ao_corners_none.ppm
-#   ./zig-out/bin/voxel --world=flatland --ao=classic \
+#   ./zig-out/bin/voxel --world=flatland --aa=none --render-distance=4 --ao=classic \
 #     --tas examples/voxel/tests/ao_corners.tas \
 #     --dump-frame=/tmp/ao_corners_classic.ppm
-#   ./zig-out/bin/voxel --world=flatland --ao=moore \
+#   ./zig-out/bin/voxel --world=flatland --aa=none --render-distance=4 --ao=moore \
 #     --tas examples/voxel/tests/ao_corners.tas \
 #     --dump-frame=/tmp/ao_corners_moore.ppm
 #

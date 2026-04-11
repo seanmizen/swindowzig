@@ -40,9 +40,15 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 echo "==> Capturing frames (/tmp/aa_{none,fxaa,msaa}.ppm)..."
-"$BIN" --world=flatland --aa=none             --tas "$TAS_PATH" --dump-frame=/tmp/aa_none.ppm >/dev/null
-"$BIN" --world=flatland --aa=fxaa             --tas "$TAS_PATH" --dump-frame=/tmp/aa_fxaa.ppm >/dev/null
-"$BIN" --world=flatland --aa=msaa  --msaa=4   --tas "$TAS_PATH" --dump-frame=/tmp/aa_msaa.ppm >/dev/null
+# NOTE: --ao=classic and --render-distance=4 are passed explicitly so this
+# regression stays isolated from the post-default-change world defaults
+# (AO=moore, AA=fxaa). If the pre-regression frames change it should be
+# because the AA stage changed, not because AO or view distance shifted
+# underneath us.
+COMMON_FLAGS=(--world=flatland --ao=classic --render-distance=4)
+"$BIN" "${COMMON_FLAGS[@]}" --aa=none                      --tas "$TAS_PATH" --dump-frame=/tmp/aa_none.ppm >/dev/null
+"$BIN" "${COMMON_FLAGS[@]}" --aa=fxaa --fxaa-quality=medium --tas "$TAS_PATH" --dump-frame=/tmp/aa_fxaa.ppm >/dev/null
+"$BIN" "${COMMON_FLAGS[@]}" --aa=msaa  --msaa=4             --tas "$TAS_PATH" --dump-frame=/tmp/aa_msaa.ppm >/dev/null
 
 echo "==> Writing reference PNGs to $OUTPUT_DIR..."
 magick /tmp/aa_none.ppm "$OUTPUT_DIR/ref_none.png"

@@ -299,22 +299,80 @@ const CameraView = enum {
 const MenuScreen = enum { main, settings, exit_confirm };
 
 // Per-screen entry counts. Kept here so nav wraparound has a single source of truth.
+// The settings screen count is dynamic (see `settingsEntryCount`) — kept separate
+// so fixed screens can still hard-code their totals.
 const MENU_MAIN_COUNT: u8 = 3;
-const MENU_SETTINGS_COUNT: u8 = 6;
 const MENU_EXIT_COUNT: u8 = 2;
 
-// Settings entry indices (matches the rendered order).
-const SETTINGS_IDX_AA: u8 = 0;
-const SETTINGS_IDX_AO: u8 = 1;
-const SETTINGS_IDX_LIGHTING: u8 = 2;
-const SETTINGS_IDX_FRUSTUM: u8 = 3;
-const SETTINGS_IDX_RENDER_DIST: u8 = 4;
-const SETTINGS_IDX_BACK: u8 = 5;
+// Settings entries. The rendered order depends on the current AA method so
+// that a method-specific quality row (MSAA samples / FXAA quality) only takes
+// up a slot when it is actually meaningful. Fixed tail entries come after:
+//     AA Method                                      (always)
+//     → MSAA Samples   (only when method == .msaa)
+//     → FXAA Quality   (only when method == .fxaa)
+//     AO Strategy      (always)
+//     Lighting         (always)
+//     Frustum          (always)
+//     Render Distance  (always)
+//     Back             (always)
+//
+// `settingsEntryAt(i)` returns the logical entry at visual index `i` under
+// the current method; `settingsEntryCount()` returns the row total. Both are
+// pure functions of the current `state.msaa_config.method`, so navigation,
+// rendering, and input dispatch all stay in sync automatically.
+const SettingsEntry = enum {
+    aa_method,
+    msaa_samples,
+    fxaa_quality,
+    ao_strategy,
+    lighting,
+    frustum,
+    render_dist,
+    back,
+};
+
+fn settingsEntryCount() u8 {
+    // 6 fixed entries (AA Method, AO Strategy, Lighting, Frustum, Render Distance, Back)
+    // plus one optional quality entry when MSAA or FXAA is active.
+    return switch (state.msaa_config.method) {
+        .msaa, .fxaa => 7,
+        else => 6,
+    };
+}
+
+fn settingsEntryAt(i: u8) SettingsEntry {
+    // Row 0 is always AA Method. Row 1 is the method-specific quality when
+    // either MSAA or FXAA is active, otherwise we skip directly into the
+    // fixed tail. From the first fixed tail row onward the layout is the
+    // same regardless of method, so we compute a single offset-aware index.
+    if (i == 0) return .aa_method;
+    const has_quality = switch (state.msaa_config.method) {
+        .msaa, .fxaa => true,
+        else => false,
+    };
+    if (has_quality and i == 1) {
+        return switch (state.msaa_config.method) {
+            .msaa => .msaa_samples,
+            .fxaa => .fxaa_quality,
+            else => unreachable,
+        };
+    }
+    const tail_start: u8 = if (has_quality) 2 else 1;
+    const tail_idx: u8 = i - tail_start;
+    return switch (tail_idx) {
+        0 => .ao_strategy,
+        1 => .lighting,
+        2 => .frustum,
+        3 => .render_dist,
+        4 => .back,
+        else => .back,
+    };
+}
 
 fn menuEntryCount(screen: MenuScreen) u8 {
     return switch (screen) {
         .main => MENU_MAIN_COUNT,
-        .settings => MENU_SETTINGS_COUNT,
+        .settings => settingsEntryCount(),
         .exit_confirm => MENU_EXIT_COUNT,
     };
 }
@@ -332,29 +390,72 @@ fn aaMethodLabel(method: gpu_mod.AAMethod) []const u8 {
     };
 }
 
-/// Cycle the value of the Settings entry at `idx` by `dir` (+1 / -1).
-/// AA Method writes through to `state.msaa_config`. AO Strategy cycles
-/// state.ao_strategy (none/classic/moore). Render Distance writes to
-/// `state.render_distance_stub` with no live effect. Mutations log a
-/// "(applies on next chunk remesh / next frame)" hint — wiring up live
-/// pipeline rebuilds and chunk remeshes is a follow-up task.
+/// Cycle the value of the Settings entry at visual index `idx` by `dir` (+1 / -1).
+/// AA Method / MSAA Samples / FXAA Quality all write through to
+/// `state.msaa_config` / `state.fxaa_quality`. AO Strategy cycles
+/// state.ao_strategy (none/classic/moore). Lighting flips between
+/// none and skylight. Render Distance writes to
+/// `state.render_distance_stub` with no live effect on the loaded region
+/// (wiring up live spiral rebuild is a follow-up task).
 fn cycleSettingsValue(idx: u8, dir: i32) void {
-    switch (idx) {
-        SETTINGS_IDX_AA => {
-            // Cycle: none → msaa(4) → fxaa → none …
+    const entry = settingsEntryAt(idx);
+    switch (entry) {
+        .aa_method => {
+            // Cycle: none → msaa → fxaa → none …
+            // When landing on MSAA the sample count snaps to 4 (the widest-
+            // supported native sample count for bgra8unorm); when landing on
+            // FXAA the quality snaps to whatever was most recently chosen
+            // (preserved on the state field so re-entering FXAA keeps it).
             const next_method: gpu_mod.AAMethod = switch (state.msaa_config.method) {
                 .none => if (dir > 0) .msaa else .fxaa,
                 .msaa => if (dir > 0) .fxaa else .none,
                 .fxaa => if (dir > 0) .none else .msaa,
-                // Other AAMethod variants aren't reachable from this picker yet —
-                // collapse them back to .none rather than getting stuck.
                 else => .none,
             };
-            const next_samples: u32 = if (next_method == .msaa) 4 else 1;
-            state.msaa_config = .{ .method = next_method, .msaa_samples = next_samples };
+            const next_samples: u32 = if (next_method == .msaa)
+                if (state.msaa_config.msaa_samples >= 2) state.msaa_config.msaa_samples else 4
+            else
+                1;
+            state.msaa_config = .{
+                .method = next_method,
+                .msaa_samples = next_samples,
+                .fxaa_quality = state.msaa_config.fxaa_quality,
+            };
             std.log.info("Settings: AA Method -> {s} (applies on next pipeline rebuild)", .{@tagName(next_method)});
         },
-        SETTINGS_IDX_AO => {
+        .msaa_samples => {
+            // Cycle MSAA sample count across 2 / 4 / 8. The GPU wrapper
+            // caps the requested count for the current surface format at
+            // pipeline-create time — see configureMSAA in gpu.zig.
+            const cur = state.msaa_config.msaa_samples;
+            const next: u32 = if (dir > 0) switch (cur) {
+                2 => 4,
+                4 => 8,
+                8 => 2,
+                else => 4,
+            } else switch (cur) {
+                2 => 8,
+                4 => 2,
+                8 => 4,
+                else => 4,
+            };
+            state.msaa_config.msaa_samples = next;
+            std.log.info("Settings: MSAA Samples -> {} (applies on next pipeline rebuild)", .{next});
+        },
+        .fxaa_quality => {
+            // Cycle FXAA quality tier: low → medium → high → low …
+            // Mark the AA pipeline dirty so the render loop re-runs
+            // configureFXAA with the new token substitutions on the next tick.
+            const next: gpu_mod.FxaaQuality = switch (state.msaa_config.fxaa_quality) {
+                .low => if (dir > 0) .medium else .high,
+                .medium => if (dir > 0) .high else .low,
+                .high => if (dir > 0) .low else .medium,
+            };
+            state.msaa_config.fxaa_quality = next;
+            state.aa_dirty = true;
+            std.log.info("Settings: FXAA Quality -> {s} (pipeline rebuild queued)", .{@tagName(next)});
+        },
+        .ao_strategy => {
             // Cycle through the three usable strategies: none → classic → moore → none …
             // propagated and ssao are not yet implemented; skip them.
             const next_ao: gpu_mod.AOStrategy = switch (state.ao_strategy) {
@@ -365,7 +466,7 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             state.ao_strategy = next_ao;
             std.log.info("Settings: AO Strategy -> {s} (applies on next chunk remesh)", .{@tagName(next_ao)});
         },
-        SETTINGS_IDX_LIGHTING => {
+        .lighting => {
             // Two-state toggle today (none ↔ skylight). dir is implicitly
             // ignored here — we flip on every press, same as a checkbox.
             // Mark every loaded chunk dirty so the new mode applies live
@@ -381,7 +482,7 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             }
             std.log.info("Settings: Lighting -> {s} (every loaded chunk marked dirty)", .{@tagName(next_mode)});
         },
-        SETTINGS_IDX_FRUSTUM => {
+        .frustum => {
             // Cycle: none → sphere → cone → none …
             // Live: writes through to state.frustum_strategy. The freeze
             // toggle (Cmd+F) is intentionally NOT cleared on cycle so the
@@ -392,7 +493,7 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
                 state.frustum_fov_deg,
             });
         },
-        SETTINGS_IDX_RENDER_DIST => {
+        .render_dist => {
             const min_rd: i32 = 1;
             const max_rd: i32 = 16;
             var next_rd = state.render_distance_stub + dir;
@@ -401,7 +502,7 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             state.render_distance_stub = next_rd;
             std.log.info("Settings: Render Distance -> {} (no live effect — stub)", .{next_rd});
         },
-        else => {},
+        .back => {},
     }
 }
 
@@ -441,11 +542,18 @@ const State = struct {
     /// Exit-confirm defaults to "No" (index 0). Reset every time we enter the screen
     /// to make accidental Enter+Enter on Exit always safe.
     menu_exit_idx: u8 = 0,
-    /// Stub for the Settings → Render Distance picker. world_mod.RENDER_DISTANCE is a
-    /// const today, so this value has no live effect — it's wired purely so the picker
-    /// has somewhere to write to. Will become a real field once render-distance live
-    /// reload lands.
-    render_distance_stub: i32 = 4,
+    /// Runtime render distance in chunks, parsed from `--render-distance=N`.
+    /// Used to initialise `World.render_distance` once per session — changing
+    /// it afterwards requires a world reload, so the in-game settings picker
+    /// still writes to `render_distance_stub` instead. Default comes from
+    /// `world_mod.DEFAULT_RENDER_DISTANCE` (currently 4).
+    render_distance: i32 = world_mod.DEFAULT_RENDER_DISTANCE,
+    /// Display-only twin of `render_distance` for the Settings → Render Distance
+    /// picker. The loaded-chunk region is still frozen at `World.render_distance`
+    /// for the lifetime of the World, so writes here only affect the rendered
+    /// label (and the fog curve below, via the same `state.render_distance`
+    /// field).
+    render_distance_stub: i32 = world_mod.DEFAULT_RENDER_DISTANCE,
     hover_block: ?Vec3 = null,
     game_state: GameState = undefined,
     overlay: OverlayRenderer = undefined,
@@ -468,13 +576,22 @@ const State = struct {
     /// When true (future): quads rebuilt this tick will be tinted a warning colour.
     /// Currently unused; set by Cmd+G or a future CLI flag.
     gpu_debug: bool = false,
-    /// MSAA config parsed from --msaa=N CLI flag. Default: 4× MSAA.
-    msaa_config: gpu_mod.AntiAliasingConfig = .{ .method = .msaa, .msaa_samples = 4 },
+    /// AA config parsed from `--aa=<none|msaa|fxaa>` (plus `--msaa=N` /
+    /// `--fxaa-quality=<tier>`). Default: FXAA 3.11 at medium quality — this
+    /// is the engine-wide ships-by-default AA mode. Override with
+    /// `--aa=none --ao=classic --render-distance=4` to reproduce the
+    /// pre-default-change behaviour used by existing regression tests.
+    msaa_config: gpu_mod.AntiAliasingConfig = .{
+        .method = .fxaa,
+        .msaa_samples = 1,
+        .fxaa_quality = .medium,
+    },
     /// Ambient-occlusion sampling strategy parsed from --ao=<none|classic|moore>.
-    /// Default: classic (preserves prior behaviour). The future in-game settings
-    /// menu reads/writes this same field; changing it at runtime requires marking
-    /// every loaded chunk's mesh dirty so they get remeshed with the new sampler.
-    ao_strategy: gpu_mod.AOStrategy = .classic,
+    /// Default: moore (extended indoor-corner darkening). The future in-game
+    /// settings menu reads/writes this same field; changing it at runtime
+    /// requires marking every loaded chunk's mesh dirty so they get remeshed
+    /// with the new sampler.
+    ao_strategy: gpu_mod.AOStrategy = .moore,
     /// World-lighting mode parsed from --lighting=<none|skylight>. Default:
     /// skylight (caves are dark). `.none` is the regression-test baseline that
     /// makes every face fully lit by sky regardless of how enclosed it is.
@@ -490,6 +607,12 @@ const State = struct {
     /// --dump-frame=<path>: capture first rendered frame to a PPM file then exit.
     dump_frame_path: ?[]const u8 = null,
     dump_frame_done: bool = false,
+    /// Set by the settings-menu FXAA quality picker to request a pipeline
+    /// rebuild on the next render tick. WGSL has no specialisation constants,
+    /// so changing quality requires re-substituting tokens in fxaa.wgsl and
+    /// re-creating the shader module + pipeline. Checked at the top of
+    /// voxelRender — cleared after the rebuild runs.
+    aa_dirty: bool = false,
     /// --compare-golden=<path>: after capturing the frame, compare it pixel-for-pixel
     /// against a golden PPM file. Exits 0 if within tolerance, 1 otherwise. Prints
     /// per-run stats (differing px / total px, max/mean channel delta). Tolerance
@@ -654,7 +777,11 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.menu_main_idx = 0;
     state.menu_settings_idx = 0;
     state.menu_exit_idx = 0;
-    state.render_distance_stub = world_mod.RENDER_DISTANCE;
+    // Runtime render distance: default from world_mod, overridden by
+    // `--render-distance=N` below. `render_distance_stub` shadows the same
+    // value for the Settings picker label.
+    state.render_distance = world_mod.DEFAULT_RENDER_DISTANCE;
+    state.render_distance_stub = world_mod.DEFAULT_RENDER_DISTANCE;
     state.headless = false;
 
     // Initialize game state layer stack
@@ -663,10 +790,15 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Initialize overlay renderer
     state.overlay = OverlayRenderer.init(ctx.allocator());
 
-    // Default MSAA config (var state = undefined bypasses struct field defaults)
-    state.msaa_config = .{ .method = .msaa, .msaa_samples = 4 };
-    // Default AO strategy: classic (matches behaviour pre-strategy-enum).
-    state.ao_strategy = .classic;
+    // Default AA config: FXAA 3.11 at medium quality (ships-by-default).
+    // `--aa=...`, `--msaa=N`, and `--fxaa-quality=<tier>` override below.
+    state.msaa_config = .{
+        .method = .fxaa,
+        .msaa_samples = 1,
+        .fxaa_quality = .medium,
+    };
+    // Default AO strategy: moore (extended indoor-corner AO).
+    state.ao_strategy = .moore;
     // Default lighting: skylight (caves dark). `--lighting=none` overrides.
     state.lighting_mode = .skylight;
     // Frustum-cull defaults: opt-in (.none) and a 180° fov no-op so any
@@ -750,16 +882,19 @@ fn voxelInit(ctx: *sw.Context) !void {
         }
         if (std.mem.startsWith(u8, arg, "--msaa=")) {
             const val = arg["--msaa=".len..];
+            // `--msaa=N` always implies method=msaa; preserves any fxaa_quality
+            // already parsed (though FXAA is inactive when method=msaa anyway).
+            const q = state.msaa_config.fxaa_quality;
             if (std.mem.eql(u8, val, "none") or std.mem.eql(u8, val, "0")) {
-                state.msaa_config = .{ .method = .none, .msaa_samples = 1 };
+                state.msaa_config = .{ .method = .none, .msaa_samples = 1, .fxaa_quality = q };
             } else if (std.mem.eql(u8, val, "1")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 1 };
+                state.msaa_config = .{ .method = .msaa, .msaa_samples = 1, .fxaa_quality = q };
             } else if (std.mem.eql(u8, val, "2")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 2 };
+                state.msaa_config = .{ .method = .msaa, .msaa_samples = 2, .fxaa_quality = q };
             } else if (std.mem.eql(u8, val, "4")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 4 };
+                state.msaa_config = .{ .method = .msaa, .msaa_samples = 4, .fxaa_quality = q };
             } else if (std.mem.eql(u8, val, "8")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 8 };
+                state.msaa_config = .{ .method = .msaa, .msaa_samples = 8, .fxaa_quality = q };
             } else {
                 std.log.err("--msaa: invalid value '{s}'. Accepted: none, 0, 1, 2, 4, 8", .{val});
                 fatalExit(1);
@@ -767,19 +902,51 @@ fn voxelInit(ctx: *sw.Context) !void {
         }
         if (std.mem.startsWith(u8, arg, "--aa=")) {
             const val = arg["--aa=".len..];
+            // Preserve method-specific knobs (sample count, FXAA quality) when
+            // switching methods so `--aa=fxaa --fxaa-quality=high` and
+            // `--msaa=8 --aa=msaa` work regardless of flag order.
+            const samples = state.msaa_config.msaa_samples;
+            const q = state.msaa_config.fxaa_quality;
             if (std.mem.eql(u8, val, "none")) {
-                state.msaa_config = .{ .method = .none, .msaa_samples = 1 };
+                state.msaa_config = .{ .method = .none, .msaa_samples = 1, .fxaa_quality = q };
             } else if (std.mem.eql(u8, val, "msaa")) {
-                // Keep the sample count from --msaa=N if set earlier, default 4×.
-                if (state.msaa_config.method != .msaa) {
-                    state.msaa_config = .{ .method = .msaa, .msaa_samples = 4 };
-                }
+                // Keep the sample count from --msaa=N if set earlier; default
+                // to 4 when it isn't already a valid MSAA sample count.
+                const s: u32 = if (samples >= 2) samples else 4;
+                state.msaa_config = .{ .method = .msaa, .msaa_samples = s, .fxaa_quality = q };
             } else if (std.mem.eql(u8, val, "fxaa")) {
-                state.msaa_config = .{ .method = .fxaa, .msaa_samples = 1 };
+                state.msaa_config = .{ .method = .fxaa, .msaa_samples = 1, .fxaa_quality = q };
             } else {
                 std.log.err("--aa: invalid value '{s}'. Accepted: none, msaa, fxaa", .{val});
                 fatalExit(1);
             }
+        }
+        if (std.mem.startsWith(u8, arg, "--fxaa-quality=")) {
+            const val = arg["--fxaa-quality=".len..];
+            if (std.mem.eql(u8, val, "low")) {
+                state.msaa_config.fxaa_quality = .low;
+            } else if (std.mem.eql(u8, val, "medium") or std.mem.eql(u8, val, "med")) {
+                state.msaa_config.fxaa_quality = .medium;
+            } else if (std.mem.eql(u8, val, "high")) {
+                state.msaa_config.fxaa_quality = .high;
+            } else {
+                std.log.err("--fxaa-quality: invalid value '{s}'. Accepted: low, medium, high", .{val});
+                std.process.exit(1);
+            }
+        }
+        if (std.mem.startsWith(u8, arg, "--render-distance=")) {
+            const val = arg["--render-distance=".len..];
+            const n = std.fmt.parseInt(i32, val, 10) catch {
+                std.log.err("--render-distance: invalid value '{s}'. Expected a positive integer.", .{val});
+                std.process.exit(1);
+                unreachable;
+            };
+            if (n < 1 or n > 32) {
+                std.log.err("--render-distance: value {} out of range [1, 32].", .{n});
+                std.process.exit(1);
+            }
+            state.render_distance = n;
+            state.render_distance_stub = n;
         }
         if (std.mem.startsWith(u8, arg, "--ao=")) {
             const val = arg["--ao=".len..];
@@ -890,8 +1057,10 @@ fn voxelInit(ctx: *sw.Context) !void {
             }
         }
     }
-    std.log.info("AA config (post-parse): method={s} requested_samples={}", .{
-        @tagName(state.msaa_config.method), state.msaa_config.msaa_samples,
+    std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s}", .{
+        @tagName(state.msaa_config.method),
+        state.msaa_config.msaa_samples,
+        @tagName(state.msaa_config.fxaa_quality),
     });
     std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
     std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
@@ -900,9 +1069,12 @@ fn voxelInit(ctx: *sw.Context) !void {
     std.log.info("Frustum cull: strategy={s} fov={d:.0}°", .{
         state.frustum_strategy.label(), state.frustum_fov_deg,
     });
+    std.log.info("Render distance (post-parse): {} chunks", .{state.render_distance});
 
-    // Initialize world with the selected preset (deferred until here so --world= works).
-    state.world = try world_mod.World.init(ctx.allocator(), state.world_preset);
+    // Initialize world with the selected preset and CLI-selected render
+    // distance (deferred until here so --world= / --render-distance= work
+    // regardless of flag order).
+    state.world = try world_mod.World.init(ctx.allocator(), state.world_preset, state.render_distance);
 
     // Open the profile CSV if requested. Writing the header here means every
     // subsequent row can be appended without a seek. Failures log a warning
@@ -1109,6 +1281,7 @@ fn hotbarBlockColor(bt: chunk_mod.BlockType) [3]f32 {
         .dirt => .{ 0.6, 0.4, 0.2 },
         .stone => .{ 0.5, 0.5, 0.5 },
         .bedrock => .{ 0.3, 0.3, 0.3 },
+        .glowstone => .{ 1.0, 0.9, 0.3 },
         .debug_marker => .{ 1.0, 0.0, 0.0 },
         .air => .{ 0.0, 0.0, 0.0 },
     };
@@ -1707,6 +1880,11 @@ fn voxelTick(ctx: *sw.Context) !void {
             if (left or right) {
                 const dir: i32 = if (right) 1 else -1;
                 cycleSettingsValue(state.menu_settings_idx, dir);
+                // AA Method toggle changes the row count (the method-specific
+                // quality row appears/disappears). Clamp the selection so the
+                // cursor can't end up past the new last row.
+                const cnt = settingsEntryCount();
+                if (state.menu_settings_idx >= cnt) state.menu_settings_idx = cnt - 1;
             }
         }
 
@@ -1738,19 +1916,24 @@ fn voxelTick(ctx: *sw.Context) !void {
                     },
                     else => {},
                 },
-                .settings => switch (state.menu_settings_idx) {
-                    SETTINGS_IDX_BACK => {
+                .settings => {
+                    // Dynamic layout — resolve the entry via settingsEntryAt
+                    // so the active index is interpreted through the same
+                    // method-aware lens as rendering and left/right cycling.
+                    const entry = settingsEntryAt(state.menu_settings_idx);
+                    if (entry == .back) {
                         state.menu_screen = .main;
                         std.log.info("Menu: -> main (Back)", .{});
-                    },
-                    // Pickers: Enter cycles forward (same as Right) so a one-key
-                    // workflow works on keyboards without arrow keys.
-                    SETTINGS_IDX_AA => cycleSettingsValue(SETTINGS_IDX_AA, 1),
-                    SETTINGS_IDX_AO => cycleSettingsValue(SETTINGS_IDX_AO, 1),
-                    SETTINGS_IDX_LIGHTING => cycleSettingsValue(SETTINGS_IDX_LIGHTING, 1),
-                    SETTINGS_IDX_FRUSTUM => cycleSettingsValue(SETTINGS_IDX_FRUSTUM, 1),
-                    SETTINGS_IDX_RENDER_DIST => cycleSettingsValue(SETTINGS_IDX_RENDER_DIST, 1),
-                    else => {},
+                    } else {
+                        // Pickers: Enter cycles forward (same as Right) so a
+                        // one-key workflow works on keyboards without arrows.
+                        cycleSettingsValue(state.menu_settings_idx, 1);
+                        // AA method toggle can shrink/grow the menu (the
+                        // quality row appears/disappears). Clamp the
+                        // selection so navigation doesn't wrap off the end.
+                        const cnt = settingsEntryCount();
+                        if (state.menu_settings_idx >= cnt) state.menu_settings_idx = cnt - 1;
+                    }
                 },
                 .exit_confirm => switch (state.menu_exit_idx) {
                     0 => {
@@ -2389,6 +2572,19 @@ fn voxelRender(ctx: *sw.Context) !void {
         };
     }
 
+    // Live AA pipeline rebuild — only the FXAA quality knob is wired for
+    // runtime reconfigure today. Changing AA method at runtime would also
+    // require rebuilding the main voxel pipeline with a different
+    // sample_count, which is a separate follow-up.
+    if (state.aa_dirty) {
+        state.aa_dirty = false;
+        if (state.msaa_config.method == .fxaa) {
+            g.configureFXAA(window_info.width, window_info.height, state.msaa_config.fxaa_quality) catch |err| {
+                std.log.err("FXAA reconfigure failed: {}", .{err});
+            };
+        }
+    }
+
     // Early path: world still loading — render a purple loading overlay only.
     // Skips all 3D work, HUD, crosshair, and the --dump-frame capture (which waits
     // for the real scene). Exits via submit+present.
@@ -2445,7 +2641,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     const hover_pos = state.hover_block orelse Vec3.init(0, 0, 0);
 
     // Fog distances derived from render distance so fog always matches the loaded world.
-    const render_dist_blocks: f32 = @as(f32, @floatFromInt(world_mod.RENDER_DISTANCE)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
+    const render_dist_blocks: f32 = @as(f32, @floatFromInt(state.world.render_distance)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
     const fog_start: f32 = render_dist_blocks * 0.50;
     const fog_end: f32 = render_dist_blocks * 0.85;
 
@@ -2764,34 +2960,42 @@ fn voxelRender(ctx: *sw.Context) !void {
                     2 => "Exit",
                     else => "",
                 },
-                .settings => switch (i) {
-                    SETTINGS_IDX_AA => blk: {
+                .settings => switch (settingsEntryAt(i)) {
+                    .aa_method => blk: {
                         const aa_label = aaMethodLabel(state.msaa_config.method);
                         const s = std.fmt.bufPrint(&entry_buf, "AA Method: {s}", .{aa_label}) catch "AA Method: ?";
                         break :blk s;
                     },
-                    SETTINGS_IDX_AO => blk: {
+                    .msaa_samples => blk: {
+                        const s = std.fmt.bufPrint(&entry_buf, "MSAA Samples: {}", .{state.msaa_config.msaa_samples}) catch "MSAA Samples: ?";
+                        break :blk s;
+                    },
+                    .fxaa_quality => blk: {
+                        const s = std.fmt.bufPrint(&entry_buf, "FXAA Quality: {s}", .{@tagName(state.msaa_config.fxaa_quality)}) catch "FXAA Quality: ?";
+                        break :blk s;
+                    },
+                    .ao_strategy => blk: {
                         const ao_label = @tagName(state.ao_strategy);
                         const s = std.fmt.bufPrint(&entry_buf, "AO Strategy: {s}", .{ao_label}) catch "AO Strategy: ?";
                         break :blk s;
                     },
-                    SETTINGS_IDX_LIGHTING => blk: {
+                    .lighting => blk: {
                         const light_label = @tagName(state.lighting_mode);
                         const s = std.fmt.bufPrint(&entry_buf, "Lighting: {s}", .{light_label}) catch "Lighting: ?";
                         break :blk s;
                     },
-                    SETTINGS_IDX_FRUSTUM => blk: {
+                    .frustum => blk: {
                         const s = std.fmt.bufPrint(&entry_buf, "Frustum: {s} ({d:.0}°)", .{
                             state.frustum_strategy.label(), state.frustum_fov_deg,
                         }) catch "Frustum: ?";
                         break :blk s;
                     },
-                    SETTINGS_IDX_RENDER_DIST => blk: {
-                        const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {} (no live effect)", .{state.render_distance_stub}) catch "Render Distance: ?";
+                    .render_dist => blk: {
+                        const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {} (restart required)", .{state.render_distance_stub}) catch "Render Distance: ?";
+
                         break :blk s;
                     },
-                    SETTINGS_IDX_BACK => "Back",
-                    else => "",
+                    .back => "Back",
                 },
                 .exit_confirm => switch (i) {
                     0 => "No",
@@ -3338,10 +3542,10 @@ fn voxelShutdown(ctx: *sw.Context) !void {
 }
 
 fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
-    // Configure AA from CLI --msaa / --aa flags (default: 4× MSAA)
+    // Configure AA from CLI flags (default: FXAA medium quality).
     try g.configureMSAA(state.msaa_config, width, height);
     if (state.msaa_config.method == .fxaa) {
-        try g.configureFXAA(width, height);
+        try g.configureFXAA(width, height, state.msaa_config.fxaa_quality);
     }
     const sample_count = g.getSampleCount();
 

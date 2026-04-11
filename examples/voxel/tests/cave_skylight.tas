@@ -16,10 +16,14 @@
 #
 # Usage (from utils/swindowzig):
 #   zig build native -Dexample=voxel
-#   ./zig-out/bin/voxel --world=flatland --lighting=none --aa=none \
+#   # NOTE: --ao=classic and --render-distance=4 are passed explicitly so the
+#   # post-default-change world defaults (AA=fxaa, AO=moore) don't contaminate
+#   # the lighting diff. The --lighting= flag is the ONE variable that should
+#   # move between these two captures.
+#   ./zig-out/bin/voxel --world=flatland --aa=none --ao=classic --render-distance=4 --lighting=none \
 #     --tas examples/voxel/tests/cave_skylight.tas \
 #     --dump-frame=/tmp/cave_skylight_none.ppm
-#   ./zig-out/bin/voxel --world=flatland --lighting=skylight --aa=none \
+#   ./zig-out/bin/voxel --world=flatland --aa=none --ao=classic --render-distance=4 --lighting=skylight \
 #     --tas examples/voxel/tests/cave_skylight.tas \
 #     --dump-frame=/tmp/cave_skylight_on.ppm
 #
