@@ -1,0 +1,35 @@
+# spike_reproducer.tas — Reproduce the main-thread spike when leaving spawn area.
+#
+# Purpose: Trigger the chunk-load/mesh spike that occurs as the world generator
+# fills in chunks beyond the 5×5 pregen ring. Profile phases: terrain fill,
+# skylight BFS, greedy mesh generation, GPU sort, GPU upload.
+#
+# Scenario:
+#   1. World loads (loading screen handles pregen of 5×5 = 25 chunks).
+#   2. Wait 2 seconds (240 ticks at 120 Hz) to let the async ring fill settle —
+#      world.update generates CHUNKS_PER_TICK=2 new chunks per tick; at tick 241
+#      most of the 9×9=81 ring around spawn should be in flight.
+#   3. Walk 32 blocks in +X (strafe right, D key — default yaw=-π/2 faces -Z,
+#      right strafe is +X). 32 blocks / 5.0 m/s = 6.4 s = 768 ticks. Crosses
+#      the first chunk boundary at X=48 (spawn X=24 → X=56), which shifts the
+#      anchor and adds new outer-ring targets.
+#   4. Stop.
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --headless \
+#     --tas examples/voxel/tests/spike_reproducer.tas \
+#     2>&1 | grep -E '\[GEN\]|\[MESH\]|\[SPIKE_TICK\]|\[UPLOAD\]|\[SPIKE_RENDER\]'
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse (enables movement input) ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Walk 32 blocks in +X (strafe right with D) ---
+# Start walking at tick 241 (= 2.0 s after gameplay begins)
+241 keydown D
+
+# 32 blocks at BASE_SPEED=5.0 m/s = 6.4 s = 768 ticks
+1009 keyup D

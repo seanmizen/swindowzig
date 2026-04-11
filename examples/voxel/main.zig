@@ -1886,6 +1886,11 @@ fn voxelTick(ctx: *sw.Context) !void {
         return;
     }
 
+    var tick_mesh_us: i128 = 0;
+    var tick_mesh_chunks: usize = 0;
+    var chunks_generated_this_tick: usize = 0;
+    var t_world_update_us: i128 = 0;
+
     // Player chunk coords — used by the mesh-radius gate and eviction pass.
     const player_cx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
     const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
@@ -1910,11 +1915,15 @@ fn voxelTick(ctx: *sw.Context) !void {
         try state.world.update(&[_]world_mod.RegionAnchor{
             .{ .position = state.player.feet_pos },
         });
-        if (state.profile_csv_file != null) {
+        {
             const gen_t1 = std.time.nanoTimestamp();
-            state.gen_ns +%= @intCast(gen_t1 - gen_t0);
+            t_world_update_us = @divTrunc(gen_t1 - gen_t0, 1000);
             const gen_after = state.world.chunks.count();
-            state.gen_count +%= @intCast(gen_after - gen_before);
+            chunks_generated_this_tick = gen_after - gen_before;
+            if (state.profile_csv_file != null) {
+                state.gen_ns +%= @intCast(gen_t1 - gen_t0);
+                state.gen_count +%= @intCast(gen_after - gen_before);
+            }
         }
 
         // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
@@ -1960,6 +1969,8 @@ fn voxelTick(ctx: *sw.Context) !void {
             lc.mesh_dirty = false;
             lc.mesh_incremental_dirty = true;
             mesh_gens += 1;
+            tick_mesh_us += t_us;
+            tick_mesh_chunks += 1;
         }
     }
     }
@@ -2030,6 +2041,18 @@ fn voxelTick(ctx: *sw.Context) !void {
             meshed_count,
             generated_count,
             meshed_count + generated_count,
+        });
+    }
+
+    // Per-tick spike summary: emit whenever generation or meshing ran this tick.
+    if (chunks_generated_this_tick > 0 or tick_mesh_chunks > 0) {
+        std.log.info("[SPIKE_TICK] tick={} gen_chunks={} gen_total={}us mesh_chunks={} mesh_total={}us total={}us", .{
+            ctx.tickId(),
+            chunks_generated_this_tick,
+            t_world_update_us,
+            tick_mesh_chunks,
+            tick_mesh_us,
+            t_world_update_us + tick_mesh_us,
         });
     }
 
@@ -2914,6 +2937,9 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     // Sort and upload each chunk's mesh.
+    var render_sort_us: i128 = 0;
+    var render_upload_us: i128 = 0;
+    var render_upload_chunks: usize = 0;
     {
         var it = state.world.chunks.iterator();
         while (it.next()) |entry| {
@@ -2921,6 +2947,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             const lc = entry.value_ptr.*;
             if (lc.mesh.vertices.items.len == 0) continue;
 
+            const t_sort = std.time.nanoTimestamp();
             lc.mesh.sortByDepth(.{
                 state.camera.position.x,
                 state.camera.position.y,
@@ -2929,6 +2956,7 @@ fn voxelRender(ctx: *sw.Context) !void {
                 std.log.err("Sort failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
+            render_sort_us += @divTrunc(std.time.nanoTimestamp() - t_sort, 1000);
 
             const gop = state.chunk_gpu.getOrPut(key) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = .{};
@@ -2943,8 +2971,18 @@ fn voxelRender(ctx: *sw.Context) !void {
                 state.upload_ns +%= @intCast(up_t1 - up_t0);
                 state.upload_count +%= 1;
             }
-            if (lc.mesh_incremental_dirty) lc.mesh_incremental_dirty = false;
+            if (lc.mesh_incremental_dirty) {
+                const this_upload_us = @divTrunc(std.time.nanoTimestamp() - up_t0, 1000);
+                render_upload_us += this_upload_us;
+                render_upload_chunks += 1;
+                lc.mesh_incremental_dirty = false;
+            }
         }
+    }
+    if (render_upload_chunks > 0) {
+        std.log.info("[SPIKE_RENDER] sort_total={}us upload_total={}us upload_chunks={}", .{
+            render_sort_us, render_upload_us, render_upload_chunks,
+        });
     }
 
     // Update uniforms — front-facing view needs a flipped lookAt direction.
