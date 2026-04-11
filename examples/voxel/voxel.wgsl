@@ -17,6 +17,7 @@ struct VertexInput {
     @location(1) normal: vec3<f32>,
     @location(2) block_type: u32,
     @location(3) uv: vec2<f32>,
+    @location(4) ao: f32,
 };
 
 struct VertexOutput {
@@ -27,6 +28,7 @@ struct VertexOutput {
     @location(3) alpha: f32,
     @location(4) highlight: f32,
     @location(5) uv: vec2<f32>,
+    @location(6) ao: f32,
 };
 
 // Block type colors
@@ -89,6 +91,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.color = base_color;
     out.alpha = select(1.0, 0.2, block_type == 100u || block_type == 101u || block_type == 102u);
     out.uv = in.uv;
+    out.ao = in.ao;
     return out;
 }
 
@@ -145,8 +148,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.6;
     let brightness = ambient + diffuse;
 
+    // Ambient occlusion: map 0..1 → 0.4..1.0 so dark corners stay visible
+    let ao_brightness = 0.4 + in.ao * 0.6;
+
     // GPU debug: mix in orange tint for freshly rebuilt quads
-    let base = in.color * brightness * texel_brightness;
+    let base = in.color * brightness * texel_brightness * ao_brightness;
     let highlighted = mix(base, vec3<f32>(1.0, 0.5, 0.1), in.highlight * 0.6);
 
     // Distance fog: fade to sky colour before the render distance cutoff.

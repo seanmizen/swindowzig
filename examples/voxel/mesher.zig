@@ -10,11 +10,12 @@ const DEBUG = false; // Enable for mesh generation debug logging
 
 /// Vertex format matching voxel.wgsl
 pub const VoxelVertex = extern struct {
-    pos: [3]f32,
-    normal: [3]f32,
-    block_type: u32,
-    uv: [2]f32,
-    _padding: [3]f32 = [_]f32{0} ** 3, // Pad to 48 bytes (16-byte aligned)
+    pos: [3]f32,       // offset 0
+    normal: [3]f32,    // offset 12
+    block_type: u32,   // offset 24
+    uv: [2]f32,        // offset 28
+    ao: f32 = 1.0,     // offset 36 — ambient occlusion brightness 0..1
+    _padding: [2]f32 = [_]f32{0} ** 2, // offset 40, pad to 48 bytes (16-byte aligned)
 };
 
 const SortEntry = struct { idx: usize, dist: f32 };
@@ -300,6 +301,10 @@ pub const Mesh = struct {
                         block,
                         ab,
                         255, // freshly rebuilt — max highlight
+                        chunk,
+                        getter,
+                        world_ox,
+                        world_oz,
                     );
                 }
             }
@@ -409,6 +414,137 @@ fn shouldRenderFace(chunk: *const Chunk, getter: BlockGetter, lx: i32, ly: i32, 
     return getter.getBlock(world_ox + nx, ny, world_oz + nz) == .air;
 }
 
+// ---------------------------------------------------------------------------
+// Ambient occlusion helpers
+// ---------------------------------------------------------------------------
+
+/// Returns true if the block at world coords (wx, wy, wz) is solid.
+/// Fast path for in-chunk; falls through to the world getter for cross-chunk.
+fn isSolid(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32) bool {
+    const lx = wx - world_ox;
+    const lz = wz - world_oz;
+    if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
+        return chunk.blocks[@intCast(lx)][@intCast(wy)][@intCast(lz)] != .air;
+    }
+    return getter.getBlock(wx, wy, wz) != .air;
+}
+
+fn aoValue(s1: bool, s2: bool, c: bool) f32 {
+    if (s1 and s2) return 0.0;
+    const blocked: u32 = @as(u32, @intFromBool(s1)) + @as(u32, @intFromBool(s2)) + @as(u32, @intFromBool(c));
+    return (3.0 - @as(f32, @floatFromInt(blocked))) / 3.0;
+}
+
+/// Compute per-vertex AO brightness (0..1) for a face quad.
+/// Returns [4]f32 — one brightness per vertex in the same order addQuad emits them.
+/// Samples the 3 neighbor blocks around each corner in the plane of the face.
+fn computeFaceAO(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
+    return switch (face) {
+        .px => blk: {
+            // +X face at x+1 plane — corners vary in Y and Z
+            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
+            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
+            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
+            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const s_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const s_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const s_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const s_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            break :blk .{
+                aoValue(s_ym, s_zm, s_ym_zm), // v0: (wx+1, wy,   wz  )
+                aoValue(s_yp, s_zm, s_yp_zm), // v1: (wx+1, wy+1, wz  )
+                aoValue(s_yp, s_zp, s_yp_zp), // v2: (wx+1, wy+1, wz+1)
+                aoValue(s_ym, s_zp, s_ym_zp), // v3: (wx+1, wy,   wz+1)
+            };
+        },
+        .nx => blk: {
+            // -X face at x plane — corners vary in Y and Z
+            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
+            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
+            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
+            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
+            const s_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const s_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const s_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const s_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            break :blk .{
+                aoValue(s_ym, s_zp, s_ym_zp), // v0: (wx, wy,   wz+1)
+                aoValue(s_yp, s_zp, s_yp_zp), // v1: (wx, wy+1, wz+1)
+                aoValue(s_yp, s_zm, s_yp_zm), // v2: (wx, wy+1, wz  )
+                aoValue(s_ym, s_zm, s_ym_zm), // v3: (wx, wy,   wz  )
+            };
+        },
+        .py => blk: {
+            // +Y face at y+1 plane — corners vary in X and Z
+            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
+            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
+            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const s_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const s_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const s_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const s_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            break :blk .{
+                aoValue(s_xm, s_zm, s_xm_zm), // v0: (wx,   wy+1, wz  )
+                aoValue(s_xm, s_zp, s_xm_zp), // v1: (wx,   wy+1, wz+1)
+                aoValue(s_xp, s_zp, s_xp_zp), // v2: (wx+1, wy+1, wz+1)
+                aoValue(s_xp, s_zm, s_xp_zm), // v3: (wx+1, wy+1, wz  )
+            };
+        },
+        .ny => blk: {
+            // -Y face at y plane — corners vary in X and Z
+            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
+            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
+            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
+            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const s_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const s_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const s_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const s_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            break :blk .{
+                aoValue(s_xm, s_zp, s_xm_zp), // v0: (wx,   wy, wz+1)
+                aoValue(s_xm, s_zm, s_xm_zm), // v1: (wx,   wy, wz  )
+                aoValue(s_xp, s_zm, s_xp_zm), // v2: (wx+1, wy, wz  )
+                aoValue(s_xp, s_zp, s_xp_zp), // v3: (wx+1, wy, wz+1)
+            };
+        },
+        .pz => blk: {
+            // +Z face at z+1 plane — corners vary in X and Y
+            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
+            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const s_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const s_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const s_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const s_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            break :blk .{
+                aoValue(s_xm, s_ym, s_xm_ym), // v0: (wx,   wy,   wz+1)
+                aoValue(s_xp, s_ym, s_xp_ym), // v1: (wx+1, wy,   wz+1)
+                aoValue(s_xp, s_yp, s_xp_yp), // v2: (wx+1, wy+1, wz+1)
+                aoValue(s_xm, s_yp, s_xm_yp), // v3: (wx,   wy+1, wz+1)
+            };
+        },
+        .nz => blk: {
+            // -Z face at z plane — corners vary in X and Y
+            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
+            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
+            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
+            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const s_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const s_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const s_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const s_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            break :blk .{
+                aoValue(s_xp, s_ym, s_xp_ym), // v0: (wx+1, wy,   wz)
+                aoValue(s_xm, s_ym, s_xm_ym), // v1: (wx,   wy,   wz)
+                aoValue(s_xm, s_yp, s_xm_yp), // v2: (wx,   wy+1, wz)
+                aoValue(s_xp, s_yp, s_xp_yp), // v3: (wx+1, wy+1, wz)
+            };
+        },
+    };
+}
+
 /// Add a quad face to the mesh, recording its owning block via block_idx.
 /// highlight: initial highlight intensity (255 = freshly rebuilt, 0 = normal).
 fn addQuad(
@@ -420,48 +556,58 @@ fn addQuad(
     block_type: BlockType,
     block_idx: u32,
     highlight: u8,
+    chunk: *const Chunk,
+    getter: BlockGetter,
+    world_ox: i32,
+    world_oz: i32,
 ) !void {
     const base_idx: u32 = @intCast(mesh.vertices.items.len);
     const normal = face_normals[@intFromEnum(face)];
     const block_u32: u32 = @intFromEnum(block_type);
 
+    // Compute per-vertex ambient occlusion for this face
+    const wx: i32 = @intFromFloat(x);
+    const wy: i32 = @intFromFloat(y);
+    const wz: i32 = @intFromFloat(z);
+    const ao = computeFaceAO(chunk, getter, world_ox, world_oz, wx, wy, wz, face);
+
     // Define quad vertices based on face direction
     const verts = switch (face) {
         .px => [_]VoxelVertex{ // +X face
-            .{ .pos = .{ x + 1, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 } },
-            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 } },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 } },
-            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 } },
+            .{ .pos = .{ x + 1, y,     z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
+            .{ .pos = .{ x + 1, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1] },
+            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
+            .{ .pos = .{ x + 1, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3] },
         },
         .nx => [_]VoxelVertex{ // -X face
-            .{ .pos = .{ x, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 } },
-            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 } },
-            .{ .pos = .{ x, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 } },
-            .{ .pos = .{ x, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 } },
+            .{ .pos = .{ x, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
+            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1] },
+            .{ .pos = .{ x, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
+            .{ .pos = .{ x, y,     z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3] },
         },
         .py => [_]VoxelVertex{ // +Y face (CCW from above: +Y normal)
-            .{ .pos = .{ x, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 } },
-            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 } },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 } },
-            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 } },
+            .{ .pos = .{ x,     y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
+            .{ .pos = .{ x,     y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1] },
+            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
+            .{ .pos = .{ x + 1, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3] },
         },
         .ny => [_]VoxelVertex{ // -Y face (CCW from below: -Y normal)
-            .{ .pos = .{ x, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 } },
-            .{ .pos = .{ x, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 } },
-            .{ .pos = .{ x + 1, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 } },
-            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 } },
+            .{ .pos = .{ x,     y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
+            .{ .pos = .{ x,     y, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1] },
+            .{ .pos = .{ x + 1, y, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
+            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3] },
         },
         .pz => [_]VoxelVertex{ // +Z face (CCW from front: +Z normal)
-            .{ .pos = .{ x, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 } },
-            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 } },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 } },
-            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 } },
+            .{ .pos = .{ x,     y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
+            .{ .pos = .{ x + 1, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1] },
+            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
+            .{ .pos = .{ x,     y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3] },
         },
         .nz => [_]VoxelVertex{ // -Z face (CCW from back: -Z normal)
-            .{ .pos = .{ x + 1, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 } },
-            .{ .pos = .{ x, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 } },
-            .{ .pos = .{ x, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 } },
-            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 } },
+            .{ .pos = .{ x + 1, y,     z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
+            .{ .pos = .{ x,     y,     z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1] },
+            .{ .pos = .{ x,     y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
+            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3] },
         },
     };
 
@@ -521,6 +667,10 @@ pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i
                             block,
                             block_idx,
                             255, // full rebuild — all quads highlighted
+                            chunk,
+                            getter,
+                            world_ox,
+                            world_oz,
                         );
                     }
                 }

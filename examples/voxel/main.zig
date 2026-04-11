@@ -1567,10 +1567,11 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     const voxel_vbl = sw.gpu_types.VertexBufferLayout{
         .array_stride = @sizeOf(VoxelVertex),
         .attributes = &[_]sw.gpu_types.VertexAttribute{
-            .{ .format = .float32x3, .offset = 0, .shader_location = 0 }, // pos
+            .{ .format = .float32x3, .offset = 0,  .shader_location = 0 }, // pos
             .{ .format = .float32x3, .offset = 12, .shader_location = 1 }, // normal
-            .{ .format = .uint32, .offset = 24, .shader_location = 2 }, // block_type
+            .{ .format = .uint32,    .offset = 24, .shader_location = 2 }, // block_type
             .{ .format = .float32x2, .offset = 28, .shader_location = 3 }, // uv
+            .{ .format = .float32,   .offset = 36, .shader_location = 4 }, // ao
         },
     };
 
