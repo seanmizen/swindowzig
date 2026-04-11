@@ -173,7 +173,8 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation; caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block triggers a full-chunk `computeSkylight()` + `computeBlockLight()` + mesh regen. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
 | `--meshing=<mode>` | Mesher strategy. Accepted: `naive` (one quad per visible block face — preserves the `quad_block` parallel-array invariant used by `updateForBlockChange`) and `greedy` (default — coplanar same-material + uniform-AO/skylight faces merged into larger rectangles, ~35× reduction on flatland, ~3× on hilly). Greedy quads span multiple blocks so `updateForBlockChange` can't patch them; dig/place events flag the chunk `mesh_dirty = true` for next-tick full regen. Merge dimension capped at 6 blocks to stay within the painter's-algorithm sort tolerance (see `examples/voxel/docs/memory.md` §Rank 5). |
 | `--place-block=<type>` | Block type emitted by right-click placement. Accepted: `stone` (default) and `glowstone`. Added with phase-3 block light so `tests/glowstone_cave.tas` can place an emitter from a TAS without needing an in-game block picker UI. |
-| `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish (so MSAA comparison runs capture the same deterministic state). |
+| `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish; if `--async-chunks=on`, also waits for the background pipeline to fully drain so the captured state is deterministic. |
+| `--async-chunks=<on\|off>` | Run chunk gen+mesh on a background worker thread (default: `on`). When on, the main thread only drains results and enqueues new jobs — the 30–150 ms per-chunk mesh spike is moved off the render thread. `off` restores the legacy time-budgeted sync loop (`MESH_GENS_PER_TICK`) as an escape hatch. Design + web-worker port plan: [`examples/voxel/docs/async-chunks.md`](examples/voxel/docs/async-chunks.md). |
 | `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none` (default — opt-in feature, draw every loaded chunk), `sphere` (radial cutoff at render_distance + slack; cheap sanity backstop), `cone` (sphere-vs-cone test against the camera forward, fov controlled by `--frustum-fov-deg`). The chunk the camera sits in plus its 8 horizontal neighbours are NEVER culled regardless of strategy — see `examples/voxel/frustum.zig` for the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
 | `--frustum-fov-deg=<degrees>` | Total fov of the cone strategy in degrees. Default 180° (a deliberate no-op short-circuit so an accidental `--frustum=cone` cannot drop chunks before the user tightens the fov). Range [0, 360]. Half-angle ≥ 90° always returns true. |
 
@@ -265,6 +266,20 @@ Theory (MSAA vs FXAA for voxels, olive-edge explanation, FXAA impl architecture,
 pixel-diff baselines): [`docs/antialiasing.md`](docs/antialiasing.md).
 Regenerating the diffs / refreshing the doc's embedded PNGs:
 `./examples/voxel/tests/aa_regression.sh [--output-dir docs/assets]`.
+
+---
+
+## Voxel Demo — Async Chunks
+
+Chunk gen+mesh runs on a background `std.Thread` worker via
+`examples/voxel/async_chunks.zig`. Mutex+condvar FIFO job queue, `[9]?*Chunk`
+snapshots (self + 8 neighbours, c_allocator-owned copies) so the worker is
+pointer-isolated from the world HashMap. Main drains per tick, sorts by
+`(cx, cz)` before applying for determinism. Dump-frame gates on
+`asyncHasPendingWork()` so captured PPMs are bit-identical with the sync
+path. Design + Web Worker port path + baseline numbers:
+[`examples/voxel/docs/async-chunks.md`](examples/voxel/docs/async-chunks.md).
+Toggle via `--async-chunks=on|off`.
 
 ---
 

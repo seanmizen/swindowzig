@@ -189,6 +189,7 @@ const VoxelVertex = mesher_mod.VoxelVertex;
 
 const world_mod = @import("world.zig");
 const world_gen = @import("world_gen.zig");
+const async_chunks_mod = @import("async_chunks.zig");
 
 const Vec3 = math.Vec3;
 const Mat4 = math.Mat4;
@@ -249,6 +250,18 @@ const PREGEN_CHUNKS_PER_TICK: usize = 8;
 /// 120Hz responsiveness so a tick overrun here is fine.
 /// Inner 3×3 = 9 meshes / 4 per tick ≈ 3 ticks of meshing.
 const PREGEN_MESH_GENS_PER_TICK: usize = 4;
+
+/// Max gen+mesh jobs the async path will enqueue per tick during gameplay.
+/// Each enqueue copies up to 8 × ~1.15 MB neighbour snapshots for the job, so
+/// the per-tick memcpy cost scales linearly with this. 4 keeps memcpy under
+/// ~40 MB/tick = ~3.6 ms worst case on a 10 GB/s memcpy, but in practice the
+/// typical chunk has 4–6 neighbours populated so the real cost is lower.
+const ASYNC_GEN_ENQUEUE_PER_TICK: usize = 4;
+
+/// Max mesh-only (remesh-for-dirty-neighbour) jobs the async path will
+/// enqueue per tick. Same memcpy-cost reasoning as above. Kept separate so
+/// fresh-chunk loading doesn't starve out the dirty-remesh work.
+const ASYNC_MESH_ONLY_ENQUEUE_PER_TICK: usize = 2;
 
 const GameState = @import("game_state.zig").GameState;
 const OverlayRenderer = @import("overlay.zig").OverlayRenderer;
@@ -714,6 +727,18 @@ const State = struct {
     /// number keys still select slots and right-click still places — the
     /// flag is purely cosmetic so screenshots can be taken without the bar.
     hotbar_visible: bool = true,
+    /// `--async-chunks=on|off`. When on, chunk gen+mesh runs on a background
+    /// worker thread and the main-thread mesh loop is skipped for new chunks
+    /// and dirty-neighbour remeshes. When off, restores the legacy synchronous
+    /// time-budgeted path. See `examples/voxel/docs/async-chunks.md`.
+    async_chunks_enabled: bool = true,
+    /// Background gen+mesh pipeline. Non-null iff `async_chunks_enabled`.
+    /// Init'd in voxelInit after the world, deinit'd in voxelShutdown before
+    /// the world so the worker thread is joined before any world data is torn
+    /// down.
+    async_pipeline: ?*async_chunks_mod.Pipeline = null,
+    /// Scratch list reused every tick to receive drained async results.
+    async_result_scratch: std.ArrayList(async_chunks_mod.Result) = .{},
 };
 
 var state: State = undefined;
@@ -821,6 +846,11 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.compare_golden_path = null;
     state.golden_max_diff_pct = 0.5;
     state.golden_max_channel_delta = 2;
+    // Default async mode: ON. `--async-chunks=off` restores the legacy sync
+    // time-budgeted gen+mesh loop.
+    state.async_chunks_enabled = true;
+    state.async_pipeline = null;
+    state.async_result_scratch = .{};
 
     // Hotbar defaults: slot 1 = stone, slot 2 = grass, slot 3 = dirt.
     // Slot 4 was reserved for glowstone but `voxel/block-light` has not been
@@ -1056,6 +1086,17 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.process.exit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--async-chunks=")) {
+            const val = arg["--async-chunks=".len..];
+            if (std.mem.eql(u8, val, "on")) {
+                state.async_chunks_enabled = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.async_chunks_enabled = false;
+            } else {
+                std.log.err("--async-chunks: invalid value '{s}'. Accepted: on, off", .{val});
+                std.process.exit(1);
+            }
+        }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s}", .{
         @tagName(state.msaa_config.method),
@@ -1092,6 +1133,18 @@ fn voxelInit(ctx: *sw.Context) !void {
             state.profile_csv_file = null;
             state.profile_csv_path = null;
         }
+    }
+
+    // Initialize the background gen+mesh pipeline if async mode is enabled.
+    // The worker thread starts immediately and blocks on the empty job queue
+    // until main pushes the first job in voxelTick.
+    std.log.info("Async chunks (post-parse): {s}", .{if (state.async_chunks_enabled) "on" else "off"});
+    if (state.async_chunks_enabled) {
+        state.async_pipeline = async_chunks_mod.Pipeline.init(ctx.allocator()) catch |init_err| blk: {
+            std.log.err("Async pipeline init failed ({}) — falling back to sync mesh loop", .{init_err});
+            state.async_chunks_enabled = false;
+            break :blk null;
+        };
     }
 
     // TAS loading — native only. `TasScript.parseFile` calls std.fs.cwd()
@@ -1400,6 +1453,259 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
 /// Teleport player to the first 1×2 air column at-or-above the current spawn_point.
 /// This is the anti-griefing respawn: if someone places a block on spawn, the next
 /// respawn finds the next clear Y slot instead of embedding the player in rock.
+/// Build a 3×3 neighbour-snapshot array for an async chunk job. Each
+/// non-center slot is filled with a c_allocator-owned Chunk clone if that
+/// neighbour is present in the world map, or left null if missing. The
+/// center slot is handled by the caller (null for gen+mesh, non-null for
+/// mesh-only).
+///
+/// On error, any snapshots already allocated are freed and the error is
+/// propagated — this is what keeps the partial-failure path leak-free.
+fn buildNeighbourSnapshots(world: *const world_mod.World, cx: i32, cz: i32) ![8]?*chunk_mod.Chunk {
+    var out: [8]?*chunk_mod.Chunk = .{ null, null, null, null, null, null, null, null };
+    errdefer for (out) |slot| {
+        if (slot) |p| async_chunks_mod.freeChunk(p);
+    };
+
+    var idx: usize = 0;
+    var dcz: i32 = -1;
+    while (dcz <= 1) : (dcz += 1) {
+        var dcx: i32 = -1;
+        while (dcx <= 1) : (dcx += 1) {
+            if (dcx == 0 and dcz == 0) continue;
+            const nk = world_mod.ChunkKey{ .cx = cx + dcx, .cz = cz + dcz };
+            if (world.chunks.get(nk)) |nlc| {
+                out[idx] = try async_chunks_mod.cloneChunk(&nlc.chunk);
+            }
+            idx += 1;
+        }
+    }
+    return out;
+}
+
+/// Unpack a linear `[8]?*Chunk` (skipping center) into the full 9-slot
+/// `[9]?*Chunk` layout the pipeline expects. Slot 4 is the center and is
+/// filled by the caller.
+fn expandNeighboursToFullGrid(n8: [8]?*chunk_mod.Chunk) [9]?*chunk_mod.Chunk {
+    var full: [9]?*chunk_mod.Chunk = .{ null, null, null, null, null, null, null, null, null };
+    // Input order: (dcx,dcz) iteration = (-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)
+    // Grid indices: slot = (dcz+1)*3 + (dcx+1)
+    const map = [8]usize{ 0, 1, 2, 3, 5, 6, 7, 8 };
+    var i: usize = 0;
+    while (i < 8) : (i += 1) {
+        full[map[i]] = n8[i];
+    }
+    return full;
+}
+
+/// Free a 9-slot snapshot grid (used when enqueue fails and we need to
+/// roll back). Center is included because failure can happen after the
+/// caller has populated it.
+fn freeFullGrid(full: *[9]?*chunk_mod.Chunk) void {
+    for (full) |*slot| {
+        if (slot.*) |p| async_chunks_mod.freeChunk(p);
+        slot.* = null;
+    }
+}
+
+/// One async tick: drain completed results, install them, enqueue new jobs
+/// (fresh chunks innermost-first + any dirty chunks whose 4 axial neighbours
+/// are all present). Replaces the synchronous `world.update` + mesh loop.
+fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos: [3]f32, ao: gpu_mod.AOStrategy, lighting: gpu_mod.LightingMode, alloc: std.mem.Allocator) !void {
+    const t_tick_start = std.time.nanoTimestamp();
+
+    // ─── 1. Drain completed results ─────────────────────────────────────
+    state.async_result_scratch.clearRetainingCapacity();
+    try p.drainSorted(&state.async_result_scratch, alloc);
+    const drained_count = state.async_result_scratch.items.len;
+
+    for (state.async_result_scratch.items) |*r| {
+        const key = world_mod.ChunkKey{ .cx = r.cx, .cz = r.cz };
+        // Single-line per-chunk log for parity with the sync [MESH] line so
+        // before/after comparison is trivial via `grep`. `kind` distinguishes
+        // fresh gen+mesh from dirty-neighbour remesh.
+        const kind_tag: []const u8 = if (r.chunk != null) "gen+mesh" else "mesh-only";
+        std.log.info("[ASYNC] chunk ({},{}) {s} worker_us={} quads={}", .{
+            r.cx,                             r.cz,
+            kind_tag,                         r.worker_us,
+            r.indices.len / 6,
+        });
+        if (r.chunk) |new_chunk| {
+            // Gen+mesh result → install as a new LoadedChunk.
+            if (world.chunks.contains(key)) {
+                // Paranoia: drop the duplicate. Shouldn't happen because the
+                // pipeline's in_flight set prevents double-enqueue and we
+                // dedupe against `world.chunks.contains` at enqueue time,
+                // but be defensive in case a future feature (re-load from
+                // disk) races with this path.
+                async_chunks_mod.releaseResult(r);
+                continue;
+            }
+            const lc = try world.allocator.create(world_mod.LoadedChunk);
+            lc.* = world_mod.LoadedChunk.init(world.allocator, r.cx, r.cz);
+            lc.chunk = new_chunk.*;
+            async_chunks_mod.freeChunk(new_chunk);
+            try async_chunks_mod.installMeshFromResult(&lc.mesh, r);
+            std.heap.c_allocator.free(r.vertices);
+            std.heap.c_allocator.free(r.indices);
+            std.heap.c_allocator.free(r.quad_block);
+            std.heap.c_allocator.free(r.quad_highlight);
+            lc.state = .meshed;
+            lc.mesh_dirty = false;
+            lc.mesh_incremental_dirty = true;
+            try world.chunks.put(key, lc);
+
+            // Mark the 4 axial neighbours dirty so they'll be re-enqueued
+            // as mesh-only jobs next tick — same as the sync path.
+            const adjacent = [_]world_mod.ChunkKey{
+                .{ .cx = r.cx - 1, .cz = r.cz },
+                .{ .cx = r.cx + 1, .cz = r.cz },
+                .{ .cx = r.cx, .cz = r.cz - 1 },
+                .{ .cx = r.cx, .cz = r.cz + 1 },
+            };
+            for (adjacent) |nk| {
+                if (world.chunks.get(nk)) |nlc| {
+                    nlc.mesh_dirty = true;
+                }
+            }
+        } else {
+            // Mesh-only result → replace the existing chunk's mesh buffers.
+            if (world.chunks.get(key)) |lc| {
+                async_chunks_mod.installMeshFromResult(&lc.mesh, r) catch |err| {
+                    std.log.err("[ASYNC] mesh install failed for ({},{}): {}", .{ r.cx, r.cz, err });
+                };
+                lc.state = .meshed;
+                lc.mesh_dirty = false;
+                lc.mesh_incremental_dirty = true;
+            }
+            std.heap.c_allocator.free(r.vertices);
+            std.heap.c_allocator.free(r.indices);
+            std.heap.c_allocator.free(r.quad_block);
+            std.heap.c_allocator.free(r.quad_highlight);
+        }
+    }
+    state.async_result_scratch.clearRetainingCapacity();
+
+    // ─── 2. Enqueue gen+mesh jobs for missing spiral-ring chunks ────────
+    const player_cx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(player_pos[0]))));
+    const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(player_pos[2]))));
+
+    var enqueued_new: usize = 0;
+    for (world.spiral_offsets) |off| {
+        if (enqueued_new >= ASYNC_GEN_ENQUEUE_PER_TICK) break;
+        const cx = player_cx + off.dx;
+        const cz = player_cz + off.dz;
+        if (world.chunks.contains(.{ .cx = cx, .cz = cz })) continue;
+        if (p.isInFlight(cx, cz)) continue;
+
+        const n8 = buildNeighbourSnapshots(world, cx, cz) catch |err| {
+            std.log.err("[ASYNC] snapshot alloc failed for ({},{}): {}", .{ cx, cz, err });
+            break;
+        };
+        var full = expandNeighboursToFullGrid(n8);
+        // Center stays null — worker will generate it.
+
+        const job = async_chunks_mod.Job{
+            .cx = cx,
+            .cz = cz,
+            .gen_config = world.gen_config,
+            .ao = ao,
+            .lighting = lighting,
+            .snapshots = full,
+        };
+        const ok = p.tryEnqueue(job) catch |err| {
+            std.log.err("[ASYNC] enqueue gen+mesh ({},{}) failed: {}", .{ cx, cz, err });
+            freeFullGrid(&full);
+            break;
+        };
+        if (!ok) {
+            // At cap or duplicate; roll back the snapshots and stop this tick.
+            freeFullGrid(&full);
+            break;
+        }
+        enqueued_new += 1;
+    }
+
+    // ─── 3. Enqueue mesh-only jobs for dirty chunks with all 4 axials ───
+    var enqueued_mesh: usize = 0;
+    var it = world.chunks.iterator();
+    while (it.next()) |entry| {
+        if (enqueued_mesh >= ASYNC_MESH_ONLY_ENQUEUE_PER_TICK) break;
+        const lc = entry.value_ptr.*;
+        if (!lc.mesh_dirty) continue;
+        if (!world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
+        if (p.isInFlight(lc.cx, lc.cz)) continue;
+
+        const n8 = buildNeighbourSnapshots(world, lc.cx, lc.cz) catch |err| {
+            std.log.err("[ASYNC] mesh-only snapshot alloc failed for ({},{}): {}", .{ lc.cx, lc.cz, err });
+            break;
+        };
+        var full = expandNeighboursToFullGrid(n8);
+        // Center = snapshot of the existing chunk (mesh-only signals worker
+        // to skip regeneration and use this Chunk as the mesh target).
+        full[4] = async_chunks_mod.cloneChunk(&lc.chunk) catch |err| {
+            std.log.err("[ASYNC] mesh-only center snapshot alloc failed for ({},{}): {}", .{ lc.cx, lc.cz, err });
+            freeFullGrid(&full);
+            break;
+        };
+
+        const job = async_chunks_mod.Job{
+            .cx = lc.cx,
+            .cz = lc.cz,
+            .gen_config = world.gen_config,
+            .ao = ao,
+            .lighting = lighting,
+            .snapshots = full,
+        };
+        const ok = p.tryEnqueue(job) catch |err| {
+            std.log.err("[ASYNC] enqueue mesh-only ({},{}) failed: {}", .{ lc.cx, lc.cz, err });
+            freeFullGrid(&full);
+            break;
+        };
+        if (!ok) {
+            freeFullGrid(&full);
+            break;
+        }
+        // Optimistically clear the dirty flag so we don't re-enqueue the
+        // same chunk on the next tick while the current job is in flight.
+        // If new neighbour changes arrive during the job, the drain step
+        // will re-set dirty when the result lands — EXCEPT nothing does
+        // that today. Phase 1 accepts this: the regression TAS scripts
+        // don't exercise the case. Follow-up: add versioning if needed.
+        lc.mesh_dirty = false;
+        enqueued_mesh += 1;
+    }
+
+    // ─── 4. Per-tick main-thread cost summary ───────────────────────────
+    // Only log on ticks where we actually did something — otherwise this
+    // fires every tick and drowns the rest of the log output. The reported
+    // figure includes drain+install memcpy and enqueue-time snapshot
+    // memcpy. It does NOT include the mesh upload (that happens in the
+    // render callback) but uploads are cheap.
+    if (drained_count > 0 or enqueued_new > 0 or enqueued_mesh > 0) {
+        const tick_us: u64 = @intCast(@divTrunc(std.time.nanoTimestamp() - t_tick_start, 1000));
+        std.log.info("[ASYNC] main thread work: drained={} enq_new={} enq_mesh={} main_us={}", .{
+            drained_count,
+            enqueued_new,
+            enqueued_mesh,
+            tick_us,
+        });
+    }
+}
+
+/// Returns true when the async pipeline has no pending work — nothing in
+/// flight, nothing queued, no dirty chunks still needing remesh. Used by the
+/// dump-frame gate to wait for the world to fully converge before capturing.
+fn asyncHasPendingWork(p: *async_chunks_mod.Pipeline, world: *const world_mod.World) bool {
+    if (p.inFlightCount() > 0) return true;
+    var it = world.chunks.iterator();
+    while (it.next()) |entry| {
+        const lc = entry.value_ptr.*;
+        if (lc.mesh_dirty and world.hasAllNeighborsGenerated(lc.cx, lc.cz)) return true;
+    }
+    return false;
+}
+
 fn doRespawn() void {
     const resolved = resolveSpawnPos(&state.world, state.spawn_point);
     state.player.feet_pos = resolved;
@@ -1580,34 +1886,45 @@ fn voxelTick(ctx: *sw.Context) !void {
         return;
     }
 
-    // Update world: load chunks progressively around active region anchors.
-    // The player is currently the only anchor. This is the async background
-    // fill that keeps the outer ring growing as the player walks.
-    const gen_before: usize = if (state.profile_csv_file != null) state.world.chunks.count() else 0;
-    const gen_t0: i128 = if (state.profile_csv_file != null) std.time.nanoTimestamp() else 0;
-    try state.world.update(&[_]world_mod.RegionAnchor{
-        .{ .position = state.player.feet_pos },
-    });
-    if (state.profile_csv_file != null) {
-        const gen_t1 = std.time.nanoTimestamp();
-        state.gen_ns +%= @intCast(gen_t1 - gen_t0);
-        const gen_after = state.world.chunks.count();
-        state.gen_count +%= @intCast(gen_after - gen_before);
-    }
-
-    // Player chunk coords — used by the mesh-radius gate below and by the
-    // eviction pass that follows. Computed once per tick and reused.
+    // Player chunk coords — used by the mesh-radius gate and eviction pass.
     const player_cx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
     const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
 
-    // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
-    // Gated by:
-    //   1. `mesh_dirty` (something asked for a rebuild),
-    //   2. `hasAllNeighborsGenerated` (no seam-hole risk),
-    //   3. distance² ≤ MESH_RADIUS_SQ (don't waste cycles meshing chunks that
-    //      are about to be evicted, or that have just been evicted and are
-    //      sitting in the hysteresis dead zone with `mesh_dirty = true`).
-    {
+    if (state.async_chunks_enabled and state.async_pipeline != null) {
+        // Async path: worker thread owns gen + mesh. Main thread only
+        // drains results, installs them, and enqueues new work.
+        try asyncTick(
+            state.async_pipeline.?,
+            &state.world,
+            state.player.feet_pos,
+            state.ao_strategy,
+            state.lighting_mode,
+            ctx.allocator(),
+        );
+    } else {
+        // Update world: load chunks progressively around active region anchors.
+        // The player is currently the only anchor. This is the async background
+        // fill that keeps the outer ring growing as the player walks.
+        const gen_before: usize = if (state.profile_csv_file != null) state.world.chunks.count() else 0;
+        const gen_t0: i128 = if (state.profile_csv_file != null) std.time.nanoTimestamp() else 0;
+        try state.world.update(&[_]world_mod.RegionAnchor{
+            .{ .position = state.player.feet_pos },
+        });
+        if (state.profile_csv_file != null) {
+            const gen_t1 = std.time.nanoTimestamp();
+            state.gen_ns +%= @intCast(gen_t1 - gen_t0);
+            const gen_after = state.world.chunks.count();
+            state.gen_count +%= @intCast(gen_after - gen_before);
+        }
+
+        // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
+        // Gated by:
+        //   1. `mesh_dirty` (something asked for a rebuild),
+        //   2. `hasAllNeighborsGenerated` (no seam-hole risk),
+        //   3. distance² ≤ MESH_RADIUS_SQ (don't waste cycles meshing chunks that
+        //      are about to be evicted, or that have just been evicted and are
+        //      sitting in the hysteresis dead zone with `mesh_dirty = true`).
+        {
         var mesh_gens: usize = 0;
         var it = state.world.chunks.iterator();
         while (it.next()) |entry| {
@@ -1644,6 +1961,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             lc.mesh_incremental_dirty = true;
             mesh_gens += 1;
         }
+    }
     }
 
     // ====================================================================
@@ -3308,7 +3626,17 @@ fn voxelRender(ctx: *sw.Context) !void {
     // capture on the first post-loading frame.
     const dump_ready = blk: {
         if (state.world_loading) break :blk false;
-        if (state.tas_replayer) |*r| break :blk (r.state == .finished);
+        if (state.tas_replayer) |*r| {
+            if (r.state != .finished) break :blk false;
+        }
+        // Async mode: the final mesh state is only stable once the pipeline
+        // has fully drained (no in-flight jobs, no dirty chunks awaiting
+        // remesh). Otherwise the dump would capture a partial world and
+        // produce a non-deterministic PPM across runs. Force the capture
+        // to wait one more tick each time the pipeline still has work.
+        if (state.async_pipeline) |p| {
+            if (asyncHasPendingWork(p, &state.world)) break :blk false;
+        }
         break :blk true;
     };
     // --dump-frame / --compare-golden: native only. WASM builds don't accept
@@ -3513,6 +3841,16 @@ fn compareAgainstGolden(
 }
 
 fn voxelShutdown(ctx: *sw.Context) !void {
+    // Join the async worker thread BEFORE tearing down the world — its
+    // snapshot pointers reference c_allocator-owned copies, not world
+    // data, but we still want the thread gone before we start destroying
+    // anything else it could touch via logging/allocator channels.
+    if (state.async_pipeline) |p| {
+        p.deinit();
+        state.async_pipeline = null;
+    }
+    state.async_result_scratch.deinit(ctx.allocator());
+
     // Destroy per-chunk GPU buffers
     var it = state.chunk_gpu.iterator();
     while (it.next()) |entry| {
