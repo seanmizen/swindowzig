@@ -865,8 +865,13 @@ fn voxelTick(ctx: *sw.Context) !void {
             if (hit.hit) {
                 state.hover_block = hit.block_pos;
 
-                // Left click: destroy block — buttonPressed fires only on the down edge,
-                // so exactly one block is destroyed per click no matter how fast you click.
+                // Left click: destroy block on the DOWN edge (buttonPressed = press,
+                // not release) so the action fires the instant SDL hands us the
+                // mouseDown event. Acting on release would add another full click
+                // duration of perceived latency. macOS Trackpad still adds an
+                // unavoidable ~80–120 ms tap-to-click delay at the OS level — that's
+                // a system pref, not something we can fix in code. See the
+                // "macOS Trackpad Click Latency" section of swindowzig/CLAUDE.md.
                 if (input.buttonPressed(.left)) {
                     const bx: i32 = @intFromFloat(hit.block_pos.x);
                     const by: i32 = @intFromFloat(hit.block_pos.y);

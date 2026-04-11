@@ -231,6 +231,88 @@ Tracks which mesh quads were rebuilt and visualises them with an orange tint.
 
 ---
 
+## macOS Trackpad Click Latency
+
+**TL;DR — our code already does the right thing. The remaining lag is macOS, not us.**
+
+Symptom: trackpad clicks in the voxel demo feel sluggish; clicking to break a
+block has a perceptible delay. It looks like a frame drop but it isn't.
+
+### What's actually happening
+
+macOS adds a system-level delay (typically **80–120 ms**) between your finger
+hitting the trackpad and the OS dispatching `NSEventTypeLeftMouseDown` to the
+application. The OS uses that window to disambiguate the press from:
+
+- a **double-tap** (synthesised double-click)
+- a **two-finger tap** (right-click / secondary click)
+- a **drag start** (tap-and-hold-then-move)
+- a **Force Touch** pressure threshold (on Force Touch trackpads, the click is
+  pressure-driven and has its own hardware-side delay)
+
+SDL2 receives the `mouseDown` from Cocoa and immediately surfaces it as
+`SDL_MOUSEBUTTONDOWN`. We forward that into the event bus on the same poll
+tick. There is no extra latency added by swindowzig — verified by reading
+`libs/sw_platform/src/native_sdl.zig:158` (the SDL→bus pump) and
+`libs/sw_app/src/app.zig:130` (the main loop polls events at the start of every
+iteration, before the tick).
+
+### Why our code is already optimal
+
+Every mouse interaction in the voxel demo uses `input.buttonPressed(.left)` —
+the **down edge** — not `buttonReleased`:
+
+- `examples/voxel/main.zig:648` — pause-menu Resume button
+- `examples/voxel/main.zig:659` — pause-menu Quit button
+- `examples/voxel/main.zig:677` — click-to-recapture-mouse after Esc
+- `examples/voxel/main.zig:754` — break block
+- `examples/voxel/main.zig:783` — place block
+
+Switching any of these to release-edge would add another full click-duration of
+perceived latency. We already act the moment SDL hands us a `mouseDown`.
+
+### Things that DO NOT help
+
+Investigated and ruled out (web search + SDL2 wiki + reading the SDL Cocoa
+backend):
+
+- `SDL_HINT_MOUSE_DOUBLE_CLICK_TIME` — only affects how SDL flags `clicks=2`
+  on the *second* click; it does not delay the first click.
+- `SDL_HINT_TRACKPAD_IS_TOUCH_ONLY=1` — would route trackpad input as
+  multitouch events instead of mouse events. We could synthesise our own
+  "click" from `SDL_FINGERDOWN`, which arrives ~30–50 ms earlier than the
+  synthesised mouseDown. **But it disables mouse-cursor synthesis from the
+  trackpad entirely**, breaking the FPS mouse-look path. Non-starter for the
+  voxel demo. Worth revisiting only if we ever build a touch-first UI.
+- Polling SDL events more than once per main-loop iteration — our poll-tick-
+  render order is already minimal; the bottleneck is the OS dispatch, not the
+  poll cadence.
+
+### Things that DO help (a little)
+
+- `SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH=1` — set in `native_sdl.zig:23` before
+  `SDL_Init`. Lets a click that focuses an unfocused window also fire a normal
+  `mouseDown`, instead of being swallowed as a focus-only click. Saves one
+  click after alt-tabbing back into the game.
+- **Disable tap-to-click in macOS System Settings → Trackpad** (or specifically
+  turn off "Smart Zoom" and "Look up & data detectors"). This removes most of
+  the disambiguation window. If the user wants the snappiest possible feel, a
+  physical click (or a real mouse) is unavoidably faster than tap-to-click.
+- Run on a 120 Hz display if possible — our tick rate is 120 Hz already, so
+  the internal pipeline latency is ~8 ms; the visible portion is dominated by
+  vsync.
+
+### TAS replay determinism
+
+Press-vs-release semantics are recorded as separate events
+(`event.payload.pointer_button.down = true | false`) in `sw_core/src/tas.zig`.
+Both edges are persisted in `.tas` scripts, so swapping our gameplay logic
+between press and release does not affect what gets *recorded*, only when our
+game-state code reacts to a recorded event. Since we have always acted on the
+press edge, no existing `.tas` script needs updating.
+
+---
+
 ## Voxel Demo — Mandatory Testing
 
 **Before handing any voxel changes back to the user, ALL three checks must pass:**

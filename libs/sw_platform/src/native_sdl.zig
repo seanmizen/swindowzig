@@ -19,6 +19,20 @@ pub const SDL2Backend = struct {
         const self = try allocator.create(SDL2Backend);
         errdefer allocator.destroy(self);
 
+        // Set SDL hints BEFORE SDL_Init / SDL_CreateWindow.
+        //
+        // MOUSE_FOCUS_CLICKTHROUGH=1: when an unfocused window is clicked, deliver
+        // the click as a normal mouseDown event instead of swallowing it as a
+        // focus-only click. Without this, alt-tabbing back to the game and clicking
+        // a pause-menu button requires *two* clicks (one to focus, one to act).
+        //
+        // Note on macOS trackpad latency: this hint does NOT eliminate the ~80–120 ms
+        // tap-to-click delay that the OS adds while it disambiguates a tap from a
+        // double-tap or drag-start. That delay is system-level (Trackpad prefs) and
+        // cannot be bypassed via SDL — see the "macOS Trackpad Click Latency" section
+        // in utils/swindowzig/CLAUDE.md.
+        _ = sdl.SDL_SetHint(sdl.SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+
         // Initialize SDL
         if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) < 0) {
             std.log.err("SDL_Init failed: {s}", .{sdl.SDL_GetError()});
