@@ -10,7 +10,7 @@
     "dev:watch": "bun --watch backends/wasm/dev-server.ts",
     "web:windows": "zig build web -Dexample=windows && bun build backends/wasm/boot.ts --outdir=zig-out/bin && bun backends/wasm/dev-server.ts",
     "native:windows": "zig build run -Dexample=windows",
-    "native:voxel": "zig build run -Dexample=voxel",
+    "native:voxel": "zig build run -Dexample=voxel --",
     "native:justabox": "zig build run -Dexample=justabox",
     "build:native": "zig build native",
     "test": "zig build test"

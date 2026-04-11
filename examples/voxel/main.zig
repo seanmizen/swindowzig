@@ -193,6 +193,8 @@ const State = struct {
     /// When true (future): quads rebuilt this tick will be tinted a warning colour.
     /// Currently unused; set by Cmd+G or a future CLI flag.
     gpu_debug: bool = false,
+    /// MSAA config parsed from --msaa=N CLI flag. Default: 4× MSAA.
+    msaa_config: gpu_mod.AntiAliasingConfig = .{ .method = .msaa, .msaa_samples = 4 },
 };
 
 var state: State = undefined;
@@ -267,6 +269,24 @@ fn voxelInit(ctx: *sw.Context) !void {
         if (std.mem.eql(u8, arg, "--headless")) state.headless = true;
         if (std.mem.eql(u8, arg, "--tas-step")) state.tas_step_mode = true;
         if (std.mem.eql(u8, arg, "--gpu-debug")) state.gpu_debug = true;
+        if (std.mem.startsWith(u8, arg, "--msaa=")) {
+            const val = arg["--msaa=".len..];
+            if (std.mem.eql(u8, val, "none") or std.mem.eql(u8, val, "0")) {
+                state.msaa_config = .{ .method = .none, .msaa_samples = 1 };
+            } else if (std.mem.eql(u8, val, "1")) {
+                state.msaa_config = .{ .method = .msaa, .msaa_samples = 1 };
+            } else if (std.mem.eql(u8, val, "2")) {
+                state.msaa_config = .{ .method = .msaa, .msaa_samples = 2 };
+            } else if (std.mem.eql(u8, val, "4")) {
+                state.msaa_config = .{ .method = .msaa, .msaa_samples = 4 };
+            } else if (std.mem.eql(u8, val, "8")) {
+                state.msaa_config = .{ .method = .msaa, .msaa_samples = 8 };
+            } else {
+                std.log.err("--msaa: invalid value '{s}'. Accepted: none, 0, 1, 2, 4, 8", .{val});
+                std.process.exit(1);
+            }
+            std.log.info("MSAA: method={s} samples={}", .{ @tagName(state.msaa_config.method), state.msaa_config.msaa_samples });
+        }
     }
 
     for (args, 0..) |arg, i| {
@@ -1268,8 +1288,8 @@ fn voxelShutdown(ctx: *sw.Context) !void {
 }
 
 fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
-    // Enable 4× MSAA for smoother geometry edges
-    try g.configureMSAA(.{ .method = .msaa, .msaa_samples = 4 }, width, height);
+    // Configure MSAA from CLI --msaa flag (default: 4× MSAA)
+    try g.configureMSAA(state.msaa_config, width, height);
     const sample_count = g.getSampleCount();
 
     // Load shader

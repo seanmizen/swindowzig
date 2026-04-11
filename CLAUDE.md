@@ -145,6 +145,7 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 | `--headless` | No window, no GPU. Ticks unlimited speed. Exits when TAS finishes. |
 | `--tas-step` | Frame-by-frame TAS stepping. Right arrow = advance one TAS tick. Implies `--gpu-debug`. |
 | `--gpu-debug` | Highlight freshly rebuilt mesh faces (orange tint, fades ~0.5s). Also toggled with Cmd+G / Ctrl+G at runtime. |
+| `--msaa=N` | MSAA sample count. Accepted: `none`/`0` (no AA), `1`, `2`, `4` (default), `8`. WebGPU core clamps to 4 max; Metal native supports 8. |
 
 ---
 
