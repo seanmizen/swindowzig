@@ -106,7 +106,7 @@ pub const LoadedChunk = struct {
 
     pub fn init(allocator: std.mem.Allocator, cx: i32, cz: i32) LoadedChunk {
         return .{
-            .chunk = Chunk.init(),
+            .chunk = Chunk.init(allocator),
             .mesh = Mesh.init(allocator),
             .cx = cx,
             .cz = cz,
@@ -118,6 +118,7 @@ pub const LoadedChunk = struct {
 
     pub fn deinit(self: *LoadedChunk) void {
         self.mesh.deinit();
+        self.chunk.deinit();
     }
 
     /// World-space X origin of this chunk in block units.
@@ -183,8 +184,26 @@ pub const World = struct {
 
         const lc = try self.allocator.create(LoadedChunk);
         lc.* = LoadedChunk.init(self.allocator, cx, cz);
-        lc.chunk.generateTerrain(cx, cz, self.gen_config);
+        try lc.chunk.generateTerrain(cx, cz, self.gen_config);
         try self.chunks.put(key, lc);
+
+        // Per-chunk RAM audit — log palette width + byte cost once on first
+        // generation so the palette-compression benefit is visible in TAS
+        // runs without having to attach a heap profiler. The legacy
+        // `[W][H][W]BlockType` layout cost 576 KB flat per chunk regardless
+        // of terrain (see `docs/memory.md` §1); the paletted figure varies
+        // from ~256 B (uniform chunk) to 576 KB + palette header.
+        std.log.info(
+            "[CHUNK SIZE] ({d:3},{d:3}) palette_len={d:3} bits={d} block_bytes={d:7} total_bytes={d:7}",
+            .{
+                cx,
+                cz,
+                lc.chunk.paletteLen(),
+                lc.chunk.bitsPerEntry(),
+                lc.chunk.blockDataBytes(),
+                lc.chunk.totalBytes(),
+            },
+        );
 
         // Mark adjacent already-loaded chunks dirty so their seam faces will
         // be re-evaluated against this new neighbour on the next mesh pass.
@@ -280,13 +299,16 @@ pub const World = struct {
     /// `skylightSample` falls back to the neighbour chunk's own grid via
     /// `BlockGetter.getSkylight`, so the neighbour renders with its existing
     /// (stale from its own last computeSkylight) values.
-    pub fn setBlock(self: *World, wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) bool {
+    pub fn setBlock(self: *World, wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) !bool {
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
         const lc_ptr = self.chunks.getPtr(.{ .cx = cx, .cz = cz }) orelse return false;
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
-        lc_ptr.*.chunk.setBlock(lx, wy, lz, block);
+        // Paletted chunk — setBlock can allocate when the palette grows
+        // past a power-of-two boundary. Propagate the error instead of
+        // swallowing it; OOM here is the caller's problem, not ours.
+        try lc_ptr.*.chunk.setBlock(lx, wy, lz, block);
         lc_ptr.*.chunk.computeSkylight();
         lc_ptr.*.mesh_dirty = true;
         return true;

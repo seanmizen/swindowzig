@@ -18,18 +18,81 @@ pub const CHUNK_W = 48;
 pub const CHUNK_H = 256;
 pub const BlockType = enum(u8) { ... };
 pub const Chunk = struct {
-    blocks: [CHUNK_W][CHUNK_H][CHUNK_W]BlockType,
+    allocator: std.mem.Allocator,
+    blocks: PalettedBlocks,   // palette compression — see below
+    skylight: [CHUNK_W][CHUNK_H][CHUNK_W]u8,
 };
 ```
 
-- Block-ID width: `u8` (1 byte). The whole palette fits in 8 bits today; only
-  5 types are defined.
 - Chunk volume: `48 × 256 × 48 = 589,824` blocks.
-- Chunk bytes: `589,824 × 1 = 589,824` B = **576 KB per chunk**.
+- Legacy layout (before palette compression):
+  - Block-ID width: `u8` (1 byte). The whole palette fits in 8 bits; only
+    5–6 `BlockType` values are defined.
+  - Block bytes: `589,824 × 1 = 589,824` B = **576 KB per chunk** flat.
 
-This is the dominant per-chunk cost. Everything else in `LoadedChunk` —
+### 1a. Palette compression (current)
+
+The block grid is now stored as a `PalettedBlocks`: a per-chunk palette of
+unique `BlockType` values plus a packed `[]u64` bit-array of indices at
+`bits_per_entry = minBitsFor(palette_size)` bits per cell. Aligned packing
+(each u64 holds `floor(64 / bits)` entries, no entry crossing a word
+boundary) keeps `get`/`set` branch-light. Palette entries are append-only;
+once a type has been seen in a chunk it stays resident. The fixed
+`[256]BlockType` palette array costs a flat 256 B per chunk regardless of
+contents.
+
+| palette_len | bits | entries/u64 | words/chunk | data bytes | data + 256 palette bytes |
+| ----------- | ---- | ----------- | ----------- | ---------- | ------------------------ |
+| 1 (uniform) | 0    | —           | 0           |        0 B |                    256 B |
+| 2           | 1    | 64          | 9 216       |   73 728 B |                  73 984 B |
+| 3–4         | 2    | 32          | 18 432      |  147 456 B |                 147 712 B |
+| 5–8         | 3    | 21          | 28 087      |  224 696 B |                 224 952 B |
+| 9–16        | 4    | 16          | 36 864      |  294 912 B |                 295 168 B |
+| 17–32       | 5    | 12          | 49 152      |  393 216 B |                 393 472 B |
+| 33–64       | 6    | 10          | 58 983      |  471 864 B |                 472 120 B |
+| 65–128      | 7    |  9          | 65 536      |  524 288 B |                 524 544 B |
+| 129–256     | 8    |  8          | 73 728      |  589 824 B |                 590 080 B |
+
+### 1b. Measured per-chunk block data
+
+Measured by the `[CHUNK SIZE]` log line in `world.generateChunk` (April 2026,
+after landing palette compression):
+
+| scenario                        | palette_len | bits | block_bytes | ratio vs 576 KB |
+| ------------------------------- | ----------- | ---- | ----------- | --------------- |
+| **Flatland** (all generated)    |           5 |    3 | **224 952** |       2.62× win |
+| **Hilly default** (pregen ring) |           5 |    3 | **224 952** |       2.62× win |
+| Uniform (pre-generation, `Chunk.init`) | 1 |    0 |         256 |     ~2300× win |
+
+Every `generateTerrain` column currently touches all five defined block
+types: `air`, `bedrock` (Y=0), `stone`, `dirt`, `grass`. Both flatland and
+hilly therefore converge on the same palette and the same bit width — 3
+bits per block. The pre-palette prediction in the task brief was
+**144 KB for flatland / 216 KB for hilly**; the real numbers are a little
+higher because (a) flatland still plants bedrock so it's 5 types, not 4,
+and (b) the 256-byte fixed palette header is counted in both figures.
+
+Worst case for today's enum (`air`, `grass`, `dirt`, `stone`, `bedrock`,
+`debug_marker` — 6 values) is still 3 bits because 6 ≤ 8, so even a
+hand-crafted chunk that uses every defined type lands at 224 952 B. A
+chunk that needed ≥ 9 distinct types would widen to 4 bits (≈ 288 KB),
+and the theoretical cap with all 256 `u8` slots used lands at 590 080 B —
+256 B above the old flat layout (the cost of the palette header itself).
+
+This is the dominant per-chunk cost **of the block data**. Skylight still
+costs another 576 KB flat — see §1c. Everything else in `LoadedChunk` —
 ChunkKey, pointers, dirty flags, the empty `Mesh` ArrayList headers — is
-<300 bytes and negligible.
+<300 B and negligible.
+
+### 1c. Skylight grid (still flat)
+
+`skylight: [CHUNK_W][CHUNK_H][CHUNK_W]u8` = 589 824 B = **576 KB** per
+chunk, unchanged by this pass. Palette compression on skylight is a
+separate problem: the nibble (4-bit) domain is too narrow for the
+indexed-palette trick to help, and values are almost unique per air cell
+after BFS propagation, so a palette table would be nearly as large as the
+flat grid. Left as-is on purpose; revisit only if skylight becomes the
+next bottleneck. See §3 totals below for how this shifts the balance.
 
 ---
 
@@ -109,7 +172,12 @@ column (N = 25, `PREGEN_RADIUS = 2`). Inside that ring, the inner 3×3 is
 meshed before the player is released.
 
 **RAM (block data, all 25 generated):**
-`25 × 576 KB = 14,400 KB ≈ 14 MB`
+
+- Pre-palette: `25 × 576 KB = 14,400 KB ≈ 14 MB`
+- Post-palette (hilly/flatland, 3 bits): `25 × 219.7 KB ≈ 5.37 MB`
+
+**RAM (skylight, all 25 generated — unchanged):**
+`25 × 576 KB ≈ 14 MB`
 
 **VRAM (typical hilly, 9 meshed):**
 `9 × 1.19 MB ≈ 10.7 MB`
@@ -134,7 +202,12 @@ area at R = 4: `π × 16 ≈ 50` chunks loaded at any one time. `world.zig`'s
 dx² + dz² ≤ 16).
 
 **RAM (block data, all 49 generated):**
-`49 × 576 KB = 28,224 KB ≈ 27.6 MB`
+
+- Pre-palette: `49 × 576 KB = 28,224 KB ≈ 27.6 MB`
+- Post-palette (hilly/flatland, 3 bits): `49 × 219.7 KB ≈ 10.5 MB`
+
+**RAM (skylight, all 49 generated — unchanged):**
+`49 × 576 KB ≈ 27.6 MB`
 
 **VRAM (typical hilly, all 49 meshed):**
 `49 × 1.19 MB ≈ 58.3 MB`
@@ -171,22 +244,32 @@ follow-up work.
   visited) to O(view disc) — worst case shrinks 10× or more for long
   sessions.
 
-### Rank 2 — Palette compression (Minecraft's trick)
+### Rank 2 — Palette compression (Minecraft's trick) ✅ LANDED
 
-- **Effort**: medium. Replace `[CHUNK_W][CHUNK_H][CHUNK_W]BlockType` with a
-  `(palette: []BlockType, bits: u4, indices: []u64)` triple and rebuild the
-  `getBlock` / `setBlock` hot paths. The mesher and generator need to be
-  retrofitted to go through `getBlock`, which they already do.
-- **Payoff**: huge. For hilly terrain, a chunk column typically touches 4–5
-  of the 5 defined block types. At `bits = 3` (fits 8 distinct values), the
-  576 KB block array collapses to `589,824 × 3 / 8 = 221,184` B ≈ 216 KB —
-  a **~2.6× reduction**. All-grass or all-stone chunks (after Rank 3) take
-  `bits = 0`, reducing to a constant.
-- **Risk**: medium. Touches the hottest read path in the engine. Benchmarks
-  needed before merging. Also has a nasty interaction with `updateForBlockChange`
-  if the bit-width grows mid-chunk.
-- **Combines well with Rank 1**: palette compression is on RAM, eviction is on
-  VRAM/host mesh. They attack different budgets.
+**Status**: implemented on branch `voxel/palette-compression` (April 2026).
+`Chunk.blocks` is now a `PalettedBlocks` — opaque behind `getBlock` /
+`setBlock` / `resolveBlockRaw`. See §1a above for the layout table and
+§1b for the measured per-chunk numbers.
+
+- **Effort actual**: medium. The refactor was ~chunk.zig rewrite plus
+  `mesher.zig` (2 direct-array accesses in `shouldRenderFace`/`isSolid`
+  swapped for `resolveBlockRaw`) and `world.zig` + `main.zig` (2 sites
+  each) for the `setBlock` error-return plumbing. Everything else already
+  went through `getBlock` and was unaffected.
+- **Payoff actual**: **~2.62× reduction** on block data for typical
+  terrain (flatland and hilly default both converge on 5 types / 3 bits
+  / 224 952 B, down from the flat 576 KB). Uniform (never-generated)
+  chunks drop to 256 B — effectively zero. See §1b for the full table.
+- **Risk actual**: the `grow` re-pack path is the only allocator call on
+  the hot `setBlock` route; it's hit at most 8 times over a chunk's
+  lifetime (once per bit-width increase). `updateForBlockChange` was
+  already routed through `chunk.getBlock`, so the incremental-mesh fast
+  path needed no changes. All four TAS regressions (`framespike`,
+  `ao_corners`, `cave_skylight`, `dig_relight`) produce byte-identical
+  PPM dumps before and after — palette compression is a pure storage
+  refactor with no visible effects.
+- **Skylight stays flat** for this pass — see §1c for why palette
+  compression on skylight is a separate problem.
 
 ### Rank 3 — Homogeneous chunk shortcut
 

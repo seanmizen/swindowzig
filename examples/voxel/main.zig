@@ -1201,7 +1201,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const bx: i32 = @intFromFloat(hit.block_pos.x);
                     const by: i32 = @intFromFloat(hit.block_pos.y);
                     const bz: i32 = @intFromFloat(hit.block_pos.z);
-                    _ = state.world.setBlock(bx, by, bz, .air);
+                    _ = try state.world.setBlock(bx, by, bz, .air);
                     const cam_pos_arr = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
                     if (state.world.getChunkAtBlock(bx, bz)) |lc| {
                         const lcx = world_mod.chunkCoordOf(bx);
@@ -1241,7 +1241,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const px: i32 = @intFromFloat(place_pos.x);
                     const py: i32 = @intFromFloat(place_pos.y);
                     const pz: i32 = @intFromFloat(place_pos.z);
-                    _ = state.world.setBlock(px, py, pz, .stone);
+                    _ = try state.world.setBlock(px, py, pz, .stone);
                     const cam_pos_arr2 = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
                     if (state.world.getChunkAtBlock(px, pz)) |lc| {
                         const lcx = world_mod.chunkCoordOf(px);

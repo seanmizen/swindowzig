@@ -19,43 +19,275 @@ pub const BlockType = enum(u8) {
 /// full reasoning.
 pub const MAX_SKYLIGHT: u8 = 15;
 
+/// Total blocks in a column.
+pub const BLOCKS_PER_CHUNK: usize = CHUNK_W * CHUNK_H * CHUNK_W;
+
+/// Flat linear index for a block position within a chunk. Matches the
+/// `packBlockIdx` layout used by `mesher.zig` so a mesher-computed index
+/// can be reused verbatim when the mesher wants to look up the block type.
+pub inline fn blockLinearIdx(x: i32, y: i32, z: i32) usize {
+    return @as(usize, @intCast(x)) * (CHUNK_H * CHUNK_W) +
+        @as(usize, @intCast(y)) * CHUNK_W +
+        @as(usize, @intCast(z));
+}
+
+/// Minecraft-style palette-compressed block storage for a single chunk.
+///
+/// A paletted chunk tracks which `BlockType`s actually appear in the column
+/// and stores per-block indices into that palette in a packed `[]u64` bit
+/// array. Bit width is chosen from palette size:
+///
+///   palette size | bits_per_entry | raw block_bytes (48×256×48)
+///   ------------ | -------------- | ---------------------------
+///      1         |   0 (uniform)  |      0   (single-constant, no data)
+///      2         |   1            |  73 728
+///      3–4       |   2            | 147 456
+///      5–8       |   3            | 221 184  (aligned-pack: 21 entries/u64)
+///      9–16      |   4            | 294 912
+///     17–32      |   5            | 368 640  (12 entries/u64)
+///     33–64      |   6            | 442 368  (10 entries/u64)
+///     65–128     |   7            | 516 096  (9 entries/u64)
+///    129–256     |   8            | 589 824  (8 entries/u64)
+///
+/// "Aligned packing" means each `u64` holds `floor(64 / bits)` entries side
+/// by side with no entry crossing a word boundary. A handful of bits are
+/// wasted per word for widths 3/5/6/7 — we trade that for trivial get/set.
+///
+/// Palette entries are append-only in insertion order. The engine never
+/// shrinks the palette: once a block type has been seen in a chunk it stays
+/// in the table, and growing past a power-of-two boundary triggers a single
+/// full re-pack into a wider `data` array. (Shrink/compact is explicitly
+/// out of scope for this pass — see `docs/memory.md` for the ranking.)
+///
+/// Invariants:
+///   - `palette_len >= 1` always (slot 0 is `.air` after `init`).
+///   - `bits_per_entry == 0` iff `palette_len == 1` iff `data.len == 0`.
+///     All reads in that state return `palette[0]` without touching `data`.
+pub const PalettedBlocks = struct {
+    /// Up to 256 distinct block types — matches `BlockType`'s `u8` width so
+    /// the palette can never overflow. Unused slots hold `.air` as a
+    /// harmless sentinel. Fixed-size so palette growth never allocates; the
+    /// only heap path is growing `data` when `bits_per_entry` increases.
+    palette: [256]BlockType = [_]BlockType{.air} ** 256,
+    palette_len: u16 = 1,
+    bits_per_entry: u8 = 0,
+    data: []u64 = &[_]u64{},
+
+    /// Return min bits needed to index a palette of `palette_size` entries.
+    /// A uniform chunk (size 1) needs zero bits — we don't even allocate.
+    fn minBitsFor(palette_size: usize) u8 {
+        if (palette_size <= 1) return 0;
+        var b: u8 = 1;
+        var cap: usize = 2;
+        while (cap < palette_size) : (b += 1) cap *= 2;
+        return b;
+    }
+
+    /// Entries per u64 for aligned-pack layout. Only valid when bits > 0.
+    inline fn entriesPerWord(bits: u8) usize {
+        return 64 / @as(usize, bits);
+    }
+
+    /// Number of u64 words needed to hold BLOCKS_PER_CHUNK entries at the
+    /// given bit width. Only valid when bits > 0.
+    inline fn wordCountFor(bits: u8) usize {
+        const epw = entriesPerWord(bits);
+        return (BLOCKS_PER_CHUNK + epw - 1) / epw;
+    }
+
+    pub fn deinit(self: *PalettedBlocks, allocator: std.mem.Allocator) void {
+        if (self.data.len > 0) allocator.free(self.data);
+        self.* = .{};
+    }
+
+    /// Total RAM footprint of this paletted block array, in bytes. Counts
+    /// the u64 backing store plus the fixed-size palette (256 BlockType
+    /// slots = 256 bytes) so the number is comparable across chunks.
+    pub fn sizeBytes(self: *const PalettedBlocks) usize {
+        return @sizeOf([256]BlockType) + self.data.len * @sizeOf(u64);
+    }
+
+    /// Look up a block by linear index (see `blockLinearIdx`). Caller is
+    /// responsible for bounds; OOB is UB in the sense that it will happily
+    /// read past the end of `data` if the index is wrong.
+    pub inline fn get(self: *const PalettedBlocks, idx: usize) BlockType {
+        // Uniform fast path — every cell resolves to the single palette entry.
+        if (self.bits_per_entry == 0) return self.palette[0];
+        const bits: usize = self.bits_per_entry;
+        const epw: usize = 64 / bits;
+        const word = idx / epw;
+        const slot = idx % epw;
+        const bit_off: u6 = @intCast(slot * bits);
+        const mask: u64 = (@as(u64, 1) << @intCast(bits)) - 1;
+        const pi: usize = @intCast((self.data[word] >> bit_off) & mask);
+        return self.palette[pi];
+    }
+
+    /// Write a block by linear index. Grows the palette and re-packs `data`
+    /// if needed. Allocation only happens when `bits_per_entry` increases
+    /// (at most `ceil(log2(256)) = 8` times over the lifetime of a chunk).
+    pub fn set(
+        self: *PalettedBlocks,
+        allocator: std.mem.Allocator,
+        idx: usize,
+        block: BlockType,
+    ) !void {
+        // Find the block in the palette; append if new.
+        var pi: usize = self.palette_len; // sentinel "not found"
+        for (self.palette[0..self.palette_len], 0..) |b, i| {
+            if (b == block) {
+                pi = i;
+                break;
+            }
+        }
+        if (pi == self.palette_len) {
+            // New entry — palette is a fixed-size array, so append is
+            // just a write + length bump. Bit width might need to grow.
+            self.palette[self.palette_len] = block;
+            self.palette_len += 1;
+            const required = minBitsFor(self.palette_len);
+            if (required > self.bits_per_entry) {
+                try self.grow(allocator, required);
+            }
+        }
+
+        // Uniform chunk: still palette_len == 1, pi must be 0, nothing to write.
+        if (self.bits_per_entry == 0) return;
+
+        const bits: usize = self.bits_per_entry;
+        const epw: usize = 64 / bits;
+        const word = idx / epw;
+        const slot = idx % epw;
+        const bit_off: u6 = @intCast(slot * bits);
+        const mask: u64 = (@as(u64, 1) << @intCast(bits)) - 1;
+        const old_word = self.data[word];
+        const cleared = old_word & ~(mask << bit_off);
+        self.data[word] = cleared | ((@as(u64, @intCast(pi)) & mask) << bit_off);
+    }
+
+    /// Allocate a wider `data` array and re-pack every entry from the
+    /// current layout into it. Called only from `set` on palette overflow.
+    /// When growing from bits=0 (uniform) the new array is all-zeros, which
+    /// correctly re-maps every block to palette[0] == the previous uniform
+    /// value (slot 0 never moves).
+    fn grow(self: *PalettedBlocks, allocator: std.mem.Allocator, new_bits: u8) !void {
+        const new_word_count = wordCountFor(new_bits);
+        const new_data = try allocator.alloc(u64, new_word_count);
+        @memset(new_data, 0);
+
+        const old_bits = self.bits_per_entry;
+        if (old_bits > 0) {
+            const old_epw: usize = 64 / @as(usize, old_bits);
+            const new_epw: usize = 64 / @as(usize, new_bits);
+            const old_mask: u64 = (@as(u64, 1) << @intCast(old_bits)) - 1;
+            var i: usize = 0;
+            while (i < BLOCKS_PER_CHUNK) : (i += 1) {
+                const ow = i / old_epw;
+                const os = i % old_epw;
+                const o_off: u6 = @intCast(os * @as(usize, old_bits));
+                const val = (self.data[ow] >> o_off) & old_mask;
+
+                const nw = i / new_epw;
+                const ns = i % new_epw;
+                const n_off: u6 = @intCast(ns * @as(usize, new_bits));
+                new_data[nw] |= val << n_off;
+            }
+        }
+
+        if (self.data.len > 0) allocator.free(self.data);
+        self.data = new_data;
+        self.bits_per_entry = new_bits;
+    }
+};
+
 pub const Chunk = struct {
-    blocks: [CHUNK_W][CHUNK_H][CHUNK_W]BlockType,
+    /// Allocator used for the paletted block data. Stored here so `setBlock`
+    /// and `deinit` don't need to plumb one through every call site. The
+    /// pointer overhead (~16 bytes) is trivial compared to what palette
+    /// compression saves on the block storage.
+    allocator: std.mem.Allocator,
+    /// Palette-compressed block storage. Opaque — every caller must go
+    /// through `getBlock`/`setBlock`/`resolveBlockRaw`.
+    blocks: PalettedBlocks,
     /// Per-block skylight value, range [0, MAX_SKYLIGHT]. Computed by
     /// `computeSkylight()` after `generateTerrain()`. Solid blocks always
     /// store 0. Air blocks store the brightness of sunlight that reaches them
     /// after BFS propagation through air. Phase 1: per-chunk only — light
     /// does not cross chunk boundaries, so wide horizontal caves spanning
     /// two chunks will show a brightness seam at the join.
+    ///
+    /// Kept flat (one u8 per cell) on purpose. Skylight values are almost
+    /// always unique per-cell in an air column, so palette compression on
+    /// this grid would bloat rather than shrink it. See `docs/memory.md`
+    /// §2 for the reasoning.
     skylight: [CHUNK_W][CHUNK_H][CHUNK_W]u8,
 
-    pub fn init() Chunk {
+    pub fn init(allocator: std.mem.Allocator) Chunk {
         return .{
-            .blocks = [_][CHUNK_H][CHUNK_W]BlockType{
-                [_][CHUNK_W]BlockType{
-                    [_]BlockType{.air} ** CHUNK_W,
-                } ** CHUNK_H,
-            } ** CHUNK_W,
-            .skylight = [_][CHUNK_H][CHUNK_W]u8{
-                [_][CHUNK_W]u8{
-                    [_]u8{0} ** CHUNK_W,
-                } ** CHUNK_H,
-            } ** CHUNK_W,
+            .allocator = allocator,
+            .blocks = PalettedBlocks{},
+            .skylight = std.mem.zeroes([CHUNK_W][CHUNK_H][CHUNK_W]u8),
         };
+    }
+
+    pub fn deinit(self: *Chunk) void {
+        self.blocks.deinit(self.allocator);
+    }
+
+    /// RAM used by this chunk's block storage (palette + packed data).
+    /// Does NOT include the skylight grid — that's reported separately by
+    /// `skylightBytes` because it's on a different optimization track.
+    pub fn blockDataBytes(self: *const Chunk) usize {
+        return self.blocks.sizeBytes();
+    }
+
+    pub fn skylightBytes(_: *const Chunk) usize {
+        return @sizeOf([CHUNK_W][CHUNK_H][CHUNK_W]u8);
+    }
+
+    /// Sum of block-data + skylight bytes. Roughly comparable to the
+    /// pre-palette-compression 576 KB per-chunk figure in `docs/memory.md`,
+    /// which counted only the raw `[W][H][W]BlockType` array. For an apples-
+    /// to-apples comparison use `blockDataBytes` (ignoring the palette table
+    /// overhead, which is a flat 256 bytes regardless of contents).
+    pub fn totalBytes(self: *const Chunk) usize {
+        return self.blockDataBytes() + self.skylightBytes();
+    }
+
+    /// Current number of distinct block types present in this chunk.
+    /// Useful for the per-chunk size log line and for tests that want to
+    /// assert palette-fit behaviour.
+    pub fn paletteLen(self: *const Chunk) usize {
+        return self.blocks.palette_len;
+    }
+
+    pub fn bitsPerEntry(self: *const Chunk) u8 {
+        return self.blocks.bits_per_entry;
     }
 
     pub fn getBlock(self: *const Chunk, x: i32, y: i32, z: i32) BlockType {
         if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) {
             return .air;
         }
-        return self.blocks[@intCast(x)][@intCast(y)][@intCast(z)];
+        return self.blocks.get(blockLinearIdx(x, y, z));
     }
 
-    pub fn setBlock(self: *Chunk, x: i32, y: i32, z: i32, block: BlockType) void {
+    /// Bounds-free block read. Caller MUST guarantee `0 <= x < CHUNK_W`,
+    /// `0 <= y < CHUNK_H`, `0 <= z < CHUNK_W`. This is the fast path used
+    /// by the mesher's in-chunk face-culling and AO sampling loops — the
+    /// old code read `chunk.blocks[x][y][z]` directly there, so callers
+    /// already have the bounds check inlined one level up. Marked `inline`
+    /// so the compiler can fold it into the mesher's hot loops without an
+    /// extra call.
+    pub inline fn resolveBlockRaw(self: *const Chunk, x: i32, y: i32, z: i32) BlockType {
+        return self.blocks.get(blockLinearIdx(x, y, z));
+    }
+
+    pub fn setBlock(self: *Chunk, x: i32, y: i32, z: i32, block: BlockType) !void {
         if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) {
             return;
         }
-        self.blocks[@intCast(x)][@intCast(y)][@intCast(z)] = block;
+        try self.blocks.set(self.allocator, blockLinearIdx(x, y, z), block);
     }
 
     /// Read the skylight at (x, y, z) using local chunk coordinates.
@@ -103,7 +335,7 @@ pub const Chunk = struct {
                     const xu: usize = @intCast(x);
                     const yu: usize = @intCast(y);
                     const zu: usize = @intCast(z);
-                    if (self.blocks[xu][yu][zu] != .air) {
+                    if (self.resolveBlockRaw(x, y, z) != .air) {
                         seen_solid = true;
                         self.skylight[xu][yu][zu] = 0;
                     } else if (!seen_solid) {
@@ -149,7 +381,7 @@ pub const Chunk = struct {
                             const nxu: usize = @intCast(nx);
                             const nyu: usize = @intCast(ny);
                             const nzu: usize = @intCast(nz);
-                            if (self.blocks[nxu][nyu][nzu] != .air) continue;
+                            if (self.resolveBlockRaw(nx, ny, nz) != .air) continue;
                             if (self.skylight[nxu][nyu][nzu] >= target) continue;
                             self.skylight[nxu][nyu][nzu] = target;
                         }
@@ -169,7 +401,12 @@ pub const Chunk = struct {
     ///
     /// For the flatland preset (noise_octaves=0), surface is always
     /// terrain_height_min=63, reproducing the original Minecraft superflat layout.
-    pub fn generateTerrain(self: *Chunk, cx: i32, cz: i32, config: world_gen.WorldGenConfig) void {
+    ///
+    /// Returns `!void` because `setBlock` on the paletted store allocates
+    /// when the palette grows past a power-of-two boundary (out-of-memory
+    /// is the only realistic failure mode — on typical hardware this path
+    /// never trips).
+    pub fn generateTerrain(self: *Chunk, cx: i32, cz: i32, config: world_gen.WorldGenConfig) !void {
         var x: i32 = 0;
         while (x < CHUNK_W) : (x += 1) {
             var z: i32 = 0;
@@ -178,23 +415,23 @@ pub const Chunk = struct {
                 const wz = cz * CHUNK_W + z;
                 const surface = world_gen.sampleHeight(wx, wz, config);
 
-                self.setBlock(x, 0, z, .bedrock);
+                try self.setBlock(x, 0, z, .bedrock);
 
                 // Stone fills from Y=1 up to (but not including) the 3-dirt band.
                 var y: i32 = 1;
                 while (y < surface - 3) : (y += 1) {
-                    self.setBlock(x, y, z, .stone);
+                    try self.setBlock(x, y, z, .stone);
                 }
 
                 // Three dirt layers immediately below the surface.
                 y = @max(1, surface - 3);
                 while (y < surface) : (y += 1) {
-                    self.setBlock(x, y, z, .dirt);
+                    try self.setBlock(x, y, z, .dirt);
                 }
 
                 // Grass cap.
                 if (surface >= 1 and surface < CHUNK_H) {
-                    self.setBlock(x, surface, z, .grass);
+                    try self.setBlock(x, surface, z, .grass);
                 }
             }
         }

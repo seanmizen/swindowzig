@@ -414,9 +414,10 @@ fn shouldRenderFace(chunk: *const Chunk, getter: BlockGetter, lx: i32, ly: i32, 
     const nx = lx + offset[0];
     const ny = ly + offset[1];
     const nz = lz + offset[2];
-    // Fast path: neighbour is within this chunk (direct array access, no HashMap)
+    // Fast path: neighbour is within this chunk (paletted bounds-free read,
+    // no HashMap). resolveBlockRaw skips the bounds check we just did.
     if (nx >= 0 and nx < CHUNK_W and ny >= 0 and ny < CHUNK_H and nz >= 0 and nz < CHUNK_W) {
-        return chunk.blocks[@intCast(nx)][@intCast(ny)][@intCast(nz)] == .air;
+        return chunk.resolveBlockRaw(nx, ny, nz) == .air;
     }
     // Slow path: neighbour in adjacent chunk — world HashMap lookup
     return getter.getBlock(world_ox + nx, ny, world_oz + nz) == .air;
@@ -432,7 +433,7 @@ fn isSolid(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i3
     const lx = wx - world_ox;
     const lz = wz - world_oz;
     if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
-        return chunk.blocks[@intCast(lx)][@intCast(wy)][@intCast(lz)] != .air;
+        return chunk.resolveBlockRaw(lx, wy, lz) != .air;
     }
     return getter.getBlock(wx, wy, wz) != .air;
 }
