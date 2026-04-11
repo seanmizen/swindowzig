@@ -98,6 +98,24 @@ const Mat4 = math.Mat4;
 const CameraType = @import("camera.zig").Camera(Vec3, Mat4, math);
 const WorldRaycastType = @import("raycast.zig").Raycast(Vec3, world_mod.World);
 const worldRaycast = WorldRaycastType.raycast;
+const camera_clip = @import("camera_clip.zig");
+
+/// 3PV camera-clip skin: distance to keep between the camera origin and the
+/// nearest solid voxel face. Must exceed the near-plane half-diagonal so the
+/// frustum corners can't poke into a wall and become see-through. With the
+/// default fov=60° / near=0.1 / aspect~16:9 the half-diagonal is ~0.12, so
+/// 0.2 leaves a comfortable margin without making 3PV feel too pulled-in.
+const CAMERA_CLIP_SKIN: f32 = 0.2;
+
+/// Adapter that gives `camera_clip.safeCameraDistance` an `isSolid()` method
+/// over the real `world_mod.World`. The helper is generic so it can also be
+/// unit-tested against a fake world (see camera_clip.zig).
+const IsSolidWorld = struct {
+    world: *const world_mod.World,
+    pub fn isSolid(self: IsSolidWorld, x: i32, y: i32, z: i32) bool {
+        return self.world.getBlock(x, y, z) != .air;
+    }
+};
 
 /// Max mesh generations per tick (keeps tick time bounded during chunk loading).
 /// Mesh gen runs in tick so render frames stay smooth.
@@ -723,25 +741,45 @@ fn voxelTick(ctx: *sw.Context) !void {
             }
 
             // Sync camera position to player eye, offset by camera view.
+            // For 3PV, raymarch from the eye toward the desired camera spot
+            // and stop short of any solid voxel (see camera_clip.zig) so the
+            // camera can never end up clipped into a wall — fixes an exploit
+            // where wedging the camera partway into a block left the clipped
+            // sliver see-through.
             const eye = state.player.eyePos();
             const fwd_vec = state.camera.forward();
             const cam_dist: f32 = 4.0;
+            const solid_world = IsSolidWorld{ .world = &state.world };
             switch (state.camera_view) {
                 .first_person => {
                     state.camera.position = Vec3.init(eye[0], eye[1], eye[2]);
                 },
                 .third_person_back => {
+                    const d = camera_clip.safeCameraDistance(
+                        solid_world,
+                        eye[0], eye[1], eye[2],
+                        -fwd_vec.x, -fwd_vec.y, -fwd_vec.z,
+                        cam_dist,
+                        CAMERA_CLIP_SKIN,
+                    );
                     state.camera.position = Vec3.init(
-                        eye[0] - fwd_vec.x * cam_dist,
-                        eye[1] - fwd_vec.y * cam_dist,
-                        eye[2] - fwd_vec.z * cam_dist,
+                        eye[0] - fwd_vec.x * d,
+                        eye[1] - fwd_vec.y * d,
+                        eye[2] - fwd_vec.z * d,
                     );
                 },
                 .third_person_front => {
+                    const d = camera_clip.safeCameraDistance(
+                        solid_world,
+                        eye[0], eye[1], eye[2],
+                        fwd_vec.x, fwd_vec.y, fwd_vec.z,
+                        cam_dist,
+                        CAMERA_CLIP_SKIN,
+                    );
                     state.camera.position = Vec3.init(
-                        eye[0] + fwd_vec.x * cam_dist,
-                        eye[1] + fwd_vec.y * cam_dist,
-                        eye[2] + fwd_vec.z * cam_dist,
+                        eye[0] + fwd_vec.x * d,
+                        eye[1] + fwd_vec.y * d,
+                        eye[2] + fwd_vec.z * d,
                     );
                 },
             }
