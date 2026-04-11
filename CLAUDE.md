@@ -197,6 +197,75 @@ block at the top documenting the purpose, usage, and baseline numbers.
 
 ---
 
+## Voxel Demo — Anti-Aliasing Analysis
+
+### What MSAA can and cannot do for voxel worlds
+
+MSAA (multi-sample anti-aliasing) works at the **rasterizer** level: it fires
+multiple sub-pixel samples per pixel and averages them. It only produces
+intermediate colours at **geometry silhouette edges** — pixels that straddle
+two different triangles. This means:
+
+- ✅ **Outer silhouette edges** (block geometry vs sky/fog): MSAA averages the
+  block colour with the background. Visible as a 1-pixel-wide blend strip.
+- ❌ **Block-on-block interior edges** (two adjacent opaque blocks touching):
+  both triangle sides are solid geometry at the same/close depth. All 4× sub-
+  samples hit geometry, so the coverage fraction is 0% or 100%. No blending.
+
+For a voxel world, the vast majority of visible edges are block-on-block
+interior edges (flat terrain faces, cliff faces, etc.). Only the outermost
+silhouette edges get smoothed. In practice, 4× MSAA on a voxel world affects
+**~3% of pixels** in a typical scene.
+
+### Why the edge looks olive/green ("green through the gaps")
+
+The specific effect Sean noticed (2026-04-11) is **correct MSAA behaviour**,
+not a bug:
+
+- The test scene has grass-top blocks (bright green, ~`RGB(102, 131, 36)` in
+  sRGB) next to a dug hole. The hole's side faces are near-black due to
+  maximum AO: `RGB(38, 4, 4)`.
+- At the diagonal silhouette of the terrain edge, a pixel at the boundary row
+  has 2/4 sub-samples hitting the grass-top and 2/4 hitting the dark side face.
+  The blend is `(102+38)/2, (131+4)/2, (36+4)/2` ≈ `(72, 71, 21)` — olive.
+- Without MSAA, the centre sample decides: one side gets solid green, the other
+  solid near-black, with a hard aliased step between them.
+- The olive/muddy blend looks garish because the AO floor (`0.4 + ao * 0.6`)
+  combined with ambient+diffuse lighting drops occluded side faces to near-black
+  while the lit grass top is fully saturated green. The extreme contrast makes
+  the sub-pixel blend traverse a wide colour space.
+
+**This is not a mesh gap.** The mesher uses `@floatFromInt(world_coord)` for
+all vertex positions; IEEE 754 f32 is exact for integers ≤ 2²³, so adjacent
+faces share mathematically identical coordinates. No subpixel cracks exist.
+
+### Recommendation: FXAA for broader coverage
+
+For voxel graphics, **FXAA** (Fast Approximate Anti-Aliasing) gives a much
+more visible improvement than MSAA:
+
+- Works as a post-process pass on the final colour image.
+- Detects luminance discontinuities in screen space — catches ALL colour edges,
+  including block-on-block interior edges that MSAA cannot touch.
+- Cost: one extra screen-space pass (cheap; runs at 1 sample/pixel).
+- Downside: blurs fine details (text, thin lines, crisp texel noise). For a
+  voxel world with procedural texel noise this is acceptable — the noise is
+  meant to look low-res anyway.
+
+FXAA implementation sketch:
+1. Render voxel scene to an offscreen `TextureView` (not the swapchain surface).
+2. Run a FXAA fullscreen-quad pass that reads from step 1's texture and writes
+   to the swapchain surface.
+3. FXAA WGSL implementation: use the public-domain FXAA 3.11 GLSL → WGSL port,
+   or implement the simpler but effective "FXAA lite" (4-tap neighbourhood
+   luminance gradient → conditional pixel shift).
+
+MSAA and FXAA can coexist: render to an MSAA texture (for geometry silhouette
+quality), resolve to an intermediate texture, then FXAA over that. For most
+voxel scenes the FXAA-only route gives a bigger visible win per GPU cost.
+
+---
+
 ## Voxel Demo — GPU Debug System
 
 Tracks which mesh quads were rebuilt and visualises them with an orange tint.
