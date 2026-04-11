@@ -68,6 +68,31 @@ pub const Mesh = struct {
         self.sort_valid = false; // mesh rebuilt — scratch order is stale
     }
 
+    /// Release ALL host-side mesh allocations back to the allocator. Unlike
+    /// `clear` (which only zeroes lengths and keeps capacity for reuse), this
+    /// drops capacity to 0 — used by the per-frame mesh-eviction pass when a
+    /// chunk wanders outside the render distance and we want the host RAM
+    /// back, not just the GPU buffer back.
+    ///
+    /// The Mesh struct itself stays valid: `init`-equivalent state is restored
+    /// on every list, so a subsequent `generateMesh` against this Mesh works
+    /// fine and just re-grows the storage as it appends.
+    pub fn freeHostBuffers(self: *Mesh) void {
+        self.vertices.shrinkAndFree(self.allocator, 0);
+        self.indices.shrinkAndFree(self.allocator, 0);
+        self.quad_block.shrinkAndFree(self.allocator, 0);
+        self.quad_highlight.shrinkAndFree(self.allocator, 0);
+        if (self.sort_scratch.len > 0) {
+            self.allocator.free(self.sort_scratch);
+            self.sort_scratch = &.{};
+        }
+        if (self.sort_indices.len > 0) {
+            self.allocator.free(self.sort_indices);
+            self.sort_indices = &.{};
+        }
+        self.sort_valid = false;
+    }
+
     /// Sort faces by depth (painter's algorithm) for correct rendering without
     /// hardware depth testing. Reuses pre-allocated scratch buffers each frame.
     pub fn sortByDepth(self: *Mesh, camera_pos: [3]f32) !void {

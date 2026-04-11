@@ -858,10 +858,18 @@ fn voxelTick(ctx: *sw.Context) !void {
         .{ .position = state.player.feet_pos },
     });
 
+    // Player chunk coords — used by the mesh-radius gate below and by the
+    // eviction pass that follows. Computed once per tick and reused.
+    const player_cx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
+    const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
+
     // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
-    // Gated: a chunk can only be meshed once all four horizontal neighbours are
-    // themselves generated. This prevents seam holes where the mesher would
-    // otherwise cull faces against unloaded .air neighbours.
+    // Gated by:
+    //   1. `mesh_dirty` (something asked for a rebuild),
+    //   2. `hasAllNeighborsGenerated` (no seam-hole risk),
+    //   3. distance² ≤ MESH_RADIUS_SQ (don't waste cycles meshing chunks that
+    //      are about to be evicted, or that have just been evicted and are
+    //      sitting in the hysteresis dead zone with `mesh_dirty = true`).
     {
         var mesh_gens: usize = 0;
         var it = state.world.chunks.iterator();
@@ -869,6 +877,9 @@ fn voxelTick(ctx: *sw.Context) !void {
             if (mesh_gens >= MESH_GENS_PER_TICK) break;
             const lc = entry.value_ptr.*;
             if (!lc.mesh_dirty) continue;
+            const dcx = lc.cx - player_cx;
+            const dcz = lc.cz - player_cz;
+            if (dcx * dcx + dcz * dcz > world_mod.MESH_RADIUS_SQ) continue;
             if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
             const t0 = std.time.nanoTimestamp();
             mesher_mod.generateMesh(
@@ -890,6 +901,75 @@ fn voxelTick(ctx: *sw.Context) !void {
             lc.mesh_incremental_dirty = true;
             mesh_gens += 1;
         }
+    }
+
+    // ====================================================================
+    // Mesh eviction — drop GPU + host mesh storage for chunks that have
+    // wandered outside the eviction radius.
+    //
+    // Design notes (long form lives in `world.zig` next to EVICT_RADIUS_SQ
+    // and in `examples/voxel/docs/memory.md` § "Mesh eviction"):
+    //
+    //   - Cheap enough to run every tick: a typical session has ~50 loaded
+    //     chunks, each check is two int multiplies + a hashmap lookup.
+    //   - Hysteresis: mesh-eligible inside MESH_RADIUS_SQ (= 16 for R=4),
+    //     evict outside EVICT_RADIUS_SQ (= 25). Dead zone 17..25 prevents
+    //     boundary-wobble flicker.
+    //   - On eviction we (a) destroy GPU vertex+index buffers and drop the
+    //     entry from `state.chunk_gpu`, then (b) call `evictMesh` on the
+    //     LoadedChunk to free its host mesh ArrayLists. The block + skylight
+    //     grids stay in RAM.
+    //   - Re-entry path: a chunk that's been evicted has `state = .generated`
+    //     and `mesh_dirty = true`. When the player walks back inside the
+    //     mesh disc, the gated mesh loop above picks it up automatically on
+    //     the next tick — no separate code path needed.
+    {
+        var evicted_this_tick: usize = 0;
+        var it = state.world.chunks.valueIterator();
+        while (it.next()) |lc_ptr| {
+            const lc = lc_ptr.*;
+            if (lc.state != .meshed) continue;
+            const dcx = lc.cx - player_cx;
+            const dcz = lc.cz - player_cz;
+            if (dcx * dcx + dcz * dcz <= world_mod.EVICT_RADIUS_SQ) continue;
+
+            // Drop GPU buffers if any are bound. The chunk_gpu entry can be
+            // absent (e.g. chunk was meshed this tick but the upload pass
+            // hasn't run yet); that's fine — the host-side eviction below
+            // is still safe.
+            if (state.chunk_gpu.fetchRemove(.{ .cx = lc.cx, .cz = lc.cz })) |kv| {
+                if (kv.value.vertex_buffer) |buf| buf.destroy();
+                if (kv.value.index_buffer) |buf| buf.destroy();
+            }
+
+            lc.evictMesh();
+            evicted_this_tick += 1;
+        }
+        if (evicted_this_tick > 0) {
+            std.log.info("[EVICT] {} chunk(s) downgraded to .generated this tick", .{evicted_this_tick});
+        }
+    }
+
+    // Periodic chunk-state stats so we can verify the eviction loop is
+    // actually doing work during a play session. 240 ticks ≈ 2 s at the
+    // default 120 Hz sim rate; in headless TAS runs (unlimited tick rate)
+    // this still fires roughly once per "TAS second" of script time, which
+    // is enough to confirm the counts on the regressions.
+    if (ctx.tickId() % 240 == 0) {
+        var meshed_count: usize = 0;
+        var generated_count: usize = 0;
+        var sit = state.world.chunks.valueIterator();
+        while (sit.next()) |lc_ptr| {
+            switch (lc_ptr.*.state) {
+                .meshed => meshed_count += 1,
+                .generated => generated_count += 1,
+            }
+        }
+        std.log.info("[CHUNK_STATS] meshed={} generated-only={} total={}", .{
+            meshed_count,
+            generated_count,
+            meshed_count + generated_count,
+        });
     }
 
     // TAS playback status + headless auto-shutdown when script completes
