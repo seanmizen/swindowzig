@@ -1049,7 +1049,8 @@ fn buildChunkBorderMesh(g: *gpu_mod.GPU, ox: f32, oz: f32) void {
 /// strips (same effect as the stuck-in-rock overlay) and centred bitmap text.
 /// Runs while state.world_loading is true, until the spawn chunk is meshed.
 fn renderLoadingScreen(ctx: *sw.Context, g: *gpu_mod.GPU, overlay_w: f32, overlay_h: f32) !void {
-    state.overlay.ensurePipeline(g, g.getSampleCount()) catch |err| {
+    // Overlay pipeline runs in a post-FXAA UI pass at sample_count=1 (see voxelRender).
+    state.overlay.ensurePipeline(g, 1) catch |err| {
         std.log.err("Loading screen: ensurePipeline failed: {}", .{err});
         return err;
     };
@@ -1071,6 +1072,8 @@ fn renderLoadingScreen(ctx: *sw.Context, g: *gpu_mod.GPU, overlay_w: f32, overla
     const color_store: gpu_mod.StoreOp =
         if (use_fxaa) .store else if (use_msaa) .discard else .store;
 
+    // Background pass: just clears to dark purple. The strips and title are
+    // drawn in the post-FXAA UI pass below so they aren't blurred.
     const pass = try encoder.beginRenderPass(.{
         .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
             .view = color_view,
@@ -1118,13 +1121,27 @@ fn renderLoadingScreen(ctx: *sw.Context, g: *gpu_mod.GPU, overlay_w: f32, overla
     drawCenteredText(&state.overlay, preset_text, preset_y, faint, preset_scale, overlay_w, overlay_h) catch {};
     _ = preset_h;
 
-    state.overlay.draw(g, pass);
     pass.end();
 
     if (use_fxaa) {
         g.runFXAAPass(encoder, &swap_view) catch |err| {
             std.log.err("FXAA pass (loading screen) failed: {}", .{err});
         };
+    }
+
+    // UI pass: composites strips + title onto the swapchain at 1 sample, after
+    // FXAA, so loading-screen text stays sharp under --aa=fxaa.
+    {
+        const ui_pass = try encoder.beginRenderPass(.{
+            .label = "loading_ui_pass",
+            .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
+                .view = &swap_view,
+                .load_op = .load,
+                .store_op = .store,
+            }},
+        });
+        state.overlay.draw(g, ui_pass);
+        ui_pass.end();
     }
 
     const cmd = try encoder.finish();
@@ -1385,8 +1402,16 @@ fn voxelRender(ctx: *sw.Context) !void {
 
     // =========================================================================
     // Overlay rendering (2D UI on top of 3D world)
+    //
+    // The overlay (HUD, crosshair, pause menu, debug bar, keyboard HUD, TAS HUD,
+    // stuck-in-rock effect) is NOT drawn into the scene render pass — that would
+    // run it through the FXAA filter and blur all the text. Instead, vertices are
+    // built here, then submitted via a SEPARATE post-FXAA UI render pass that
+    // targets the swapchain directly with load_op=.load. The pass always runs at
+    // sample_count=1 regardless of AA mode (no MSAA on the resolved swapchain),
+    // so the overlay pipeline is created with sample_count=1.
     // =========================================================================
-    state.overlay.ensurePipeline(g, g.getSampleCount()) catch |err| {
+    state.overlay.ensurePipeline(g, 1) catch |err| {
         std.log.err("Failed to ensure overlay pipeline: {}", .{err});
     };
 
@@ -1578,15 +1603,39 @@ fn voxelRender(ctx: *sw.Context) !void {
         }
     }
 
-    state.overlay.draw(g, pass);
-
     pass.end();
 
     // FXAA post-process pass: blit the offscreen scene texture to the swapchain.
+    // Runs BEFORE the UI pass so the UI draws on top of the FXAA-resolved scene
+    // and is itself never filtered.
     if (use_fxaa) {
         g.runFXAAPass(encoder, &swap_view) catch |err| {
             std.log.err("FXAA pass failed: {}", .{err});
         };
+    }
+
+    // =========================================================================
+    // UI render pass — runs AFTER scene+FXAA so the overlay (HUD, menu, crosshair,
+    // debug bar, etc.) is composited directly onto the resolved swapchain at
+    // 1:1 pixel mapping. load_op=.load preserves whatever the previous pass put
+    // in the swap view (FXAA output, MSAA-resolved scene, or directly-rendered
+    // scene depending on AA mode). store_op=.store keeps everything for present.
+    // =========================================================================
+    {
+        const ui_pass = encoder.beginRenderPass(.{
+            .label = "ui_pass",
+            .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
+                .view = &swap_view,
+                .load_op = .load,
+                .store_op = .store,
+            }},
+        }) catch |err| {
+            std.log.err("Failed to begin UI render pass: {}", .{err});
+            return;
+        };
+
+        state.overlay.draw(g, ui_pass);
+        ui_pass.end();
     }
 
     const cmd = encoder.finish() catch |err| {
