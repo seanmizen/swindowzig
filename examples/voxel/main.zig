@@ -90,6 +90,7 @@ const Mesh = mesher_mod.Mesh;
 const VoxelVertex = mesher_mod.VoxelVertex;
 
 const world_mod = @import("world.zig");
+const world_gen = @import("world_gen.zig");
 
 const Vec3 = math.Vec3;
 const Mat4 = math.Mat4;
@@ -106,6 +107,7 @@ const GameState = @import("game_state.zig").GameState;
 const OverlayRenderer = @import("overlay.zig").OverlayRenderer;
 const bitmap_font = @import("bitmap_font.zig");
 const drawText = bitmap_font.drawText;
+const drawCenteredText = bitmap_font.drawCenteredText;
 const drawStepHud = bitmap_font.drawStepHud;
 const GLYPH_W = bitmap_font.GLYPH_W;
 const GLYPH_H = bitmap_font.GLYPH_H;
@@ -198,6 +200,13 @@ const State = struct {
     /// --dump-frame=<path>: capture first rendered frame to a PPM file then exit.
     dump_frame_path: ?[]const u8 = null,
     dump_frame_done: bool = false,
+    /// True while the first spawn chunk is being generated + meshed. Render loop
+    /// shows a purple "WORLD LOADING" overlay and skips 3D rendering. Flipped
+    /// false once the spawn chunk is meshed and the player has been placed at
+    /// the resolved spawn position.
+    world_loading: bool = true,
+    /// Selected world generation preset. Parsed from --world=<flatland|hilly>.
+    world_preset: world_gen.Preset = .hilly,
 };
 
 var state: State = undefined;
@@ -221,8 +230,12 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.hover_block = null;
     state.tas_replayer = null;
 
-    // Initialize world (replaces single chunk + mesh)
-    state.world = try world_mod.World.init(ctx.allocator());
+    // Default preset (overridden by --world= below, parsed AFTER this block).
+    // We init the world with the default first and recreate if the flag overrides.
+    state.world_preset = .hilly;
+    state.world_loading = true;
+
+    // World init is deferred until after arg parsing (so --world= can select the preset).
     state.chunk_gpu = std.HashMap(world_mod.ChunkKey, ChunkGPU, world_mod.ChunkKey.HashContext, std.hash_map.default_max_load_percentage).init(ctx.allocator());
 
     // Initialize camera
@@ -283,6 +296,17 @@ fn voxelInit(ctx: *sw.Context) !void {
             // dupe so the path survives argsFree at end of voxelInit
             state.dump_frame_path = try ctx.allocator().dupe(u8, p);
         }
+        if (std.mem.startsWith(u8, arg, "--world=")) {
+            const val = std.mem.sliceTo(arg["--world=".len..], 0);
+            if (std.mem.eql(u8, val, "flatland")) {
+                state.world_preset = .flatland;
+            } else if (std.mem.eql(u8, val, "hilly")) {
+                state.world_preset = .hilly;
+            } else {
+                std.log.err("--world: invalid value '{s}'. Accepted: flatland, hilly", .{val});
+                std.process.exit(1);
+            }
+        }
         if (std.mem.startsWith(u8, arg, "--msaa=")) {
             const val = arg["--msaa=".len..];
             if (std.mem.eql(u8, val, "none") or std.mem.eql(u8, val, "0")) {
@@ -304,6 +328,10 @@ fn voxelInit(ctx: *sw.Context) !void {
     std.log.info("MSAA config (post-parse): method={s} requested_samples={}", .{
         @tagName(state.msaa_config.method), state.msaa_config.msaa_samples,
     });
+    std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
+
+    // Initialize world with the selected preset (deferred until here so --world= works).
+    state.world = try world_mod.World.init(ctx.allocator(), state.world_preset);
 
     for (args, 0..) |arg, i| {
         if (std.mem.eql(u8, arg, "--tas") and i + 1 < args.len) {
@@ -325,14 +353,13 @@ fn voxelInit(ctx: *sw.Context) !void {
             // Convert TAS entries → events, transfer ownership directly to the replayer.
             // No serialize/deserialize roundtrip needed.
             const events = try tas_script.toEvents(120); // 120 Hz
-            var replayer = core.Replayer.initDirect(ctx.allocator(), events);
-            replayer.play();
+            const replayer = core.Replayer.initDirect(ctx.allocator(), events);
+            // Leave replayer in .stopped state. It will be remapped and .play()ed
+            // when world loading completes (see voxelTick). This ensures TAS tick 1
+            // aligns with the first post-loading sim tick regardless of load duration.
             state.tas_replayer = replayer;
 
             if (state.tas_step_mode) {
-                // Step mode: start paused so the user advances one tick at a time.
-                // Physical input is NOT blocked — we need arrow keys for stepping.
-                state.tas_replayer.?.pause();
                 std.log.info("TAS step mode: press Right arrow to advance one tick", .{});
             } else {
                 // Normal TAS: block physical input for deterministic replay.
@@ -343,7 +370,7 @@ fn voxelInit(ctx: *sw.Context) !void {
             state.debug_mode = true;
             // Auto-enable GPU debug in step mode so rebuilt faces are highlighted.
             if (state.tas_step_mode) state.gpu_debug = true;
-            std.log.info("TAS replayer ready - starting playback (physical input blocked)!", .{});
+            std.log.info("TAS replayer ready — will start after world loading completes", .{});
             break;
         }
     }
@@ -412,25 +439,25 @@ fn resolveSpawnPos(world: *const world_mod.World, spawn: [3]f32) [3]f32 {
     return spawn; // already above terrain (or chunk not generating normally)
 }
 
+/// Teleport player to the first 1×2 air column at-or-above the current spawn_point.
+/// This is the anti-griefing respawn: if someone places a block on spawn, the next
+/// respawn finds the next clear Y slot instead of embedding the player in rock.
+fn doRespawn() void {
+    const resolved = resolveSpawnPos(&state.world, state.spawn_point);
+    state.player.feet_pos = resolved;
+    state.player.velocity = .{ 0, 0, 0 };
+    state.player.on_ground = false;
+    std.log.info("Respawned at ({d:.1}, {d:.1}, {d:.1})", .{
+        resolved[0], resolved[1], resolved[2],
+    });
+}
+
 fn voxelTick(ctx: *sw.Context) !void {
     // Update world: load chunks progressively around active region anchors.
     // The player is currently the only anchor.
     try state.world.update(&[_]world_mod.RegionAnchor{
         .{ .position = state.player.feet_pos },
     });
-
-    // Once the spawn chunk loads, snap the player to a terrain-safe position.
-    if (!state.spawn_resolved) {
-        const bx: i32 = @intFromFloat(@floor(state.spawn_point[0]));
-        const bz: i32 = @intFromFloat(@floor(state.spawn_point[2]));
-        if (state.world.getChunkAtBlock(bx, bz) != null) {
-            state.player.feet_pos = resolveSpawnPos(&state.world, state.spawn_point);
-            state.spawn_resolved = true;
-            std.log.info("Spawned at ({d:.1}, {d:.1}, {d:.1})", .{
-                state.player.feet_pos[0], state.player.feet_pos[1], state.player.feet_pos[2],
-            });
-        }
-    }
 
     // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
     {
@@ -457,6 +484,49 @@ fn voxelTick(ctx: *sw.Context) !void {
             lc.mesh_incremental_dirty = true;
             mesh_gens += 1;
         }
+    }
+
+    // World loading gate: wait for the spawn chunk to exist AND have its mesh
+    // generated before placing the player. The render loop shows a loading
+    // screen during this phase. Gameplay input and TAS playback are both
+    // deferred until loading completes.
+    if (state.world_loading) {
+        const bx: i32 = @intFromFloat(@floor(state.spawn_point[0]));
+        const bz: i32 = @intFromFloat(@floor(state.spawn_point[2]));
+        if (state.world.getChunkAtBlock(bx, bz)) |lc| {
+            if (!lc.mesh_dirty) {
+                // Spawn chunk meshed — resolve final spawn position and lock it in.
+                const resolved = resolveSpawnPos(&state.world, state.spawn_point);
+                state.player.feet_pos = resolved;
+                state.player.velocity = .{ 0, 0, 0 };
+                state.player.on_ground = false;
+                state.spawn_point = resolved; // permanent — first-spawn locks XYZ
+                state.spawn_resolved = true;
+                state.world_loading = false;
+                std.log.info("World ready — spawned at ({d:.1}, {d:.1}, {d:.1})", .{
+                    resolved[0], resolved[1], resolved[2],
+                });
+
+                // Remap TAS event tick_ids so tick 1 = first post-loading tick.
+                // The replayer is in .stopped state from voxelInit; we start it now.
+                if (state.tas_replayer) |*r| {
+                    if (r.state == .stopped) {
+                        const offset: u64 = ctx.tickId() + 1;
+                        for (r.events.items) |*ev| {
+                            ev.tick_id += offset;
+                        }
+                        if (!state.tas_step_mode) {
+                            r.play();
+                            // play() resets current_index to 0 — events are in order
+                            // so this is fine (we haven't consumed any yet).
+                        }
+                        std.log.info("TAS replayer: remapped event tick_ids by +{} and started", .{offset});
+                    }
+                }
+            }
+        }
+        // Skip gameplay input processing while loading.
+        return;
     }
 
     // TAS playback status + headless auto-shutdown when script completes
@@ -521,12 +591,17 @@ fn voxelTick(ctx: *sw.Context) !void {
         std.log.info("GPU debug: {}", .{state.gpu_debug});
     }
 
-    // Cmd+S (macOS) / Ctrl+S (Windows/Linux) — set spawn point to current position
+    // Cmd+S (macOS) / Ctrl+S (Windows/Linux) — set spawn point to current position (debug override)
     if (input.keyPressed(.S) and (input.mods.super or input.mods.ctrl)) {
         state.spawn_point = state.player.feet_pos;
         std.log.info("Spawn point set to ({d:.1}, {d:.1}, {d:.1})", .{
             state.spawn_point[0], state.spawn_point[1], state.spawn_point[2],
         });
+    }
+
+    // R — manual respawn at spawn_point (uses first-air-above logic)
+    if (input.keyPressed(.R) and !input.mods.ctrl and !input.mods.super) {
+        doRespawn();
     }
 
     // TAS step mode: Right arrow = queue next step (executed in preTick next tick).
@@ -624,6 +699,12 @@ fn voxelTick(ctx: *sw.Context) !void {
             const sprint = input.keyDown(.Shift);
 
             state.player.tick(state.world.asBlockGetter(), dt, state.camera.yaw, fwd, rgt, jump, space_held, sprint);
+
+            // Void death: fell below the world → respawn at spawn_point.
+            if (state.player.feet_pos[1] < -10.0) {
+                std.log.info("Void death at Y={d:.1}", .{state.player.feet_pos[1]});
+                doRespawn();
+            }
 
             // Sync camera position to player eye, offset by camera view.
             const eye = state.player.eyePos();
@@ -840,6 +921,83 @@ fn buildChunkBorderMesh(g: *gpu_mod.GPU, ox: f32, oz: f32) void {
     g.writeBuffer(state.border_index_buffer.?, 0, std.mem.sliceAsBytes(&idxs));
 }
 
+/// Render the "WORLD LOADING" screen: dark purple background with animated wavy
+/// strips (same effect as the stuck-in-rock overlay) and centred bitmap text.
+/// Runs while state.world_loading is true, until the spawn chunk is meshed.
+fn renderLoadingScreen(ctx: *sw.Context, g: *gpu_mod.GPU, overlay_w: f32, overlay_h: f32) !void {
+    state.overlay.ensurePipeline(g, g.getSampleCount()) catch |err| {
+        std.log.err("Loading screen: ensurePipeline failed: {}", .{err});
+        return err;
+    };
+
+    const encoder = try g.createCommandEncoder();
+    var swap_view = try g.getCurrentTextureView();
+    defer swap_view.release();
+
+    // Match the main render path's MSAA setup so the loading screen looks identical
+    // whether MSAA is on or off.
+    const use_msaa = g.msaa_color_view != null;
+    var msaa_cv: gpu_mod.TextureView = undefined;
+    if (use_msaa) msaa_cv = g.msaa_color_view.?;
+    const color_view: *gpu_mod.TextureView = if (use_msaa) &msaa_cv else &swap_view;
+    const resolve_target: ?*gpu_mod.TextureView = if (use_msaa) &swap_view else null;
+    const color_store: gpu_mod.StoreOp = if (use_msaa) .discard else .store;
+
+    const pass = try encoder.beginRenderPass(.{
+        .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
+            .view = color_view,
+            .resolve_target = resolve_target,
+            .load_op = .clear,
+            .store_op = color_store,
+            .clear_value = .{ .r = 0.08, .g = 0.02, .b = 0.12, .a = 1.0 }, // Dark purple
+        }},
+    });
+
+    // Animated wavy purple strips — same algorithm as the stuck-in-rock overlay,
+    // just drawn on the loading screen's clear background.
+    state.overlay.begin();
+    {
+        const t = @as(f32, @floatFromInt(ctx.tickId())) * 0.04;
+        const strip_count: usize = 24;
+        const strip_h = overlay_h / @as(f32, @floatFromInt(strip_count));
+        var i: usize = 0;
+        while (i < strip_count) : (i += 1) {
+            const fi = @as(f32, @floatFromInt(i));
+            const wave = @sin(fi * 0.7 + t) * 0.5 + @sin(fi * 1.3 - t * 0.6) * 0.3;
+            const alpha: f32 = 0.04 + @max(0.0, wave) * 0.18;
+            const r: f32 = 0.25 + wave * 0.08;
+            const b: f32 = 0.45 + @sin(fi * 0.5 + t * 0.3) * 0.1;
+            const y_offset = @mod(fi * strip_h - t * 12.0, overlay_h);
+            state.overlay.rect(0, y_offset, overlay_w, strip_h, .{ r, 0.05, b, alpha }, overlay_w, overlay_h) catch {};
+        }
+    }
+
+    // "WORLD LOADING!!!" title — large, centred.
+    const white = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+    const title = "WORLD LOADING!!!";
+    const title_scale: f32 = 4.0;
+    const title_h = GLYPH_H * title_scale;
+    const title_y = (overlay_h - title_h) / 2.0 - 20;
+    drawCenteredText(&state.overlay, title, title_y, white, title_scale, overlay_w, overlay_h) catch {};
+
+    // Preset line below — smaller, fainter.
+    const faint = [4]f32{ 0.8, 0.7, 0.9, 0.9 };
+    const preset_scale: f32 = 2.0;
+    const preset_h = GLYPH_H * preset_scale;
+    const preset_y = title_y + title_h + 20;
+    var preset_buf: [64]u8 = undefined;
+    const preset_text = std.fmt.bufPrint(&preset_buf, "PRESET: {s}", .{@tagName(state.world_preset)}) catch "PRESET: ?";
+    drawCenteredText(&state.overlay, preset_text, preset_y, faint, preset_scale, overlay_w, overlay_h) catch {};
+    _ = preset_h;
+
+    state.overlay.draw(g, pass);
+    pass.end();
+
+    const cmd = try encoder.finish();
+    g.submit(&[_]gpu_mod.CommandBuffer{cmd});
+    g.present();
+}
+
 fn voxelRender(ctx: *sw.Context) !void {
     const g = ctx.gpu();
 
@@ -865,6 +1023,16 @@ fn voxelRender(ctx: *sw.Context) !void {
             std.log.err("Failed to setup GPU resources: {}", .{err});
             return;
         };
+    }
+
+    // Early path: world still loading — render a purple loading overlay only.
+    // Skips all 3D work, HUD, crosshair, and the --dump-frame capture (which waits
+    // for the real scene). Exits via submit+present.
+    if (state.world_loading) {
+        renderLoadingScreen(ctx, g, overlay_w, overlay_h) catch |err| {
+            std.log.err("Loading screen render failed: {}", .{err});
+        };
+        return;
     }
 
     // Sort and upload each chunk's mesh.
@@ -1279,8 +1447,16 @@ fn voxelRender(ctx: *sw.Context) !void {
     };
 
     // --dump-frame: capture the surface texture BEFORE present, write PPM, then exit.
+    // When a TAS is running, defer capture until the TAS has finished so both MSAA
+    // comparison runs dump the same deterministic game state. Without a TAS,
+    // capture on the first post-loading frame.
+    const dump_ready = blk: {
+        if (state.world_loading) break :blk false;
+        if (state.tas_replayer) |*r| break :blk (r.state == .finished);
+        break :blk true;
+    };
     if (state.dump_frame_path) |path| {
-        if (!state.dump_frame_done) {
+        if (!state.dump_frame_done and dump_ready) {
             state.dump_frame_done = true;
             g.submit(&[_]gpu_mod.CommandBuffer{cmd});
             // Capture pixels (surface has CopySrc usage; call before present)

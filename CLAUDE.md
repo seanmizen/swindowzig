@@ -146,6 +146,54 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 | `--tas-step` | Frame-by-frame TAS stepping. Right arrow = advance one TAS tick. Implies `--gpu-debug`. |
 | `--gpu-debug` | Highlight freshly rebuilt mesh faces (orange tint, fades ~0.5s). Also toggled with Cmd+G / Ctrl+G at runtime. |
 | `--msaa=N` | MSAA sample count. Accepted: `none`/`0` (no AA), `1`, `2`, `4` (default), `8`. The `bgra8unorm` surface format supports [1, 2, 4] on native and [1, 4] on WebGPU; values outside that range are clamped (e.g. `--msaa=8` → 4×). |
+| `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
+| `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish (so MSAA comparison runs capture the same deterministic state). |
+
+---
+
+## Voxel Demo — World Loading & Spawn
+
+**Loading screen** (`main.zig:renderLoadingScreen`): on first launch, the render
+loop shows a dark purple background with animated wavy strips and a centred
+"WORLD LOADING!!!" title. The screen remains until the spawn chunk is generated
+*and* its mesh is built (`state.world_loading = false`). While loading, `voxelTick`
+skips all gameplay input, and the TAS replayer stays `.stopped`.
+
+**First spawn**: when loading completes, `resolveSpawnPos()` scans upward from the
+default spawn_point (24, 64, 20) until it finds a 1×2 air column and places the
+player there. The resolved (x, y, z) is stored as the permanent `state.spawn_point`.
+
+**Respawn mechanics**:
+- **R key** — manual respawn at current `spawn_point` via `resolveSpawnPos` (scans
+  upward, so griefer blocks can't trap future respawns).
+- **Void death** — automatic respawn when `player.feet_pos[1] < -10`.
+- **Cmd+S / Ctrl+S** — debug override: set spawn_point to current player position.
+
+**TAS + loading integration**: the replayer starts in `.stopped` state. When loading
+completes, every event's `tick_id` is remapped by `+ctx.tickId() + 1` and the
+replayer is `play()`ed. Result: TAS tick 1 is always the first post-loading sim
+tick, regardless of how long loading took.
+
+---
+
+## Voxel Demo — Regression Tests
+
+TAS scripts for regression live under `examples/voxel/`:
+- `framespike.tas` — block-removal during camera pan (hilly world). Mandatory
+  headless test (see below).
+- `tests/msaa_flatland.tas` — MSAA regression test on flatland. Usage:
+  ```bash
+  ./zig-out/bin/voxel --world=flatland --msaa=none \
+    --tas examples/voxel/tests/msaa_flatland.tas --dump-frame=/tmp/a.ppm
+  ./zig-out/bin/voxel --world=flatland --msaa=4 \
+    --tas examples/voxel/tests/msaa_flatland.tas --dump-frame=/tmp/b.ppm
+  ```
+  Then pixel-diff `a.ppm` vs `b.ppm`. Baseline (2026-04-11): 3.42% differing pixels,
+  max channel delta = 67, 13,570 channels with diff ≥ 5 — the MSAA signature is
+  unambiguous (vs hilly's max delta = 1).
+
+New regression TAS scripts should go in `examples/voxel/tests/` with a comment
+block at the top documenting the purpose, usage, and baseline numbers.
 
 ---
 
@@ -228,10 +276,10 @@ Chunk dimensions: **CHUNK_W = 48** (X/Z), **CHUNK_H = 256** (Y).
 
 | File | Purpose |
 |------|---------|
-| `main.zig` | Entry point, TAS wiring, render loop, pause menu, debug overlay |
+| `main.zig` | Entry point, TAS wiring, render loop, pause menu, debug overlay, loading screen, `resolveSpawnPos`/`doRespawn` |
 | `chunk.zig` | `Chunk` struct; `BlockType` enum; `setBlock`/`getBlock`; world-gen call |
-| `world.zig` | Multi-chunk world; chunk map; load/unload |
-| `world_gen.zig` | Procedural terrain (height-map noise → block placement) |
+| `world.zig` | Multi-chunk world; chunk map; load/unload; `World.init(allocator, preset)` |
+| `world_gen.zig` | Procedural terrain; `Preset` enum (flatland / hilly); `presetConfig()`; value-noise `sampleHeight` |
 | `mesher.zig` | Greedy quad mesher; incremental `updateForBlockChange`; `sortByDepth` |
 | `camera.zig` | FPS camera; view/projection matrices |
 | `player.zig` | Movement, gravity, collision |
@@ -242,3 +290,4 @@ Chunk dimensions: **CHUNK_W = 48** (X/Z), **CHUNK_H = 256** (Y).
 | `keyboard_hud.zig` | On-screen keyboard layout diagram |
 | `voxel.wgsl` | Voxel vertex+fragment shader; GPU debug highlight decode |
 | `framespike.tas` | TAS script used by the mandatory headless regression test |
+| `tests/msaa_flatland.tas` | MSAA regression test — flatland, block-remove, camera pan |

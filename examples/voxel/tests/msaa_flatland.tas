@@ -1,0 +1,46 @@
+# msaa_flatland.tas — MSAA regression test on a flat world.
+#
+# Purpose: destroy a nearby block and pan the camera to an off-axis angle so
+# silhouette diagonals are exposed. Frame diffs between --msaa=none and
+# --msaa=4 should produce many ±1 LSB pixel differences (the MSAA signature).
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --world=flatland --msaa=none \
+#     --tas examples/voxel/tests/msaa_flatland.tas \
+#     --dump-frame=/tmp/flat_none.ppm
+#   ./zig-out/bin/voxel --world=flatland --msaa=4 \
+#     --tas examples/voxel/tests/msaa_flatland.tas \
+#     --dump-frame=/tmp/flat_msaa4.ppm
+#   python3 diff-ppm.py /tmp/flat_none.ppm /tmp/flat_msaa4.ppm
+#
+# Tick numbering is relative to the first post-loading tick (the replayer is
+# gated during world load), so tick 1 is always the first frame of gameplay.
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look down so the flat grass surface is in view ---
+3 mouse_move 0 180
+
+# --- Destroy the block at the crosshair (digs a 1x1 hole in flat terrain) ---
+5 mouse_down left
+6 mouse_up left
+
+# --- Pan rightward to expose the diagonal edges of the hole at an angle ---
+# 8 ticks of rightward pan @ 4px/tick = 32px total.
+8 mouse_move 4 0
+9 mouse_move 4 0
+10 mouse_move 4 0
+11 mouse_move 4 0
+12 mouse_move 4 0
+13 mouse_move 4 0
+14 mouse_move 4 0
+15 mouse_move 4 0
+
+# --- Tilt up slightly so the horizon is in frame (more diagonal silhouettes) ---
+16 mouse_move 0 -40
+
+# Hold steady a few ticks so the --dump-frame capture lands on a stable view.
+20 mouse_move 0 0

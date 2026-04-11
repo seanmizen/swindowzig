@@ -103,12 +103,12 @@ pub const World = struct {
     /// to tweak generation without changing the preset.
     gen_config: world_gen.WorldGenConfig,
 
-    pub fn init(allocator: std.mem.Allocator) !World {
+    pub fn init(allocator: std.mem.Allocator, preset: world_gen.Preset) !World {
         return .{
             .allocator = allocator,
             .chunks = ChunkMap.init(allocator),
             .spiral_offsets = try buildSpiralOffsets(allocator, RENDER_DISTANCE),
-            .gen_config = world_gen.presetConfig(world_gen.ACTIVE_PRESET),
+            .gen_config = world_gen.presetConfig(preset),
         };
     }
 
