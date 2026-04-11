@@ -157,10 +157,95 @@ const CameraView = enum {
     }
 };
 
-// Pause menu button geometry (in logical pixels)
-const RESUME_BTN_W: f32 = 200;
-const RESUME_BTN_H: f32 = 40;
-const BTN_GAP: f32 = 12; // gap between resume and quit buttons
+// ─── Pause menu state machine ────────────────────────────────────────────────
+// Three screens reachable from the gameplay esc-menu:
+//   main         → "Resume", "Settings", "Exit"
+//   settings     → AA Method, AO Strategy, Render Distance, Back
+//   exit_confirm → "No" (default), "Yes"
+// Esc is contextual:
+//   gameplay → main
+//   main     → close, resume gameplay
+//   settings → main
+//   exit_confirm → main
+const MenuScreen = enum { main, settings, exit_confirm };
+
+// Per-screen entry counts. Kept here so nav wraparound has a single source of truth.
+const MENU_MAIN_COUNT: u8 = 3;
+const MENU_SETTINGS_COUNT: u8 = 4;
+const MENU_EXIT_COUNT: u8 = 2;
+
+// Settings entry indices (matches the rendered order).
+const SETTINGS_IDX_AA: u8 = 0;
+const SETTINGS_IDX_AO: u8 = 1;
+const SETTINGS_IDX_RENDER_DIST: u8 = 2;
+const SETTINGS_IDX_BACK: u8 = 3;
+
+fn menuEntryCount(screen: MenuScreen) u8 {
+    return switch (screen) {
+        .main => MENU_MAIN_COUNT,
+        .settings => MENU_SETTINGS_COUNT,
+        .exit_confirm => MENU_EXIT_COUNT,
+    };
+}
+
+/// Display label for the AA Method picker. Kept short so the centred entry line
+/// stays within the bitmap-font safe area at scale 3.
+fn aaMethodLabel(method: gpu_mod.AAMethod) []const u8 {
+    return switch (method) {
+        .none => "None",
+        .msaa => "MSAA",
+        .fxaa => "FXAA",
+        .smaa => "SMAA",
+        .ssaa => "SSAA",
+        .taa => "TAA",
+    };
+}
+
+/// Cycle the value of the Settings entry at `idx` by `dir` (+1 / -1).
+/// AA Method writes through to `state.msaa_config`. AO Strategy cycles
+/// state.ao_strategy (none/classic/moore). Render Distance writes to
+/// `state.render_distance_stub` with no live effect. Mutations log a
+/// "(applies on next chunk remesh / next frame)" hint — wiring up live
+/// pipeline rebuilds and chunk remeshes is a follow-up task.
+fn cycleSettingsValue(idx: u8, dir: i32) void {
+    switch (idx) {
+        SETTINGS_IDX_AA => {
+            // Cycle: none → msaa(4) → fxaa → none …
+            const next_method: gpu_mod.AAMethod = switch (state.msaa_config.method) {
+                .none => if (dir > 0) .msaa else .fxaa,
+                .msaa => if (dir > 0) .fxaa else .none,
+                .fxaa => if (dir > 0) .none else .msaa,
+                // Other AAMethod variants aren't reachable from this picker yet —
+                // collapse them back to .none rather than getting stuck.
+                else => .none,
+            };
+            const next_samples: u32 = if (next_method == .msaa) 4 else 1;
+            state.msaa_config = .{ .method = next_method, .msaa_samples = next_samples };
+            std.log.info("Settings: AA Method -> {s} (applies on next pipeline rebuild)", .{@tagName(next_method)});
+        },
+        SETTINGS_IDX_AO => {
+            // Cycle through the three usable strategies: none → classic → moore → none …
+            // propagated and ssao are not yet implemented; skip them.
+            const next_ao: gpu_mod.AOStrategy = switch (state.ao_strategy) {
+                .none => if (dir > 0) .classic else .moore,
+                .classic => if (dir > 0) .moore else .none,
+                .moore, .propagated, .ssao => if (dir > 0) .none else .classic,
+            };
+            state.ao_strategy = next_ao;
+            std.log.info("Settings: AO Strategy -> {s} (applies on next chunk remesh)", .{@tagName(next_ao)});
+        },
+        SETTINGS_IDX_RENDER_DIST => {
+            const min_rd: i32 = 1;
+            const max_rd: i32 = 16;
+            var next_rd = state.render_distance_stub + dir;
+            if (next_rd < min_rd) next_rd = max_rd;
+            if (next_rd > max_rd) next_rd = min_rd;
+            state.render_distance_stub = next_rd;
+            std.log.info("Settings: Render Distance -> {} (no live effect — stub)", .{next_rd});
+        },
+        else => {},
+    }
+}
 
 const ChunkGPU = struct {
     vertex_buffer: ?gpu_mod.Buffer = null,
@@ -189,8 +274,20 @@ const State = struct {
     border_idx_count: usize = 0,
     mouse_captured: bool = false,
     paused_with_mouse: bool = false,
-    button_resume_hovered: bool = false,
-    button_quit_hovered: bool = false,
+    /// Current pause-menu screen (only meaningful when the pause_menu layer is active).
+    menu_screen: MenuScreen = .main,
+    /// Per-screen selection indices, kept independently so backing out and re-entering
+    /// a screen restores its previous selection.
+    menu_main_idx: u8 = 0,
+    menu_settings_idx: u8 = 0,
+    /// Exit-confirm defaults to "No" (index 0). Reset every time we enter the screen
+    /// to make accidental Enter+Enter on Exit always safe.
+    menu_exit_idx: u8 = 0,
+    /// Stub for the Settings → Render Distance picker. world_mod.RENDER_DISTANCE is a
+    /// const today, so this value has no live effect — it's wired purely so the picker
+    /// has somewhere to write to. Will become a real field once render-distance live
+    /// reload lands.
+    render_distance_stub: i32 = 4,
     hover_block: ?Vec3 = null,
     game_state: GameState = undefined,
     overlay: OverlayRenderer = undefined,
@@ -289,8 +386,11 @@ fn voxelInit(ctx: *sw.Context) !void {
 
     state.mouse_captured = false;
     state.paused_with_mouse = false;
-    state.button_resume_hovered = false;
-    state.button_quit_hovered = false;
+    state.menu_screen = .main;
+    state.menu_main_idx = 0;
+    state.menu_settings_idx = 0;
+    state.menu_exit_idx = 0;
+    state.render_distance_stub = world_mod.RENDER_DISTANCE;
     state.headless = false;
 
     // Initialize game state layer stack
@@ -672,23 +772,34 @@ fn voxelTick(ctx: *sw.Context) !void {
     // =========================================================================
     if (input.keyPressed(.Escape)) {
         if (state.game_state.isLayerActive(.pause_menu)) {
-            // Resume: deactivate pause menu, recapture mouse if we had it before pausing
-            state.game_state.togglePauseMenu();
-            if (state.paused_with_mouse) {
-                ctx.setMouseCapture(true);
-                state.mouse_captured = true;
-                state.paused_with_mouse = false;
+            // Esc inside the pause menu: contextual pop. Sub-screens go back to main;
+            // main closes the menu and resumes gameplay.
+            switch (state.menu_screen) {
+                .main => {
+                    state.game_state.togglePauseMenu();
+                    if (state.paused_with_mouse) {
+                        ctx.setMouseCapture(true);
+                        state.mouse_captured = true;
+                        state.paused_with_mouse = false;
+                    }
+                    std.log.info("Resumed (ESC)", .{});
+                },
+                .settings, .exit_confirm => {
+                    state.menu_screen = .main;
+                    std.log.info("Menu: -> main (ESC)", .{});
+                },
             }
-            std.log.info("Resumed (ESC)", .{});
         } else {
-            // Open menu: save mouse state, then release mouse
+            // Open menu: save mouse state, release the mouse, reset to main screen at top.
             state.paused_with_mouse = state.mouse_captured;
             state.game_state.togglePauseMenu();
+            state.menu_screen = .main;
+            state.menu_main_idx = 0;
             if (state.mouse_captured) {
                 ctx.setMouseCapture(false);
                 state.mouse_captured = false;
             }
-            std.log.info("Paused (ESC)", .{});
+            std.log.info("Paused (ESC) -> main", .{});
         }
     }
 
@@ -743,45 +854,91 @@ fn voxelTick(ctx: *sw.Context) !void {
     // =========================================================================
     // 2. Pause menu input — only when pause menu is showing
     // =========================================================================
+    // Keyboard nav only. Mouse clicks on menu entries are intentionally not wired —
+    // see voxel TODO #4. Up/Down navigates within the current screen (with wraparound),
+    // Left/Right cycles values for value-picker entries on the Settings screen,
+    // Enter activates, and Esc is handled in the global keys block above.
     if (state.game_state.isLayerActive(.pause_menu)) {
-        const win = ctx.window();
-        // Mouse coords from SDL are logical pixels; window width/height are drawable (physical).
-        // Divide by dpi_scale to get logical screen dimensions for hit testing.
-        const logical_w = @as(f32, @floatFromInt(win.width)) / win.dpi_scale;
-        const logical_h = @as(f32, @floatFromInt(win.height)) / win.dpi_scale;
-        const btn_x = (logical_w - RESUME_BTN_W) / 2.0;
-        // Center the button pair vertically
-        const total_btn_h = RESUME_BTN_H * 2 + BTN_GAP;
-        const resume_y = (logical_h - total_btn_h) / 2.0;
-        const quit_y = resume_y + RESUME_BTN_H + BTN_GAP;
+        const sel_ptr: *u8 = switch (state.menu_screen) {
+            .main => &state.menu_main_idx,
+            .settings => &state.menu_settings_idx,
+            .exit_confirm => &state.menu_exit_idx,
+        };
+        const count = menuEntryCount(state.menu_screen);
 
-        const mx = input.mouse.x;
-        const my = input.mouse.y;
-        state.button_resume_hovered =
-            mx >= btn_x and mx <= btn_x + RESUME_BTN_W and
-            my >= resume_y and my <= resume_y + RESUME_BTN_H;
-        state.button_quit_hovered =
-            mx >= btn_x and mx <= btn_x + RESUME_BTN_W and
-            my >= quit_y and my <= quit_y + RESUME_BTN_H;
+        // Up/Down: move selection with wraparound.
+        if (input.keyPressed(.Up)) {
+            sel_ptr.* = if (sel_ptr.* == 0) count - 1 else sel_ptr.* - 1;
+        }
+        if (input.keyPressed(.Down)) {
+            sel_ptr.* = (sel_ptr.* + 1) % count;
+        }
 
-        if (input.buttonPressed(.left) and state.button_resume_hovered) {
-            state.game_state.togglePauseMenu();
-            if (state.paused_with_mouse) {
-                ctx.setMouseCapture(true);
-                state.mouse_captured = true;
-                state.paused_with_mouse = false;
+        // Left/Right: only meaningful on the Settings screen for value-picker entries.
+        if (state.menu_screen == .settings) {
+            const left = input.keyPressed(.Left);
+            const right = input.keyPressed(.Right);
+            if (left or right) {
+                const dir: i32 = if (right) 1 else -1;
+                cycleSettingsValue(state.menu_settings_idx, dir);
             }
-            state.button_resume_hovered = false;
-            std.log.info("Resumed (button click)", .{});
         }
 
-        if (input.buttonPressed(.left) and state.button_quit_hovered) {
-            std.log.info("Quit (button click)", .{});
-            std.process.exit(0);
+        // Enter: activate current entry.
+        if (input.keyPressed(.Enter)) {
+            switch (state.menu_screen) {
+                .main => switch (state.menu_main_idx) {
+                    0 => {
+                        // Resume
+                        state.game_state.togglePauseMenu();
+                        if (state.paused_with_mouse) {
+                            ctx.setMouseCapture(true);
+                            state.mouse_captured = true;
+                            state.paused_with_mouse = false;
+                        }
+                        std.log.info("Resumed (ENTER)", .{});
+                    },
+                    1 => {
+                        // Settings
+                        state.menu_screen = .settings;
+                        state.menu_settings_idx = 0;
+                        std.log.info("Menu: -> settings", .{});
+                    },
+                    2 => {
+                        // Exit -> confirm screen, default to "No"
+                        state.menu_screen = .exit_confirm;
+                        state.menu_exit_idx = 0;
+                        std.log.info("Menu: -> exit_confirm", .{});
+                    },
+                    else => {},
+                },
+                .settings => switch (state.menu_settings_idx) {
+                    SETTINGS_IDX_BACK => {
+                        state.menu_screen = .main;
+                        std.log.info("Menu: -> main (Back)", .{});
+                    },
+                    // Pickers: Enter cycles forward (same as Right) so a one-key
+                    // workflow works on keyboards without arrow keys.
+                    SETTINGS_IDX_AA => cycleSettingsValue(SETTINGS_IDX_AA, 1),
+                    SETTINGS_IDX_AO => cycleSettingsValue(SETTINGS_IDX_AO, 1),
+                    SETTINGS_IDX_RENDER_DIST => cycleSettingsValue(SETTINGS_IDX_RENDER_DIST, 1),
+                    else => {},
+                },
+                .exit_confirm => switch (state.menu_exit_idx) {
+                    0 => {
+                        // No -> back to main
+                        state.menu_screen = .main;
+                        std.log.info("Menu: -> main (No)", .{});
+                    },
+                    1 => {
+                        // Yes -> exit
+                        std.log.info("Quit (ENTER on confirm)", .{});
+                        std.process.exit(0);
+                    },
+                    else => {},
+                },
+            }
         }
-    } else {
-        state.button_resume_hovered = false;
-        state.button_quit_hovered = false;
     }
 
     // =========================================================================
@@ -1486,49 +1643,107 @@ fn voxelRender(ctx: *sw.Context) !void {
         state.overlay.rect(cx - cthick / 2.0, cy - clen, cthick, clen * 2, white, overlay_w, overlay_h) catch {};
     }
 
-    // Pause menu overlay
+    // Pause menu overlay — multi-screen state machine (main / settings / exit_confirm).
+    // Layout is purely text: a centred title at the top, then a vertical list of
+    // entries. The selected entry gets a "> " prefix and a brighter colour.
     if (state.game_state.isLayerActive(.pause_menu)) {
         // Semi-transparent dark fullscreen overlay
         state.overlay.rect(0, 0, overlay_w, overlay_h, .{ 0.0, 0.0, 0.0, 0.55 }, overlay_w, overlay_h) catch {};
 
-        const btn_x = (overlay_w - RESUME_BTN_W) / 2.0;
-        const total_btn_h = RESUME_BTN_H * 2 + BTN_GAP;
-        const resume_y = (overlay_h - total_btn_h) / 2.0;
-        const quit_y = resume_y + RESUME_BTN_H + BTN_GAP;
-        const border: f32 = 2;
+        const title_scale: f32 = 4.0;
+        const entry_scale: f32 = 3.0;
+        const entry_line_h: f32 = (GLYPH_H + 4) * entry_scale; // ~33 px per line
+        const title_h: f32 = GLYPH_H * title_scale;
 
-        // Resume button: border then fill
-        state.overlay.rect(btn_x - border, resume_y - border, RESUME_BTN_W + border * 2, RESUME_BTN_H + border * 2, .{ 0.85, 0.85, 0.85, 1.0 }, overlay_w, overlay_h) catch {};
-        const resume_fill = if (state.button_resume_hovered)
-            [4]f32{ 0.55, 0.55, 0.55, 1.0 }
-        else
-            [4]f32{ 0.35, 0.35, 0.35, 1.0 };
-        state.overlay.rect(btn_x, resume_y, RESUME_BTN_W, RESUME_BTN_H, resume_fill, overlay_w, overlay_h) catch {};
-
-        // Quit button: border then reddish-grey fill
-        state.overlay.rect(btn_x - border, quit_y - border, RESUME_BTN_W + border * 2, RESUME_BTN_H + border * 2, .{ 0.75, 0.60, 0.60, 1.0 }, overlay_w, overlay_h) catch {};
-        const quit_fill = if (state.button_quit_hovered)
-            [4]f32{ 0.58, 0.35, 0.35, 1.0 }
-        else
-            [4]f32{ 0.42, 0.25, 0.25, 1.0 };
-        state.overlay.rect(btn_x, quit_y, RESUME_BTN_W, RESUME_BTN_H, quit_fill, overlay_w, overlay_h) catch {};
-
-        // Button text labels — scale 2, centred on each button
-        const btn_text_scale: f32 = 2.0;
-        const btn_text_h = GLYPH_H * btn_text_scale;
         const white = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+        const dim = [4]f32{ 0.65, 0.65, 0.70, 1.0 };
+        const yellow = [4]f32{ 1.0, 0.90, 0.30, 1.0 };
 
-        const resume_label = "RESUME GAME";
-        const resume_label_w = @as(f32, @floatFromInt(resume_label.len)) * (GLYPH_W + GLYPH_GAP) * btn_text_scale;
-        const resume_text_x = btn_x + (RESUME_BTN_W - resume_label_w) / 2.0;
-        const resume_text_y = resume_y + (RESUME_BTN_H - btn_text_h) / 2.0;
-        drawText(&state.overlay, resume_label, resume_text_x, resume_text_y, white, btn_text_scale, overlay_w, overlay_h) catch {};
+        const title: []const u8 = switch (state.menu_screen) {
+            .main => "PAUSED",
+            .settings => "SETTINGS",
+            .exit_confirm => "EXIT TO DESKTOP?",
+        };
 
-        const quit_label = "EXIT GAME";
-        const quit_label_w = @as(f32, @floatFromInt(quit_label.len)) * (GLYPH_W + GLYPH_GAP) * btn_text_scale;
-        const quit_text_x = btn_x + (RESUME_BTN_W - quit_label_w) / 2.0;
-        const quit_text_y = quit_y + (RESUME_BTN_H - btn_text_h) / 2.0;
-        drawText(&state.overlay, quit_label, quit_text_x, quit_text_y, white, btn_text_scale, overlay_w, overlay_h) catch {};
+        const count = menuEntryCount(state.menu_screen);
+        const total_h = title_h + 40 + entry_line_h * @as(f32, @floatFromInt(count));
+        const title_y = (overlay_h - total_h) / 2.0;
+        const first_entry_y = title_y + title_h + 40;
+
+        drawCenteredText(&state.overlay, title, title_y, white, title_scale, overlay_w, overlay_h) catch {};
+
+        // Per-screen entry rendering. Each entry is a single line of text built into
+        // a small stack buffer; "> " is prepended for the selected row.
+        var line_buf: [128]u8 = undefined;
+        var entry_buf: [96]u8 = undefined;
+
+        const sel: u8 = switch (state.menu_screen) {
+            .main => state.menu_main_idx,
+            .settings => state.menu_settings_idx,
+            .exit_confirm => state.menu_exit_idx,
+        };
+
+        var i: u8 = 0;
+        while (i < count) : (i += 1) {
+            // Build the per-entry label. value-picker entries include their current value.
+            const entry_text: []const u8 = switch (state.menu_screen) {
+                .main => switch (i) {
+                    0 => "Resume",
+                    1 => "Settings",
+                    2 => "Exit",
+                    else => "",
+                },
+                .settings => switch (i) {
+                    SETTINGS_IDX_AA => blk: {
+                        const aa_label = aaMethodLabel(state.msaa_config.method);
+                        const s = std.fmt.bufPrint(&entry_buf, "AA Method: {s}", .{aa_label}) catch "AA Method: ?";
+                        break :blk s;
+                    },
+                    SETTINGS_IDX_AO => blk: {
+                        const ao_label = @tagName(state.ao_strategy);
+                        const s = std.fmt.bufPrint(&entry_buf, "AO Strategy: {s}", .{ao_label}) catch "AO Strategy: ?";
+                        break :blk s;
+                    },
+                    SETTINGS_IDX_RENDER_DIST => blk: {
+                        const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {} (no live effect)", .{state.render_distance_stub}) catch "Render Distance: ?";
+                        break :blk s;
+                    },
+                    SETTINGS_IDX_BACK => "Back",
+                    else => "",
+                },
+                .exit_confirm => switch (i) {
+                    0 => "No",
+                    1 => "Yes",
+                    else => "",
+                },
+            };
+
+            const is_selected = i == sel;
+
+            const col: [4]f32 = if (is_selected)
+                yellow
+            else
+                dim;
+
+            // Prepend selection marker so the eye can scan the active row.
+            const display = if (is_selected)
+                std.fmt.bufPrint(&line_buf, "> {s}", .{entry_text}) catch entry_text
+            else
+                std.fmt.bufPrint(&line_buf, "  {s}", .{entry_text}) catch entry_text;
+
+            const entry_y = first_entry_y + entry_line_h * @as(f32, @floatFromInt(i));
+            drawCenteredText(&state.overlay, display, entry_y, col, entry_scale, overlay_w, overlay_h) catch {};
+        }
+
+        // Footer hint line so newcomers know which keys do what without leaving the screen.
+        const hint_scale: f32 = 1.5;
+        const hint_y = first_entry_y + entry_line_h * @as(f32, @floatFromInt(count)) + 24;
+        const hint: []const u8 = switch (state.menu_screen) {
+            .main => "UP/DOWN move - ENTER select - ESC resume",
+            .settings => "UP/DOWN move - LEFT/RIGHT change - ENTER activate - ESC back",
+            .exit_confirm => "UP/DOWN move - ENTER confirm - ESC cancel",
+        };
+        drawCenteredText(&state.overlay, hint, hint_y, dim, hint_scale, overlay_w, overlay_h) catch {};
     }
 
     // Debug overlay: sidebar with live game state values
