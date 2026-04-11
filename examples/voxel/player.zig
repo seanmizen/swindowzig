@@ -19,6 +19,11 @@ pub const CYLINDER_SEGS: usize = 16;
 pub const CYLINDER_VERT_COUNT: usize = CYLINDER_SEGS * 4 + 2 * (1 + CYLINDER_SEGS * 2);
 pub const CYLINDER_IDX_COUNT: usize = CYLINDER_SEGS * 6 + 2 * CYLINDER_SEGS * 3;
 
+pub const DISC_SEGS: usize = 32;
+// Flat disc: 1 center + DISC_SEGS rim verts, DISC_SEGS triangles
+pub const DISC_VERT_COUNT: usize = 1 + DISC_SEGS;
+pub const DISC_IDX_COUNT: usize = DISC_SEGS * 3;
+
 pub const FLY_SPEED: f32 = 10.0;
 const DOUBLE_TAP_WINDOW: f32 = 0.3; // seconds
 
@@ -354,5 +359,55 @@ pub fn buildCylinderMesh(
         });
         // Reverse winding for bottom cap (CCW viewed from below)
         try idx.appendSlice(allocator, &[_]u32{ bot_center, base + 1, base });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Disc (flat plate) mesh generation — spawn point marker
+// ---------------------------------------------------------------------------
+
+/// Write a flat disc (bottom cap only, no sides, no top) into scratch ArrayList buffers.
+/// The disc lies at y = feet[1] + 0.01 (tiny epsilon above ground to avoid z-fighting).
+/// Uses clearRetainingCapacity so after the first frame there are no allocations.
+/// `block_type` controls the shader colour: 102 = bright red.
+pub fn buildDiscMesh(
+    feet: [3]f32,
+    block_type: u32,
+    allocator: std.mem.Allocator,
+    verts: *std.ArrayList(VoxelVertex),
+    idx: *std.ArrayList(u32),
+) !void {
+    verts.clearRetainingCapacity();
+    idx.clearRetainingCapacity();
+
+    const N = DISC_SEGS;
+    const r = PLAYER_RADIUS;
+    const cx = feet[0];
+    const cz = feet[2];
+    const cy = feet[1] + 0.01; // tiny epsilon above ground to avoid z-fighting
+    const bt: u32 = block_type;
+    const tau = 2.0 * std.math.pi;
+
+    // Center vertex
+    const center: u32 = 0;
+    try verts.append(allocator, .{ .pos = .{ cx, cy, cz }, .normal = .{ 0, 1, 0 }, .block_type = bt, .uv = .{ 0.5, 0.5 } });
+
+    // Rim vertices: one per segment endpoint (N total, reused for adjacent triangles)
+    for (0..N) |i| {
+        const a = tau * @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(N));
+        try verts.append(allocator, .{
+            .pos = .{ cx + r * @cos(a), cy, cz + r * @sin(a) },
+            .normal = .{ 0, 1, 0 },
+            .block_type = bt,
+            .uv = .{ 0, 0 },
+        });
+    }
+
+    // Triangle fan: center → rim[i] → rim[(i+1) % N], CCW viewed from above (+Y)
+    for (0..N) |i| {
+        const v0: u32 = center;
+        const v1: u32 = @intCast(1 + i);
+        const v2: u32 = @intCast(1 + (i + 1) % N);
+        try idx.appendSlice(allocator, &[_]u32{ v0, v1, v2 });
     }
 }

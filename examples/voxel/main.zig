@@ -1229,12 +1229,12 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     // =========================================================================
-    // Spawn point debug marker (debug mode; red translucent cylinder)
+    // Spawn point debug marker (debug mode; flat red disc plate on the ground)
     // Reuses the same scratch buffers and GPU buffers as the player hitbox —
     // they're drawn sequentially so there's no overlap.
     // =========================================================================
     if (state.debug_mode and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
-        player_mod.buildCylinderMesh(
+        player_mod.buildDiscMesh(
             state.spawn_point,
             102, // bright red
             ctx.allocator(),
