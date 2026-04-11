@@ -13,13 +13,13 @@ const DEBUG = false; // Enable for mesh generation debug logging
 
 /// Vertex format matching voxel.wgsl
 pub const VoxelVertex = extern struct {
-    pos: [3]f32,       // offset 0
-    normal: [3]f32,    // offset 12
-    block_type: u32,   // offset 24
-    uv: [2]f32,        // offset 28
-    ao: f32 = 1.0,     // offset 36 — ambient occlusion brightness 0..1
+    pos: [3]f32, // offset 0
+    normal: [3]f32, // offset 12
+    block_type: u32, // offset 24
+    uv: [2]f32, // offset 28
+    ao: f32 = 1.0, // offset 36 — ambient occlusion brightness 0..1
     skylight: f32 = 1.0, // offset 40 — sky brightness 0..1 (0 = pitch cave, 1 = open sky)
-    _padding: [1]f32 = [_]f32{0}, // offset 44, pad to 48 bytes (16-byte aligned)
+    block_light: f32 = 0.0, // offset 44 — block-light brightness 0..1 (0 = no emitter nearby, 1 = adjacent to glowstone)
 };
 
 const SortEntry = struct { idx: usize, dist: f32 };
@@ -556,10 +556,10 @@ fn computeFaceAOClassic(chunk: *const Chunk, getter: BlockGetter, world_ox: i32,
     return switch (face) {
         .px => blk: {
             // +X face at x+1 plane — corners vary in Y and Z
-            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
-            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
-            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
-            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const s_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
+            const s_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
+            const s_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
+            const s_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
             const s_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
             const s_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
             const s_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
@@ -573,10 +573,10 @@ fn computeFaceAOClassic(chunk: *const Chunk, getter: BlockGetter, world_ox: i32,
         },
         .nx => blk: {
             // -X face at x plane — corners vary in Y and Z
-            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
-            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
-            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
-            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
+            const s_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const s_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
+            const s_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
+            const s_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
             const s_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
             const s_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
             const s_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
@@ -590,10 +590,10 @@ fn computeFaceAOClassic(chunk: *const Chunk, getter: BlockGetter, world_ox: i32,
         },
         .py => blk: {
             // +Y face at y+1 plane — corners vary in X and Z
-            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
-            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
-            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
-            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const s_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
+            const s_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
+            const s_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
+            const s_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
             const s_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
             const s_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
             const s_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
@@ -607,10 +607,10 @@ fn computeFaceAOClassic(chunk: *const Chunk, getter: BlockGetter, world_ox: i32,
         },
         .ny => blk: {
             // -Y face at y plane — corners vary in X and Z
-            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
-            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
-            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
-            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const s_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const s_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
+            const s_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
+            const s_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
             const s_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
             const s_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
             const s_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
@@ -624,10 +624,10 @@ fn computeFaceAOClassic(chunk: *const Chunk, getter: BlockGetter, world_ox: i32,
         },
         .pz => blk: {
             // +Z face at z+1 plane — corners vary in X and Y
-            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
-            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
-            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
-            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const s_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
+            const s_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
+            const s_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
+            const s_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
             const s_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
             const s_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
             const s_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
@@ -641,10 +641,10 @@ fn computeFaceAOClassic(chunk: *const Chunk, getter: BlockGetter, world_ox: i32,
         },
         .nz => blk: {
             // -Z face at z plane — corners vary in X and Y
-            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
-            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
-            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
-            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const s_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
+            const s_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
+            const s_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
+            const s_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
             const s_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
             const s_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
             const s_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
@@ -679,18 +679,18 @@ fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, w
     return switch (face) {
         .px => blk: {
             // Near plane: x = wx + 1   |   Far plane: x = wx + 2
-            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
-            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
-            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
-            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const s_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
+            const s_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
+            const s_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
+            const s_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
             const s_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
             const s_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
             const s_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
             const s_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            const d_ym    = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy - 1, wz    );
-            const d_yp    = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz    );
-            const d_zm    = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy,     wz - 1);
-            const d_zp    = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy,     wz + 1);
+            const d_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy - 1, wz);
+            const d_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz);
+            const d_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy, wz - 1);
+            const d_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy, wz + 1);
             const d_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy - 1, wz - 1);
             const d_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz - 1);
             const d_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz + 1);
@@ -704,18 +704,18 @@ fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, w
         },
         .nx => blk: {
             // Near plane: x = wx - 1   |   Far plane: x = wx - 2
-            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
-            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
-            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
-            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
+            const s_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const s_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
+            const s_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
+            const s_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
             const s_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
             const s_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
             const s_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
             const s_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const d_ym    = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy - 1, wz    );
-            const d_yp    = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz    );
-            const d_zm    = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy,     wz - 1);
-            const d_zp    = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy,     wz + 1);
+            const d_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy - 1, wz);
+            const d_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz);
+            const d_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy, wz - 1);
+            const d_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy, wz + 1);
             const d_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy - 1, wz - 1);
             const d_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz - 1);
             const d_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz + 1);
@@ -729,18 +729,18 @@ fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, w
         },
         .py => blk: {
             // Near plane: y = wy + 1   |   Far plane: y = wy + 2
-            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
-            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
-            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
-            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const s_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
+            const s_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
+            const s_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
+            const s_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
             const s_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
             const s_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
             const s_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
             const s_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            const d_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz    );
-            const d_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 2, wz    );
-            const d_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 2, wz - 1);
-            const d_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 2, wz + 1);
+            const d_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz);
+            const d_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 2, wz);
+            const d_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 2, wz - 1);
+            const d_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 2, wz + 1);
             const d_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz - 1);
             const d_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz + 1);
             const d_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 2, wz + 1);
@@ -754,18 +754,18 @@ fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, w
         },
         .ny => blk: {
             // Near plane: y = wy - 1   |   Far plane: y = wy - 2
-            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
-            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
-            const s_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
-            const s_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const s_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const s_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
+            const s_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
+            const s_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
             const s_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
             const s_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
             const s_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
             const s_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            const d_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz    );
-            const d_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 2, wz    );
-            const d_zm    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 2, wz - 1);
-            const d_zp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 2, wz + 1);
+            const d_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz);
+            const d_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 2, wz);
+            const d_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 2, wz - 1);
+            const d_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 2, wz + 1);
             const d_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz - 1);
             const d_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz + 1);
             const d_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 2, wz - 1);
@@ -779,18 +779,18 @@ fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, w
         },
         .pz => blk: {
             // Near plane: z = wz + 1   |   Far plane: z = wz + 2
-            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
-            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
-            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
-            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const s_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
+            const s_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
+            const s_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
+            const s_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
             const s_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
             const s_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
             const s_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
             const s_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            const d_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 2);
-            const d_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 2);
-            const d_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 2);
-            const d_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 2);
+            const d_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 2);
+            const d_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 2);
+            const d_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 2);
+            const d_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 2);
             const d_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 2);
             const d_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 2);
             const d_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 2);
@@ -804,18 +804,18 @@ fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, w
         },
         .nz => blk: {
             // Near plane: z = wz - 1   |   Far plane: z = wz - 2
-            const s_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
-            const s_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
-            const s_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
-            const s_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const s_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
+            const s_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
+            const s_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
+            const s_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
             const s_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
             const s_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
             const s_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
             const s_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            const d_xm    = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 2);
-            const d_xp    = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 2);
-            const d_ym    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 2);
-            const d_yp    = isSolid(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 2);
+            const d_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 2);
+            const d_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 2);
+            const d_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 2);
+            const d_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 2);
             const d_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 2);
             const d_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 2);
             const d_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 2);
@@ -875,13 +875,13 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
             // For each vertex (varying y, z), average the 4 cells in the
             // 2×2 outward neighbourhood at that vertex's y/z corner.
             const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
-            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
+            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
             const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
-            const a011 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz    );
-            const a021 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
+            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
+            const a011 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz);
+            const a021 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
             const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
             const a022 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
             // Vertex order matches addQuad's .px branch: (y, z) → (0,0)(1,0)(1,1)(0,1).
             const v0: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
@@ -892,13 +892,13 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
         },
         .nx => blk: {
             const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
-            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
+            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
             const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
-            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
-            const a011 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz    );
-            const a021 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
+            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const a011 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz);
+            const a021 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
             const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
+            const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
             const a022 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
             // Vertex order matches addQuad's .nx branch: (y, z) → (0,1)(1,1)(1,0)(0,0).
             const v0: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
@@ -910,13 +910,13 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
         .py => blk: {
             // +Y face at y = wy + 1. Outward slab is wy + 1.
             const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
-            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
             const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
-            const a101 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz    );
-            const a201 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
+            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
+            const a101 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz);
+            const a201 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
             const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
             const a202 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
             // Vertex order matches addQuad's .py branch: (x, z) → (0,0)(0,1)(1,1)(1,0).
             const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
@@ -927,13 +927,13 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
         },
         .ny => blk: {
             const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
-            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
+            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
             const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
-            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
-            const a101 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz    );
-            const a201 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
+            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const a101 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz);
+            const a201 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
             const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
             const a202 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
             // Vertex order matches addQuad's .ny branch: (x, z) → (0,1)(0,0)(1,0)(1,1).
             const v0: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
@@ -945,13 +945,13 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
         .pz => blk: {
             // +Z face at z = wz + 1. Outward slab is wz + 1.
             const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
             const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
-            const a110 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy,     wz + 1);
-            const a210 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
+            const a110 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy, wz + 1);
+            const a210 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
             const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
             const a220 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
             // Vertex order matches addQuad's .pz branch: (x, y) → (0,0)(1,0)(1,1)(0,1).
             const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
@@ -962,13 +962,13 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
         },
         .nz => blk: {
             const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
-            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
+            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
             const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
-            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
-            const a110 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy,     wz - 1);
-            const a210 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
+            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
+            const a110 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy, wz - 1);
+            const a210 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
             const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
-            const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
             const a220 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
             // Vertex order matches addQuad's .nz branch: (x, y) → (1,0)(0,0)(0,1)(1,1).
             const v0: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
@@ -977,6 +977,153 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
             const v3: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
             break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
         },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Block-light sampling (phase 3)
+// ---------------------------------------------------------------------------
+
+/// Read the block-light value at world (wx, wy, wz). Fast path reads the
+/// owning chunk's grid directly; out-of-chunk samples fall through to the
+/// world getter (which in phase 3 always returns 0 across chunk boundaries
+/// because cross-chunk block-light propagation is deliberately out of scope).
+fn blockLightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32) u8 {
+    const lx = wx - world_ox;
+    const lz = wz - world_oz;
+    if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
+        return chunk.block_light[@intCast(lx)][@intCast(wy)][@intCast(lz)];
+    }
+    return getter.getBlockLight(wx, wy, wz);
+}
+
+/// Per-vertex block-light brightness for a face.
+///
+/// Shape mirrors `computeFaceSkylight`: for each of the 4 vertices, average
+/// the block-light of the 4 air cells in the 2×2 outward neighbourhood at
+/// that vertex corner.
+///
+/// CRITICAL DIFFERENCE from skylight: a face belonging to an emissive block
+/// (e.g. a glowstone) must render at the emitter's own level, not at the
+/// slightly-dimmer value one BFS hop away in the outward air. This function
+/// folds the face-owner's own block-light into the final value via `max`:
+///
+///     block_light[i] = max(outward_mean[i], owner_level)
+///
+/// The owner_level comes from `blockLightSample(wx, wy, wz)` — the cell the
+/// face belongs to. For non-emissive solids this is 0 (no effect); for a
+/// glowstone cell it is `MAX_BLOCK_LIGHT` and the face lights up fully.
+fn computeFaceBlockLight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
+    const max_f: f32 = @floatFromInt(chunk_mod.MAX_BLOCK_LIGHT);
+    const inv4: f32 = 1.0 / 4.0;
+    const owner_u8 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy, wz);
+    const owner_f: f32 = @floatFromInt(owner_u8);
+    const owner_norm = owner_f / max_f;
+
+    const raw: [4]f32 = switch (face) {
+        .px => blk: {
+            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const a010 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
+            const a020 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const a001 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
+            const a011 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz);
+            const a021 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
+            const a002 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const a012 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
+            const a022 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const v0: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
+            const v1: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
+            const v2: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
+            const v3: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .nx => blk: {
+            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const a010 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
+            const a020 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const a001 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const a011 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz);
+            const a021 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
+            const a002 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const a012 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
+            const a022 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const v0: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
+            const v1: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
+            const v2: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
+            const v3: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .py => blk: {
+            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const a100 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
+            const a200 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const a001 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
+            const a101 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz);
+            const a201 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
+            const a002 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const a102 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
+            const a202 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
+            const v1: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
+            const v2: f32 = @floatFromInt(@as(u32, a101) + a201 + a102 + a202);
+            const v3: f32 = @floatFromInt(@as(u32, a100) + a200 + a101 + a201);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .ny => blk: {
+            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const a100 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
+            const a200 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const a001 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const a101 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz);
+            const a201 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
+            const a002 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const a102 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
+            const a202 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const v0: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
+            const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
+            const v2: f32 = @floatFromInt(@as(u32, a100) + a200 + a101 + a201);
+            const v3: f32 = @floatFromInt(@as(u32, a101) + a201 + a102 + a202);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .pz => blk: {
+            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const a100 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
+            const a200 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const a010 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
+            const a110 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy, wz + 1);
+            const a210 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
+            const a020 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const a120 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
+            const a220 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
+            const v1: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
+            const v2: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
+            const v3: f32 = @floatFromInt(@as(u32, a010) + a110 + a020 + a120);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .nz => blk: {
+            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const a100 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
+            const a200 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const a010 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
+            const a110 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy, wz - 1);
+            const a210 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
+            const a020 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const a120 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
+            const a220 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const v0: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
+            const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
+            const v2: f32 = @floatFromInt(@as(u32, a010) + a110 + a020 + a120);
+            const v3: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+    };
+
+    return .{
+        @max(raw[0], owner_norm),
+        @max(raw[1], owner_norm),
+        @max(raw[2], owner_norm),
+        @max(raw[3], owner_norm),
     };
 }
 
@@ -1018,43 +1165,55 @@ fn addQuad(
         .skylight => computeFaceSkylight(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
     };
 
+    // Per-vertex block-light 0..1. Baked from the chunk's `block_light` grid
+    // (seeded by emissive blocks, BFS-propagated through air). Always
+    // computed — block light is a separate channel that is combined with
+    // sky in the shader via `max`, so `.none` lighting-mode baselines still
+    // work because sky = 1.0 saturates the max against whatever block
+    // contributes. When lighting_mode == .none we short-circuit to zero so
+    // we don't pay the sample cost for values that will never be read.
+    const bl: [4]f32 = switch (lighting_mode) {
+        .none => .{ 0.0, 0.0, 0.0, 0.0 },
+        .skylight => computeFaceBlockLight(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
+    };
+
     // Define quad vertices based on face direction
     const verts = switch (face) {
         .px => [_]VoxelVertex{ // +X face
-            .{ .pos = .{ x + 1, y,     z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
-            .{ .pos = .{ x + 1, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1] },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
-            .{ .pos = .{ x + 1, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3] },
+            .{ .pos = .{ x + 1, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
+            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
+            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
+            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
         },
         .nx => [_]VoxelVertex{ // -X face
-            .{ .pos = .{ x, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
-            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1] },
-            .{ .pos = .{ x, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
-            .{ .pos = .{ x, y,     z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3] },
+            .{ .pos = .{ x, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
+            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
+            .{ .pos = .{ x, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
+            .{ .pos = .{ x, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
         },
         .py => [_]VoxelVertex{ // +Y face (CCW from above: +Y normal)
-            .{ .pos = .{ x,     y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
-            .{ .pos = .{ x,     y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1] },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
-            .{ .pos = .{ x + 1, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3] },
+            .{ .pos = .{ x, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
+            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
+            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
+            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
         },
         .ny => [_]VoxelVertex{ // -Y face (CCW from below: -Y normal)
-            .{ .pos = .{ x,     y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
-            .{ .pos = .{ x,     y, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1] },
-            .{ .pos = .{ x + 1, y, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
-            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3] },
+            .{ .pos = .{ x, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
+            .{ .pos = .{ x, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
+            .{ .pos = .{ x + 1, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
+            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
         },
         .pz => [_]VoxelVertex{ // +Z face (CCW from front: +Z normal)
-            .{ .pos = .{ x,     y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
-            .{ .pos = .{ x + 1, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1], .skylight = sky[1] },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
-            .{ .pos = .{ x,     y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3], .skylight = sky[3] },
+            .{ .pos = .{ x, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
+            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
+            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
+            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
         },
         .nz => [_]VoxelVertex{ // -Z face (CCW from back: -Z normal)
-            .{ .pos = .{ x + 1, y,     z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
-            .{ .pos = .{ x,     y,     z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1], .skylight = sky[1] },
-            .{ .pos = .{ x,     y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
-            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3], .skylight = sky[3] },
+            .{ .pos = .{ x + 1, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
+            .{ .pos = .{ x, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
+            .{ .pos = .{ x, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
+            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
         },
     };
 

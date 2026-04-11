@@ -10,6 +10,10 @@ pub const BlockType = enum(u8) {
     dirt = 2,
     stone = 3,
     bedrock = 4,
+    /// Minecraft-style glowstone: solid (blocks propagation, culls faces) but
+    /// emits `MAX_BLOCK_LIGHT` from its own cell. Seeded during
+    /// `computeBlockLight` and propagated outward through adjacent air.
+    glowstone = 5,
     debug_marker = 99,
 };
 
@@ -18,6 +22,23 @@ pub const BlockType = enum(u8) {
 /// multiple light channels. See `examples/voxel/docs/lighting.md` for the
 /// full reasoning.
 pub const MAX_SKYLIGHT: u8 = 15;
+
+/// Maximum block-light level. Same [0, 15] range as skylight; phase-3 block
+/// light uses a parallel storage nibble and an independent BFS. See
+/// `examples/voxel/docs/lighting.md` § phase 3 for the design.
+pub const MAX_BLOCK_LIGHT: u8 = 15;
+
+/// Emission level for each block type. Non-emissive blocks return 0; the BFS
+/// seed pass writes this value into every emissive cell's `block_light` slot
+/// before any propagation runs. Phase-3 only ships glowstone (level 15);
+/// torches and lava can be added later by extending this switch — no other
+/// code path needs to change.
+pub fn emissionLevel(block: BlockType) u8 {
+    return switch (block) {
+        .glowstone => MAX_BLOCK_LIGHT,
+        else => 0,
+    };
+}
 
 /// Total blocks in a column.
 pub const BLOCKS_PER_CHUNK: usize = CHUNK_W * CHUNK_H * CHUNK_W;
@@ -200,6 +221,7 @@ pub const PalettedBlocks = struct {
     }
 };
 
+
 pub const Chunk = struct {
     /// Allocator used for the paletted block data. Stored here so `setBlock`
     /// and `deinit` don't need to plumb one through every call site. The
@@ -221,12 +243,26 @@ pub const Chunk = struct {
     /// this grid would bloat rather than shrink it. See `docs/memory.md`
     /// §2 for the reasoning.
     skylight: [CHUNK_W][CHUNK_H][CHUNK_W]u8,
+    /// Per-block block-light value, range [0, MAX_BLOCK_LIGHT]. Computed by
+    /// `computeBlockLight()` after `generateTerrain()` and again whenever a
+    /// block is placed or removed. Unlike skylight, emissive blocks (e.g.
+    /// glowstone) store their OWN emission level in this slot even though
+    /// they are solid — this is what lets the mesher read a bright value for
+    /// a glowstone's own face without the sample escaping to a dim outward
+    /// air cell. Non-emissive solids and unlit air stay at 0.
+    ///
+    /// Phase-3 scope: per-chunk BFS only. A glowstone placed near a chunk
+    /// edge will NOT push light into the neighbour chunk. The seam is small
+    /// in practice because block light decays to 0 within 15 cells and
+    /// glowstones are explicitly placed, but it is a documented limitation.
+    block_light: [CHUNK_W][CHUNK_H][CHUNK_W]u8,
 
     pub fn init(allocator: std.mem.Allocator) Chunk {
         return .{
             .allocator = allocator,
             .blocks = PalettedBlocks{},
             .skylight = std.mem.zeroes([CHUNK_W][CHUNK_H][CHUNK_W]u8),
+            .block_light = std.mem.zeroes([CHUNK_W][CHUNK_H][CHUNK_W]u8),
         };
     }
 
@@ -299,6 +335,16 @@ pub const Chunk = struct {
         if (y >= CHUNK_H) return MAX_SKYLIGHT; // above world top = open sky
         if (x < 0 or x >= CHUNK_W or y < 0 or z < 0 or z >= CHUNK_W) return 0;
         return self.skylight[@intCast(x)][@intCast(y)][@intCast(z)];
+    }
+
+    /// Read the block-light at (x, y, z) using local chunk coordinates.
+    /// Out-of-bounds returns 0 (no "above world" bright-side asymmetry — block
+    /// light has no global seed like the sun). Phase-3 cross-chunk propagation
+    /// is out of scope; that means a glowstone placed near a chunk edge lights
+    /// only its own chunk.
+    pub fn getBlockLight(self: *const Chunk, x: i32, y: i32, z: i32) u8 {
+        if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) return 0;
+        return self.block_light[@intCast(x)][@intCast(y)][@intCast(z)];
     }
 
     /// Recompute skylight for the entire chunk from the current `blocks` array.
@@ -391,6 +437,102 @@ pub const Chunk = struct {
         }
     }
 
+    /// Recompute block-light for the entire chunk from the current `blocks`
+    /// array. Same shape as `computeSkylight`, seeded differently:
+    ///
+    ///   Pass 1 (emission seed):
+    ///     Walk every cell. Air cells and non-emissive solids get 0.
+    ///     Emissive blocks (see `emissionLevel`) get their emission level
+    ///     stored directly in `block_light[x][y][z]`, even though the cell
+    ///     is solid — this is what makes a glowstone's own face read bright
+    ///     when the mesher later samples with `max(outward_mean, owner_bl)`.
+    ///
+    ///   Pass 2 (bucket-sort BFS, levels MAX_BLOCK_LIGHT down to 2):
+    ///     For each level L, sweep the chunk and for each cell (emissive
+    ///     solid OR air) with block_light == L, propagate (L - 1) into any
+    ///     AIR neighbour whose current value is strictly lower. Solid
+    ///     neighbours (including other emissive blocks) are skipped — light
+    ///     cannot travel through glowstone the same way skylight cannot
+    ///     travel through stone.
+    ///
+    /// O(MAX_BLOCK_LIGHT × N). In practice the sweep is dominated by
+    /// cells with value 0 that short-circuit on the first check, so this is
+    /// a small fraction of the skylight pass on chunks with no emitters
+    /// (early-out: if pass 1 finds no emitters, pass 2 is a no-op).
+    /// Allocator-free by design so it can be called from `generateTerrain`
+    /// and `World.setBlock` without touching call sites.
+    ///
+    /// Cross-chunk propagation is out of scope in phase 3. The BFS never
+    /// pushes light into a neighbouring chunk's array; a glowstone placed
+    /// right at a chunk edge will light only its own chunk. Phase 4 should
+    /// mirror the planned cross-chunk skylight fix.
+    pub fn computeBlockLight(self: *Chunk) void {
+        // Pass 1 — seed emissive cells, zero everything else.
+        var any_emitter = false;
+        var x: i32 = 0;
+        while (x < CHUNK_W) : (x += 1) {
+            var y: i32 = 0;
+            while (y < CHUNK_H) : (y += 1) {
+                var z: i32 = 0;
+                while (z < CHUNK_W) : (z += 1) {
+                    const xu: usize = @intCast(x);
+                    const yu: usize = @intCast(y);
+                    const zu: usize = @intCast(z);
+                    const emit = emissionLevel(self.resolveBlockRaw(x, y, z));
+                    self.block_light[xu][yu][zu] = emit;
+                    if (emit > 0) any_emitter = true;
+                }
+            }
+        }
+
+        // Fast path: no emitters, nothing to propagate.
+        if (!any_emitter) return;
+
+        // Pass 2 — bucket-sort BFS, level MAX_BLOCK_LIGHT down to 2.
+        var level: u8 = MAX_BLOCK_LIGHT;
+        while (level >= 2) : (level -= 1) {
+            const target: u8 = level - 1;
+            var ix: i32 = 0;
+            while (ix < CHUNK_W) : (ix += 1) {
+                var iy: i32 = 0;
+                while (iy < CHUNK_H) : (iy += 1) {
+                    var iz: i32 = 0;
+                    while (iz < CHUNK_W) : (iz += 1) {
+                        const xu: usize = @intCast(ix);
+                        const yu: usize = @intCast(iy);
+                        const zu: usize = @intCast(iz);
+                        if (self.block_light[xu][yu][zu] != level) continue;
+                        // Six axis-aligned neighbours.
+                        const neighbours = [_][3]i32{
+                            .{ ix + 1, iy, iz },
+                            .{ ix - 1, iy, iz },
+                            .{ ix, iy + 1, iz },
+                            .{ ix, iy - 1, iz },
+                            .{ ix, iy, iz + 1 },
+                            .{ ix, iy, iz - 1 },
+                        };
+                        for (neighbours) |n| {
+                            const nx = n[0];
+                            const ny = n[1];
+                            const nz = n[2];
+                            if (nx < 0 or nx >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
+                            const nxu: usize = @intCast(nx);
+                            const nyu: usize = @intCast(ny);
+                            const nzu: usize = @intCast(nz);
+                            // Solid neighbours block propagation — including
+                            // other emissive solids. Their seed value is
+                            // already set in pass 1 and they will propagate
+                            // from THEIR own cell on their own sweep tick.
+                            if (self.resolveBlockRaw(nx, ny, nz) != .air) continue;
+                            if (self.block_light[nxu][nyu][nzu] >= target) continue;
+                            self.block_light[nxu][nyu][nzu] = target;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Generate terrain for this chunk at chunk grid position (cx, cz).
     ///
     /// Layout per column (surface = noise-sampled height):
@@ -439,6 +581,11 @@ pub const Chunk = struct {
         // Skylight: must run after the blocks array is fully populated, since
         // the BFS reads `blocks` to know which cells block propagation.
         self.computeSkylight();
+        // Block light: cheap no-op on freshly generated terrain (no emitters
+        // in the default worldgen), but runs anyway so `World.setBlock` has
+        // a zeroed grid to start from. Emitters placed later trigger the
+        // real cost on the setBlock-driven recompute.
+        self.computeBlockLight();
     }
 };
 
@@ -452,6 +599,7 @@ pub const BlockGetter = struct {
     ctx: *const anyopaque,
     getFn: *const fn (ctx: *const anyopaque, x: i32, y: i32, z: i32) BlockType,
     getSkylightFn: *const fn (ctx: *const anyopaque, x: i32, y: i32, z: i32) u8,
+    getBlockLightFn: *const fn (ctx: *const anyopaque, x: i32, y: i32, z: i32) u8,
 
     pub fn getBlock(self: BlockGetter, x: i32, y: i32, z: i32) BlockType {
         return self.getFn(self.ctx, x, y, z);
@@ -459,5 +607,9 @@ pub const BlockGetter = struct {
 
     pub fn getSkylight(self: BlockGetter, x: i32, y: i32, z: i32) u8 {
         return self.getSkylightFn(self.ctx, x, y, z);
+    }
+
+    pub fn getBlockLight(self: BlockGetter, x: i32, y: i32, z: i32) u8 {
+        return self.getBlockLightFn(self.ctx, x, y, z);
     }
 };

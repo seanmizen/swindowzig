@@ -390,6 +390,12 @@ const State = struct {
     /// Mutating this at runtime requires `mesh_dirty = true` on every loaded
     /// chunk because skylight is baked per-vertex at mesh time, same as AO.
     lighting_mode: gpu_mod.LightingMode = .skylight,
+    /// Block type emitted by right-click placement. Parsed from
+    /// `--place-block=<stone|glowstone>`; default stone preserves prior
+    /// behaviour. Introduced alongside phase-3 block light so the
+    /// `glowstone_cave.tas` regression can place a glowstone without
+    /// needing an in-game block-picker UI.
+    place_block: chunk_mod.BlockType = .stone,
     /// --dump-frame=<path>: capture first rendered frame to a PPM file then exit.
     dump_frame_path: ?[]const u8 = null,
     dump_frame_done: bool = false,
@@ -671,6 +677,17 @@ fn voxelInit(ctx: *sw.Context) !void {
                 }
             } else {
                 std.log.err("--debug-overlay: invalid value '{s}'. Accepted: on, off", .{val});
+                std.process.exit(1);
+            }
+        }
+        if (std.mem.startsWith(u8, arg, "--place-block=")) {
+            const val = arg["--place-block=".len..];
+            if (std.mem.eql(u8, val, "stone")) {
+                state.place_block = .stone;
+            } else if (std.mem.eql(u8, val, "glowstone")) {
+                state.place_block = .glowstone;
+            } else {
+                std.log.err("--place-block: invalid value '{s}'. Accepted: stone, glowstone", .{val});
                 std.process.exit(1);
             }
         }
@@ -1508,7 +1525,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const px: i32 = @intFromFloat(place_pos.x);
                     const py: i32 = @intFromFloat(place_pos.y);
                     const pz: i32 = @intFromFloat(place_pos.z);
-                    _ = try state.world.setBlock(px, py, pz, .stone);
+                    _ = try state.world.setBlock(px, py, pz, state.place_block);
                     const cam_pos_arr2 = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
                     if (state.world.getChunkAtBlock(px, pz)) |lc| {
                         const lcx = world_mod.chunkCoordOf(px);
@@ -2390,9 +2407,14 @@ fn voxelRender(ctx: *sw.Context) !void {
             const s = std.fmt.bufPrint(&dbg_buf, "SKYLIGHT: {}", .{sky}) catch "SKYLIGHT: ?";
             drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
-        // Block light: branch hasn't landed in this demo, show '-' so the row
-        // is reserved without lying. Update once block-light propagation lands.
-        drawLine("BLOCK LIGHT: -", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+        // Block light at the player's feet. Shows the BFS-propagated block
+        // light value from nearby emissive blocks (e.g. glowstone).
+        {
+            const bl_y = if (block_y < 0) @as(i32, 0) else block_y;
+            const bl = state.world.getBlockLight(block_x, bl_y, block_z);
+            const s = std.fmt.bufPrint(&dbg_buf, "BLOCK LIGHT: {}", .{bl}) catch "BLOCK LIGHT: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+        }
 
         // Blank separator
         drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
@@ -2770,6 +2792,7 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             .{ .format = .float32x2, .offset = 28, .shader_location = 3 }, // uv
             .{ .format = .float32, .offset = 36, .shader_location = 4 }, // ao
             .{ .format = .float32, .offset = 40, .shader_location = 5 }, // skylight
+            .{ .format = .float32, .offset = 44, .shader_location = 6 }, // block_light
         },
     };
 

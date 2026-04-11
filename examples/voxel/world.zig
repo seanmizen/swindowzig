@@ -354,6 +354,11 @@ pub const World = struct {
         // swallowing it; OOM here is the caller's problem, not ours.
         try lc_ptr.*.chunk.setBlock(lx, wy, lz, block);
         lc_ptr.*.chunk.computeSkylight();
+        // Block light also needs a full recompute: placing a glowstone adds
+        // a seed, removing one erases the flood region. Phase 3 keeps this
+        // chunk-scoped; cross-chunk block-light seam repair is tracked as
+        // the same TODO as skylight's cross-chunk fix.
+        lc_ptr.*.chunk.computeBlockLight();
         lc_ptr.*.mesh_dirty = true;
         return true;
     }
@@ -378,6 +383,18 @@ pub const World = struct {
         return lc.chunk.getSkylight(lx, wy, lz);
     }
 
+    /// Get the block-light at world-space coordinates. Returns 0 for any
+    /// out-of-world coordinate and for unloaded chunks — block light has no
+    /// global seed (unlike the sun) so "unknown" naturally means "no light".
+    pub fn getBlockLight(self: *const World, wx: i32, wy: i32, wz: i32) u8 {
+        const cx = chunkCoordOf(wx);
+        const cz = chunkCoordOf(wz);
+        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return 0;
+        const lx = wx - cx * chunk_mod.CHUNK_W;
+        const lz = wz - cz * chunk_mod.CHUNK_W;
+        return lc.chunk.getBlockLight(lx, wy, lz);
+    }
+
     /// Returns a BlockGetter backed by this World (queries world coords).
     /// Implements both `getBlock` (for solidity / face culling / physics) and
     /// `getSkylight` (for the mesher's per-vertex skylight sampling).
@@ -394,6 +411,11 @@ pub const World = struct {
                     return @as(*const World, @ptrCast(@alignCast(ctx))).getSkylight(x, y, z);
                 }
             }.getSky,
+            .getBlockLightFn = struct {
+                fn getBl(ctx: *const anyopaque, x: i32, y: i32, z: i32) u8 {
+                    return @as(*const World, @ptrCast(@alignCast(ctx))).getBlockLight(x, y, z);
+                }
+            }.getBl,
         };
     }
 };

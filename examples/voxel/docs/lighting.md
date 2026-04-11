@@ -335,8 +335,66 @@ on flat walls). Multiplicative composition is the only correct option here.
   and only re-BFS the affected neighbourhood on dig, instead of full
   chunk recompute. Needed once dig latency becomes user-visible.
 
-**Phase 3 (future):**
-- Block light: torches/lava/glowstone with their own BFS channel.
+**Phase 3 (branch `voxel/block-light`, glowstone only):**
+- `BlockType.glowstone` — a new opaque block type that emits light from its
+  own cell. Seeded at `MAX_BLOCK_LIGHT` by `computeBlockLight` pass 1.
+- `Chunk.block_light: [48*256*48]u8` — a second per-block light channel
+  stored alongside `skylight`. +576 KB per chunk (per-chunk memory now
+  ~1.7 MB = blocks 576 KB + skylight 576 KB + block_light 576 KB).
+- `Chunk.computeBlockLight()` — allocator-free bucket-sort BFS, same shape
+  as `computeSkylight`, with two differences: (a) the seed pass stores
+  emission level in the emissive cell itself (even though it is solid),
+  (b) a `any_emitter` short-circuit skips pass 2 entirely on chunks that
+  generated with no glowstones, which is every freshly-generated terrain
+  chunk.
+- `World.setBlock` now recomputes both skylight AND block light after any
+  mutation. Placing a glowstone seeds the BFS; removing one erases the
+  flood region.
+- `VoxelVertex.block_light: f32` at offset 44 (replacing the padding) —
+  same 48-byte stride. Vertex buffer layout gains attribute location 6
+  in `main.zig:2192`, WGSL input gains `@location(6) block_light`.
+- `mesher.computeFaceBlockLight` mirrors `computeFaceSkylight` but folds
+  the face-owning block's `block_light` into the final value via `max`:
+      block_light[v] = max(outward_mean[v], owner_block_light)
+  The `max` is the bit that makes a glowstone's own face render at its
+  full emission level. Without it, the face would sample the outward air
+  cell (which has value 14, one BFS step from the emitter) and render as
+  a noticeably dimmer glowstone.
+- Shader combines sky and block as `max(sky_brightness, block_brightness)`
+  — they compete, they do not add. Ambient occlusion and directional
+  lighting still multiply on top. A glowstone in a cave with
+  `sky_brightness = 0.05` reads `block_brightness = 1.0` and the max
+  selects block; a glowstone in the open sky reads sky = 1.0 and block =
+  1.0 and both yield the same peak. This matches the Minecraft wiki
+  formula.
+- **Distinctive pixel-art texture** for glowstone: the fragment shader
+  detects glowstone via its base color and switches to a coarser 4×4
+  hash grid with wider (±25%) brightness variance, producing a chunky
+  molten-cluster look instead of the fine 16×16 noise used for stone
+  and dirt. No per-block texture atlas is needed — the identity is
+  encoded in the vertex color channel.
+- **Cross-chunk propagation is deliberately out of scope.** Block light
+  never crosses a chunk boundary. A glowstone placed right at a chunk
+  edge lights only its own chunk; the neighbour reads 0 via
+  `World.getBlockLight`. The seam is small in practice because block
+  light decays to 0 within 15 cells and the player rarely straddles a
+  chunk edge with an emitter, but the same cross-chunk fix planned for
+  phase 2 skylight will also solve this. **TODO(phase 4):** re-BFS into
+  adjacent chunks after `World.setBlock` mutates a cell near a seam.
+- Regression test: `examples/voxel/tests/glowstone_cave.tas` +
+  `glowstone_cave.sh`. The TAS digs a small flatland pit, places either
+  `--place-block=stone` (baseline) or `--place-block=glowstone`, and the
+  runner checks four bboxes in the dumped PPMs:
+    core (glowstone face)   — lum ≈146 in glow, ≈34 in stone   (+112)
+    wall near (1 cell away) — lum ≈120 in glow, ≈42 in stone    (+78)
+    wall rim (~4 cells)     — lum  ≈44 in glow, ≈15 in stone    (+30)
+    far grass               — lum ≈157, unchanged               (+0)
+  The falloff 146 → 120 → 44 mirrors the BFS decay 15 → 14 → 11. The
+  "far unchanged" check is the regression hook for cross-chunk leakage.
+
+**Phase 4 (future):**
+- Cross-chunk block-light seam fix (mirrors phase 2 skylight plan).
+- Torch / lava block types (extend `emissionLevel` switch).
 - Day/night cycle modulating the global skylight scalar.
 - Real sun shadow mapping for outdoor scenes.
 

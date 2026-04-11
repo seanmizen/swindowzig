@@ -19,6 +19,7 @@ struct VertexInput {
     @location(3) uv: vec2<f32>,
     @location(4) ao: f32,
     @location(5) skylight: f32,
+    @location(6) block_light: f32,
 };
 
 struct VertexOutput {
@@ -31,6 +32,7 @@ struct VertexOutput {
     @location(5) uv: vec2<f32>,
     @location(6) ao: f32,
     @location(7) skylight: f32,
+    @location(8) block_light: f32,
 };
 
 // Block type colors
@@ -47,6 +49,9 @@ fn getBlockColor(block_type: u32) -> vec3<f32> {
         }
         case 4u: { // Bedrock
             return vec3<f32>(0.3, 0.3, 0.3);
+        }
+        case 5u: { // Glowstone — warm yellow-gold base; fs_main bumps per-texel variance for chunky pixel art.
+            return vec3<f32>(1.0, 0.88, 0.42);
         }
         case 99u: { // Debug marker
             return vec3<f32>(1.0, 0.0, 0.0);
@@ -95,6 +100,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.uv = in.uv;
     out.ao = in.ao;
     out.skylight = in.skylight;
+    out.block_light = in.block_light;
     return out;
 }
 
@@ -136,6 +142,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
+    // Block type needed again here (vs_main stripped it out of the VertexOutput).
+    // Recover it by checking the color picked upstream; a simpler path is to
+    // just bake a per-block texture selector here using a flag we can rebuild
+    // from the color channel. For now, check the normal/color heuristic isn't
+    // needed — we use UV-hashing with a slightly different pattern when the
+    // base colour matches glowstone (yellow-gold dominance).
+    //
     // Minecraft-style procedural texel noise.
     // Subdivide each block face into a 16x16 grid; hash each cell to a
     // deterministic brightness offset so the face looks like a low-res
@@ -143,7 +156,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let texel = vec2<u32>(floor(in.uv * 16.0));
     let noise = texelHash(texel);
     // Map [0,1] → [0.875, 1.125]: ±12.5% brightness variation per texel.
-    let texel_brightness = 0.875 + noise * 0.25;
+    var texel_brightness = 0.875 + noise * 0.25;
+
+    // Glowstone distinctive look: detect via base color (bright warm yellow,
+    // R≈1.0 G≈0.88 B≈0.42). Use a coarser 4×4 grid and wider brightness
+    // variance to give the face a chunky, molten-cluster pixel-art pattern.
+    // Kept in the shader so we don't have to thread another "is emissive"
+    // vertex attribute — the color channel already encodes the identity.
+    let is_glowstone = in.color.r > 0.95 && in.color.g > 0.80 && in.color.b > 0.35 && in.color.b < 0.55;
+    if (is_glowstone) {
+        let coarse = vec2<u32>(floor(in.uv * 4.0));
+        let n2 = texelHash(coarse + vec2<u32>(7u, 13u));
+        // Wider ±25% variance across big 4×4 chunks. Layer on the fine 16×16
+        // noise at reduced amplitude so single texels still shimmer subtly.
+        texel_brightness = 0.75 + n2 * 0.5 + (noise - 0.5) * 0.08;
+    }
 
     // Directional lighting
     let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
@@ -160,8 +187,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // 0.05 floor matches vanilla Minecraft's "minimum brightness" intuition.
     let sky_brightness = 0.05 + in.skylight * 0.95;
 
+    // Block light: phase-3 per-vertex emitter light (glowstone). Unlike sky,
+    // block light has no floor on its own — a cell with no emitter nearby
+    // contributes 0 to this channel, and the sky floor (0.05) provides the
+    // global "can see your hand in a cave" minimum. A glowstone cell's face
+    // reads owner_level=1.0, so the face lights up to full 1.0.
+    let block_brightness = in.block_light;
+
+    // Combine: sky and block light compete for maximum brightness; neither
+    // "adds" to the other. This matches the Minecraft Wiki formula
+    //     final = max(sky_nibble * day_curve, block_nibble) / 15
+    // and ensures a glowstone buried in a cave still renders bright even
+    // though the sky channel is near zero there.
+    let world_light = max(sky_brightness, block_brightness);
+
     // GPU debug: mix in orange tint for freshly rebuilt quads
-    let base = in.color * brightness * texel_brightness * ao_brightness * sky_brightness;
+    let base = in.color * brightness * texel_brightness * ao_brightness * world_light;
     let highlighted = mix(base, vec3<f32>(1.0, 0.5, 0.1), in.highlight * 0.6);
 
     // Distance fog: fade to sky colour before the render distance cutoff.

@@ -161,7 +161,8 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 | `--msaa=N` | MSAA sample count. Accepted: `none`/`0` (no AA), `1`, `2`, `4` (default), `8`. The `bgra8unorm` surface format supports [1, 2, 4] on native and [1, 4] on WebGPU; values outside that range are clamped (e.g. `--msaa=8` → 4×). |
 | `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (default — per-vertex Mojang face-plane AO), `moore` (extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
-| `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation; caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block triggers a full-chunk `computeSkylight()` + mesh regen (safe fallback for dig relight; bounded local BFS is still a future optimisation). See `examples/voxel/docs/lighting.md` for the algorithm and the phase-1 known limitations (no cross-chunk seam fixing). |
+| `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation; caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block triggers a full-chunk `computeSkylight()` + `computeBlockLight()` + mesh regen. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
+| `--place-block=<type>` | Block type emitted by right-click placement. Accepted: `stone` (default) and `glowstone`. Added with phase-3 block light so `tests/glowstone_cave.tas` can place an emitter from a TAS without needing an in-game block picker UI. |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish (so MSAA comparison runs capture the same deterministic state). |
 | `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none` (default — opt-in feature, draw every loaded chunk), `sphere` (radial cutoff at render_distance + slack; cheap sanity backstop), `cone` (sphere-vs-cone test against the camera forward, fov controlled by `--frustum-fov-deg`). The chunk the camera sits in plus its 8 horizontal neighbours are NEVER culled regardless of strategy — see `examples/voxel/frustum.zig` for the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
 | `--frustum-fov-deg=<degrees>` | Total fov of the cone strategy in degrees. Default 180° (a deliberate no-op short-circuit so an accidental `--frustum=cone` cannot drop chunks before the user tightens the fov). Range [0, 360]. Half-angle ≥ 90° always returns true. |
@@ -227,6 +228,15 @@ TAS scripts for regression live under `examples/voxel/`:
   Δ ~52/255 — the affected pixels are exactly the pit interior, which
   goes from RGB ~(2,2,1) to a ~(15..38) gradient matching the skylight
   fall-off as the camera looks into the shaft.
+- `tests/glowstone_cave.tas` + `tests/glowstone_cave.sh` — phase-3 block
+  light regression. TAS digs a small flatland pit and right-clicks once;
+  runner captures two frames (`--place-block=stone` baseline vs
+  `--place-block=glowstone`) and asserts four brightness bboxes: core
+  (glowstone face, glow lum ≈146 vs stone 34), wall near (lum ≈120 vs
+  42), wall rim at ~distance-4 (lum ≈44 vs 15), and far grass (unchanged
+  — verifies block light did NOT leak beyond the BFS radius or across
+  chunk boundaries). Run with `./examples/voxel/tests/glowstone_cave.sh`
+  (or `--skip-build` to reuse an existing binary).
 
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
 block at the top documenting the purpose, usage, and baseline numbers.
