@@ -195,6 +195,9 @@ const State = struct {
     gpu_debug: bool = false,
     /// MSAA config parsed from --msaa=N CLI flag. Default: 4× MSAA.
     msaa_config: gpu_mod.AntiAliasingConfig = .{ .method = .msaa, .msaa_samples = 4 },
+    /// --dump-frame=<path>: capture first rendered frame to a PPM file then exit.
+    dump_frame_path: ?[]const u8 = null,
+    dump_frame_done: bool = false,
 };
 
 var state: State = undefined;
@@ -260,6 +263,11 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Initialize overlay renderer
     state.overlay = OverlayRenderer.init(ctx.allocator());
 
+    // Default MSAA config (var state = undefined bypasses struct field defaults)
+    state.msaa_config = .{ .method = .msaa, .msaa_samples = 4 };
+    state.dump_frame_path = null;
+    state.dump_frame_done = false;
+
     // Check for TAS script argument
     const args = try std.process.argsAlloc(ctx.allocator());
     defer std.process.argsFree(ctx.allocator(), args);
@@ -269,6 +277,12 @@ fn voxelInit(ctx: *sw.Context) !void {
         if (std.mem.eql(u8, arg, "--headless")) state.headless = true;
         if (std.mem.eql(u8, arg, "--tas-step")) state.tas_step_mode = true;
         if (std.mem.eql(u8, arg, "--gpu-debug")) state.gpu_debug = true;
+        if (std.mem.startsWith(u8, arg, "--dump-frame=")) {
+            const raw: []const u8 = arg["--dump-frame=".len..];
+            const p = std.mem.sliceTo(raw, 0);
+            // dupe so the path survives argsFree at end of voxelInit
+            state.dump_frame_path = try ctx.allocator().dupe(u8, p);
+        }
         if (std.mem.startsWith(u8, arg, "--msaa=")) {
             const val = arg["--msaa=".len..];
             if (std.mem.eql(u8, val, "none") or std.mem.eql(u8, val, "0")) {
@@ -285,9 +299,11 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.log.err("--msaa: invalid value '{s}'. Accepted: none, 0, 1, 2, 4, 8", .{val});
                 std.process.exit(1);
             }
-            std.log.info("MSAA: method={s} samples={}", .{ @tagName(state.msaa_config.method), state.msaa_config.msaa_samples });
         }
     }
+    std.log.info("MSAA config (post-parse): method={s} requested_samples={}", .{
+        @tagName(state.msaa_config.method), state.msaa_config.msaa_samples,
+    });
 
     for (args, 0..) |arg, i| {
         if (std.mem.eql(u8, arg, "--tas") and i + 1 < args.len) {
@@ -1261,6 +1277,57 @@ fn voxelRender(ctx: *sw.Context) !void {
         std.log.err("Failed to finish encoder: {}", .{err});
         return;
     };
+
+    // --dump-frame: capture the surface texture BEFORE present, write PPM, then exit.
+    if (state.dump_frame_path) |path| {
+        if (!state.dump_frame_done) {
+            state.dump_frame_done = true;
+            g.submit(&[_]gpu_mod.CommandBuffer{cmd});
+            // Capture pixels (surface has CopySrc usage; call before present)
+            const pixels = g.captureFrame(ctx.allocator()) catch |err| {
+                std.log.err("captureFrame failed: {}", .{err});
+                g.present();
+                return;
+            };
+            defer ctx.allocator().free(pixels);
+            g.present();
+
+            // Write PPM P6 (binary RGB). Build in a byte buffer then write once.
+            // Use GPU surface dimensions — on Retina, ctx.window().width/height are
+            // physical pixels, which match the GPU swapchain size captured above.
+            const w = g.getSurfaceWidth();
+            const h = g.getSurfaceHeight();
+            // Header: "P6\n<w> <h>\n255\n"
+            var hdr_buf: [64]u8 = undefined;
+            const hdr = std.fmt.bufPrint(&hdr_buf, "P6\n{} {}\n255\n", .{ w, h }) catch unreachable;
+            // Body: w*h*3 RGB bytes
+            const rgb = ctx.allocator().alloc(u8, w * h * 3) catch {
+                std.log.err("OOM allocating PPM buffer", .{});
+                std.process.exit(1);
+            };
+            defer ctx.allocator().free(rgb);
+            var y: u32 = 0;
+            while (y < h) : (y += 1) {
+                var x: u32 = 0;
+                while (x < w) : (x += 1) {
+                    const src = (y * w + x) * 4;
+                    const dst = (y * w + x) * 3;
+                    rgb[dst + 0] = pixels[src + 2]; // R (from B channel in BGRA)
+                    rgb[dst + 1] = pixels[src + 1]; // G
+                    rgb[dst + 2] = pixels[src + 0]; // B (from R channel in BGRA)
+                }
+            }
+            const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+                std.log.err("Cannot create {s}: {}", .{ path, err });
+                std.process.exit(1);
+            };
+            file.writeAll(hdr) catch unreachable;
+            file.writeAll(rgb) catch unreachable;
+            file.close();
+            std.log.info("Frame captured: {s} ({}×{} px)", .{ path, w, h });
+            std.process.exit(0);
+        }
+    }
 
     g.submit(&[_]gpu_mod.CommandBuffer{cmd});
     g.present();

@@ -499,8 +499,10 @@ pub const AAMethod = enum { none, msaa, fxaa, smaa, ssaa, taa };
 ///   - `taa`          — temporal AA (needs motion vectors / history buffer)
 pub const AntiAliasingConfig = struct {
     method: AAMethod = .none,
-    /// Sample count for MSAA. Must be 1 or 4 (WebGPU guarantee).
-    /// Values other than 1 and 4 are clamped: 2 → 4, >4 → 4.
+    /// Sample count for MSAA.
+    /// WebGPU (WASM): only 1 and 4 are guaranteed; other values clamp to 4.
+    /// Native (wgpu-native): 1, 2, 4, 8 are supported; other values round down
+    /// to the nearest power of two ≤ 8.
     msaa_samples: u32 = 1,
     /// Render scale for SSAA (e.g. 2.0 = 4× pixels). Currently unused.
     ssaa_scale: f32 = 1.0,

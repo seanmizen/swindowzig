@@ -61,8 +61,12 @@ pub extern fn wgpuDevicePoll(device: WGPUDevice, wait: u32, wrapped_submission_i
 // Buffer
 pub extern fn wgpuDeviceCreateBuffer(device: WGPUDevice, descriptor: *const WGPUBufferDescriptor) WGPUBuffer;
 pub extern fn wgpuBufferGetMappedRange(buffer: WGPUBuffer, offset: usize, size: usize) ?*anyopaque;
+pub extern fn wgpuBufferMapAsync(buffer: WGPUBuffer, mode: u32, offset: usize, size: usize, callback: WGPUBufferMapCallback, userdata: ?*anyopaque) void;
 pub extern fn wgpuBufferUnmap(buffer: WGPUBuffer) void;
 pub extern fn wgpuBufferDestroy(buffer: WGPUBuffer) void;
+
+pub const WGPUMapMode_Read: u32 = 0x00000001;
+pub const WGPUBufferMapCallback = *const fn (status: u32, userdata: ?*anyopaque) callconv(.c) void;
 
 // Texture
 pub extern fn wgpuDeviceCreateTexture(device: WGPUDevice, descriptor: *const WGPUTextureDescriptor) WGPUTexture;
@@ -90,9 +94,16 @@ pub extern fn wgpuDeviceCreateComputePipeline(device: WGPUDevice, descriptor: *c
 pub extern fn wgpuDeviceCreateCommandEncoder(device: WGPUDevice, descriptor: ?*const WGPUCommandEncoderDescriptor) WGPUCommandEncoder;
 pub extern fn wgpuCommandEncoderBeginRenderPass(encoder: WGPUCommandEncoder, descriptor: *const WGPURenderPassDescriptor) WGPURenderPassEncoder;
 pub extern fn wgpuCommandEncoderBeginComputePass(encoder: WGPUCommandEncoder, descriptor: ?*const WGPUComputePassDescriptor) WGPUComputePassEncoder;
+pub extern fn wgpuCommandEncoderCopyTextureToBuffer(encoder: WGPUCommandEncoder, source: *const WGPUImageCopyTexture, destination: *const WGPUImageCopyBuffer, copy_size: *const WGPUExtent3D) void;
 pub extern fn wgpuCommandEncoderFinish(encoder: WGPUCommandEncoder, descriptor: ?*const WGPUCommandBufferDescriptor) WGPUCommandBuffer;
 pub extern fn wgpuCommandEncoderRelease(encoder: WGPUCommandEncoder) void;
 pub extern fn wgpuCommandBufferRelease(buffer: WGPUCommandBuffer) void;
+
+pub const WGPUImageCopyBuffer = extern struct {
+    next_in_chain: ?*const anyopaque = null,
+    layout: WGPUTextureDataLayout,
+    buffer: WGPUBuffer,
+};
 
 // Render Pass
 pub extern fn wgpuRenderPassEncoderSetPipeline(pass: WGPURenderPassEncoder, pipeline: WGPURenderPipeline) void;

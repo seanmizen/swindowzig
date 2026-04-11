@@ -115,6 +115,11 @@ pub const GPU = struct {
     msaa_color_texture: ?Texture = null,
     msaa_color_view: ?TextureView = null,
 
+    // Current-frame surface texture (native only) — set by getCurrentTextureView,
+    // consumed by captureFrame, cleared by present().
+    current_surface_texture: if (!is_wasm) ?native.WGPUTexture else void =
+        if (!is_wasm) null else {},
+
     /// Check if GPU is ready for use
     pub fn isReady(self: *const GPU) bool {
         return self.state == .ready;
@@ -137,15 +142,34 @@ pub const GPU = struct {
         const sample_count: u32 = switch (config.method) {
             .none => 1,
             .msaa => blk: {
-                // WebGPU mandates 1 and 4; round anything in between up to 4.
-                if (config.msaa_samples <= 1) break :blk 1;
-                break :blk 4;
+                const req = config.msaa_samples;
+                if (req <= 1) break :blk 1;
+                if (comptime is_wasm) {
+                    // WebGPU spec only guarantees sample counts 1 and 4.
+                    break :blk 4;
+                } else {
+                    // Native (Metal/Vulkan/DX12): bgra8unorm surface format supports 1, 2, and 4.
+                    // Sample count 8 requires TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES and is
+                    // NOT supported for bgra8unorm on most devices — attempting it causes a
+                    // wgpu-native panic.  Cap at 4; allow 2 which is widely supported natively.
+                    if (req >= 4) break :blk @as(u32, 4);
+                    break :blk @as(u32, 2);
+                }
             },
             .fxaa, .smaa, .ssaa, .taa => blk: {
                 std.log.warn("sw_gpu: AA method '{s}' not yet implemented — no anti-aliasing applied", .{@tagName(config.method)});
                 break :blk 1;
             },
         };
+
+        if (config.method == .msaa and sample_count != config.msaa_samples) {
+            std.log.warn("sw_gpu: --msaa={} clamped to {} (bgra8unorm surface format supports 1/2/4 on native; 1/4 on WebGPU)", .{
+                config.msaa_samples, sample_count,
+            });
+        }
+        std.log.info("sw_gpu: configureMSAA → sample_count={} (method={s} requested={})", .{
+            sample_count, @tagName(config.method), config.msaa_samples,
+        });
 
         // Destroy any existing MSAA texture
         if (self.msaa_color_texture) |tex| tex.destroy();
@@ -174,6 +198,19 @@ pub const GPU = struct {
     /// Returns the active MSAA sample count (1 means no MSAA).
     pub fn getSampleCount(self: *const GPU) u32 {
         return self.msaa_sample_count;
+    }
+
+    /// Returns the swapchain/surface width in pixels (matches wgpu texture dimensions).
+    /// On Retina/HiDPI displays this is the physical pixel count, NOT logical pixels.
+    pub fn getSurfaceWidth(self: *const GPU) u32 {
+        if (comptime is_wasm) return 0;
+        return self.width;
+    }
+
+    /// Returns the swapchain/surface height in pixels.
+    pub fn getSurfaceHeight(self: *const GPU) u32 {
+        if (comptime is_wasm) return 0;
+        return self.height;
     }
 
     /// Initialize WebGPU (call once at startup)
@@ -261,7 +298,7 @@ pub const GPU = struct {
                 .next_in_chain = null,
                 .device = device_result.device.?,
                 .format = .bgra8unorm,
-                .usage = native.WGPUTextureUsage_RenderAttachment,
+                .usage = native.WGPUTextureUsage_RenderAttachment | native.WGPUTextureUsage_CopySrc,
                 .view_format_count = 0,
                 .view_formats = null,
                 .alpha_mode = .auto,
@@ -938,12 +975,101 @@ pub const GPU = struct {
                 return error.SurfaceTextureError;
             }
 
+            // Cache the texture handle so captureFrame() can reuse it without
+            // calling wgpuSurfaceGetCurrentTexture() again (invalid within a frame).
+            self.current_surface_texture = surface_texture.texture;
+
             // Create a texture view
             const view = native.wgpuTextureCreateView(surface_texture.texture, null);
             if (view == null) return error.TextureViewCreationFailed;
 
             return TextureView{ .handle = view };
         }
+    }
+
+    /// Capture the current surface texture to a raw BGRA byte buffer.
+    ///
+    /// Call AFTER submit() and BEFORE present().  The surface must have been
+    /// configured with CopySrc usage (done automatically since this was added).
+    /// The caller owns the returned slice and must free it with `allocator.free`.
+    ///
+    /// Returns width × height × 4 bytes in BGRA order (the native swapchain format).
+    pub fn captureFrame(self: *GPU, allocator: std.mem.Allocator) ![]u8 {
+        if (comptime is_wasm) return error.NotSupportedOnWasm;
+
+        // Reuse the texture that getCurrentTextureView() already fetched this frame.
+        // Calling wgpuSurfaceGetCurrentTexture() a second time within the same frame
+        // causes a validation error on Metal.
+        const tex = self.current_surface_texture orelse return error.NoCurrentTexture;
+
+        const w = self.width;
+        const h = self.height;
+
+        // wgpu requires bytes_per_row to be aligned to 256
+        const bpp: u32 = 4;
+        const bytes_per_row = (w * bpp + 255) & ~@as(u32, 255);
+        const buf_size: u64 = @as(u64, bytes_per_row) * h;
+
+        // Create a CPU-readable staging buffer
+        var buf_desc = std.mem.zeroes(native.WGPUBufferDescriptor);
+        buf_desc.size = buf_size;
+        buf_desc.usage = native.WGPUBufferUsage_CopyDst | native.WGPUBufferUsage_MapRead;
+        buf_desc.mapped_at_creation = 0;
+        const staging_buf = native.wgpuDeviceCreateBuffer(self.device, &buf_desc)
+            orelse return error.BufferCreationFailed;
+        defer native.wgpuBufferDestroy(staging_buf);
+
+        // Record the copy command
+        const enc = native.wgpuDeviceCreateCommandEncoder(self.device, null)
+            orelse return error.EncoderCreationFailed;
+
+        var src = std.mem.zeroes(native.WGPUImageCopyTexture);
+        src.texture = tex;
+        src.mip_level = 0;
+        src.aspect = .all; // .all captures the colour plane for colour textures
+
+        var dst = std.mem.zeroes(native.WGPUImageCopyBuffer);
+        dst.buffer = staging_buf;
+        dst.layout.bytes_per_row = bytes_per_row;
+        dst.layout.rows_per_image = h;
+
+        const extent = native.WGPUExtent3D{ .width = w, .height = h, .depth_or_array_layers = 1 };
+        native.wgpuCommandEncoderCopyTextureToBuffer(enc, &src, &dst, &extent);
+
+        const cmd = native.wgpuCommandEncoderFinish(enc, null)
+            orelse return error.FinishFailed;
+        native.wgpuQueueSubmit(self.queue, 1, @ptrCast(&cmd));
+        native.wgpuCommandBufferRelease(cmd);
+        native.wgpuCommandEncoderRelease(enc);
+
+        // Map buffer and wait synchronously
+        const MapState = struct { done: bool = false };
+        var map_state = MapState{};
+        native.wgpuBufferMapAsync(
+            staging_buf,
+            native.WGPUMapMode_Read,
+            0,
+            buf_size,
+            struct {
+                fn cb(status: u32, ud: ?*anyopaque) callconv(.c) void {
+                    _ = status;
+                    @as(*MapState, @ptrCast(@alignCast(ud))).done = true;
+                }
+            }.cb,
+            &map_state,
+        );
+        _ = native.wgpuDevicePoll(self.device, 1, null);
+
+        // Copy pixels into output buffer, stripping the 256-byte row padding
+        const out = try allocator.alloc(u8, w * h * bpp);
+        const ptr: [*]const u8 = @ptrCast(native.wgpuBufferGetMappedRange(staging_buf, 0, buf_size)
+            orelse { allocator.free(out); return error.MapFailed; });
+        for (0..h) |y| {
+            const src_row = ptr[y * bytes_per_row ..][0 .. w * bpp];
+            @memcpy(out[y * w * bpp ..][0 .. w * bpp], src_row);
+        }
+        native.wgpuBufferUnmap(staging_buf);
+        return out;
     }
 
     /// Present the current frame to screen
@@ -955,6 +1081,7 @@ pub const GPU = struct {
         } else {
             // Native: Present the surface
             native.wgpuSurfacePresent(self.surface);
+            self.current_surface_texture = null;
         }
     }
 
