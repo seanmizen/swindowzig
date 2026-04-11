@@ -9,8 +9,33 @@ const Mesh = mesher_mod.Mesh;
 /// TODO: expose as an in-game setting via the HUD.
 pub const RENDER_DISTANCE: i32 = 4;
 
-/// Terrain-generation passes per tick. Keeps tick time bounded while loading.
-const CHUNKS_PER_TICK: usize = 2;
+/// Terrain-generation passes per tick during normal gameplay.
+///
+/// Rationale for K=2: generation is cheap (value noise + a handful of block
+/// writes per column, ~1ms/chunk on the bad laptop used for development) and
+/// only runs when the player crosses a chunk boundary. Two per tick keeps the
+/// async background fill invisible during casual wandering without spiking
+/// the frame budget. The pregen phase (loading screen) uses an unbounded
+/// budget — see `generateRing` in main.zig.
+pub const CHUNKS_PER_TICK: usize = 2;
+
+/// Horizontal pregen radius used by the first-spawn flow.
+///
+/// Rationale for N = 25 chunks (RADIUS = 2 → 5×5 horizontal ring at the spawn
+/// chunk column):
+///   - Horizontal movement dominates first-play UX. A player walking in any
+///     direction from spawn should not immediately hit an unmeshed edge.
+///   - `RENDER_DISTANCE = 4` is a circular cull radius, but only the inner
+///     3×3 (9 chunks) need to be MESHED to have a clean view immediately —
+///     those are the chunks whose four horizontal neighbours are all also
+///     generated. The outer ring (16 chunks) acts as the "generated but not
+///     yet meshed" buffer so the inner 9 CAN be meshed without seam holes.
+///   - Vertical is free: chunks are 256-tall columns, not 16-tall sections.
+///     We don't need a sphere.
+///   - A 5×5 square = 25 columns × ~576 KB per chunk ≈ 14 MB RAM. Comfortable.
+///     Moving to 7×7 (radius 3, 49 chunks) would push it to ~28 MB and slow
+///     the loading screen; not worth it until we palette-compress chunks.
+pub const PREGEN_RADIUS: i32 = 2;
 
 /// A RegionAnchor requests that all chunks within RENDER_DISTANCE be loaded.
 /// Currently only the player satisfies this. Future entities (beacons, spectators,
@@ -45,13 +70,36 @@ const ChunkOffset = struct { dx: i32, dz: i32 };
 
 pub const ChunkMap = std.HashMap(ChunkKey, *LoadedChunk, ChunkKey.HashContext, std.hash_map.default_max_load_percentage);
 
-/// A single loaded chunk: terrain data + mesh + dirty flags.
+/// Pipeline state for a loaded chunk. Generation (writing the block-ID array)
+/// and meshing (building a GPU vertex/index buffer) are two distinct phases.
+///
+/// `.generated`  — `chunk.blocks` is valid in RAM. Deterministic from seed+coords.
+///                 No GPU mesh yet. Cannot be meshed until all four horizontal
+///                 neighbours are also at least `.generated` (otherwise face
+///                 culling against .air for missing neighbours would punch holes
+///                 along chunk seams — the classic "sky gap" artifact).
+/// `.meshed`     — `mesh.vertices` / `mesh.indices` are valid. Ready to draw.
+///
+/// Chunks in this codebase are 48×256×48 *columns*, not 3D cubes, so there is
+/// no vertical neighbour to wait on — a column is meshable as soon as its four
+/// horizontal neighbours exist.
+pub const ChunkState = enum(u8) {
+    generated = 0,
+    meshed = 1,
+};
+
+/// A single loaded chunk: terrain data + mesh + pipeline state.
 pub const LoadedChunk = struct {
     chunk: Chunk,
     mesh: Mesh,
     cx: i32,
     cz: i32,
-    /// True when the mesh needs full regeneration (just loaded, or neighbor arrived).
+    /// Pipeline state — generated vs meshed. See `ChunkState` doc above.
+    state: ChunkState,
+    /// True when the mesh needs full regeneration — either because it has
+    /// never been meshed yet, or because a neighbour arrived and the seam
+    /// faces need re-evaluation. Only meaningful when `state == .meshed`
+    /// except for the initial `true` that lives while `.generated`.
     mesh_dirty: bool,
     /// True when mesh was changed incrementally and GPU buffers need re-upload.
     mesh_incremental_dirty: bool,
@@ -62,6 +110,7 @@ pub const LoadedChunk = struct {
             .mesh = Mesh.init(allocator),
             .cx = cx,
             .cz = cz,
+            .state = .generated,
             .mesh_dirty = true,
             .mesh_incremental_dirty = false,
         };
@@ -122,11 +171,64 @@ pub const World = struct {
         self.allocator.free(self.spiral_offsets);
     }
 
+    /// Generate one chunk at (cx, cz) if it does not already exist, and mark
+    /// any existing horizontal neighbours as `mesh_dirty` so their seam faces
+    /// will be re-evaluated against the new chunk.
+    ///
+    /// Returns true if a new chunk was created, false if the slot was already
+    /// occupied. Cheap to call repeatedly with the same coords.
+    pub fn generateChunk(self: *World, cx: i32, cz: i32) !bool {
+        const key = ChunkKey{ .cx = cx, .cz = cz };
+        if (self.chunks.contains(key)) return false;
+
+        const lc = try self.allocator.create(LoadedChunk);
+        lc.* = LoadedChunk.init(self.allocator, cx, cz);
+        lc.chunk.generateTerrain(cx, cz, self.gen_config);
+        try self.chunks.put(key, lc);
+
+        // Mark adjacent already-loaded chunks dirty so their seam faces will
+        // be re-evaluated against this new neighbour on the next mesh pass.
+        const adjacent = [_]ChunkKey{
+            .{ .cx = cx - 1, .cz = cz },
+            .{ .cx = cx + 1, .cz = cz },
+            .{ .cx = cx, .cz = cz - 1 },
+            .{ .cx = cx, .cz = cz + 1 },
+        };
+        for (adjacent) |nk| {
+            if (self.chunks.get(nk)) |nlc| {
+                nlc.mesh_dirty = true;
+            }
+        }
+        return true;
+    }
+
+    /// True iff `lc` has all four horizontal neighbours generated (or better).
+    /// Since chunks here are full-height columns, "all six neighbours" from
+    /// classic 3D-chunk voxel engines collapses to four horizontal neighbours.
+    /// A chunk must meet this condition before its mesh is built — otherwise
+    /// seam faces would cull against `.air` for the missing sides and produce
+    /// visible holes along chunk boundaries.
+    pub fn hasAllNeighborsGenerated(self: *const World, cx: i32, cz: i32) bool {
+        const neighbors = [_]ChunkKey{
+            .{ .cx = cx - 1, .cz = cz },
+            .{ .cx = cx + 1, .cz = cz },
+            .{ .cx = cx, .cz = cz - 1 },
+            .{ .cx = cx, .cz = cz + 1 },
+        };
+        for (neighbors) |nk| {
+            if (!self.chunks.contains(nk)) return false;
+        }
+        return true;
+    }
+
     /// Update chunk loading for the given anchors.
-    /// Loads up to CHUNKS_PER_TICK new chunks per call, innermost-first.
-    /// When a new chunk is loaded, adjacent already-loaded chunks are re-meshed
-    /// so their boundary faces are correctly culled against the new neighbour.
-    /// Call this from voxelTick once per tick.
+    /// Generates up to CHUNKS_PER_TICK new chunks per call, innermost-first.
+    /// Call this from voxelTick once per tick during normal gameplay.
+    ///
+    /// Meshing is handled separately by the caller — see main.zig's per-tick
+    /// mesh loop. The split keeps generation (cheap, deterministic, no GPU
+    /// state) completely decoupled from meshing (must wait for neighbours,
+    /// produces GPU buffers).
     pub fn update(self: *World, anchors: []const RegionAnchor) !void {
         var loaded_this_tick: usize = 0;
 
@@ -138,28 +240,8 @@ pub const World = struct {
 
                 const anchor_cx = chunkCoordOf(@as(i32, @intFromFloat(@floor(anchor.position[0]))));
                 const anchor_cz = chunkCoordOf(@as(i32, @intFromFloat(@floor(anchor.position[2]))));
-                const key = ChunkKey{ .cx = anchor_cx + off.dx, .cz = anchor_cz + off.dz };
-
-                if (!self.chunks.contains(key)) {
-                    const lc = try self.allocator.create(LoadedChunk);
-                    lc.* = LoadedChunk.init(self.allocator, key.cx, key.cz);
-                    lc.chunk.generateTerrain(key.cx, key.cz, self.gen_config);
-                    try self.chunks.put(key, lc);
+                if (try self.generateChunk(anchor_cx + off.dx, anchor_cz + off.dz)) {
                     loaded_this_tick += 1;
-
-                    // Re-mesh adjacent already-loaded chunks so their boundary faces
-                    // are re-evaluated against this new neighbour.
-                    const adjacent = [_]ChunkKey{
-                        .{ .cx = key.cx - 1, .cz = key.cz },
-                        .{ .cx = key.cx + 1, .cz = key.cz },
-                        .{ .cx = key.cx, .cz = key.cz - 1 },
-                        .{ .cx = key.cx, .cz = key.cz + 1 },
-                    };
-                    for (adjacent) |nk| {
-                        if (self.chunks.getPtr(nk)) |nlc_ptr| {
-                            nlc_ptr.*.mesh_dirty = true;
-                        }
-                    }
                 }
             }
         }

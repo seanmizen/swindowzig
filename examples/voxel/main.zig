@@ -119,7 +119,33 @@ const IsSolidWorld = struct {
 
 /// Max mesh generations per tick (keeps tick time bounded during chunk loading).
 /// Mesh gen runs in tick so render frames stay smooth.
+///
+/// Rationale for M=1: meshing a 48×256×48 column scans 589,824 blocks and
+/// currently costs ~2.3ms on the dev laptop. At 120 Hz sim the frame budget
+/// is 8.3ms — one mesh per tick leaves plenty of headroom for physics and
+/// rendering. If the player sprints past the async outer ring faster than
+/// one-chunk-per-tick, they'll briefly see a seam; in practice running speed
+/// is capped well below that threshold. Bump if sprint speed increases.
+/// The pregen phase bypasses this cap and meshes everything in one go.
 const MESH_GENS_PER_TICK: usize = 1;
+
+/// Pregen-phase chunk generation budget per tick. Runs only while
+/// state.world_loading is true. Much larger than the gameplay budget because
+/// (a) the player isn't rendered yet, so we don't care about frame smoothness,
+/// and (b) we want the loading screen to clear fast.
+///
+/// Rationale: 5×5 = 25 chunks / 8 per tick ≈ 4 ticks of generation.
+/// At 120Hz sim that's ~33ms wall-clock — barely enough for the loading
+/// animation to draw one full wave. Higher values don't help; lower values
+/// make the screen hang.
+const PREGEN_CHUNKS_PER_TICK: usize = 8;
+
+/// Pregen-phase mesh generation budget per tick. Meshing is the slow part
+/// (~2.3ms/chunk vs ~1ms/chunk for generation). 4 per tick = 4 × 2.3ms ≈ 9ms,
+/// comparable to the 8.3ms tick budget. The loading screen doesn't need
+/// 120Hz responsiveness so a tick overrun here is fine.
+/// Inner 3×3 = 9 meshes / 4 per tick ≈ 3 ticks of meshing.
+const PREGEN_MESH_GENS_PER_TICK: usize = 4;
 
 const GameState = @import("game_state.zig").GameState;
 const OverlayRenderer = @import("overlay.zig").OverlayRenderer;
@@ -617,6 +643,89 @@ fn syncCameraToPlayer() void {
     state.camera.position = Vec3.init(eye[0], eye[1], eye[2]);
 }
 
+/// Pregen step: generate up to K chunks in a (2*R+1)×(2*R+1) square around the
+/// spawn chunk column, then mesh up to M chunks whose four horizontal neighbours
+/// are all generated. Returns true once the entire INNER ring (the (2*(R-1)+1)
+/// square centred on spawn) is meshed — meaning every chunk inside the outer
+/// ring that has all-neighbours-present has completed meshing and the player
+/// can safely be released without the loading screen having to linger.
+///
+/// Inner ring size: for R = PREGEN_RADIUS = 2 the outer square is 5×5 and the
+/// inner square is 3×3 (9 chunks), since only cells whose four neighbours are
+/// also inside the 5×5 can satisfy `hasAllNeighborsGenerated`.
+///
+/// Running cost: bursts through PREGEN_CHUNKS_PER_TICK generations and
+/// PREGEN_MESH_GENS_PER_TICK mesh builds per call. Caller ticks this until it
+/// returns true, keeping the loading screen animated between ticks.
+fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy) !bool {
+    const R = world_mod.PREGEN_RADIUS;
+
+    // Pass 1 — generate every chunk inside the (2R+1)^2 outer square that is
+    // not yet present. Inside-out order so the innermost (meshable) ones
+    // come online first.
+    var gens: usize = 0;
+    var r: i32 = 0;
+    outer_gen: while (r <= R) : (r += 1) {
+        var dz: i32 = -r;
+        while (dz <= r) : (dz += 1) {
+            var dx: i32 = -r;
+            while (dx <= r) : (dx += 1) {
+                // Skip cells from inner radii we've already visited.
+                if (@max(@abs(dx), @abs(dz)) != r) continue;
+                if (gens >= PREGEN_CHUNKS_PER_TICK) break :outer_gen;
+                if (try world.generateChunk(spawn_cx + dx, spawn_cz + dz)) {
+                    gens += 1;
+                }
+            }
+        }
+    }
+
+    // Pass 2 — mesh any chunk inside the inner (2*(R-1)+1)^2 square that has
+    // all four neighbours generated. Only the inner ring can mesh cleanly;
+    // the outer ring is intentionally left unmeshed (it's the buffer so the
+    // inner ring can mesh without seam holes).
+    const inner_r = R - 1;
+    var meshes: usize = 0;
+    var idz: i32 = -inner_r;
+    outer_mesh: while (idz <= inner_r) : (idz += 1) {
+        var idx: i32 = -inner_r;
+        while (idx <= inner_r) : (idx += 1) {
+            if (meshes >= PREGEN_MESH_GENS_PER_TICK) break :outer_mesh;
+            const key = world_mod.ChunkKey{ .cx = spawn_cx + idx, .cz = spawn_cz + idz };
+            const lc = world.chunks.get(key) orelse continue;
+            if (!lc.mesh_dirty) continue;
+            if (!world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
+            mesher_mod.generateMesh(
+                &lc.chunk,
+                &lc.mesh,
+                lc.worldX(),
+                lc.worldZ(),
+                world.asBlockGetter(),
+                ao_strategy,
+            ) catch |err| {
+                std.log.err("[PREGEN] mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
+                continue;
+            };
+            lc.state = .meshed;
+            lc.mesh_dirty = false;
+            lc.mesh_incremental_dirty = true;
+            meshes += 1;
+        }
+    }
+
+    // Ready? All cells inside the inner square must be .meshed.
+    var cz: i32 = -inner_r;
+    while (cz <= inner_r) : (cz += 1) {
+        var cx: i32 = -inner_r;
+        while (cx <= inner_r) : (cx += 1) {
+            const key = world_mod.ChunkKey{ .cx = spawn_cx + cx, .cz = spawn_cz + cz };
+            const lc = world.chunks.get(key) orelse return false;
+            if (lc.state != .meshed or lc.mesh_dirty) return false;
+        }
+    }
+    return true;
+}
+
 /// Teleport player to the first 1×2 air column at-or-above the current spawn_point.
 /// This is the anti-griefing respawn: if someone places a block on spawn, the next
 /// respawn finds the next clear Y slot instead of embedding the player in rock.
@@ -632,13 +741,88 @@ fn doRespawn() void {
 }
 
 fn voxelTick(ctx: *sw.Context) !void {
+    // ====================================================================
+    // World loading branch: pregen ring around spawn, mesh inner square,
+    // release player. Runs while state.world_loading is true. No gameplay
+    // input is processed. The render loop shows the loading overlay.
+    // ====================================================================
+    if (state.world_loading) {
+        const spawn_bx: i32 = @intFromFloat(@floor(state.spawn_point[0]));
+        const spawn_bz: i32 = @intFromFloat(@floor(state.spawn_point[2]));
+        const spawn_cx = world_mod.chunkCoordOf(spawn_bx);
+        const spawn_cz = world_mod.chunkCoordOf(spawn_bz);
+
+        const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy) catch |err| blk: {
+            std.log.err("Pregen step failed: {}", .{err});
+            break :blk false;
+        };
+        if (!ring_ready) {
+            // Still generating/meshing the spawn ring — keep the loading
+            // screen visible and run pregenStep again next tick.
+            return;
+        }
+
+        // Pregen complete: resolve spawn, place player, unlock world.
+        // First-ever spawn this session: reset spawn Y to the heightmap
+        // surface ("overworld Y") so we don't attempt to start from a Y
+        // embedded in rock on hilly worlds.
+        if (!state.spawn_resolved) {
+            const surf = surfaceFeetY(&state.world, spawn_bx, spawn_bz);
+            state.spawn_point[1] = @as(f32, @floatFromInt(surf));
+            std.log.info("First-spawn: heightmap surface feet Y={} at ({},{})", .{
+                surf, spawn_bx, spawn_bz,
+            });
+        }
+
+        const resolved = resolveSpawnPos(&state.world, state.spawn_point);
+
+        // Safety net: never un-gate loading with the player inside solid.
+        const fbx: i32 = @intFromFloat(@floor(resolved[0]));
+        const fby: i32 = @intFromFloat(@floor(resolved[1]));
+        const fbz: i32 = @intFromFloat(@floor(resolved[2]));
+        std.debug.assert(state.world.getBlock(fbx, fby, fbz) == .air);
+        std.debug.assert(state.world.getBlock(fbx, fby + 1, fbz) == .air);
+
+        state.player.feet_pos = resolved;
+        state.player.velocity = .{ 0, 0, 0 };
+        state.player.on_ground = false;
+        state.spawn_point = resolved;
+        state.spawn_resolved = true;
+        state.world_loading = false;
+        syncCameraToPlayer();
+        std.log.info("World ready — spawned at ({d:.1}, {d:.1}, {d:.1})", .{
+            resolved[0], resolved[1], resolved[2],
+        });
+
+        // Remap TAS event tick_ids so tick 1 = first post-loading tick.
+        if (state.tas_replayer) |*r| {
+            if (r.state == .stopped) {
+                const offset: u64 = ctx.tickId() + 1;
+                for (r.events.items) |*ev| {
+                    ev.tick_id += offset;
+                }
+                if (!state.tas_step_mode) {
+                    r.play();
+                }
+                std.log.info("TAS replayer: remapped event tick_ids by +{} and started", .{offset});
+            }
+        }
+
+        // Skip gameplay input on the unlock tick — input starts next tick.
+        return;
+    }
+
     // Update world: load chunks progressively around active region anchors.
-    // The player is currently the only anchor.
+    // The player is currently the only anchor. This is the async background
+    // fill that keeps the outer ring growing as the player walks.
     try state.world.update(&[_]world_mod.RegionAnchor{
         .{ .position = state.player.feet_pos },
     });
 
     // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
+    // Gated: a chunk can only be meshed once all four horizontal neighbours are
+    // themselves generated. This prevents seam holes where the mesher would
+    // otherwise cull faces against unloaded .air neighbours.
     {
         var mesh_gens: usize = 0;
         var it = state.world.chunks.iterator();
@@ -646,6 +830,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             if (mesh_gens >= MESH_GENS_PER_TICK) break;
             const lc = entry.value_ptr.*;
             if (!lc.mesh_dirty) continue;
+            if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
             const t0 = std.time.nanoTimestamp();
             mesher_mod.generateMesh(
                 &lc.chunk,
@@ -660,92 +845,11 @@ fn voxelTick(ctx: *sw.Context) !void {
             };
             const t_us = @divTrunc(std.time.nanoTimestamp() - t0, 1000);
             std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
+            lc.state = .meshed;
             lc.mesh_dirty = false;
             lc.mesh_incremental_dirty = true;
             mesh_gens += 1;
         }
-    }
-
-    // World loading gate: wait for the spawn chunk to exist AND have its mesh
-    // generated before placing the player. The render loop shows a loading
-    // screen during this phase. Gameplay input and TAS playback are both
-    // deferred until loading completes.
-    if (state.world_loading) {
-        const bx: i32 = @intFromFloat(@floor(state.spawn_point[0]));
-        const bz: i32 = @intFromFloat(@floor(state.spawn_point[2]));
-        if (state.world.getChunkAtBlock(bx, bz)) |lc| {
-            if (!lc.mesh_dirty) {
-                // First-ever spawn this session: reset spawn Y to the heightmap
-                // surface ("overworld Y") so we don't even attempt to start from
-                // a Y embedded in rock on hilly worlds. The default spawn_point Y
-                // (set in voxelInit) is a placeholder; the real Y is decided here,
-                // once we know the chunk is generated and we can sample the
-                // heightmap. Subsequent respawns reuse the stored spawn_point and
-                // only scan upward via resolveSpawnPos if the slot is blocked.
-                if (!state.spawn_resolved) {
-                    const surf = surfaceFeetY(&state.world, bx, bz);
-                    state.spawn_point[1] = @as(f32, @floatFromInt(surf));
-                    std.log.info("First-spawn: heightmap surface feet Y={} at ({},{})", .{
-                        surf, bx, bz,
-                    });
-                }
-
-                // Resolve a 1×2 air column at-or-above spawn_point. With a
-                // heightmap-based first-spawn Y this is normally a no-op (the
-                // grass-cap-plus-one IS already a 2-block air column). For
-                // respawns it does the upward anti-griefing scan.
-                const resolved = resolveSpawnPos(&state.world, state.spawn_point);
-
-                // Safety net: never un-gate the loading screen with the player
-                // still embedded in solid blocks. resolveSpawnPos guarantees a
-                // 1×2 air column when called against a generated chunk; assert
-                // it explicitly so any future regression panics here instead of
-                // dumping the user inside rock.
-                const fbx: i32 = @intFromFloat(@floor(resolved[0]));
-                const fby: i32 = @intFromFloat(@floor(resolved[1]));
-                const fbz: i32 = @intFromFloat(@floor(resolved[2]));
-                std.debug.assert(state.world.getBlock(fbx, fby, fbz) == .air);
-                std.debug.assert(state.world.getBlock(fbx, fby + 1, fbz) == .air);
-
-                state.player.feet_pos = resolved;
-                state.player.velocity = .{ 0, 0, 0 };
-                state.player.on_ground = false;
-                state.spawn_point = resolved; // permanent — first-spawn locks XYZ
-                state.spawn_resolved = true;
-                state.world_loading = false;
-
-                // Sync the camera to the new player eye. Without this, the
-                // camera stays at its voxelInit position (eye derived from the
-                // pre-resolution feet at y=64) until the user clicks to capture
-                // the mouse — which on hilly terrain means the camera spends
-                // those first frames buried inside rock at (24, 65.6, 20) and
-                // the user appears to "spawn inside rock until first input".
-                syncCameraToPlayer();
-
-                std.log.info("World ready — spawned at ({d:.1}, {d:.1}, {d:.1})", .{
-                    resolved[0], resolved[1], resolved[2],
-                });
-
-                // Remap TAS event tick_ids so tick 1 = first post-loading tick.
-                // The replayer is in .stopped state from voxelInit; we start it now.
-                if (state.tas_replayer) |*r| {
-                    if (r.state == .stopped) {
-                        const offset: u64 = ctx.tickId() + 1;
-                        for (r.events.items) |*ev| {
-                            ev.tick_id += offset;
-                        }
-                        if (!state.tas_step_mode) {
-                            r.play();
-                            // play() resets current_index to 0 — events are in order
-                            // so this is fine (we haven't consumed any yet).
-                        }
-                        std.log.info("TAS replayer: remapped event tick_ids by +{} and started", .{offset});
-                    }
-                }
-            }
-        }
-        // Skip gameplay input processing while loading.
-        return;
     }
 
     // TAS playback status + headless auto-shutdown when script completes
