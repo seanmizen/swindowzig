@@ -424,10 +424,10 @@ fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, c
 
     // Four horizontal neighbours; Y never crosses a chunk boundary.
     const checks = [_]struct { coord: i32, at_min: bool, dx: i32, dz: i32 }{
-        .{ .coord = lx, .at_min = true,  .dx = -1, .dz =  0 }, // −X edge
-        .{ .coord = lx, .at_min = false, .dx =  1, .dz =  0 }, // +X edge
-        .{ .coord = lz, .at_min = true,  .dx =  0, .dz = -1 }, // −Z edge
-        .{ .coord = lz, .at_min = false, .dx =  0, .dz =  1 }, // +Z edge
+        .{ .coord = lx, .at_min = true, .dx = -1, .dz = 0 }, // −X edge
+        .{ .coord = lx, .at_min = false, .dx = 1, .dz = 0 }, // +X edge
+        .{ .coord = lz, .at_min = true, .dx = 0, .dz = -1 }, // −Z edge
+        .{ .coord = lz, .at_min = false, .dx = 0, .dz = 1 }, // +Z edge
     };
     for (checks) |c| {
         const at_boundary = if (c.at_min) c.coord == 0 else c.coord == chunk_mod.CHUNK_W - 1;
@@ -442,9 +442,13 @@ fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, c
         const nb_lz = nb_wz - nb_cz * chunk_mod.CHUNK_W;
 
         nb_lc.mesh.updateForBlockChange(
-            &nb_lc.chunk, nb_lx, wy, nb_lz,
+            &nb_lc.chunk,
+            nb_lx,
+            wy,
+            nb_lz,
             camera_pos,
-            nb_lc.worldX(), nb_lc.worldZ(),
+            nb_lc.worldX(),
+            nb_lc.worldZ(),
             world.asBlockGetter(),
         ) catch {
             nb_lc.mesh_dirty = true;
@@ -473,6 +477,24 @@ fn resolveSpawnPos(world: *const world_mod.World, spawn: [3]f32) [3]f32 {
     return spawn; // already above terrain (or chunk not generating normally)
 }
 
+/// Y coordinate just above the heightmap surface at world (wx, wz). This is the
+/// "overworld Y" — the block a player's feet occupy when standing on top of the
+/// grass cap. Used for first-ever spawn resolution so we never start from a Y
+/// embedded in rock on hilly preset spawns.
+fn surfaceFeetY(world: *const world_mod.World, wx: i32, wz: i32) i32 {
+    return world_gen.sampleHeight(wx, wz, world.gen_config) + 1;
+}
+
+/// Sync the camera position to the player's eye position. Call this any time
+/// the player is teleported outside of the gameplay-input branch (initial
+/// spawn after world loading completes, manual respawn, void-death respawn) so
+/// the rendered view follows the player on the very next frame instead of
+/// lagging behind until first input.
+fn syncCameraToPlayer() void {
+    const eye = state.player.eyePos();
+    state.camera.position = Vec3.init(eye[0], eye[1], eye[2]);
+}
+
 /// Teleport player to the first 1×2 air column at-or-above the current spawn_point.
 /// This is the anti-griefing respawn: if someone places a block on spawn, the next
 /// respawn finds the next clear Y slot instead of embedding the player in rock.
@@ -481,6 +503,7 @@ fn doRespawn() void {
     state.player.feet_pos = resolved;
     state.player.velocity = .{ 0, 0, 0 };
     state.player.on_ground = false;
+    syncCameraToPlayer();
     std.log.info("Respawned at ({d:.1}, {d:.1}, {d:.1})", .{
         resolved[0], resolved[1], resolved[2],
     });
@@ -529,14 +552,53 @@ fn voxelTick(ctx: *sw.Context) !void {
         const bz: i32 = @intFromFloat(@floor(state.spawn_point[2]));
         if (state.world.getChunkAtBlock(bx, bz)) |lc| {
             if (!lc.mesh_dirty) {
-                // Spawn chunk meshed — resolve final spawn position and lock it in.
+                // First-ever spawn this session: reset spawn Y to the heightmap
+                // surface ("overworld Y") so we don't even attempt to start from
+                // a Y embedded in rock on hilly worlds. The default spawn_point Y
+                // (set in voxelInit) is a placeholder; the real Y is decided here,
+                // once we know the chunk is generated and we can sample the
+                // heightmap. Subsequent respawns reuse the stored spawn_point and
+                // only scan upward via resolveSpawnPos if the slot is blocked.
+                if (!state.spawn_resolved) {
+                    const surf = surfaceFeetY(&state.world, bx, bz);
+                    state.spawn_point[1] = @as(f32, @floatFromInt(surf));
+                    std.log.info("First-spawn: heightmap surface feet Y={} at ({},{})", .{
+                        surf, bx, bz,
+                    });
+                }
+
+                // Resolve a 1×2 air column at-or-above spawn_point. With a
+                // heightmap-based first-spawn Y this is normally a no-op (the
+                // grass-cap-plus-one IS already a 2-block air column). For
+                // respawns it does the upward anti-griefing scan.
                 const resolved = resolveSpawnPos(&state.world, state.spawn_point);
+
+                // Safety net: never un-gate the loading screen with the player
+                // still embedded in solid blocks. resolveSpawnPos guarantees a
+                // 1×2 air column when called against a generated chunk; assert
+                // it explicitly so any future regression panics here instead of
+                // dumping the user inside rock.
+                const fbx: i32 = @intFromFloat(@floor(resolved[0]));
+                const fby: i32 = @intFromFloat(@floor(resolved[1]));
+                const fbz: i32 = @intFromFloat(@floor(resolved[2]));
+                std.debug.assert(state.world.getBlock(fbx, fby, fbz) == .air);
+                std.debug.assert(state.world.getBlock(fbx, fby + 1, fbz) == .air);
+
                 state.player.feet_pos = resolved;
                 state.player.velocity = .{ 0, 0, 0 };
                 state.player.on_ground = false;
                 state.spawn_point = resolved; // permanent — first-spawn locks XYZ
                 state.spawn_resolved = true;
                 state.world_loading = false;
+
+                // Sync the camera to the new player eye. Without this, the
+                // camera stays at its voxelInit position (eye derived from the
+                // pre-resolution feet at y=64) until the user clicks to capture
+                // the mouse — which on hilly terrain means the camera spends
+                // those first frames buried inside rock at (24, 65.6, 20) and
+                // the user appears to "spawn inside rock until first input".
+                syncCameraToPlayer();
+
                 std.log.info("World ready — spawned at ({d:.1}, {d:.1}, {d:.1})", .{
                     resolved[0], resolved[1], resolved[2],
                 });
@@ -818,9 +880,13 @@ fn voxelTick(ctx: *sw.Context) !void {
                         const lbz = bz - lcz * chunk_mod.CHUNK_W;
                         const t_incr0 = std.time.nanoTimestamp();
                         lc.mesh.updateForBlockChange(
-                            &lc.chunk, lbx, by, lbz,
+                            &lc.chunk,
+                            lbx,
+                            by,
+                            lbz,
                             cam_pos_arr,
-                            lc.worldX(), lc.worldZ(),
+                            lc.worldX(),
+                            lc.worldZ(),
                             state.world.asBlockGetter(),
                         ) catch |err| {
                             std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
@@ -852,9 +918,13 @@ fn voxelTick(ctx: *sw.Context) !void {
                         const lpz = pz - lcz * chunk_mod.CHUNK_W;
                         const t_incr0 = std.time.nanoTimestamp();
                         lc.mesh.updateForBlockChange(
-                            &lc.chunk, lpx, py, lpz,
+                            &lc.chunk,
+                            lpx,
+                            py,
+                            lpz,
                             cam_pos_arr2,
-                            lc.worldX(), lc.worldZ(),
+                            lc.worldX(),
+                            lc.worldZ(),
                             state.world.asBlockGetter(),
                         ) catch |err| {
                             std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
@@ -1140,7 +1210,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     // Fog distances derived from render distance so fog always matches the loaded world.
     const render_dist_blocks: f32 = @as(f32, @floatFromInt(world_mod.RENDER_DISTANCE)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
     const fog_start: f32 = render_dist_blocks * 0.50;
-    const fog_end: f32   = render_dist_blocks * 0.85;
+    const fog_end: f32 = render_dist_blocks * 0.85;
 
     const uniforms = [_]f32{
         // view_proj (16 floats)
@@ -1668,11 +1738,11 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     const voxel_vbl = sw.gpu_types.VertexBufferLayout{
         .array_stride = @sizeOf(VoxelVertex),
         .attributes = &[_]sw.gpu_types.VertexAttribute{
-            .{ .format = .float32x3, .offset = 0,  .shader_location = 0 }, // pos
+            .{ .format = .float32x3, .offset = 0, .shader_location = 0 }, // pos
             .{ .format = .float32x3, .offset = 12, .shader_location = 1 }, // normal
-            .{ .format = .uint32,    .offset = 24, .shader_location = 2 }, // block_type
+            .{ .format = .uint32, .offset = 24, .shader_location = 2 }, // block_type
             .{ .format = .float32x2, .offset = 28, .shader_location = 3 }, // uv
-            .{ .format = .float32,   .offset = 36, .shader_location = 4 }, // ao
+            .{ .format = .float32, .offset = 36, .shader_location = 4 }, // ao
         },
     };
 
