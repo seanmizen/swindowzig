@@ -273,7 +273,24 @@ pub const World = struct {
         return self.chunks.get(.{ .cx = chunkCoordOf(wx), .cz = chunkCoordOf(wz) });
     }
 
+    /// Get the skylight at world-space coordinates. Returns MAX_SKYLIGHT for
+    /// any cell above the world top (so faces under the open sky stay bright)
+    /// and 0 for unloaded chunks (treats the unknown as fully shadowed —
+    /// strictly an artifact at the loaded-region boundary, not visible during
+    /// normal play because the loading ring extends well past the camera).
+    pub fn getSkylight(self: *const World, wx: i32, wy: i32, wz: i32) u8 {
+        if (wy >= chunk_mod.CHUNK_H) return chunk_mod.MAX_SKYLIGHT;
+        const cx = chunkCoordOf(wx);
+        const cz = chunkCoordOf(wz);
+        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return 0;
+        const lx = wx - cx * chunk_mod.CHUNK_W;
+        const lz = wz - cz * chunk_mod.CHUNK_W;
+        return lc.chunk.getSkylight(lx, wy, lz);
+    }
+
     /// Returns a BlockGetter backed by this World (queries world coords).
+    /// Implements both `getBlock` (for solidity / face culling / physics) and
+    /// `getSkylight` (for the mesher's per-vertex skylight sampling).
     pub fn asBlockGetter(self: *const World) chunk_mod.BlockGetter {
         return .{
             .ctx = self,
@@ -282,6 +299,11 @@ pub const World = struct {
                     return @as(*const World, @ptrCast(@alignCast(ctx))).getBlock(x, y, z);
                 }
             }.get,
+            .getSkylightFn = struct {
+                fn getSky(ctx: *const anyopaque, x: i32, y: i32, z: i32) u8 {
+                    return @as(*const World, @ptrCast(@alignCast(ctx))).getSkylight(x, y, z);
+                }
+            }.getSky,
         };
     }
 };

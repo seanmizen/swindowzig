@@ -7,6 +7,7 @@ const BlockGetter = chunk_mod.BlockGetter;
 const CHUNK_W = chunk_mod.CHUNK_W;
 const CHUNK_H = chunk_mod.CHUNK_H;
 pub const AOStrategy = gpu_mod.AOStrategy;
+pub const LightingMode = gpu_mod.LightingMode;
 
 const DEBUG = false; // Enable for mesh generation debug logging
 
@@ -17,7 +18,8 @@ pub const VoxelVertex = extern struct {
     block_type: u32,   // offset 24
     uv: [2]f32,        // offset 28
     ao: f32 = 1.0,     // offset 36 — ambient occlusion brightness 0..1
-    _padding: [2]f32 = [_]f32{0} ** 2, // offset 40, pad to 48 bytes (16-byte aligned)
+    skylight: f32 = 1.0, // offset 40 — sky brightness 0..1 (0 = pitch cave, 1 = open sky)
+    _padding: [1]f32 = [_]f32{0}, // offset 44, pad to 48 bytes (16-byte aligned)
 };
 
 const SortEntry = struct { idx: usize, dist: f32 };
@@ -207,6 +209,7 @@ pub const Mesh = struct {
         world_oz: i32,
         getter: BlockGetter,
         ao_strategy: AOStrategy,
+        lighting_mode: LightingMode,
     ) !void {
         const offsets = [7][3]i32{
             .{ 0, 0, 0 },
@@ -309,6 +312,7 @@ pub const Mesh = struct {
                         world_ox,
                         world_oz,
                         ao_strategy,
+                        lighting_mode,
                     );
                 }
             }
@@ -800,6 +804,156 @@ fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, w
     };
 }
 
+// ---------------------------------------------------------------------------
+// Skylight sampling
+// ---------------------------------------------------------------------------
+
+/// Read the skylight value at world (wx, wy, wz).
+/// Fast path: if (wx, wy, wz) is inside the chunk being meshed, read its
+/// skylight grid directly. Slow path: query the world via the getter so the
+/// sample crosses chunk boundaries cleanly. Phase 1 has no cross-chunk light
+/// propagation, but each chunk independently flood-fills its own air, so
+/// adjacent chunks have correct skylight for cells that don't depend on a
+/// neighbour's light path. The visible artifact is limited to caves whose
+/// brightest light source is on the OTHER side of a chunk seam.
+fn skylightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32) u8 {
+    const lx = wx - world_ox;
+    const lz = wz - world_oz;
+    if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
+        return chunk.skylight[@intCast(lx)][@intCast(wy)][@intCast(lz)];
+    }
+    return getter.getSkylight(wx, wy, wz);
+}
+
+/// Per-vertex skylight brightness for a face.
+///
+/// For each of the 4 vertices, average the skylight of the 4 air cells
+/// adjacent to the vertex on the outward side of the face. This is
+/// structurally identical to how `computeFaceAOClassic` averages 3
+/// neighbours per vertex; here we average 4 to get a smooth analog gradient
+/// (skylight is a continuous 0..15 quantity, unlike AO which is 0/1 per
+/// neighbour). Solid cells contribute 0, which gives natural darkening when
+/// a vertex sits in a corner against a wall — exactly the look we want.
+///
+/// Returned values are in [0, 1] (skylight / MAX_SKYLIGHT).
+///
+/// When the lighting mode is `.none` the caller passes a baseline of 1.0 for
+/// every vertex by NOT calling this function — it's only invoked when
+/// `lighting_mode == .skylight`.
+fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
+    const max_f: f32 = @floatFromInt(chunk_mod.MAX_SKYLIGHT);
+    const inv4: f32 = 1.0 / 4.0;
+    return switch (face) {
+        .px => blk: {
+            // +X face at x = wx + 1. Outward column samples the slab wx+1.
+            // For each vertex (varying y, z), average the 4 cells in the
+            // 2×2 outward neighbourhood at that vertex's y/z corner.
+            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
+            const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
+            const a011 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz    );
+            const a021 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
+            const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const a022 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            // Vertex order matches addQuad's .px branch: (y, z) → (0,0)(1,0)(1,1)(0,1).
+            const v0: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
+            const v1: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
+            const v2: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
+            const v3: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .nx => blk: {
+            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
+            const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
+            const a011 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz    );
+            const a021 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
+            const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
+            const a022 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            // Vertex order matches addQuad's .nx branch: (y, z) → (0,1)(1,1)(1,0)(0,0).
+            const v0: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
+            const v1: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
+            const v2: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
+            const v3: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .py => blk: {
+            // +Y face at y = wy + 1. Outward slab is wy + 1.
+            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz    );
+            const a101 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz    );
+            const a201 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz    );
+            const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const a202 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            // Vertex order matches addQuad's .py branch: (x, z) → (0,0)(0,1)(1,1)(1,0).
+            const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
+            const v1: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
+            const v2: f32 = @floatFromInt(@as(u32, a101) + a201 + a102 + a202);
+            const v3: f32 = @floatFromInt(@as(u32, a100) + a200 + a101 + a201);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .ny => blk: {
+            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
+            const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz    );
+            const a101 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz    );
+            const a201 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz    );
+            const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const a202 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            // Vertex order matches addQuad's .ny branch: (x, z) → (0,1)(0,0)(1,0)(1,1).
+            const v0: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
+            const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
+            const v2: f32 = @floatFromInt(@as(u32, a100) + a200 + a101 + a201);
+            const v3: f32 = @floatFromInt(@as(u32, a101) + a201 + a102 + a202);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .pz => blk: {
+            // +Z face at z = wz + 1. Outward slab is wz + 1.
+            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz + 1);
+            const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz + 1);
+            const a110 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy,     wz + 1);
+            const a210 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz + 1);
+            const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz + 1);
+            const a220 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            // Vertex order matches addQuad's .pz branch: (x, y) → (0,0)(1,0)(1,1)(0,1).
+            const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
+            const v1: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
+            const v2: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
+            const v3: f32 = @floatFromInt(@as(u32, a010) + a110 + a020 + a120);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+        .nz => blk: {
+            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy - 1, wz - 1);
+            const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy,     wz - 1);
+            const a110 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy,     wz - 1);
+            const a210 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy,     wz - 1);
+            const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx,     wy + 1, wz - 1);
+            const a220 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            // Vertex order matches addQuad's .nz branch: (x, y) → (1,0)(0,0)(0,1)(1,1).
+            const v0: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
+            const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
+            const v2: f32 = @floatFromInt(@as(u32, a010) + a110 + a020 + a120);
+            const v3: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
+            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
+        },
+    };
+}
+
 /// Add a quad face to the mesh, recording its owning block via block_idx.
 /// highlight: initial highlight intensity (255 = freshly rebuilt, 0 = normal).
 fn addQuad(
@@ -816,6 +970,7 @@ fn addQuad(
     world_ox: i32,
     world_oz: i32,
     ao_strategy: AOStrategy,
+    lighting_mode: LightingMode,
 ) !void {
     const base_idx: u32 = @intCast(mesh.vertices.items.len);
     const normal = face_normals[@intFromEnum(face)];
@@ -830,43 +985,50 @@ fn addQuad(
     const wz: i32 = @intFromFloat(z);
     const ao = computeFaceAOForStrategy(chunk, getter, world_ox, world_oz, wx, wy, wz, face, ao_strategy);
 
+    // Per-vertex skylight 0..1. When lighting_mode == .none we hand every
+    // vertex 1.0 so the shader's sky channel collapses to a no-op multiply.
+    const sky: [4]f32 = switch (lighting_mode) {
+        .none => .{ 1.0, 1.0, 1.0, 1.0 },
+        .skylight => computeFaceSkylight(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
+    };
+
     // Define quad vertices based on face direction
     const verts = switch (face) {
         .px => [_]VoxelVertex{ // +X face
-            .{ .pos = .{ x + 1, y,     z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
-            .{ .pos = .{ x + 1, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1] },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
-            .{ .pos = .{ x + 1, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3] },
+            .{ .pos = .{ x + 1, y,     z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
+            .{ .pos = .{ x + 1, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1] },
+            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
+            .{ .pos = .{ x + 1, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3] },
         },
         .nx => [_]VoxelVertex{ // -X face
-            .{ .pos = .{ x, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
-            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1] },
-            .{ .pos = .{ x, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
-            .{ .pos = .{ x, y,     z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3] },
+            .{ .pos = .{ x, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
+            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1] },
+            .{ .pos = .{ x, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
+            .{ .pos = .{ x, y,     z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3] },
         },
         .py => [_]VoxelVertex{ // +Y face (CCW from above: +Y normal)
-            .{ .pos = .{ x,     y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
-            .{ .pos = .{ x,     y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1] },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
-            .{ .pos = .{ x + 1, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3] },
+            .{ .pos = .{ x,     y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
+            .{ .pos = .{ x,     y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1] },
+            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
+            .{ .pos = .{ x + 1, y + 1, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3] },
         },
         .ny => [_]VoxelVertex{ // -Y face (CCW from below: -Y normal)
-            .{ .pos = .{ x,     y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
-            .{ .pos = .{ x,     y, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1] },
-            .{ .pos = .{ x + 1, y, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
-            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3] },
+            .{ .pos = .{ x,     y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
+            .{ .pos = .{ x,     y, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1] },
+            .{ .pos = .{ x + 1, y, z     }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
+            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3] },
         },
         .pz => [_]VoxelVertex{ // +Z face (CCW from front: +Z normal)
-            .{ .pos = .{ x,     y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
-            .{ .pos = .{ x + 1, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1] },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
-            .{ .pos = .{ x,     y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3] },
+            .{ .pos = .{ x,     y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
+            .{ .pos = .{ x + 1, y,     z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1], .skylight = sky[1] },
+            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
+            .{ .pos = .{ x,     y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3], .skylight = sky[3] },
         },
         .nz => [_]VoxelVertex{ // -Z face (CCW from back: -Z normal)
-            .{ .pos = .{ x + 1, y,     z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0] },
-            .{ .pos = .{ x,     y,     z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1] },
-            .{ .pos = .{ x,     y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2] },
-            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3] },
+            .{ .pos = .{ x + 1, y,     z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0] },
+            .{ .pos = .{ x,     y,     z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1], .skylight = sky[1] },
+            .{ .pos = .{ x,     y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2] },
+            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3], .skylight = sky[3] },
         },
     };
 
@@ -907,7 +1069,7 @@ fn addQuad(
 /// and no shader switch will recover it. The render loop already remeshes on
 /// `mesh_dirty`; setting that flag on every chunk after a strategy change is
 /// the entry point.
-pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i32, getter: BlockGetter, ao_strategy: AOStrategy) !void {
+pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i32, getter: BlockGetter, ao_strategy: AOStrategy, lighting_mode: LightingMode) !void {
     mesh.clear();
 
     var x: i32 = 0;
@@ -938,6 +1100,7 @@ pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i
                             world_ox,
                             world_oz,
                             ao_strategy,
+                            lighting_mode,
                         );
                     }
                 }

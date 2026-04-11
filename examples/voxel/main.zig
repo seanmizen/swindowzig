@@ -197,14 +197,15 @@ const MenuScreen = enum { main, settings, exit_confirm };
 
 // Per-screen entry counts. Kept here so nav wraparound has a single source of truth.
 const MENU_MAIN_COUNT: u8 = 3;
-const MENU_SETTINGS_COUNT: u8 = 4;
+const MENU_SETTINGS_COUNT: u8 = 5;
 const MENU_EXIT_COUNT: u8 = 2;
 
 // Settings entry indices (matches the rendered order).
 const SETTINGS_IDX_AA: u8 = 0;
 const SETTINGS_IDX_AO: u8 = 1;
-const SETTINGS_IDX_RENDER_DIST: u8 = 2;
-const SETTINGS_IDX_BACK: u8 = 3;
+const SETTINGS_IDX_LIGHTING: u8 = 2;
+const SETTINGS_IDX_RENDER_DIST: u8 = 3;
+const SETTINGS_IDX_BACK: u8 = 4;
 
 fn menuEntryCount(screen: MenuScreen) u8 {
     return switch (screen) {
@@ -259,6 +260,22 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             };
             state.ao_strategy = next_ao;
             std.log.info("Settings: AO Strategy -> {s} (applies on next chunk remesh)", .{@tagName(next_ao)});
+        },
+        SETTINGS_IDX_LIGHTING => {
+            // Two-state toggle today (none ↔ skylight). dir is implicitly
+            // ignored here — we flip on every press, same as a checkbox.
+            // Mark every loaded chunk dirty so the new mode applies live
+            // (skylight is baked per-vertex at mesh time, same as AO).
+            const next_mode: gpu_mod.LightingMode = switch (state.lighting_mode) {
+                .none => .skylight,
+                .skylight => .none,
+            };
+            state.lighting_mode = next_mode;
+            var it = state.world.chunks.valueIterator();
+            while (it.next()) |lc_ptr| {
+                lc_ptr.*.mesh_dirty = true;
+            }
+            std.log.info("Settings: Lighting -> {s} (every loaded chunk marked dirty)", .{@tagName(next_mode)});
         },
         SETTINGS_IDX_RENDER_DIST => {
             const min_rd: i32 = 1;
@@ -343,6 +360,12 @@ const State = struct {
     /// menu reads/writes this same field; changing it at runtime requires marking
     /// every loaded chunk's mesh dirty so they get remeshed with the new sampler.
     ao_strategy: gpu_mod.AOStrategy = .classic,
+    /// World-lighting mode parsed from --lighting=<none|skylight>. Default:
+    /// skylight (caves are dark). `.none` is the regression-test baseline that
+    /// makes every face fully lit by sky regardless of how enclosed it is.
+    /// Mutating this at runtime requires `mesh_dirty = true` on every loaded
+    /// chunk because skylight is baked per-vertex at mesh time, same as AO.
+    lighting_mode: gpu_mod.LightingMode = .skylight,
     /// --dump-frame=<path>: capture first rendered frame to a PPM file then exit.
     dump_frame_path: ?[]const u8 = null,
     dump_frame_done: bool = false,
@@ -429,6 +452,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.msaa_config = .{ .method = .msaa, .msaa_samples = 4 };
     // Default AO strategy: classic (matches behaviour pre-strategy-enum).
     state.ao_strategy = .classic;
+    // Default lighting: skylight (caves dark). `--lighting=none` overrides.
+    state.lighting_mode = .skylight;
     state.dump_frame_path = null;
     state.dump_frame_done = false;
 
@@ -504,11 +529,23 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.process.exit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--lighting=")) {
+            const val = arg["--lighting=".len..];
+            if (std.mem.eql(u8, val, "none")) {
+                state.lighting_mode = .none;
+            } else if (std.mem.eql(u8, val, "skylight")) {
+                state.lighting_mode = .skylight;
+            } else {
+                std.log.err("--lighting: invalid value '{s}'. Accepted: none, skylight", .{val});
+                std.process.exit(1);
+            }
+        }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={}", .{
         @tagName(state.msaa_config.method), state.msaa_config.msaa_samples,
     });
     std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
+    std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
 
     // Initialize world with the selected preset (deferred until here so --world= works).
@@ -598,6 +635,7 @@ fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, c
             nb_lc.worldZ(),
             world.asBlockGetter(),
             state.ao_strategy,
+            state.lighting_mode,
         ) catch {
             nb_lc.mesh_dirty = true;
         };
@@ -657,7 +695,7 @@ fn syncCameraToPlayer() void {
 /// Running cost: bursts through PREGEN_CHUNKS_PER_TICK generations and
 /// PREGEN_MESH_GENS_PER_TICK mesh builds per call. Caller ticks this until it
 /// returns true, keeping the loading screen animated between ticks.
-fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy) !bool {
+fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy, lighting_mode: gpu_mod.LightingMode) !bool {
     const R = world_mod.PREGEN_RADIUS;
 
     // Pass 1 — generate every chunk inside the (2R+1)^2 outer square that is
@@ -702,6 +740,7 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
                 lc.worldZ(),
                 world.asBlockGetter(),
                 ao_strategy,
+                lighting_mode,
             ) catch |err| {
                 std.log.err("[PREGEN] mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
@@ -752,7 +791,7 @@ fn voxelTick(ctx: *sw.Context) !void {
         const spawn_cx = world_mod.chunkCoordOf(spawn_bx);
         const spawn_cz = world_mod.chunkCoordOf(spawn_bz);
 
-        const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy) catch |err| blk: {
+        const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy, state.lighting_mode) catch |err| blk: {
             std.log.err("Pregen step failed: {}", .{err});
             break :blk false;
         };
@@ -839,6 +878,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 lc.worldZ(),
                 state.world.asBlockGetter(),
                 state.ao_strategy,
+                state.lighting_mode,
             ) catch |err| {
                 std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
@@ -1025,6 +1065,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     // workflow works on keyboards without arrow keys.
                     SETTINGS_IDX_AA => cycleSettingsValue(SETTINGS_IDX_AA, 1),
                     SETTINGS_IDX_AO => cycleSettingsValue(SETTINGS_IDX_AO, 1),
+                    SETTINGS_IDX_LIGHTING => cycleSettingsValue(SETTINGS_IDX_LIGHTING, 1),
                     SETTINGS_IDX_RENDER_DIST => cycleSettingsValue(SETTINGS_IDX_RENDER_DIST, 1),
                     else => {},
                 },
@@ -1178,6 +1219,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                             lc.worldZ(),
                             state.world.asBlockGetter(),
                             state.ao_strategy,
+                            state.lighting_mode,
                         ) catch |err| {
                             std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
                             lc.mesh_dirty = true;
@@ -1217,6 +1259,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                             lc.worldZ(),
                             state.world.asBlockGetter(),
                             state.ao_strategy,
+                            state.lighting_mode,
                         ) catch |err| {
                             std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
                             lc.mesh_dirty = true;
@@ -1808,6 +1851,11 @@ fn voxelRender(ctx: *sw.Context) !void {
                         const s = std.fmt.bufPrint(&entry_buf, "AO Strategy: {s}", .{ao_label}) catch "AO Strategy: ?";
                         break :blk s;
                     },
+                    SETTINGS_IDX_LIGHTING => blk: {
+                        const light_label = @tagName(state.lighting_mode);
+                        const s = std.fmt.bufPrint(&entry_buf, "Lighting: {s}", .{light_label}) catch "Lighting: ?";
+                        break :blk s;
+                    },
                     SETTINGS_IDX_RENDER_DIST => blk: {
                         const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {} (no live effect)", .{state.render_distance_stub}) catch "Render Distance: ?";
                         break :blk s;
@@ -2141,6 +2189,7 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             .{ .format = .uint32, .offset = 24, .shader_location = 2 }, // block_type
             .{ .format = .float32x2, .offset = 28, .shader_location = 3 }, // uv
             .{ .format = .float32, .offset = 36, .shader_location = 4 }, // ao
+            .{ .format = .float32, .offset = 40, .shader_location = 5 }, // skylight
         },
     };
 

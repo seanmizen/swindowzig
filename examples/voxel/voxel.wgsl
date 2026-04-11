@@ -18,6 +18,7 @@ struct VertexInput {
     @location(2) block_type: u32,
     @location(3) uv: vec2<f32>,
     @location(4) ao: f32,
+    @location(5) skylight: f32,
 };
 
 struct VertexOutput {
@@ -29,6 +30,7 @@ struct VertexOutput {
     @location(4) highlight: f32,
     @location(5) uv: vec2<f32>,
     @location(6) ao: f32,
+    @location(7) skylight: f32,
 };
 
 // Block type colors
@@ -92,6 +94,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.alpha = select(1.0, 0.2, block_type == 100u || block_type == 101u || block_type == 102u);
     out.uv = in.uv;
     out.ao = in.ao;
+    out.skylight = in.skylight;
     return out;
 }
 
@@ -151,8 +154,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Ambient occlusion: map 0..1 → 0.55..1.0 (raised floor reduces harsh MSAA blends)
     let ao_brightness = 0.55 + in.ao * 0.45;
 
+    // Skylight: per-vertex sky brightness baked at mesh time. Map 0..1 → 0.05..1.0
+    // so a fully shadowed cave wall is dim (≈5%) but not literally black —
+    // a 0.0 floor would make caves unplayable until block-light lands. The
+    // 0.05 floor matches vanilla Minecraft's "minimum brightness" intuition.
+    let sky_brightness = 0.05 + in.skylight * 0.95;
+
     // GPU debug: mix in orange tint for freshly rebuilt quads
-    let base = in.color * brightness * texel_brightness * ao_brightness;
+    let base = in.color * brightness * texel_brightness * ao_brightness * sky_brightness;
     let highlighted = mix(base, vec3<f32>(1.0, 0.5, 0.1), in.highlight * 0.6);
 
     // Distance fog: fade to sky colour before the render distance cutoff.

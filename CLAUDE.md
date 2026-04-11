@@ -161,6 +161,7 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 | `--msaa=N` | MSAA sample count. Accepted: `none`/`0` (no AA), `1`, `2`, `4` (default), `8`. The `bgra8unorm` surface format supports [1, 2, 4] on native and [1, 4] on WebGPU; values outside that range are clamped (e.g. `--msaa=8` → 4×). |
 | `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (default — per-vertex Mojang face-plane AO), `moore` (extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
+| `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation; caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. See `examples/voxel/docs/lighting.md` for the algorithm and the phase-1 known limitations (no cross-chunk seam fixing, no relight on dig). |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish (so MSAA comparison runs capture the same deterministic state). |
 
 ---
@@ -204,6 +205,12 @@ TAS scripts for regression live under `examples/voxel/`:
   (~0.7% of frame, max delta ~8) because the shaft is small; on the hilly
   default world Moore differs from classic across ~70% of pixels with a
   mean channel delta of ~5/255 — that's the "more grounded" look.
+- `tests/cave_skylight.tas` — flatland 1×6×1 shaft, used to verify
+  `--lighting=none|skylight` darkens the dug interior. Baselines:
+  flatland → 10.65% pixels differ, mean Δ 3.91/255, max Δ 105/255 (the
+  affected pixels are exactly the cave interior; sky region unchanged).
+  Hilly → 97.5% pixels differ, mean Δ 19.78/255, max Δ 105/255 (almost
+  every face shifts because hilly terrain has overhangs everywhere).
 
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
 block at the top documenting the purpose, usage, and baseline numbers.
@@ -216,6 +223,15 @@ Theory (MSAA vs FXAA for voxels, olive-edge explanation, FXAA impl architecture,
 pixel-diff baselines): [`docs/antialiasing.md`](docs/antialiasing.md).
 Regenerating the diffs / refreshing the doc's embedded PNGs:
 `./examples/voxel/tests/aa_regression.sh [--output-dir docs/assets]`.
+
+---
+
+## Voxel Demo — Lighting
+
+Why caves are dark: per-chunk skylight propagation, baked per-vertex at mesh
+time, multiplied with AO and direct light in the shader. Design + algorithm +
+phase-1 limitations (no cross-chunk seams, no relight on dig):
+[`examples/voxel/docs/lighting.md`](examples/voxel/docs/lighting.md).
 
 ---
 

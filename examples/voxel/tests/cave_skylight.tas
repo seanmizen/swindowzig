@@ -1,0 +1,62 @@
+# cave_skylight.tas — Skylight regression on a flatland deep shaft.
+#
+# Purpose: dig a 1×6×1 vertical shaft into flat terrain so the lower
+# interior wall faces sit beneath several layers of seed cells. Skylight
+# reaches the top of the hole at level 15 and decays as the BFS bends
+# horizontally — but on a 1×1 column the column-seed pass alone gives every
+# air cell in the hole skylight = 15 (no horizontal bend needed). The cave
+# darkness comes from the wall faces themselves: the air cells INSIDE the
+# wall (at x±1, z±1) are not part of the dug shaft and therefore never get
+# light, so the per-vertex skylight averaging produces a strong gradient
+# from the rim down.
+#
+# Compare:
+#   --lighting=none     → baseline, every wall face fully bright
+#   --lighting=skylight → wall faces darken progressively with depth
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --world=flatland --lighting=none --aa=none \
+#     --tas examples/voxel/tests/cave_skylight.tas \
+#     --dump-frame=/tmp/cave_skylight_none.ppm
+#   ./zig-out/bin/voxel --world=flatland --lighting=skylight --aa=none \
+#     --tas examples/voxel/tests/cave_skylight.tas \
+#     --dump-frame=/tmp/cave_skylight_on.ppm
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look down so the flat grass surface is in view. ---
+3 mouse_move 0 200
+
+# --- Dig six blocks deep (1×6×1 vertical shaft).
+#     One tick between each dig so the press edge fires cleanly. ---
+5  mouse_down left
+6  mouse_up left
+8  mouse_down left
+9  mouse_up left
+11 mouse_down left
+12 mouse_up left
+14 mouse_down left
+15 mouse_up left
+17 mouse_down left
+18 mouse_up left
+20 mouse_down left
+21 mouse_up left
+
+# --- Tilt up slightly so we see both the hole rim and a few cells of wall. ---
+24 mouse_move 0 -40
+
+# --- Pan so the diagonal interior is exposed. ---
+26 mouse_move 6 0
+27 mouse_move 6 0
+28 mouse_move 6 0
+29 mouse_move 6 0
+30 mouse_move 6 0
+31 mouse_move 6 0
+
+# Hold steady so --dump-frame lands on a stable view.
+35 mouse_move 0 0

@@ -519,6 +519,25 @@ pub const AOStrategy = enum {
     ssao,
 };
 
+/// World-lighting mode for the voxel mesher. Controls whether per-vertex
+/// skylight values are baked into the mesh from the chunk's `skylight` grid.
+///
+/// Implemented:
+///   - `none`     — every vertex receives full skylight (1.0). Caves stay
+///     bright. The chunk's skylight grid is still computed (cost is small)
+///     but unused at mesh time. Useful as the A baseline in regression diffs.
+///   - `skylight` — per-vertex sky brightness sampled from the air block on
+///     the outward side of each face, normalised to 0..1. Caves go dark.
+///     Default. See examples/voxel/docs/lighting.md for the full design.
+///
+/// Planned / not yet implemented (no enum slot reserved yet — block light
+/// will be a second multiplicative channel rather than a third LightingMode
+/// variant once it lands).
+pub const LightingMode = enum {
+    none,
+    skylight,
+};
+
 /// Anti-aliasing configuration for the engine renderer.
 ///
 /// Implemented:
