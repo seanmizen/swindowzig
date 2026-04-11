@@ -1,0 +1,71 @@
+# frustum_look_down.tas — Cone-cull regression for "looking straight down".
+#
+# Purpose: pitch the camera as far down as the clamp allows (≈ -89°) on a
+# flatland world, then dump a frame. The dumped frame must NOT be black —
+# the chunk the player is standing in (and its neighbours) must remain
+# visible regardless of how aggressive the cone-cull setting is.
+#
+# Why this exists: cone culling against a chunk bounding sphere only works
+# correctly if the camera-inside-bounding-sphere short-circuit fires. If the
+# short-circuit is broken, looking straight down at narrow fov drops every
+# chunk centre behind the camera and the screen goes pure sky. The 3×3
+# camera-neighbourhood safety net in `frustum.zig::keepChunk` is the second
+# line of defence — between the two, looking-straight-down on flatland
+# should always produce a frame whose mean RGB sits well clear of black.
+#
+# Tick rate: 120 Hz. Pitch sensitivity is 0.002 rad/px, starting pitch is
+# -0.3 rad. The voxel demo inverts mouse-Y in main.zig before forwarding to
+# camera.rotate, so a POSITIVE dy in this TAS pulls the pitch DOWN. A
+# +700 dy mouse_move drives pitch into the clamp at -π/2 + 0.01 (the
+# camera's hard lower limit), so this script does NOT depend on exact
+# pitch values — only on "fully looking down".
+#
+# Usage (from utils/swindowzig):
+#
+#   zig build native -Dexample=voxel
+#
+#   # Baseline — frustum off, must produce a non-black ground.
+#   ./zig-out/bin/voxel --world=flatland --aa=none \
+#     --tas examples/voxel/tests/frustum_look_down.tas \
+#     --dump-frame=/tmp/frustum_look_down_none.ppm
+#
+#   # Aggressive cone — must STILL produce a non-black ground because the
+#   # 3×3 safety net + camera-inside-bounding-sphere shortcut both fire.
+#   ./zig-out/bin/voxel --world=flatland --aa=none \
+#     --frustum=cone --frustum-fov-deg=30 \
+#     --tas examples/voxel/tests/frustum_look_down.tas \
+#     --dump-frame=/tmp/frustum_look_down_cone30.ppm
+#
+# Verification: parse the PPM P6 header, then average the body bytes.
+# A reference one-liner (Python) is:
+#
+#   python3 -c '
+#   import sys
+#   p = open(sys.argv[1], "rb").read()
+#   nl1 = p.index(b"\n"); nl2 = p.index(b"\n", nl1+1); nl3 = p.index(b"\n", nl2+1)
+#   body = p[nl3+1:]
+#   print(sum(body) / len(body))
+#   ' /tmp/frustum_look_down_cone30.ppm
+#
+# Pass criterion: mean byte value > 5 (true black ≈ 0; the flatland grass
+# top under the default sky reads ~30–60 per channel even after the painter's
+# sort, so anything above ~5 confirms terrain is visible).
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Pitch all the way down. +700 dy at 0.002 rad/px (with the inversion
+#     applied in main.zig) = -1.4 rad delta on pitch; the camera's clamp at
+#     -π/2 + 0.01 catches it. Starting pitch is -0.3 so this puts us flush
+#     against the lower clamp. ---
+3 mouse_move 0 700
+
+# --- Hold steady for several ticks so any pending mesh upload completes
+#     before --dump-frame snapshots the surface. ---
+5 mouse_move 0 0
+10 mouse_move 0 0
+15 mouse_move 0 0
+20 mouse_move 0 0
