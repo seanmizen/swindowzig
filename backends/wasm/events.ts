@@ -8,6 +8,7 @@
 
 const keysDown = new Set<number>();
 const buttonsDown = new Set<number>();
+let pointerLocked = false;
 
 export interface WasmExports {
   swindowzig_init: () => void;
@@ -80,10 +81,16 @@ export function attachEventListeners(
     wasmExports.swindowzig_event_mouse_button?.(mouseEvent.button, false);
   });
 
-  // Keyboard — prevent browser shortcuts (Cmd+D bookmark, Cmd+S save, etc.)
-  // so the game can use these key combos.
+  // Track pointer lock state — when locked, the game has focus and we
+  // block browser shortcuts. When unlocked (pause menu), browser defaults work.
+  document.addEventListener('pointerlockchange', () => {
+    pointerLocked = document.pointerLockElement === canvas;
+  });
+
+  // Keyboard — prevent browser defaults only while pointer is locked (gameplay).
+  // When the pause menu is open (pointer unlocked), browser shortcuts work normally.
   window.addEventListener('keydown', (e) => {
-    if (e.metaKey || e.ctrlKey) {
+    if (pointerLocked) {
       e.preventDefault();
     }
     const keycode = e.keyCode || e.which;

@@ -1962,7 +1962,8 @@ fn voxelTick(ctx: *sw.Context) !void {
 
     // Sync mesh loop — runs for both WASM and native-sync paths.
     // The async path handles meshing in its worker thread, so skip it there.
-    if (comptime is_wasm or !state.async_chunks_enabled or state.async_pipeline == null) {
+    const run_sync_mesh = if (comptime is_wasm) true else (!state.async_chunks_enabled or state.async_pipeline == null);
+    if (run_sync_mesh) {
         // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
         // Gated by:
         //   1. `mesh_dirty` (something asked for a rebuild),
