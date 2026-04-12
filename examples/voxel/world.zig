@@ -456,15 +456,25 @@ pub const World = struct {
     }
 
     /// Get the skylight at world-space coordinates. Returns MAX_SKYLIGHT for
-    /// any cell above the world top (so faces under the open sky stay bright)
-    /// and 0 for unloaded chunks (treats the unknown as fully shadowed —
-    /// strictly an artifact at the loaded-region boundary, not visible during
-    /// normal play because the loading ring extends well past the camera).
+    /// any cell above the world top, and also for unloaded chunks.
+    ///
+    /// Unloaded-chunk default is MAX_SKYLIGHT (not 0): the sky continues
+    /// beyond the render boundary, so treating missing neighbours as pitch-black
+    /// causes false dark seams along the outer edge of the loaded area. Vertices
+    /// at the boundary whose skylight samples fall into an unloaded chunk get
+    /// full sunlight instead of artificial shadow. Any in-chunk dimming (caves,
+    /// overhangs) only exists in *loaded* terrain and is handled by each chunk's
+    /// own skylight grid; we cannot know the state of unloaded terrain, and
+    /// "bright unknown" is far less jarring than "dark unknown".
+    ///
+    /// Note: getBlock returns .air for unloaded chunks (no false AO occlusion).
+    /// getBlockLight returns 0 for unloaded chunks (no false emitter glow).
+    /// Only skylight uses MAX_SKYLIGHT because it has a global source (the sun).
     pub fn getSkylight(self: *const World, wx: i32, wy: i32, wz: i32) u8 {
         if (wy >= chunk_mod.CHUNK_H) return chunk_mod.MAX_SKYLIGHT;
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
-        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return 0;
+        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return chunk_mod.MAX_SKYLIGHT;
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
         return lc.chunk.getSkylight(lx, wy, lz);
