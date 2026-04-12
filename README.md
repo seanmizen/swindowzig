@@ -221,6 +221,8 @@ Current:
 
 ## TODOs
 
+### Rendering bugs
+
 - [ ] **MSAA edge surface bleed-through.** 4× MSAA currently shows unwanted
   colour bleed across block-on-block silhouette edges (neighbouring surface
   colour leaks into the foreground sample). FXAA does not exhibit this.
@@ -228,10 +230,10 @@ Current:
   algorithm sort order, and whether bgra8unorm MSAA resolve is averaging
   samples from behind the silhouette. Tracked as a defect against `--aa=msaa`;
   see [`docs/antialiasing.md`](docs/antialiasing.md) for context.
-- [ ] **Headless AA regression.** `aa_regression.sh` requires a display + GPU and
-  so is not yet part of the mandatory pre-handback checklist. Resolve by
-  finding a headless GPU path (offscreen surface creation without a platform
-  window) so it can run in CI.
+- [ ] **AO shadows lookthrough.** If you're above a voxel looking down
+  diagonally, and there's a shadow on the far side, the shadowed face bleeds
+  through the roof — it appears "above" the roof on screen, when the roof
+  should be occluding it. AO compositing order bug.
 - [ ] **Camera clipping exploit.** The purple-block-view-when-inside-a-voxel
   overlay currently only fires when the camera is centrally inside a voxel.
   If the 3PV camera partially clips into a voxel (off-center), the clipped
@@ -239,21 +241,46 @@ Current:
   through walls. Seek a low-cost fix: sample the camera near-plane corners
   for occlusion, or push the camera back along the view vector until it's
   fully outside any solid block.
-- [ ] **Ambient occlusion depth.** Current per-vertex AO feels shallow —
-  likely only sampling von Neumann / face-plane neighbours. Investigate
-  Moore-neighbourhood sampling, chunk-level updates, or per-chunk light
-  propagation at distance N. Add a configurable shadow strategy (CLI flag
-  now, in-game settings menu later).
 - [ ] **FXAA over UI is blurry.** FXAA looks great on terrain and blocks but
   smears menu text and HUD glyphs. Treat UI as a separate render layer that
   isn't FXAA'd — either a second render pass after FXAA that writes UI
   directly to the swapchain, or a UI-to-texture composite. Pick whichever
   is cheaper and cleaner.
-- [ ] **Settings menu.** Expand the esc menu into Resume / Settings / Exit.
-  Settings is its own screen — the gateway for AA method, AO strategy,
-  render distance, and any future tunables currently exposed only as CLI
-  flags. Exit shows a confirm prompt. Needs a multi-screen menu state
-  machine rather than the current single-pane pause overlay.
+
+### Lighting
+
+- [ ] **Glowstone should produce light.** Block is placed and scattered in
+  world gen, but doesn't actually emit visible light into the world yet.
+  Hook into block-light BFS so nearby blocks are actually illuminated.
+- [ ] **Ambient occlusion depth.** Current per-vertex AO feels shallow —
+  likely only sampling von Neumann / face-plane neighbours. Investigate
+  Moore-neighbourhood sampling, chunk-level updates, or per-chunk light
+  propagation at distance N. Add a configurable shadow strategy (CLI flag
+  now, in-game settings menu later).
+
+### UI & settings
+
+- [ ] **Settings menu tidy-up.** Expand the esc menu into Resume / Settings /
+  Exit. Settings probably needs Game / Video / Audio tabs. Make the settings
+  items actually clickable again. Gateway for AA method, AO strategy, render
+  distance, and tunables currently buried in CLI flags. Exit shows a confirm
+  prompt. Needs a multi-screen menu state machine rather than the current
+  single-pane pause overlay.
+- [ ] **Configurable fog distance.** The current fog cutoff is too short —
+  want to go much much much further out. Expose as a settings slider (and
+  CLI flag in the interim).
+- [ ] **Web: cursor not visible when paused.** Even when the game is paused,
+  the cursor stays hidden in the web build. Should be visible whenever the
+  mouse isn't captured.
+
+### World gen & simulation
+
+- [ ] **Water.** Spawn rivers, then let flow work. This introduces the concept
+  of simulation — if outside simulation distance, water should not flow.
+- [ ] **Biomes.** Hills, grassland, ocean, river (maybe). Do it the Minecraft
+  way — biome map first, then terrain shaped per-biome.
+- [ ] **Caves.** Underground cave systems. Carver pass after heightmap gen.
+- [ ] **Trees.** Just Oak for now. Place at world gen time above surface.
 - [ ] **First-spawn flow in non-flatland worlds.** Today we spawn into rock
   until first input nudges the player free. Fix the order: (a) generate at
   least the first chunk while showing the existing purple loading screen +
@@ -261,6 +288,13 @@ Current:
   resets to the overworld Y. Subsequent spawns keep the stored location
   unless it's blocked — if blocked, scan upward for the lowest available
   1×1×2 air column above the stored spawn point.
+
+### CI / infra
+
+- [ ] **Headless AA regression.** `aa_regression.sh` requires a display + GPU and
+  so is not yet part of the mandatory pre-handback checklist. Resolve by
+  finding a headless GPU path (offscreen surface creation without a platform
+  window) so it can run in CI.
 
 ---
 
