@@ -3,6 +3,14 @@
 import { watch } from 'node:fs';
 import { serve, spawn } from 'bun';
 
+// Parse --example flag from CLI args (e.g. bun dev-server.ts --example voxel)
+const exampleArg = (() => {
+  const idx = process.argv.indexOf('--example');
+  return idx !== -1 && process.argv[idx + 1]
+    ? process.argv[idx + 1]
+    : undefined;
+})();
+
 // Watch Zig source files and rebuild on change
 let buildInProgress = false;
 let buildQueued = false;
@@ -17,7 +25,11 @@ async function rebuildZig() {
   console.log('\n🔨 Rebuilding Zig...');
 
   const start = performance.now();
-  const proc = spawn(['zig', 'build', 'web'], {
+  const buildArgs = ['zig', 'build', 'web'];
+  if (exampleArg) {
+    buildArgs.push(`-Dexample=${exampleArg}`, '-Doptimize=ReleaseFast');
+  }
+  const proc = spawn(buildArgs, {
     cwd: process.cwd(),
     stdout: 'inherit',
     stderr: 'inherit',

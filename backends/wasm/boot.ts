@@ -38,7 +38,7 @@ async function main() {
   window.addEventListener('resize', resizeCanvas);
 
   // Load WASM
-  const response = await fetch('../../zig-out/bin/app.wasm');
+  const response = await fetch('/app.wasm');
   const wasmBytes = await response.arrayBuffer();
 
   // Initialize WebGPU
