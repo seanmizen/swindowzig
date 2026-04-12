@@ -63,6 +63,15 @@ async function main() {
   const imports = {
     env: {
       jsGetTime: () => performance.now(),
+      jsSetPointerLock: (lock: number) => {
+        if (lock) {
+          canvas.requestPointerLock();
+        } else {
+          if (document.pointerLockElement === canvas) {
+            document.exitPointerLock();
+          }
+        }
+      },
       jsLog: (ptr: number, len: number) => {
         console.log('WASM log:', ptr, len);
       },

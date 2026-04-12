@@ -87,8 +87,8 @@ pub const WasmBackend = struct {
         return null;
     }
 
-    fn setMouseCapture(_: *anyopaque, _: bool) void {
-        // WASM: pointer lock handled via JS; no-op here
+    fn setMouseCapture(_: *anyopaque, captured: bool) void {
+        jsSetPointerLock(if (captured) 1 else 0);
     }
 };
 
@@ -188,8 +188,22 @@ export fn swindowzig_event_mouse_move(x: f32, y: f32, dx: f32, dy: f32) void {
     } }, global_allocator);
 }
 
+// Map HTML5 MouseEvent.button to our MouseButton enum
+// HTML5: 0=left, 1=middle, 2=right
+// MouseButton enum: left=0, right=1, middle=2
+fn htmlButtonToMouseButton(button: u8) core.MouseButton {
+    return switch (button) {
+        0 => .left,
+        1 => .middle,
+        2 => .right,
+        3 => .x1,
+        4 => .x2,
+        else => .left,
+    };
+}
+
 export fn swindowzig_event_mouse_button(button: u8, down: bool) void {
-    const mouse_button: core.MouseButton = @enumFromInt(button);
+    const mouse_button = htmlButtonToMouseButton(button);
     pushEvent(.{ .pointer_button = .{
         .button = mouse_button,
         .down = down,
@@ -220,3 +234,4 @@ export fn swindowzig_event_key(keycode: u16, down: bool) void {
 
 // JS imports
 extern fn jsGetTime() f64;
+extern fn jsSetPointerLock(lock: u8) void;

@@ -1924,7 +1924,10 @@ fn voxelTick(ctx: *sw.Context) !void {
     const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
 
     if (comptime is_wasm) {
-        // WASM: always sync path
+        // WASM: synchronous chunk loading (async pipeline unavailable on wasm)
+        try state.world.update(&[_]world_mod.RegionAnchor{
+            .{ .position = state.player.feet_pos },
+        });
     } else if (state.async_chunks_enabled and state.async_pipeline != null) {
         // Async path: worker thread owns gen + mesh. Main thread only
         // drains results, installs them, and enqueues new work.
@@ -1955,7 +1958,11 @@ fn voxelTick(ctx: *sw.Context) !void {
                 state.gen_count +%= @intCast(gen_after - gen_before);
             }
         }
+    }
 
+    // Sync mesh loop — runs for both WASM and native-sync paths.
+    // The async path handles meshing in its worker thread, so skip it there.
+    if (comptime is_wasm or !state.async_chunks_enabled or state.async_pipeline == null) {
         // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
         // Gated by:
         //   1. `mesh_dirty` (something asked for a rebuild),

@@ -80,8 +80,12 @@ export function attachEventListeners(
     wasmExports.swindowzig_event_mouse_button?.(mouseEvent.button, false);
   });
 
-  // Keyboard
+  // Keyboard — prevent browser shortcuts (Cmd+D bookmark, Cmd+S save, etc.)
+  // so the game can use these key combos.
   window.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey) {
+      e.preventDefault();
+    }
     const keycode = e.keyCode || e.which;
     // Use keycode as the stable identifier for tracking
     keysDown.add(keycode);
