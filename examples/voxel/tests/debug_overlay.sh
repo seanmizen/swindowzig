@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# debug_overlay.sh — verify the F3-style debug overlay actually renders.
+# debug_overlay.sh — verify the F3-style debug info panel actually renders
+# when Cmd+D debug mode is on.
 #
-# Strategy: run the same TAS twice, once with --debug-overlay=on (so the
-# H-key toggle in the script flips it OFF) and once without the flag (so
-# H toggles it ON). Compare the top-left 320×320 corner of the resulting
-# PPM dumps. If the overlay rendered, the corner brightness must drop
-# noticeably (the translucent black rect alone gives ~6/255).
+# Strategy: run the same TAS twice — once with --debug=off (default) and
+# once with --debug=on. Compare the top-left 320×320 corner of the resulting
+# PPM dumps. If the panel rendered, the corner brightness must change
+# noticeably: white text (0.95, 0.95, 0.95) dominates the translucent black
+# background, so panel-on is BRIGHTER than baseline by ~5–10/255.
 #
-# Run from the swindowzig directory (or any subdir — the script cds up).
+# The keyboard HUD also paints in --debug=on, but it lives in the bottom
+# half of the screen, so it does not affect the top-left sample region.
+# Chunk borders are 3D world geometry — they show up wherever the camera
+# happens to look, but the camera in this TAS faces the default spawn
+# vista where the borders sit well below the top of the frame.
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."  # → utils/swindowzig
@@ -20,24 +25,24 @@ if [[ ! -x "$VOXEL" ]]; then
     exit 1
 fi
 
-BASELINE=/tmp/voxel_dbg_overlay_baseline.ppm
-OVERLAY=/tmp/voxel_dbg_overlay_on.ppm
+BASELINE=/tmp/voxel_dbg_panel_baseline.ppm
+PANEL=/tmp/voxel_dbg_panel_on.ppm
 
-echo "[1/2] baseline (overlay forced OFF via flag, then H toggles to OFF)"
-"$VOXEL" --debug-overlay=on --tas "$TAS" --dump-frame="$BASELINE" \
-    >/tmp/voxel_dbg_baseline.log 2>&1 || {
-        tail -20 /tmp/voxel_dbg_baseline.log
+echo "[1/2] baseline (--debug=off, no panel)"
+"$VOXEL" --debug=off --tas "$TAS" --dump-frame="$BASELINE" \
+    >/tmp/voxel_dbg_panel_baseline.log 2>&1 || {
+        tail -20 /tmp/voxel_dbg_panel_baseline.log
         exit 1
     }
 
-echo "[2/2] overlay (default OFF, H toggles to ON)"
-"$VOXEL" --tas "$TAS" --dump-frame="$OVERLAY" \
-    >/tmp/voxel_dbg_overlay.log 2>&1 || {
-        tail -20 /tmp/voxel_dbg_overlay.log
+echo "[2/2] panel (--debug=on, F3 info panel rendered)"
+"$VOXEL" --debug=on --tas "$TAS" --dump-frame="$PANEL" \
+    >/tmp/voxel_dbg_panel_on.log 2>&1 || {
+        tail -20 /tmp/voxel_dbg_panel_on.log
         exit 1
     }
 
-python3 - "$BASELINE" "$OVERLAY" <<'PY'
+python3 - "$BASELINE" "$PANEL" <<'PY'
 import sys
 
 def read_ppm(p):
@@ -72,13 +77,13 @@ def avg_corner(p, cw, ch):
     return s / n
 
 baseline = sys.argv[1]
-overlay = sys.argv[2]
+panel = sys.argv[2]
 a = avg_corner(baseline, 320, 320)
-b = avg_corner(overlay, 320, 320)
-delta = a - b  # overlay should be DARKER than baseline
-print(f"top-left avg  baseline={a:.2f}  overlay={b:.2f}  delta={delta:+.2f}")
-if delta < 1.0:
-    print("FAIL: top-left brightness delta < 1.0 — overlay did not render")
+b = avg_corner(panel, 320, 320)
+delta = b - a  # panel run should be BRIGHTER than baseline (white text wins)
+print(f"top-left avg  baseline={a:.2f}  panel={b:.2f}  delta={delta:+.2f}")
+if delta < 2.0:
+    print("FAIL: top-left brightness delta < 2.0 — F3 panel did not render")
     sys.exit(1)
-print("PASS: F3 debug overlay rendered as expected")
+print("PASS: F3 debug info panel rendered as expected")
 PY

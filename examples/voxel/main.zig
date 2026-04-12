@@ -764,24 +764,6 @@ fn voxelInit(ctx: *sw.Context) !void {
             }
             state.frustum_fov_deg = parsed;
         }
-        if (std.mem.startsWith(u8, arg, "--debug-overlay=")) {
-            // Force the F3-style debug overlay on at boot. Default is off so
-            // production runs (and the framespike regression) aren't visually
-            // contaminated. Same shape as the other engine toggles.
-            const val = std.mem.sliceTo(arg["--debug-overlay=".len..], 0);
-            if (std.mem.eql(u8, val, "on")) {
-                if (!state.game_state.isLayerActive(.debug_overlay)) {
-                    state.game_state.toggleDebugOverlay();
-                }
-            } else if (std.mem.eql(u8, val, "off")) {
-                if (state.game_state.isLayerActive(.debug_overlay)) {
-                    state.game_state.toggleDebugOverlay();
-                }
-            } else {
-                std.log.err("--debug-overlay: invalid value '{s}'. Accepted: on, off", .{val});
-                std.process.exit(1);
-            }
-        }
         if (std.mem.startsWith(u8, arg, "--place-block=")) {
             const val = arg["--place-block=".len..];
             if (std.mem.eql(u8, val, "stone")) {
@@ -863,6 +845,25 @@ fn voxelInit(ctx: *sw.Context) !void {
                 if (state.tas_step_mode) state.gpu_debug = true;
                 std.log.info("TAS replayer ready — will start after world loading completes", .{});
                 break;
+            }
+        }
+    }
+
+    // --debug=on|off final pass: parsed AFTER TAS init so it overrides the
+    // automatic `state.debug_mode = true` that TAS load forces (the keyboard
+    // HUD wants to be visible during a normal TAS run, but the
+    // debug_overlay.sh regression test needs to capture a clean baseline with
+    // debug_mode=off even when a TAS is loaded for camera determinism).
+    for (args) |arg| {
+        if (std.mem.startsWith(u8, arg, "--debug=")) {
+            const val = std.mem.sliceTo(arg["--debug=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.debug_mode = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.debug_mode = false;
+            } else {
+                std.log.err("--debug: invalid value '{s}'. Accepted: on, off", .{val});
+                std.process.exit(1);
             }
         }
     }
@@ -1358,15 +1359,6 @@ fn voxelTick(ctx: *sw.Context) !void {
                 eye[0], eye[1], eye[2], fwd[0], fwd[1], fwd[2],
             });
         }
-    }
-
-    // H — toggle the Minecraft-style F3 debug overlay. The voxel-demo CLAUDE.md
-    // forbids function keys, so we use a bare letter following the precedent
-    // of bare R for respawn. Suppressed while the pause menu is up so menu
-    // screens stay clean. CLI flag --debug-overlay=on|off sets the initial state.
-    if (input.keyPressed(.H) and !input.mods.ctrl and !input.mods.super and !input.mods.shift and !input.mods.alt and !state.game_state.isLayerActive(.pause_menu)) {
-        state.game_state.toggleDebugOverlay();
-        std.log.info("Debug overlay: {}", .{state.game_state.isLayerActive(.debug_overlay)});
     }
 
     // Cmd+S (macOS) / Ctrl+S (Windows/Linux) — set spawn point to current position (debug override)
@@ -2379,26 +2371,33 @@ fn voxelRender(ctx: *sw.Context) !void {
         drawCenteredText(&state.overlay, hint, hint_y, dim, hint_scale, overlay_w, overlay_h) catch {};
     }
 
-    // F3-style debug overlay (top-left, mirrors Minecraft's debug screen).
-    // Suppressed while the pause menu is up so menu screens stay clean.
-    // All values are O(1): drawn/culled counters from this frame's cull pass,
-    // FPS from the rolling-window sampler at the top of voxelRender, hover
-    // block from the existing per-frame raycast. Loaded chunk count is
-    // HashMap.count(). Mem estimate is constant × loaded count.
+    // F3-style debug info panel (top-left, mirrors Minecraft's debug screen).
+    // Lives under the existing Cmd+D / Ctrl+D debug mode alongside the
+    // keyboard HUD, hitbox cylinder, and chunk borders — Cmd+D IS "the
+    // debug screen". Suppressed while the pause menu is up so menu screens
+    // stay clean. CLI: --debug=on|off forces the initial state for tests.
     //
-    // Toggle: H (function-keys ban rules out F3). CLI: --debug-overlay=on|off.
-    // Font: bitmap_font.zig has only ASCII 0x20-0x5A — no lowercase rendering
+    // All values are O(1) per frame: FPS from a rolling-window sampler at
+    // the top of voxelRender, drawn/culled from this frame's cull pass,
+    // hover block from the existing per-frame raycast. Loaded count is
+    // HashMap.count(); meshed count is one bounded iterator pass.
+    //
+    // Font: scale 2.0 keeps every glyph "pixel" integer-aligned in logical
+    // space (5×7 glyph × 2 = 10×14 logical px), so the rasterizer never
+    // splits coverage across physical pixels regardless of dpi_scale —
+    // tried 1.5 first, but the resulting 7.5×10.5 quads blurred at edges.
+    // bitmap_font.zig has only ASCII 0x20-0x5A — no lowercase rendering
     // (auto-uppercased), no degree sign (uses 'D'), no brackets (uses parens).
-    if (state.game_state.isLayerActive(.debug_overlay) and !state.game_state.isLayerActive(.pause_menu)) {
-        const dbg_scale: f32 = 1.5; // smaller than menu entries (3.0) and old sidebar (2.0)
-        const dbg_line_h: f32 = (GLYPH_H + 2) * dbg_scale; // ~13.5 px per line
+    if (state.debug_mode and !state.game_state.isLayerActive(.pause_menu)) {
+        const dbg_scale: f32 = 2.0; // smaller than menu entries (3.0); integer-aligned glyph quads
+        const dbg_line_h: f32 = (GLYPH_H + 2) * dbg_scale; // 18 px per line
         const dbg_edge: f32 = 2; // 2-pixel gutter from screen edge per spec
-        const dbg_pad: f32 = 4; // inner padding inside the dark rect
+        const dbg_pad: f32 = 6; // inner padding inside the dark rect
         const dbg_text_x: f32 = dbg_edge + dbg_pad;
         const dbg_text_y0: f32 = dbg_edge + dbg_pad;
-        // Conservative fixed background: ~36 chars wide × 21 lines tall.
+        // Conservative fixed background: ~32 chars wide × 21 lines tall.
         // Avoids a two-pass measure-then-draw.
-        const dbg_bg_w: f32 = 36 * (GLYPH_W + GLYPH_GAP) * dbg_scale + dbg_pad * 2;
+        const dbg_bg_w: f32 = 32 * (GLYPH_W + GLYPH_GAP) * dbg_scale + dbg_pad * 2;
         const dbg_bg_h: f32 = 21 * dbg_line_h + dbg_pad * 2;
         const dbg_col = [4]f32{ 0.95, 0.95, 0.95, 1.0 };
 
@@ -2422,8 +2421,6 @@ fn voxelRender(ctx: *sw.Context) !void {
         // FPS — rolling-window mean from the sampler at the top of voxelRender.
         {
             const sample_count: usize = if (state.fps_window_filled) state.fps_window_ns.len else state.fps_window_idx;
-            var fps_str: []const u8 = "FPS: ?";
-            var ms_str: []const u8 = "MS: ?";
             if (sample_count > 0) {
                 var sum_ns: u64 = 0;
                 for (state.fps_window_ns[0..sample_count]) |s| sum_ns += s;
@@ -2431,26 +2428,25 @@ fn voxelRender(ctx: *sw.Context) !void {
                 if (mean_ns > 0) {
                     const fps: f64 = 1_000_000_000.0 / mean_ns;
                     const ms: f64 = mean_ns / 1_000_000.0;
-                    fps_str = std.fmt.bufPrint(&dbg_buf, "FPS: {d:.0}", .{fps}) catch "FPS: ?";
+                    const fps_str = std.fmt.bufPrint(&dbg_buf, "FPS: {d:.0}", .{fps}) catch "FPS: ?";
                     drawLine(fps_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
                     var ms_buf: [32]u8 = undefined;
-                    ms_str = std.fmt.bufPrint(&ms_buf, "MS: {d:.2}", .{ms}) catch "MS: ?";
+                    const ms_str = std.fmt.bufPrint(&ms_buf, "FRAME: {d:.2} MS", .{ms}) catch "FRAME: ? MS";
                     drawLine(ms_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
                 } else {
-                    drawLine(fps_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-                    drawLine(ms_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                    drawLine("FPS: ?", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                    drawLine("FRAME: ? MS", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
                 }
             } else {
-                drawLine(fps_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-                drawLine(ms_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                drawLine("FPS: ?", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                drawLine("FRAME: ? MS", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
             }
         }
 
         // Chunks: rendered / loaded (meshed) — `frustum_drawn` is set this
-        // frame by the cull, so we add it to `frustum_culled` to recover the
-        // total visited; loaded count is the live HashMap size. Meshed count
-        // requires a single iterator pass over the HashMap (still bounded by
-        // (2*RD+1)² ≤ 81 entries at the default render distance, so O(1)-ish).
+        // frame by the cull; loaded count is the live HashMap size. Meshed
+        // count requires a single iterator pass over the HashMap (still
+        // bounded by (2*RD+1)² ≤ 81 entries at the default render distance).
         {
             const loaded_count: u32 = @intCast(state.world.chunks.count());
             var meshed_count: u32 = 0;
@@ -2459,13 +2455,13 @@ fn voxelRender(ctx: *sw.Context) !void {
                 if (lc_ptr.*.state == .meshed) meshed_count += 1;
             }
             const rendered = state.frustum_drawn;
-            const s = std.fmt.bufPrint(&dbg_buf, "C: {}/{} ({} MESHED)", .{ rendered, loaded_count, meshed_count }) catch "C: ?";
+            const s = std.fmt.bufPrint(&dbg_buf, "CHUNKS: {}/{} ({} MESHED)", .{ rendered, loaded_count, meshed_count }) catch "CHUNKS: ?";
             drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
 
         // Render distance (compile-time constant; --render-distance is reserved).
         {
-            const s = std.fmt.bufPrint(&dbg_buf, "RD: {}", .{world_mod.RENDER_DISTANCE}) catch "RD: ?";
+            const s = std.fmt.bufPrint(&dbg_buf, "RENDER DIST: {}", .{world_mod.RENDER_DISTANCE}) catch "RENDER DIST: ?";
             drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
 
@@ -2522,11 +2518,11 @@ fn voxelRender(ctx: *sw.Context) !void {
             drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
         {
-            const s = std.fmt.bufPrint(&dbg_buf, "LIGHT: {s}", .{@tagName(state.lighting_mode)}) catch "LIGHT: ?";
+            const s = std.fmt.bufPrint(&dbg_buf, "LIGHTING: {s}", .{@tagName(state.lighting_mode)}) catch "LIGHTING: ?";
             drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
         {
-            const s = std.fmt.bufPrint(&dbg_buf, "AA: {s} ({}X)", .{ aaMethodLabel(state.msaa_config.method), state.msaa_config.msaa_samples }) catch "AA: ?";
+            const s = std.fmt.bufPrint(&dbg_buf, "ANTIALIAS: {s} ({}X)", .{ aaMethodLabel(state.msaa_config.method), state.msaa_config.msaa_samples }) catch "ANTIALIAS: ?";
             drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
 
@@ -2572,7 +2568,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             const loaded_count: u32 = @intCast(state.world.chunks.count());
             const kb_total: u64 = @as(u64, loaded_count) * 576;
             const mb_total: f32 = @as(f32, @floatFromInt(kb_total)) / 1024.0;
-            const s = std.fmt.bufPrint(&dbg_buf, "MEM: CHUNKS {d:.1} MB", .{mb_total}) catch "MEM: ?";
+            const s = std.fmt.bufPrint(&dbg_buf, "MEMORY: CHUNKS {d:.1} MB", .{mb_total}) catch "MEMORY: ?";
             drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
 

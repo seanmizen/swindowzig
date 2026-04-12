@@ -1,14 +1,20 @@
-# debug_overlay.tas — F3-style debug overlay regression.
+# debug_overlay.tas — F3-style info panel regression.
 #
-# Purpose: exercise the H-key toggle and confirm the overlay actually
-# renders (and only the overlay, not menu screens) by comparing the
-# top-left corner of two dumps:
-#   * baseline: --debug-overlay=on  + this TAS  → H toggles OFF (no overlay)
-#   * overlay : (no flag)           + this TAS  → H toggles ON  (overlay)
+# Purpose: confirm the F3-style debug info panel actually paints to the
+# top-left when Cmd+D ("debug mode") is on, by comparing the top-left
+# corner of two PPM dumps:
+#   * baseline: --debug=off + this TAS  → no debug overlay, no panel
+#   * panel   : --debug=on  + this TAS  → keyboard HUD + chunk borders
+#                                          + F3 panel
 #
-# Same TAS, same camera state, the only difference is whether the F3 panel
-# was painted in the top-left. The brightness delta over the top-left
-# corner should be > 1.0/255 (the dark translucent rect alone gives ~6).
+# Same TAS, same camera state. The keyboard HUD lives in the bottom half
+# of the screen and chunk borders are 3D world geometry, so neither
+# affects the top-left 320×320 region we sample. The panel rect alone
+# (translucent black at alpha 0.5) gives ~5–6 brightness delta per channel.
+#
+# We can't toggle Cmd+D from a TAS — the parser doesn't support modifier
+# keys, so the .D event would arrive without the .super/.ctrl bit set
+# and the in-game handler would ignore it. The CLI flag is the way.
 #
 # Usage (from utils/swindowzig):
 #   zig build native -Dexample=voxel
@@ -22,13 +28,7 @@
 
 # --- Hold the camera still for a few ticks so the FPS sampler settles. ---
 4 mouse_move 0 0
-6 mouse_move 0 0
 8 mouse_move 0 0
-
-# --- Toggle the F3 debug overlay with H (function-keys ban rules out F3). ---
-10 keydown H
-11 keyup H
-
-# --- Hold steady so --dump-frame lands on a stable view. ---
+12 mouse_move 0 0
 20 mouse_move 0 0
 30 mouse_move 0 0
