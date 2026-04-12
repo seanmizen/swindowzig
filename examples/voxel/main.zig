@@ -1744,6 +1744,27 @@ fn doRespawn() void {
     });
 }
 
+/// Dispatch a command event (from TAS `cmd` directive or future console).
+fn handleCommand(cmd: anytype) void {
+    switch (cmd.kind) {
+        .tp => {
+            state.player.feet_pos = .{ cmd.args[0], cmd.args[1], cmd.args[2] };
+            state.player.velocity = .{ 0, 0, 0 };
+            state.player.on_ground = false;
+            syncCameraToPlayer();
+            std.log.info("[CMD] tp ({d:.1}, {d:.1}, {d:.1})", .{
+                cmd.args[0], cmd.args[1], cmd.args[2],
+            });
+        },
+        .set_spawn => {
+            state.spawn_point = state.player.feet_pos;
+            std.log.info("[CMD] set_spawn ({d:.1}, {d:.1}, {d:.1})", .{
+                state.spawn_point[0], state.spawn_point[1], state.spawn_point[2],
+            });
+        },
+    }
+}
+
 /// Flush one per-tick row to the --profile-csv file. Called from a `defer`
 /// at the top of voxelRender so every render path — including the
 /// world_loading early-return — contributes a row. The row includes
@@ -1923,11 +1944,54 @@ fn voxelTick(ctx: *sw.Context) !void {
     const player_cx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
     const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
 
+    // When dump-frame is pending and TAS has finished, freeze world loading
+    // so the async pipeline can fully drain. Without this, asyncTick keeps
+    // enqueuing new gen jobs around the teleported position and the dump-frame
+    // convergence gate never fires.
+    const dump_draining = if (comptime is_wasm) false else blk: {
+        const tas_done = if (state.tas_replayer) |*r| r.state == .finished else true;
+        const want_dump = (state.dump_frame_path != null or state.compare_golden_path != null) and !state.dump_frame_done;
+        break :blk tas_done and want_dump;
+    };
+
     if (comptime is_wasm) {
-        // WASM: synchronous chunk loading (async pipeline unavailable on wasm)
-        try state.world.update(&[_]world_mod.RegionAnchor{
-            .{ .position = state.player.feet_pos },
-        });
+        // WASM: always sync path
+    } else if (dump_draining) {
+        // Drain-only: process completed async results but do NOT enqueue
+        // new gen/mesh jobs. This lets the pipeline fully converge.
+        if (state.async_pipeline) |p| {
+            state.async_result_scratch.clearRetainingCapacity();
+            try p.drainSorted(&state.async_result_scratch, ctx.allocator());
+            for (state.async_result_scratch.items) |*r| {
+                const key = world_mod.ChunkKey{ .cx = r.cx, .cz = r.cz };
+                if (r.chunk) |new_chunk| {
+                    if (!state.world.chunks.contains(key)) {
+                        const lc = try state.world.allocator.create(world_mod.LoadedChunk);
+                        lc.* = world_mod.LoadedChunk.init(state.world.allocator, r.cx, r.cz);
+                        lc.chunk = new_chunk.*;
+                        async_chunks_mod.freeChunk(new_chunk);
+                        try async_chunks_mod.installMeshFromResult(&lc.mesh, r);
+                        lc.state = .meshed;
+                        lc.mesh_dirty = false;
+                        lc.mesh_incremental_dirty = true;
+                        try state.world.chunks.put(key, lc);
+                    }
+                } else {
+                    if (state.world.chunks.get(key)) |lc| {
+                        async_chunks_mod.installMeshFromResult(&lc.mesh, r) catch {};
+                        lc.state = .meshed;
+                        lc.mesh_dirty = false;
+                        lc.neighbor_ao_dirty = false;
+                        lc.mesh_incremental_dirty = true;
+                    }
+                }
+                std.heap.c_allocator.free(r.vertices);
+                std.heap.c_allocator.free(r.indices);
+                std.heap.c_allocator.free(r.quad_block);
+                std.heap.c_allocator.free(r.quad_highlight);
+            }
+            state.async_result_scratch.clearRetainingCapacity();
+        }
     } else if (state.async_chunks_enabled and state.async_pipeline != null) {
         // Async path: worker thread owns gen + mesh. Main thread only
         // drains results, installs them, and enqueues new work.
@@ -2154,9 +2218,23 @@ fn voxelTick(ctx: *sw.Context) !void {
             std.log.info("TAS playback: tick={} state={}", .{ ctx.tickId(), replayer.state });
         }
         if (state.headless and replayer.state == .finished) {
-            std.log.info("TAS finished at tick={} — requesting headless shutdown", .{ctx.tickId()});
-            ctx.requestShutdown();
-            return;
+            // When --dump-frame or --compare-golden is active, defer shutdown
+            // until the render callback has captured the frame. The dump gate
+            // requires TAS finished + async pipeline drained — killing the
+            // process here would race with the async drain.
+            if (comptime !is_wasm) {
+                if ((state.dump_frame_path != null or state.compare_golden_path != null) and !state.dump_frame_done) {
+                    // Don't shut down yet — let the render loop capture first.
+                } else {
+                    std.log.info("TAS finished at tick={} — requesting headless shutdown", .{ctx.tickId()});
+                    ctx.requestShutdown();
+                    return;
+                }
+            } else {
+                std.log.info("TAS finished at tick={} — requesting headless shutdown", .{ctx.tickId()});
+                ctx.requestShutdown();
+                return;
+            }
         }
     }
 
@@ -2166,6 +2244,18 @@ fn voxelTick(ctx: *sw.Context) !void {
     // Snapshot capture state BEFORE global keys modify it.
     // was_captured = false on the tick we resume from pause → prevents camera jump.
     const was_captured = state.mouse_captured;
+
+    // =========================================================================
+    // 0. Command events — from TAS `cmd` directives or future in-game console
+    // =========================================================================
+    if (comptime !is_wasm) {
+        for (ctx.bus().eventsForTick(ctx.tickId())) |ev| {
+            switch (ev.payload) {
+                .command => |cmd| handleCommand(cmd),
+                else => {},
+            }
+        }
+    }
 
     // =========================================================================
     // 1. Global keys — always processed regardless of layer state
@@ -3793,14 +3883,21 @@ fn voxelRender(ctx: *sw.Context) !void {
         if (state.tas_replayer) |*r| {
             if (r.state != .finished) break :blk false;
         }
-        // Async mode: the final mesh state is only stable once the pipeline
-        // has fully drained (no in-flight jobs, no dirty chunks awaiting
-        // remesh). Otherwise the dump would capture a partial world and
-        // produce a non-deterministic PPM across runs. Force the capture
-        // to wait one more tick each time the pipeline still has work.
+        // Async mode: wait for the pipeline to fully drain before capturing.
+        // In dump-drain mode (TAS finished + dump pending), we only check
+        // in-flight jobs — dirty chunks that got marked after we stopped
+        // enqueuing new work are stale-AO leftovers and won't change the
+        // visual output. Without this relaxation, the dump-frame gate
+        // never fires because the drain keeps creating dirty neighbours.
         if (comptime !is_wasm) {
             if (state.async_pipeline) |p| {
-                if (asyncHasPendingWork(p, &state.world)) break :blk false;
+                if (p.inFlightCount() > 0) break :blk false;
+                // Full convergence check only when NOT in dump-drain mode.
+                const tas_done = if (state.tas_replayer) |*r| r.state == .finished else true;
+                const in_dump_drain = tas_done and !state.dump_frame_done;
+                if (!in_dump_drain) {
+                    if (asyncHasPendingWork(p, &state.world)) break :blk false;
+                }
             }
         }
         break :blk true;

@@ -103,6 +103,15 @@ pub const WheelMode = enum(u8) {
     page = 2,
 };
 
+/// Game command types dispatched via TAS scripts or a future in-game console.
+/// Payload is a fixed-size [4]f32 arg array — meaning depends on the kind:
+///   .tp        — args[0..2] = world-space x, y, z
+///   .set_spawn — no args (uses current player position)
+pub const CommandKind = enum(u8) {
+    tp = 0,
+    set_spawn = 1,
+};
+
 /// Event payloads
 pub const EventPayload = union(enum) {
     pointer_move: extern struct {
@@ -159,6 +168,11 @@ pub const EventPayload = union(enum) {
 
     tick: extern struct {
         dt_ns: u64,
+    },
+
+    command: struct {
+        kind: CommandKind,
+        args: [4]f32,
     },
 };
 
