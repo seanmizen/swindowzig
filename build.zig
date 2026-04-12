@@ -79,6 +79,11 @@ pub fn build(b: *std.Build) void {
     // swindowzig_init export).
     example.root_module.addImport("sw_platform", sw_platform);
     example.rdynamic = true; // Export symbols for WASM
+    // Voxel's Chunk.init() constructs a ~1.17 MB struct value on the
+    // stack (48×256×48 blocks + same-sized skylight array). The default
+    // wasm stack blows up on that — bump to 16 MB so there's headroom
+    // for recursive meshing + a few chunks worth of call frames.
+    example.stack_size = 16 * 1024 * 1024;
 
     const install_example = b.addInstallArtifact(example, .{});
     b.getInstallStep().dependOn(&install_example.step);

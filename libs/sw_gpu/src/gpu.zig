@@ -702,7 +702,7 @@ pub const GPU = struct {
                 for (fragment.targets, 0..) |target, i| {
                     targets[i] = .{
                         .format = @intFromEnum(target.format),
-                        .blend_enabled = target.blend != null,
+                        .blend_enabled = @as(u32, if (target.blend != null) 1 else 0),
                         .color_operation = if (target.blend) |blend| @intFromEnum(blend.color.operation) else 0,
                         .color_src_factor = if (target.blend) |blend| @intFromEnum(blend.color.src_factor) else 0,
                         .color_dst_factor = if (target.blend) |blend| @intFromEnum(blend.color.dst_factor) else 0,
@@ -946,7 +946,7 @@ pub const GPU = struct {
                         .storage => 2,
                         .read_only_storage => 3,
                     } else 0,
-                    .buffer_has_dynamic_offset = if (entry.buffer) |buf| buf.has_dynamic_offset else false,
+                    .buffer_has_dynamic_offset = if (entry.buffer) |buf| @as(u32, if (buf.has_dynamic_offset) 1 else 0) else 0,
                     .buffer_min_binding_size = if (entry.buffer) |buf| buf.min_binding_size else 0,
                     .sampler_type = if (entry.sampler) |samp| switch (samp.type) {
                         .filtering => 1,
@@ -961,7 +961,7 @@ pub const GPU = struct {
                         .uint => 5,
                     } else 0,
                     .texture_view_dimension = if (entry.texture) |tex| @intFromEnum(tex.view_dimension) else 0,
-                    .texture_multisampled = if (entry.texture) |tex| tex.multisampled else false,
+                    .texture_multisampled = if (entry.texture) |tex| @as(u32, if (tex.multisampled) 1 else 0) else 0,
                     .storage_access = if (entry.storage_texture) |st| @intFromEnum(st.access) + 1 else 0,
                     .storage_format = if (entry.storage_texture) |st| @intFromEnum(st.format) else 0,
                     .storage_view_dimension = if (entry.storage_texture) |st| @intFromEnum(st.view_dimension) else 0,

@@ -31,6 +31,23 @@ let gpuQueue: GPUQueue | null = null;
 let gpuContext: GPUCanvasContext | null = null;
 let canvasFormat: GPUTextureFormat | null = null;
 
+// Source of truth: must match `TextureFormat` in
+// utils/swindowzig/libs/sw_gpu/src/types.zig. Only the formats actually
+// used by the voxel engine are populated; add more as needed.
+const TEXTURE_FORMAT_MAP: Record<number, GPUTextureFormat> = {
+  0x12: 'rgba8unorm',
+  0x13: 'rgba8unorm-srgb',
+  0x17: 'bgra8unorm',
+  0x18: 'bgra8unorm-srgb',
+  0x1f: 'rgba16float',
+  0x22: 'rgba32float',
+  0x27: 'depth16unorm',
+  0x28: 'depth24plus',
+  0x29: 'depth24plus-stencil8',
+  0x2a: 'depth32float',
+  0x2b: 'depth32float-stencil8',
+};
+
 export async function initWebGPU(
   canvas: HTMLCanvasElement,
 ): Promise<GPUBridge> {
@@ -174,20 +191,9 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
     ): number => {
       const device = getHandle<GPUDevice>(deviceHandle);
 
-      // Map format enum to GPUTextureFormat string
-      const formatMap: Record<number, GPUTextureFormat> = {
-        70: 'rgba8unorm',
-        71: 'rgba8unorm-srgb',
-        72: 'bgra8unorm',
-        73: 'bgra8unorm-srgb',
-        85: 'depth32float',
-        83: 'depth24plus',
-        // Add more as needed
-      };
-
       const texture = device.createTexture({
         size: { width, height, depthOrArrayLayers: depth },
-        format: formatMap[format] || 'rgba8unorm',
+        format: TEXTURE_FORMAT_MAP[format] || 'rgba8unorm',
         usage,
         mipLevelCount: mipLevels,
         sampleCount,
@@ -208,15 +214,20 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
     ): number => {
       const texture = getHandle<GPUTexture>(textureHandle);
 
-      const dimensionMap: Record<number, GPUTextureViewDimension> = {
-        0: 'undefined' as never,
-        1: '1d',
-        2: '2d',
-        3: '2d-array',
-        4: 'cube',
-        5: 'cube-array',
-        6: '3d',
-      };
+      // Zig passes 0 to mean "use the texture's natural dimension" — that
+      // should become JS `undefined`, NOT the string 'undefined'. The old
+      // map returned a literal string which WebGPU rejects as "not a valid
+      // enum value of type GPUTextureViewDimension".
+      const dimensionMap: Record<number, GPUTextureViewDimension | undefined> =
+        {
+          0: undefined,
+          1: '1d',
+          2: '2d',
+          3: '2d-array',
+          4: 'cube',
+          5: 'cube-array',
+          6: '3d',
+        };
 
       const aspectMap: Record<number, GPUTextureAspect> = {
         0: 'all',
@@ -224,15 +235,20 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
         2: 'depth-only',
       };
 
+      // Wasm passes u32 as i32 over the ABI boundary, so Zig's sentinel
+      // 0xFFFFFFFF arrives here as -1. Force-unsigned with `>>> 0` before
+      // comparing or forwarding — otherwise `createView` sees a negative
+      // integer and rejects it with "outside the 'unsigned long' range".
+      const mipCount = mipLevelCount >>> 0;
+      const layerCount = arrayLayerCount >>> 0;
       const view = texture.createView({
-        format: format ? (format as never) : undefined,
+        format: format ? TEXTURE_FORMAT_MAP[format] : undefined,
         dimension: dimensionMap[dimension],
         aspect: aspectMap[aspect] || 'all',
-        baseMipLevel,
-        mipLevelCount: mipLevelCount === 0xffffffff ? undefined : mipLevelCount,
-        baseArrayLayer,
-        arrayLayerCount:
-          arrayLayerCount === 0xffffffff ? undefined : arrayLayerCount,
+        baseMipLevel: baseMipLevel >>> 0,
+        mipLevelCount: mipCount === 0xffffffff ? undefined : mipCount,
+        baseArrayLayer: baseArrayLayer >>> 0,
+        arrayLayerCount: layerCount === 0xffffffff ? undefined : layerCount,
       });
 
       return createHandle(view);
@@ -518,29 +534,28 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
 
       const entries: GPUBindGroupEntry[] = [];
 
-      // BindGroupEntryJS size calculation (extern struct):
-      // binding(u32=4) + resource_type(u32=4) + buffer(u32=4) + buffer_offset(u64=8) +
-      // buffer_size(u64=8) + sampler(u32=4) + texture_view(u32=4) = 36 bytes
+      // BindGroupEntryJS layout (extern struct, u64s first so no padding):
+      //   buffer_offset   u64  @  0
+      //   buffer_size     u64  @  8
+      //   binding         u32  @ 16
+      //   resource_type   u32  @ 20
+      //   buffer handle   u32  @ 24
+      //   sampler handle  u32  @ 28
+      //   texture_view    u32  @ 32
+      // Total: 36 bytes.
       const entrySize = 36;
 
       for (let i = 0; i < entryCount; i++) {
         const ptr = entriesPtr + i * entrySize;
         const view = new DataView(memory.buffer, ptr, entrySize);
-        let offset = 0;
 
-        const binding = view.getUint32(offset, true);
-        offset += 4;
-        const resourceType = view.getUint32(offset, true);
-        offset += 4;
-        const bufferHandle = view.getUint32(offset, true);
-        offset += 4;
-        const bufferOffset = view.getBigUint64(offset, true);
-        offset += 8;
-        const bufferSize = view.getBigUint64(offset, true);
-        offset += 8;
-        const samplerHandle = view.getUint32(offset, true);
-        offset += 4;
-        const textureViewHandle = view.getUint32(offset, true);
+        const bufferOffset = view.getBigUint64(0, true);
+        const bufferSize = view.getBigUint64(8, true);
+        const binding = view.getUint32(16, true);
+        const resourceType = view.getUint32(20, true);
+        const bufferHandle = view.getUint32(24, true);
+        const samplerHandle = view.getUint32(28, true);
+        const textureViewHandle = view.getUint32(32, true);
 
         const entry: GPUBindGroupEntry = { binding, resource: null as never };
 
@@ -654,25 +669,31 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
 
       // Parse vertex buffer layouts
       const vertexBuffers: GPUVertexBufferLayout[] = [];
-      // VertexBufferLayoutJS size: array_stride(u64=8) + step_mode(u32=4) +
-      // attributes_ptr(u32=4) + attribute_count(u32=4) = 20 bytes
-      const vertexBufferLayoutSize = 20;
+      // VertexBufferLayoutJS (extern struct):
+      //   array_stride     u64  @  0
+      //   step_mode        u32  @  8
+      //   attributes_ptr   u32  @ 12  (ptr, wasm32)
+      //   attribute_count  u32  @ 16
+      // Data size = 20, but the struct's alignment is 8 (from the u64),
+      // so C ABI pads the total size to 24. Zig's `alloc(T, N)` uses
+      // @sizeOf(T) per slot, so each entry is 24 bytes apart, NOT 20 —
+      // reading at stride 20 dereferences garbage from entry 2 onwards.
+      const vertexBufferLayoutSize = 24;
 
       for (let i = 0; i < vertexBufferCount; i++) {
         const ptr = vertexBuffersPtr + i * vertexBufferLayoutSize;
         const view = new DataView(memory.buffer, ptr, vertexBufferLayoutSize);
-        let offset = 0;
 
-        const arrayStride = view.getBigUint64(offset, true);
-        offset += 8;
-        const stepMode = view.getUint32(offset, true);
-        offset += 4;
-        const attributesPtr = view.getUint32(offset, true);
-        offset += 4;
-        const attributeCount = view.getUint32(offset, true);
+        const arrayStride = view.getBigUint64(0, true);
+        const stepMode = view.getUint32(8, true);
+        const attributesPtr = view.getUint32(12, true);
+        const attributeCount = view.getUint32(16, true);
 
-        // Parse vertex attributes
-        // VertexAttributeJS size: format(u32=4) + offset(u64=8) + shader_location(u32=4) = 16 bytes
+        // VertexAttributeJS (extern struct, u64 first so no padding):
+        //   offset           u64  @  0
+        //   format           u32  @  8
+        //   shader_location  u32  @ 12
+        // Total = 16 bytes.
         const vertexAttributeSize = 16;
         const attributes: GPUVertexAttribute[] = [];
 
@@ -683,13 +704,10 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
             attrPtr,
             vertexAttributeSize,
           );
-          let attrOffset = 0;
 
-          const format = attrView.getUint32(attrOffset, true);
-          attrOffset += 4;
-          const attrByteOffset = attrView.getBigUint64(attrOffset, true);
-          attrOffset += 8;
-          const shaderLocation = attrView.getUint32(attrOffset, true);
+          const attrByteOffset = attrView.getBigUint64(0, true);
+          const format = attrView.getUint32(8, true);
+          const shaderLocation = attrView.getUint32(12, true);
 
           // Map format enum to GPUVertexFormat
           const vertexFormatMap: Record<number, GPUVertexFormat> = {
@@ -758,7 +776,10 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
         },
         multisample: {
           count: sampleCount,
-          mask: sampleMask,
+          // `mask` is a u32 on the Zig side; Zig's default of 0xFFFFFFFF
+          // arrives here as -1 via the wasm i32 ABI, which fails the
+          // "unsigned long" range check. Force-unsigned.
+          mask: sampleMask >>> 0,
           alphaToCoverageEnabled,
         },
       };
@@ -804,13 +825,6 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
           offset += 4;
           const writeMask = view.getUint32(offset, true);
 
-          const formatMap: Record<number, GPUTextureFormat> = {
-            70: 'rgba8unorm',
-            71: 'rgba8unorm-srgb',
-            72: 'bgra8unorm',
-            73: 'bgra8unorm-srgb',
-          };
-
           const operationMap: Record<number, GPUBlendOperation> = {
             0: 'add',
             1: 'subtract',
@@ -836,7 +850,7 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
           };
 
           const target: GPUColorTargetState = {
-            format: formatMap[format] || canvasFormat || 'bgra8unorm',
+            format: TEXTURE_FORMAT_MAP[format] || canvasFormat || 'bgra8unorm',
             writeMask,
           };
 
@@ -1077,9 +1091,20 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
       const pass = getHandle<GPURenderPassEncoder>(passHandle);
       const buffer = getHandle<GPUBuffer>(bufferHandle);
 
+      // IndexFormat enum values must match `types.IndexFormat` in
+      // utils/swindowzig/libs/sw_gpu/src/types.zig:
+      //   uint16 = 0
+      //   uint32 = 1
+      // The old `{1:'uint16', 2:'uint32'}` map was off-by-one and caused
+      // every u32 index buffer to be reinterpreted as u16 — which means
+      // every second index pointed to vertex 0 (the high 16 bits of each
+      // u32 index are normally zero for small meshes), producing the
+      // classic "fan-from-origin" rendering bug.
+      // See utils/swindowzig/CLAUDE.md for the native-side version of the
+      // same enum mismatch that was fixed in gpu.zig's setIndexBuffer.
       const formatMap: Record<number, GPUIndexFormat> = {
-        1: 'uint16',
-        2: 'uint32',
+        0: 'uint16',
+        1: 'uint32',
       };
 
       pass.setIndexBuffer(

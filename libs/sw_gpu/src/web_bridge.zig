@@ -143,7 +143,11 @@ pub const BindGroupLayoutEntryJS = extern struct {
 
     // Buffer binding (if buffer_type != 0)
     buffer_type: u32, // 0=none, 1=uniform, 2=storage, 3=read-only-storage
-    buffer_has_dynamic_offset: bool,
+    // NOTE: Was `bool` but Zig's debug mode fills the 3 padding bytes with
+    // 0xAA, and the JS DataView.getUint32 reader sees `0xAAAAAA00` which
+    // is nonzero → reads as true. Widen to u32 so the wire format is a
+    // full 4-byte 0/1 with no undef padding.
+    buffer_has_dynamic_offset: u32,
     buffer_min_binding_size: u64,
 
     // Sampler binding (if sampler_type != 0)
@@ -152,7 +156,7 @@ pub const BindGroupLayoutEntryJS = extern struct {
     // Texture binding (if texture_sample_type != 0)
     texture_sample_type: u32, // 0=none, 1=float, 2=unfilterable-float, 3=depth, 4=sint, 5=uint
     texture_view_dimension: u32,
-    texture_multisampled: bool,
+    texture_multisampled: u32, // u32 for the same reason as buffer_has_dynamic_offset.
 
     // Storage texture binding (if storage_access != 0)
     storage_access: u32, // 0=none, 1=write-only, 2=read-only, 3=read-write
@@ -168,14 +172,18 @@ pub extern "webgpu" fn webgpuCreateBindGroup(
     entry_count: u32,
 ) WebGPUBindGroup;
 
+// Field order: u64s first so the C-ABI alignment doesn't insert any
+// padding bytes (Zig fills padding with 0xAA in debug, which corrupts
+// the JS decoder that sees uninitialised memory through `DataView`).
 pub const BindGroupEntryJS = extern struct {
-    binding: u32,
-    resource_type: u32, // 1=buffer, 2=sampler, 3=texture_view
-    buffer: WebGPUBuffer,
-    buffer_offset: u64,
-    buffer_size: u64,
-    sampler: WebGPUSampler,
-    texture_view: WebGPUTextureView,
+    buffer_offset: u64, // 0
+    buffer_size: u64, // 8
+    binding: u32, // 16
+    resource_type: u32, // 20  (1=buffer, 2=sampler, 3=texture_view)
+    buffer: WebGPUBuffer, // 24
+    sampler: WebGPUSampler, // 28
+    texture_view: WebGPUTextureView, // 32
+    // total = 36 bytes, no padding
 };
 
 // Pipeline Layout Operations
@@ -229,14 +237,17 @@ pub const VertexBufferLayoutJS = extern struct {
 };
 
 pub const VertexAttributeJS = extern struct {
-    format: u32, // VertexFormat enum
-    offset: u64,
-    shader_location: u32,
+    offset: u64, // 0  — u64 first so the struct has no padding
+    format: u32, // 8  — VertexFormat enum
+    shader_location: u32, // 12
+    // total = 16 bytes, no padding
 };
 
 pub const ColorTargetStateJS = extern struct {
     format: u32, // TextureFormat
-    blend_enabled: bool,
+    // u32 instead of bool to avoid Zig's 0xAA debug padding leaking
+    // into the JS reader.
+    blend_enabled: u32,
 
     // Color blend
     color_operation: u32,
