@@ -189,7 +189,20 @@ const VoxelVertex = mesher_mod.VoxelVertex;
 
 const world_mod = @import("world.zig");
 const world_gen = @import("world_gen.zig");
-const async_chunks_mod = @import("async_chunks.zig");
+const async_chunks_mod = if (!is_wasm) @import("async_chunks.zig") else struct {
+    pub const Pipeline = struct {
+        pub fn init(_: std.mem.Allocator) !*Pipeline { unreachable; }
+        pub fn drainSorted(_: *Pipeline, _: *std.ArrayList(Result), _: std.mem.Allocator) !void { unreachable; }
+        pub fn submit(_: *Pipeline, _: anytype) !void { unreachable; }
+        pub fn deinit(_: *Pipeline) void { unreachable; }
+    };
+    pub const Result = struct {
+        cx: i32 = 0,
+        cz: i32 = 0,
+        chunk_ptr: ?*chunk_mod.Chunk = null,
+        mesh: ?mesher_mod.Mesh = null,
+    };
+};
 
 const Vec3 = math.Vec3;
 const Mat4 = math.Mat4;
@@ -697,7 +710,7 @@ const State = struct {
     // player is released, so the analysis script can partition the dataset
     // into "first-paint" and "flyover" halves without guessing.
     profile_csv_path: ?[]const u8 = null,
-    profile_csv_file: ?std.fs.File = null,
+    profile_csv_file: if (!is_wasm) ?std.fs.File else ?void = null,
     tick_t0_ns: i128 = 0,
     tick_ns: u64 = 0,
     gen_ns: u64 = 0,
@@ -1120,7 +1133,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Open the profile CSV if requested. Writing the header here means every
     // subsequent row can be appended without a seek. Failures log a warning
     // and disable the feature so a bad path doesn't crash the TAS run.
-    if (state.profile_csv_path) |p| {
+    if (comptime !is_wasm) {
+        if (state.profile_csv_path) |p| {
         if (std.fs.cwd().createFile(p, .{ .truncate = true })) |f| {
             state.profile_csv_file = f;
             const header = "tick,loading,chunk_w,tick_ns,gen_ns,gen_count,mesh_ns,mesh_count,upload_ns,upload_count,render_ns\n";
@@ -1133,18 +1147,23 @@ fn voxelInit(ctx: *sw.Context) !void {
             state.profile_csv_file = null;
             state.profile_csv_path = null;
         }
+        }
     }
 
     // Initialize the background gen+mesh pipeline if async mode is enabled.
     // The worker thread starts immediately and blocks on the empty job queue
     // until main pushes the first job in voxelTick.
-    std.log.info("Async chunks (post-parse): {s}", .{if (state.async_chunks_enabled) "on" else "off"});
-    if (state.async_chunks_enabled) {
-        state.async_pipeline = async_chunks_mod.Pipeline.init(ctx.allocator()) catch |init_err| blk: {
+    if (comptime !is_wasm) std.log.info("Async chunks (post-parse): {s}", .{if (state.async_chunks_enabled) "on" else "off"});
+    if (comptime !is_wasm) {
+        if (state.async_chunks_enabled) {
+            state.async_pipeline = async_chunks_mod.Pipeline.init(ctx.allocator()) catch |init_err| blk: {
             std.log.err("Async pipeline init failed ({}) — falling back to sync mesh loop", .{init_err});
             state.async_chunks_enabled = false;
-            break :blk null;
-        };
+                break :blk null;
+            };
+        }
+    } else {
+        state.async_chunks_enabled = false;
     }
 
     // TAS loading — native only. `TasScript.parseFile` calls std.fs.cwd()
@@ -1512,7 +1531,7 @@ fn freeFullGrid(full: *[9]?*chunk_mod.Chunk) void {
 /// (fresh chunks innermost-first + any dirty chunks whose 4 axial neighbours
 /// are all present). Replaces the synchronous `world.update` + mesh loop.
 fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos: [3]f32, ao: gpu_mod.AOStrategy, lighting: gpu_mod.LightingMode, alloc: std.mem.Allocator) !void {
-    const t_tick_start = std.time.nanoTimestamp();
+    const t_tick_start = perfNowNs();
 
     // ─── 1. Drain completed results ─────────────────────────────────────
     state.async_result_scratch.clearRetainingCapacity();
@@ -1683,7 +1702,7 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
     // memcpy. It does NOT include the mesh upload (that happens in the
     // render callback) but uploads are cheap.
     if (drained_count > 0 or enqueued_new > 0 or enqueued_mesh > 0) {
-        const tick_us: u64 = @intCast(@divTrunc(std.time.nanoTimestamp() - t_tick_start, 1000));
+        const tick_us: u64 = @intCast(@divTrunc(perfNowNs() - t_tick_start, 1000));
         std.log.info("[ASYNC] main thread work: drained={} enq_new={} enq_mesh={} main_us={}", .{
             drained_count,
             enqueued_new,
@@ -1723,11 +1742,12 @@ fn doRespawn() void {
 /// chunk_w so downstream analysis can join baseline and experiment CSVs
 /// without reading the filenames.
 fn flushProfileRow(ctx: *sw.Context) void {
+    if (comptime is_wasm) return;
     const f = state.profile_csv_file orelse return;
     // Tick time measured from the tick_t0_ns captured at the top of voxelTick
     // to now (end of render). This bundles tick+render into one "frame" cost,
     // which is what we actually care about for the "see it be slow" metric.
-    const now = std.time.nanoTimestamp();
+    const now = perfNowNs();
     const tick_ns: u64 = if (state.tick_t0_ns != 0) @intCast(now - state.tick_t0_ns) else 0;
     const render_ns: u64 = if (state.render_t0_ns != 0) @intCast(now - state.render_t0_ns) else 0;
     const tick_id = ctx.tickId();
@@ -1777,7 +1797,7 @@ fn voxelTick(ctx: *sw.Context) !void {
     // fast path during world loading) accumulates into a fresh row. render
     // adds upload_ns then flushes the row.
     if (state.profile_csv_file != null) {
-        state.tick_t0_ns = std.time.nanoTimestamp();
+        state.tick_t0_ns = perfNowNs();
         state.tick_ns = 0;
         state.gen_ns = 0;
         state.gen_count = 0;
@@ -1803,13 +1823,13 @@ fn voxelTick(ctx: *sw.Context) !void {
         // meshed-count before/after.
         const pregen_gen_before: usize = if (state.profile_csv_file != null) state.world.chunks.count() else 0;
         const pregen_mesh_before: usize = if (state.profile_csv_file != null) countMeshedChunks(&state.world) else 0;
-        const pregen_t0: i128 = if (state.profile_csv_file != null) std.time.nanoTimestamp() else 0;
+        const pregen_t0: i128 = if (state.profile_csv_file != null) perfNowNs() else 0;
         const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy, state.lighting_mode, state.meshing_mode) catch |err| blk: {
             std.log.err("Pregen step failed: {}", .{err});
             break :blk false;
         };
         if (state.profile_csv_file != null) {
-            const pregen_t1 = std.time.nanoTimestamp();
+            const pregen_t1 = perfNowNs();
             const dt_ns: u64 = @intCast(pregen_t1 - pregen_t0);
             const gen_after = state.world.chunks.count();
             const mesh_after = countMeshedChunks(&state.world);
@@ -1895,7 +1915,9 @@ fn voxelTick(ctx: *sw.Context) !void {
     const player_cx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
     const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
 
-    if (state.async_chunks_enabled and state.async_pipeline != null) {
+    if (comptime is_wasm) {
+        // WASM: always sync path
+    } else if (state.async_chunks_enabled and state.async_pipeline != null) {
         // Async path: worker thread owns gen + mesh. Main thread only
         // drains results, installs them, and enqueues new work.
         try asyncTick(
@@ -1911,12 +1933,12 @@ fn voxelTick(ctx: *sw.Context) !void {
         // The player is currently the only anchor. This is the async background
         // fill that keeps the outer ring growing as the player walks.
         const gen_before: usize = if (state.profile_csv_file != null) state.world.chunks.count() else 0;
-        const gen_t0: i128 = if (state.profile_csv_file != null) std.time.nanoTimestamp() else 0;
+        const gen_t0: i128 = if (state.profile_csv_file != null) perfNowNs() else 0;
         try state.world.update(&[_]world_mod.RegionAnchor{
             .{ .position = state.player.feet_pos },
         });
         {
-            const gen_t1 = std.time.nanoTimestamp();
+            const gen_t1 = perfNowNs();
             t_world_update_us = @divTrunc(gen_t1 - gen_t0, 1000);
             const gen_after = state.world.chunks.count();
             chunks_generated_this_tick = gen_after - gen_before;
@@ -1958,7 +1980,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
-            const mesh_dt_ns: i128 = std.time.nanoTimestamp() - t0;
+            const mesh_dt_ns: i128 = perfNowNs() - t0;
             const t_us = @divTrunc(mesh_dt_ns, 1000);
             std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
             if (state.profile_csv_file != null) {
@@ -2867,7 +2889,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     // writes the row regardless of which early-return path we take, so
     // every tick is represented in the CSV even when render skips work.
     if (state.profile_csv_file != null) {
-        state.render_t0_ns = std.time.nanoTimestamp();
+        state.render_t0_ns = perfNowNs();
         state.upload_ns = 0;
         state.upload_count = 0;
     }
@@ -2947,7 +2969,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             const lc = entry.value_ptr.*;
             if (lc.mesh.vertices.items.len == 0) continue;
 
-            const t_sort = std.time.nanoTimestamp();
+            const t_sort = perfNowNs();
             lc.mesh.sortByDepth(.{
                 state.camera.position.x,
                 state.camera.position.y,
@@ -2956,23 +2978,23 @@ fn voxelRender(ctx: *sw.Context) !void {
                 std.log.err("Sort failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
-            render_sort_us += @divTrunc(std.time.nanoTimestamp() - t_sort, 1000);
+            render_sort_us += @divTrunc(perfNowNs() - t_sort, 1000);
 
             const gop = state.chunk_gpu.getOrPut(key) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = .{};
             const needed_upload = lc.mesh_incremental_dirty;
-            const up_t0: i128 = if (state.profile_csv_file != null and needed_upload) std.time.nanoTimestamp() else 0;
+            const up_t0: i128 = if (state.profile_csv_file != null and needed_upload) perfNowNs() else 0;
             uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.mesh_incremental_dirty) catch |err| {
                 std.log.err("Upload failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
             if (state.profile_csv_file != null and needed_upload) {
-                const up_t1 = std.time.nanoTimestamp();
+                const up_t1 = perfNowNs();
                 state.upload_ns +%= @intCast(up_t1 - up_t0);
                 state.upload_count +%= 1;
             }
             if (lc.mesh_incremental_dirty) {
-                const this_upload_us = @divTrunc(std.time.nanoTimestamp() - up_t0, 1000);
+                const this_upload_us = @divTrunc(perfNowNs() - up_t0, 1000);
                 render_upload_us += this_upload_us;
                 render_upload_chunks += 1;
                 lc.mesh_incremental_dirty = false;
@@ -3672,8 +3694,10 @@ fn voxelRender(ctx: *sw.Context) !void {
         // remesh). Otherwise the dump would capture a partial world and
         // produce a non-deterministic PPM across runs. Force the capture
         // to wait one more tick each time the pipeline still has work.
-        if (state.async_pipeline) |p| {
-            if (asyncHasPendingWork(p, &state.world)) break :blk false;
+        if (comptime !is_wasm) {
+            if (state.async_pipeline) |p| {
+                if (asyncHasPendingWork(p, &state.world)) break :blk false;
+            }
         }
         break :blk true;
     };

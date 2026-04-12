@@ -561,7 +561,7 @@ pub const Chunk = struct {
     /// is the only realistic failure mode — on typical hardware this path
     /// never trips).
     pub fn generateTerrain(self: *Chunk, cx: i32, cz: i32, config: world_gen.WorldGenConfig) !void {
-        const t_fill_start = std.time.nanoTimestamp();
+        const t_fill_start = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else std.time.nanoTimestamp();
         var x: i32 = 0;
         while (x < CHUNK_W) : (x += 1) {
             var z: i32 = 0;
@@ -590,13 +590,13 @@ pub const Chunk = struct {
                 }
             }
         }
-        const t_fill_us = @divTrunc(std.time.nanoTimestamp() - t_fill_start, 1000);
+        const t_fill_us = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else @divTrunc(std.time.nanoTimestamp() - t_fill_start, 1000);
 
         // Skylight: must run after the blocks array is fully populated, since
         // the BFS reads `blocks` to know which cells block propagation.
-        const t_sky_start = std.time.nanoTimestamp();
+        const t_sky_start = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else std.time.nanoTimestamp();
         self.computeSkylight();
-        const t_sky_us = @divTrunc(std.time.nanoTimestamp() - t_sky_start, 1000);
+        const t_sky_us = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else @divTrunc(std.time.nanoTimestamp() - t_sky_start, 1000);
         // Block light: cheap no-op on freshly generated terrain (no emitters
         // in the default worldgen), but runs anyway so `World.setBlock` has
         // a zeroed grid to start from. Emitters placed later trigger the
