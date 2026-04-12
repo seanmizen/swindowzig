@@ -2478,10 +2478,27 @@ fn voxelTick(ctx: *sw.Context) !void {
                             // Greedy quads span multiple blocks, so the
                             // `quad_block` parallel array lookup used by
                             // `updateForBlockChange` can't isolate what to
-                            // rebuild. Flag the chunk dirty and let the full
-                            // regen pick it up next tick.
-                            lc.mesh_dirty = true;
-                            std.log.info("[TICK  tick={d:4}] greedy remove ({},{},{}) mesh_dirty=true", .{ ctx.tickId(), bx, by, bz });
+                            // rebuild. Do a synchronous full-chunk regen
+                            // rather than deferring to the async pipeline,
+                            // which can be starved by gen+mesh jobs for the
+                            // outer ring of chunks.
+                            const t_regen0 = perfNowNs();
+                            mesher_mod.generateMeshForMode(
+                                &lc.chunk,
+                                &lc.mesh,
+                                lc.worldX(),
+                                lc.worldZ(),
+                                state.world.asBlockGetter(),
+                                state.ao_strategy,
+                                state.lighting_mode,
+                                state.meshing_mode,
+                            ) catch |err| {
+                                std.log.err("Greedy mesh regen failed for remove at ({},{},{}): {}", .{ bx, by, bz, err });
+                            };
+                            lc.mesh_dirty = false;
+                            lc.mesh_incremental_dirty = true;
+                            const t_regen_us = @divTrunc(perfNowNs() - t_regen0, 1000);
+                            std.log.info("[TICK  tick={d:4}] greedy remove ({},{},{}) sync regen={}us", .{ ctx.tickId(), bx, by, bz, t_regen_us });
                         } else {
                             const t_incr0 = perfNowNs();
                             lc.mesh.updateForBlockChange(
@@ -2543,8 +2560,25 @@ fn voxelTick(ctx: *sw.Context) !void {
                         if (state.meshing_mode == .greedy) {
                             // See note in the break-block path above: greedy
                             // merged quads can't be incrementally updated.
-                            lc.mesh_dirty = true;
-                            std.log.info("[TICK  tick={d:4}] greedy place ({},{},{}) mesh_dirty=true", .{ ctx.tickId(), px, py, pz });
+                            // Synchronous full regen avoids async pipeline
+                            // starvation from gen+mesh jobs.
+                            const t_regen0 = perfNowNs();
+                            mesher_mod.generateMeshForMode(
+                                &lc.chunk,
+                                &lc.mesh,
+                                lc.worldX(),
+                                lc.worldZ(),
+                                state.world.asBlockGetter(),
+                                state.ao_strategy,
+                                state.lighting_mode,
+                                state.meshing_mode,
+                            ) catch |err| {
+                                std.log.err("Greedy mesh regen failed for place at ({},{},{}): {}", .{ px, py, pz, err });
+                            };
+                            lc.mesh_dirty = false;
+                            lc.mesh_incremental_dirty = true;
+                            const t_regen_us = @divTrunc(perfNowNs() - t_regen0, 1000);
+                            std.log.info("[TICK  tick={d:4}] greedy place ({},{},{}) sync regen={}us", .{ ctx.tickId(), px, py, pz, t_regen_us });
                         } else {
                             const t_incr0 = perfNowNs();
                             lc.mesh.updateForBlockChange(
