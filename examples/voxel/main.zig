@@ -1,10 +1,97 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const sw = @import("sw_app");
 const gpu_mod = @import("sw_gpu");
 const core = @import("sw_core");
 const math = @import("sw_math");
 
+// `is_wasm` gates all OS-dependent code paths (CLI parsing, TAS file IO,
+// frame dumping, process.exit). The native path is unchanged — see the
+// matching `if (comptime !is_wasm)` blocks throughout this file.
+const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
+
+// Custom std_options.logFn: on wasm32-freestanding, std.log.* otherwise
+// reaches for std.debug.print → std.posix.writev → STDERR_FILENO, AND the
+// default formatter pulls in std.time.nanoTimestamp → clock_gettime → more
+// missing posix symbols. On wasm we route everything through a jsLog extern.
+// On native the default log path still works — this override only kicks in
+// when something actually calls std.log.*.
+pub const std_options: std.Options = .{
+    .logFn = swindowzigLogFn,
+};
+
+extern fn jsLog(ptr: [*]const u8, len: u32) void;
+
+/// Wasm-safe replacement for `std.process.exit`. On native it terminates
+/// the process as expected. On wasm32-freestanding `std.process.exit`
+/// references `system.exit` which doesn't exist, so we trap instead —
+/// the browser will surface it as a runtime error, which is fine because
+/// reaching this path in the WASM build is already a logic bug. Split into
+/// two separate fns so Zig doesn't flag `_ = code` as a pointless discard
+/// when the alternate branch also uses `code`.
+const fatalExit = if (is_wasm) fatalExitWasm else fatalExitNative;
+
+fn fatalExitWasm(code: u8) noreturn {
+    _ = code;
+    @trap();
+}
+
+fn fatalExitNative(code: u8) noreturn {
+    std.process.exit(code);
+}
+
+/// Perf-logging timestamp. Native uses std.time.nanoTimestamp, wasm
+/// returns 0 — the few call sites are perf-measurement logs that can
+/// safely report 0µs in the browser. Split into two functions so Zig's
+/// comptime compile-time dispatch fully elides the std.time import on
+/// wasm32-freestanding (which has no clock_gettime / clockid_t).
+const perfNowNs = if (is_wasm) perfNowNsWasm else perfNowNsNative;
+
+fn perfNowNsWasm() i128 {
+    return 0;
+}
+
+fn perfNowNsNative() i128 {
+    return std.time.nanoTimestamp();
+}
+
+fn swindowzigLogFn(
+    comptime level: std.log.Level,
+    comptime scope: @TypeOf(.enum_literal),
+    comptime fmt: []const u8,
+    args: anytype,
+) void {
+    _ = scope;
+    if (comptime is_wasm) {
+        // On wasm: format into a stack buffer, hand bytes to the JS host.
+        // No posix, no time, no threading.
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(
+            &buf,
+            "[" ++ @tagName(level) ++ "] " ++ fmt,
+            args,
+        ) catch blk: {
+            break :blk "[" ++ @tagName(level) ++ "] <log truncated>";
+        };
+        jsLog(msg.ptr, @intCast(msg.len));
+    } else {
+        // Native: plain stderr via std.debug.print. std.debug.print is
+        // gated for native targets only on this branch so the posix
+        // symbols it transitively references never get pulled into the
+        // wasm dependency graph.
+        std.debug.print("[" ++ @tagName(level) ++ "] " ++ fmt ++ "\n", args);
+    }
+}
+
 pub fn main() !void {
+    if (comptime is_wasm) {
+        // WASM never takes the native main() path — sw.run() is driven from
+        // the exported swindowzig_init/frame entry points at the bottom of
+        // this file. Having `main` return early keeps the freestanding linker
+        // happy while still letting the native build keep its behaviour.
+        return;
+    }
+
     // Read --headless / --dump-frame / --compare-golden flags before sw.run()
     // so we can set Config accordingly. When --headless is combined with
     // --dump-frame= (or --compare-golden=, which implies a capture), we
@@ -549,9 +636,14 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.golden_max_diff_pct = 0.5;
     state.golden_max_channel_delta = 2;
 
-    // Check for TAS script argument
-    const args = try std.process.argsAlloc(ctx.allocator());
-    defer std.process.argsFree(ctx.allocator(), args);
+    // CLI flag parsing — native only. WASM builds never have process args;
+    // they use the hardcoded defaults set above (hilly world, skylight,
+    // classic AO, 4× MSAA) which is exactly what the browser should show.
+    const args: [][:0]u8 = if (comptime is_wasm)
+        &[_][:0]u8{}
+    else
+        try std.process.argsAlloc(ctx.allocator());
+    defer if (comptime !is_wasm) std.process.argsFree(ctx.allocator(), args);
 
     // Pre-scan: collect all flags before processing --tas, so flag order doesn't matter.
     for (args) |arg| {
@@ -591,7 +683,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.world_preset = .hilly;
             } else {
                 std.log.err("--world: invalid value '{s}'. Accepted: flatland, hilly", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--msaa=")) {
@@ -608,7 +700,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.msaa_config = .{ .method = .msaa, .msaa_samples = 8 };
             } else {
                 std.log.err("--msaa: invalid value '{s}'. Accepted: none, 0, 1, 2, 4, 8", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--aa=")) {
@@ -624,7 +716,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.msaa_config = .{ .method = .fxaa, .msaa_samples = 1 };
             } else {
                 std.log.err("--aa: invalid value '{s}'. Accepted: none, msaa, fxaa", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--ao=")) {
@@ -637,7 +729,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.ao_strategy = .moore;
             } else {
                 std.log.err("--ao: invalid value '{s}'. Accepted: none, classic, moore", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--lighting=")) {
@@ -648,7 +740,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.lighting_mode = .skylight;
             } else {
                 std.log.err("--lighting: invalid value '{s}'. Accepted: none, skylight", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--frustum=")) {
@@ -727,45 +819,51 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Initialize world with the selected preset (deferred until here so --world= works).
     state.world = try world_mod.World.init(ctx.allocator(), state.world_preset);
 
-    for (args, 0..) |arg, i| {
-        if (std.mem.eql(u8, arg, "--tas") and i + 1 < args.len) {
-            const tas_path = args[i + 1];
-            std.log.info("Loading TAS script: {s}", .{tas_path});
+    // TAS loading — native only. `TasScript.parseFile` calls std.fs.cwd()
+    // which pulls in posix symbols that don't exist on wasm32-freestanding.
+    // The browser build never loads TAS scripts anyway; users replay via the
+    // native binary.
+    if (comptime !is_wasm) {
+        for (args, 0..) |arg, i| {
+            if (std.mem.eql(u8, arg, "--tas") and i + 1 < args.len) {
+                const tas_path = args[i + 1];
+                std.log.info("Loading TAS script: {s}", .{tas_path});
 
-            // Parse TAS script
-            var tas_script = core.TasScript.parseFile(ctx.allocator(), tas_path) catch |err| {
-                std.log.err("Failed to parse TAS script: {}", .{err});
-                return err;
-            };
-            defer tas_script.deinit();
+                // Parse TAS script
+                var tas_script = core.TasScript.parseFile(ctx.allocator(), tas_path) catch |err| {
+                    std.log.err("Failed to parse TAS script: {}", .{err});
+                    return err;
+                };
+                defer tas_script.deinit();
 
-            std.log.info("TAS script loaded: {} commands, {} ticks duration", .{
-                tas_script.entries.items.len,
-                tas_script.getDuration(),
-            });
+                std.log.info("TAS script loaded: {} commands, {} ticks duration", .{
+                    tas_script.entries.items.len,
+                    tas_script.getDuration(),
+                });
 
-            // Convert TAS entries → events, transfer ownership directly to the replayer.
-            // No serialize/deserialize roundtrip needed.
-            const events = try tas_script.toEvents(120); // 120 Hz
-            const replayer = core.Replayer.initDirect(ctx.allocator(), events);
-            // Leave replayer in .stopped state. It will be remapped and .play()ed
-            // when world loading completes (see voxelTick). This ensures TAS tick 1
-            // aligns with the first post-loading sim tick regardless of load duration.
-            state.tas_replayer = replayer;
+                // Convert TAS entries → events, transfer ownership directly to the replayer.
+                // No serialize/deserialize roundtrip needed.
+                const events = try tas_script.toEvents(120); // 120 Hz
+                const replayer = core.Replayer.initDirect(ctx.allocator(), events);
+                // Leave replayer in .stopped state. It will be remapped and .play()ed
+                // when world loading completes (see voxelTick). This ensures TAS tick 1
+                // aligns with the first post-loading sim tick regardless of load duration.
+                state.tas_replayer = replayer;
 
-            if (state.tas_step_mode) {
-                std.log.info("TAS step mode: press Right arrow to advance one tick", .{});
-            } else {
-                // Normal TAS: block physical input for deterministic replay.
-                ctx.setInputBlocked(true);
+                if (state.tas_step_mode) {
+                    std.log.info("TAS step mode: press Right arrow to advance one tick", .{});
+                } else {
+                    // Normal TAS: block physical input for deterministic replay.
+                    ctx.setInputBlocked(true);
+                }
+
+                // Enable debug mode automatically so the keyboard HUD shows TAS input live.
+                state.debug_mode = true;
+                // Auto-enable GPU debug in step mode so rebuilt faces are highlighted.
+                if (state.tas_step_mode) state.gpu_debug = true;
+                std.log.info("TAS replayer ready — will start after world loading completes", .{});
+                break;
             }
-
-            // Enable debug mode automatically so the keyboard HUD shows TAS input live.
-            state.debug_mode = true;
-            // Auto-enable GPU debug in step mode so rebuilt faces are highlighted.
-            if (state.tas_step_mode) state.gpu_debug = true;
-            std.log.info("TAS replayer ready — will start after world loading completes", .{});
-            break;
         }
     }
 
@@ -1065,7 +1163,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             const dcz = lc.cz - player_cz;
             if (dcx * dcx + dcz * dcz > world_mod.MESH_RADIUS_SQ) continue;
             if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
-            const t0 = std.time.nanoTimestamp();
+            const t0 = perfNowNs();
             mesher_mod.generateMeshForMode(
                 &lc.chunk,
                 &lc.mesh,
@@ -1079,7 +1177,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
-            const t_us = @divTrunc(std.time.nanoTimestamp() - t0, 1000);
+            const t_us = @divTrunc(perfNowNs() - t0, 1000);
             std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
             lc.state = .meshed;
             lc.mesh_dirty = false;
@@ -1385,7 +1483,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     1 => {
                         // Yes -> exit
                         std.log.info("Quit (ENTER on confirm)", .{});
-                        std.process.exit(0);
+                        fatalExit(0);
                     },
                     else => {},
                 },
@@ -1532,7 +1630,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                             lc.mesh_dirty = true;
                             std.log.info("[TICK  tick={d:4}] greedy remove ({},{},{}) mesh_dirty=true", .{ ctx.tickId(), bx, by, bz });
                         } else {
-                            const t_incr0 = std.time.nanoTimestamp();
+                            const t_incr0 = perfNowNs();
                             lc.mesh.updateForBlockChange(
                                 &lc.chunk,
                                 lbx,
@@ -1549,7 +1647,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                                 lc.mesh_dirty = true;
                             };
                             lc.mesh_incremental_dirty = true;
-                            const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
+                            const t_incr_us = @divTrunc(perfNowNs() - t_incr0, 1000);
                             std.log.info("[TICK  tick={d:4}] incremental remove ({},{},{}) update={}us", .{ ctx.tickId(), bx, by, bz, t_incr_us });
                         }
                     }
@@ -1579,7 +1677,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                             lc.mesh_dirty = true;
                             std.log.info("[TICK  tick={d:4}] greedy place ({},{},{}) mesh_dirty=true", .{ ctx.tickId(), px, py, pz });
                         } else {
-                            const t_incr0 = std.time.nanoTimestamp();
+                            const t_incr0 = perfNowNs();
                             lc.mesh.updateForBlockChange(
                                 &lc.chunk,
                                 lpx,
@@ -1596,7 +1694,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                                 lc.mesh_dirty = true;
                             };
                             lc.mesh_incremental_dirty = true;
-                            const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
+                            const t_incr_us = @divTrunc(perfNowNs() - t_incr0, 1000);
                             std.log.info("[TICK  tick={d:4}] incremental place ({},{},{}) update={}us", .{ ctx.tickId(), px, py, pz, t_incr_us });
                         }
                     }
@@ -1822,7 +1920,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     // Sampled here so the F3 overlay shows real present cadence even if the
     // simulation runs at a different rate. 60-sample window ≈ 1 s at 60 Hz.
     {
-        const now = std.time.nanoTimestamp();
+        const now = perfNowNs();
         if (state.last_frame_ns != 0) {
             const delta_i = now - state.last_frame_ns;
             if (delta_i > 0) {
@@ -2556,8 +2654,12 @@ fn voxelRender(ctx: *sw.Context) !void {
         if (state.tas_replayer) |*r| break :blk (r.state == .finished);
         break :blk true;
     };
+    // --dump-frame / --compare-golden: native only. WASM builds don't accept
+    // CLI flags, so dump_frame_path and compare_golden_path are always null
+    // in the browser, but the body still references std.fs and std.process.exit
+    // which pull in posix — must be comptime-gated.
     const want_capture = (state.dump_frame_path != null) or (state.compare_golden_path != null);
-    if (want_capture and !state.dump_frame_done and dump_ready) {
+    if (comptime !is_wasm) if (want_capture and !state.dump_frame_done and dump_ready) {
         state.dump_frame_done = true;
         g.submit(&[_]gpu_mod.CommandBuffer{cmd});
         // Capture pixels (target has CopySrc usage; call before present)
@@ -2577,7 +2679,7 @@ fn voxelRender(ctx: *sw.Context) !void {
         // golden comparator.
         const rgb = ctx.allocator().alloc(u8, w * h * 3) catch {
             std.log.err("OOM allocating PPM buffer", .{});
-            std.process.exit(1);
+            fatalExit(1);
         };
         defer ctx.allocator().free(rgb);
         {
@@ -2600,7 +2702,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             const hdr = std.fmt.bufPrint(&hdr_buf, "P6\n{} {}\n255\n", .{ w, h }) catch unreachable;
             const file = std.fs.cwd().createFile(path, .{}) catch |err| {
                 std.log.err("Cannot create {s}: {}", .{ path, err });
-                std.process.exit(1);
+                fatalExit(1);
             };
             file.writeAll(hdr) catch unreachable;
             file.writeAll(rgb) catch unreachable;
@@ -2620,13 +2722,13 @@ fn voxelRender(ctx: *sw.Context) !void {
                 state.golden_max_channel_delta,
             ) catch |err| {
                 std.log.err("compare-golden failed: {s}: {}", .{ golden_path, err });
-                std.process.exit(2);
+                fatalExit(2);
             };
-            std.process.exit(exit_code);
+            fatalExit(exit_code);
         }
 
-        std.process.exit(0);
-    }
+        fatalExit(0);
+    };
 
     g.submit(&[_]gpu_mod.CommandBuffer{cmd});
     g.present();
@@ -2959,4 +3061,113 @@ fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkG
     }
 
     g.writeBuffer(cg.index_buffer.?, 0, std.mem.sliceAsBytes(sorted));
+}
+
+// ----------------------------------------------------------------------------
+// WASM entry shim
+// ----------------------------------------------------------------------------
+// These exports let the swindowzig WASM bootstrap (backends/wasm/boot.ts)
+// drive the voxel engine from the browser. Only compiled when targeting
+// wasm32-freestanding — on native, the `comptime if (is_wasm)` gate below
+// keeps them out of the binary entirely.
+//
+// Lifecycle:
+//   - JS side initialises WebGPU (navigator.gpu.requestDevice) BEFORE
+//     instantiating the WASM module. By the time swindowzig_init() runs,
+//     the webgpuRequestAdapter/Device extern calls return real handles.
+//   - swindowzig_init() constructs the Context (timeline, bus, input,
+//     WasmBackend, GPU), calls voxelInit(&ctx).
+//   - swindowzig_frame(ts) polls events from the bus, advances the
+//     fixed-step timeline, calls voxelTick/voxelRender.
+//
+// Default settings are hardcoded: hilly worldgen, skylight lighting,
+// classic AO, 4× MSAA, 120 Hz, windowed (not headless).
+
+const platform_mod = @import("sw_platform");
+
+var wasm_timeline: core.FixedStepTimeline = undefined;
+var wasm_bus: core.Bus = undefined;
+var wasm_input: core.InputSnapshot = undefined;
+var wasm_gpu: gpu_mod.GPU = .{};
+var wasm_ctx: sw.Context = undefined;
+var wasm_backend: platform_mod.Backend = undefined;
+var wasm_last_time_ns: u64 = 0;
+var wasm_initialised: bool = false;
+
+fn wasmInitImpl() callconv(.c) void {
+    if (wasm_initialised) return;
+    const alloc = std.heap.wasm_allocator;
+
+    // Construct the WASM backend — it owns the global event queue that
+    // the swindowzig_event_* exports (in sw_platform/wasm_canvas.zig)
+    // push key and mouse events into.
+    wasm_backend = platform_mod.wasm_canvas.WasmBackend.create(alloc) catch return;
+    wasm_backend.init() catch return;
+
+    wasm_timeline = core.FixedStepTimeline.init(120);
+    wasm_bus = core.Bus.init(alloc);
+    wasm_input = core.InputSnapshot.init();
+
+    // GPU.init() on wasm routes to web_bridge.webgpuRequestAdapter/Device
+    // which read handles set up by initWebGPU() on the JS side.
+    wasm_gpu.init(null, 1280, 720) catch {
+        std.log.warn("WASM GPU init failed; engine will run blind", .{});
+    };
+
+    wasm_ctx = .{
+        .alloc = alloc,
+        .timeline = &wasm_timeline,
+        .event_bus = &wasm_bus,
+        .input_snapshot = &wasm_input,
+        .backend = wasm_backend,
+        .gpu_device = &wasm_gpu,
+    };
+
+    voxelInit(&wasm_ctx) catch |err| {
+        std.log.err("voxelInit failed: {s}", .{@errorName(err)});
+        return;
+    };
+
+    wasm_last_time_ns = wasm_backend.getTime();
+    wasm_initialised = true;
+}
+
+fn wasmFrameImpl(timestamp_ms: f64) callconv(.c) void {
+    _ = timestamp_ms;
+    if (!wasm_initialised) return;
+
+    wasm_backend.pollEvents(&wasm_bus) catch return;
+
+    const now = wasm_backend.getTime();
+    const dt = now - wasm_last_time_ns;
+    wasm_last_time_ns = now;
+
+    _ = wasm_timeline.advance(dt);
+    wasm_bus.assignPendingToTick(wasm_timeline.currentTick() + 1);
+
+    while (wasm_timeline.step()) {
+        if (@hasDecl(Callbacks, "preTick")) {
+            Callbacks.preTick(&wasm_ctx) catch {};
+        }
+        const ev = wasm_bus.eventsForTick(wasm_timeline.currentTick());
+        wasm_input.updateFromEvents(ev);
+        voxelTick(&wasm_ctx) catch {};
+    }
+
+    voxelRender(&wasm_ctx) catch {};
+
+    wasm_bus.clear();
+}
+
+// Constants read by boot.ts for canvas configuration.
+const wasm_config_disable_context_menu: u8 = 1;
+const wasm_config_hide_cursor: u8 = 0;
+
+comptime {
+    if (is_wasm) {
+        @export(&wasmInitImpl, .{ .name = "swindowzig_init" });
+        @export(&wasmFrameImpl, .{ .name = "swindowzig_frame" });
+        @export(&wasm_config_disable_context_menu, .{ .name = "swindowzig_config_disable_context_menu" });
+        @export(&wasm_config_hide_cursor, .{ .name = "swindowzig_config_hide_cursor" });
+    }
 }

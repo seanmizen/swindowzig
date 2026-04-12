@@ -74,6 +74,10 @@ pub fn build(b: *std.Build) void {
     example.root_module.addImport("sw_math", sw_math);
     example.root_module.addImport("sw_gpu", sw_gpu);
     example.root_module.addImport("sw_core", sw_core);
+    // sw_platform is needed by examples that drive their own wasm entry
+    // (e.g. voxel, which constructs a WasmBackend directly in its
+    // swindowzig_init export).
+    example.root_module.addImport("sw_platform", sw_platform);
     example.rdynamic = true; // Export symbols for WASM
 
     const install_example = b.addInstallArtifact(example, .{});

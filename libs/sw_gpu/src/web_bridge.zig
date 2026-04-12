@@ -37,29 +37,29 @@ pub const WebGPUCommandBuffer = u32;
 // The "webgpu" namespace groups all WebGPU-related imports
 
 // Initialization
-extern "webgpu" fn webgpuInit() void;
-extern "webgpu" fn webgpuRequestAdapter() WebGPUAdapter;
-extern "webgpu" fn webgpuRequestDevice(adapter: WebGPUAdapter) WebGPUDevice;
-extern "webgpu" fn webgpuGetQueue(device: WebGPUDevice) WebGPUQueue;
+pub extern "webgpu" fn webgpuInit() void;
+pub extern "webgpu" fn webgpuRequestAdapter() WebGPUAdapter;
+pub extern "webgpu" fn webgpuRequestDevice(adapter: WebGPUAdapter) WebGPUDevice;
+pub extern "webgpu" fn webgpuGetQueue(device: WebGPUDevice) WebGPUQueue;
 
 // Buffer Operations
-extern "webgpu" fn webgpuCreateBuffer(
+pub extern "webgpu" fn webgpuCreateBuffer(
     device: WebGPUDevice,
     size: u64,
     usage: u32, // BufferUsage flags
     mapped_at_creation: bool,
 ) WebGPUBuffer;
 
-extern "webgpu" fn webgpuBufferGetMappedRange(
+pub extern "webgpu" fn webgpuBufferGetMappedRange(
     buffer: WebGPUBuffer,
     offset: u64,
     size: u64,
 ) u32; // Returns handle to ArrayBuffer
 
-extern "webgpu" fn webgpuBufferUnmap(buffer: WebGPUBuffer) void;
-extern "webgpu" fn webgpuBufferDestroy(buffer: WebGPUBuffer) void;
+pub extern "webgpu" fn webgpuBufferUnmap(buffer: WebGPUBuffer) void;
+pub extern "webgpu" fn webgpuBufferDestroy(buffer: WebGPUBuffer) void;
 
-extern "webgpu" fn webgpuWriteBuffer(
+pub extern "webgpu" fn webgpuWriteBuffer(
     queue: WebGPUQueue,
     buffer: WebGPUBuffer,
     buffer_offset: u64,
@@ -68,7 +68,7 @@ extern "webgpu" fn webgpuWriteBuffer(
 ) void;
 
 // Texture Operations
-extern "webgpu" fn webgpuCreateTexture(
+pub extern "webgpu" fn webgpuCreateTexture(
     device: WebGPUDevice,
     width: u32,
     height: u32,
@@ -79,7 +79,7 @@ extern "webgpu" fn webgpuCreateTexture(
     sample_count: u32,
 ) WebGPUTexture;
 
-extern "webgpu" fn webgpuCreateTextureView(
+pub extern "webgpu" fn webgpuCreateTextureView(
     texture: WebGPUTexture,
     format: u32, // TextureFormat or 0 for default
     dimension: u32, // TextureViewDimension
@@ -90,9 +90,9 @@ extern "webgpu" fn webgpuCreateTextureView(
     array_layer_count: u32,
 ) WebGPUTextureView;
 
-extern "webgpu" fn webgpuTextureDestroy(texture: WebGPUTexture) void;
+pub extern "webgpu" fn webgpuTextureDestroy(texture: WebGPUTexture) void;
 
-extern "webgpu" fn webgpuWriteTexture(
+pub extern "webgpu" fn webgpuWriteTexture(
     queue: WebGPUQueue,
     texture: WebGPUTexture,
     mip_level: u32,
@@ -109,7 +109,7 @@ extern "webgpu" fn webgpuWriteTexture(
 ) void;
 
 // Sampler Operations
-extern "webgpu" fn webgpuCreateSampler(
+pub extern "webgpu" fn webgpuCreateSampler(
     device: WebGPUDevice,
     address_mode_u: u32,
     address_mode_v: u32,
@@ -123,14 +123,14 @@ extern "webgpu" fn webgpuCreateSampler(
 ) WebGPUSampler;
 
 // Shader Operations
-extern "webgpu" fn webgpuCreateShaderModule(
+pub extern "webgpu" fn webgpuCreateShaderModule(
     device: WebGPUDevice,
     code_ptr: [*]const u8,
     code_len: u32,
 ) WebGPUShaderModule;
 
 // Bind Group Layout Operations
-extern "webgpu" fn webgpuCreateBindGroupLayout(
+pub extern "webgpu" fn webgpuCreateBindGroupLayout(
     device: WebGPUDevice,
     entries_ptr: [*]const BindGroupLayoutEntryJS,
     entry_count: u32,
@@ -161,7 +161,7 @@ pub const BindGroupLayoutEntryJS = extern struct {
 };
 
 // Bind Group Operations
-extern "webgpu" fn webgpuCreateBindGroup(
+pub extern "webgpu" fn webgpuCreateBindGroup(
     device: WebGPUDevice,
     layout: WebGPUBindGroupLayout,
     entries_ptr: [*]const BindGroupEntryJS,
@@ -179,14 +179,14 @@ pub const BindGroupEntryJS = extern struct {
 };
 
 // Pipeline Layout Operations
-extern "webgpu" fn webgpuCreatePipelineLayout(
+pub extern "webgpu" fn webgpuCreatePipelineLayout(
     device: WebGPUDevice,
     bind_group_layouts_ptr: [*]const WebGPUBindGroupLayout,
     bind_group_layout_count: u32,
 ) WebGPUPipelineLayout;
 
 // Render Pipeline Operations
-extern "webgpu" fn webgpuCreateRenderPipeline(
+pub extern "webgpu" fn webgpuCreateRenderPipeline(
     device: WebGPUDevice,
     layout: WebGPUPipelineLayout, // 0 for auto layout
 
@@ -252,7 +252,7 @@ pub const ColorTargetStateJS = extern struct {
 };
 
 // Compute Pipeline Operations
-extern "webgpu" fn webgpuCreateComputePipeline(
+pub extern "webgpu" fn webgpuCreateComputePipeline(
     device: WebGPUDevice,
     layout: WebGPUPipelineLayout, // 0 for auto layout
     module: WebGPUShaderModule,
@@ -261,9 +261,9 @@ extern "webgpu" fn webgpuCreateComputePipeline(
 ) WebGPUComputePipeline;
 
 // Command Encoding
-extern "webgpu" fn webgpuCreateCommandEncoder(device: WebGPUDevice) WebGPUCommandEncoder;
+pub extern "webgpu" fn webgpuCreateCommandEncoder(device: WebGPUDevice) WebGPUCommandEncoder;
 
-extern "webgpu" fn webgpuCommandEncoderBeginRenderPass(
+pub extern "webgpu" fn webgpuCommandEncoderBeginRenderPass(
     encoder: WebGPUCommandEncoder,
     color_attachments_ptr: [*]const RenderPassColorAttachmentJS,
     color_attachment_count: u32,
@@ -287,21 +287,21 @@ pub const RenderPassColorAttachmentJS = extern struct {
     clear_a: f64,
 };
 
-extern "webgpu" fn webgpuCommandEncoderBeginComputePass(
+pub extern "webgpu" fn webgpuCommandEncoderBeginComputePass(
     encoder: WebGPUCommandEncoder,
 ) WebGPUComputePassEncoder;
 
-extern "webgpu" fn webgpuCommandEncoderFinish(
+pub extern "webgpu" fn webgpuCommandEncoderFinish(
     encoder: WebGPUCommandEncoder,
 ) WebGPUCommandBuffer;
 
 // Render Pass Encoding
-extern "webgpu" fn webgpuRenderPassSetPipeline(
+pub extern "webgpu" fn webgpuRenderPassSetPipeline(
     pass: WebGPURenderPassEncoder,
     pipeline: WebGPURenderPipeline,
 ) void;
 
-extern "webgpu" fn webgpuRenderPassSetBindGroup(
+pub extern "webgpu" fn webgpuRenderPassSetBindGroup(
     pass: WebGPURenderPassEncoder,
     index: u32,
     bind_group: WebGPUBindGroup,
@@ -309,7 +309,7 @@ extern "webgpu" fn webgpuRenderPassSetBindGroup(
     dynamic_offset_count: u32,
 ) void;
 
-extern "webgpu" fn webgpuRenderPassSetVertexBuffer(
+pub extern "webgpu" fn webgpuRenderPassSetVertexBuffer(
     pass: WebGPURenderPassEncoder,
     slot: u32,
     buffer: WebGPUBuffer,
@@ -317,7 +317,7 @@ extern "webgpu" fn webgpuRenderPassSetVertexBuffer(
     size: u64,
 ) void;
 
-extern "webgpu" fn webgpuRenderPassSetIndexBuffer(
+pub extern "webgpu" fn webgpuRenderPassSetIndexBuffer(
     pass: WebGPURenderPassEncoder,
     buffer: WebGPUBuffer,
     format: u32, // 1=uint16, 2=uint32
@@ -325,7 +325,7 @@ extern "webgpu" fn webgpuRenderPassSetIndexBuffer(
     size: u64,
 ) void;
 
-extern "webgpu" fn webgpuRenderPassDraw(
+pub extern "webgpu" fn webgpuRenderPassDraw(
     pass: WebGPURenderPassEncoder,
     vertex_count: u32,
     instance_count: u32,
@@ -333,7 +333,7 @@ extern "webgpu" fn webgpuRenderPassDraw(
     first_instance: u32,
 ) void;
 
-extern "webgpu" fn webgpuRenderPassDrawIndexed(
+pub extern "webgpu" fn webgpuRenderPassDrawIndexed(
     pass: WebGPURenderPassEncoder,
     index_count: u32,
     instance_count: u32,
@@ -342,15 +342,15 @@ extern "webgpu" fn webgpuRenderPassDrawIndexed(
     first_instance: u32,
 ) void;
 
-extern "webgpu" fn webgpuRenderPassEnd(pass: WebGPURenderPassEncoder) void;
+pub extern "webgpu" fn webgpuRenderPassEnd(pass: WebGPURenderPassEncoder) void;
 
 // Compute Pass Encoding
-extern "webgpu" fn webgpuComputePassSetPipeline(
+pub extern "webgpu" fn webgpuComputePassSetPipeline(
     pass: WebGPUComputePassEncoder,
     pipeline: WebGPUComputePipeline,
 ) void;
 
-extern "webgpu" fn webgpuComputePassSetBindGroup(
+pub extern "webgpu" fn webgpuComputePassSetBindGroup(
     pass: WebGPUComputePassEncoder,
     index: u32,
     bind_group: WebGPUBindGroup,
@@ -358,25 +358,25 @@ extern "webgpu" fn webgpuComputePassSetBindGroup(
     dynamic_offset_count: u32,
 ) void;
 
-extern "webgpu" fn webgpuComputePassDispatch(
+pub extern "webgpu" fn webgpuComputePassDispatch(
     pass: WebGPUComputePassEncoder,
     workgroup_count_x: u32,
     workgroup_count_y: u32,
     workgroup_count_z: u32,
 ) void;
 
-extern "webgpu" fn webgpuComputePassEnd(pass: WebGPUComputePassEncoder) void;
+pub extern "webgpu" fn webgpuComputePassEnd(pass: WebGPUComputePassEncoder) void;
 
 // Queue Submission
-extern "webgpu" fn webgpuQueueSubmit(
+pub extern "webgpu" fn webgpuQueueSubmit(
     queue: WebGPUQueue,
     command_buffers_ptr: [*]const WebGPUCommandBuffer,
     command_buffer_count: u32,
 ) void;
 
 // Canvas/SwapChain Operations (web-specific)
-extern "webgpu" fn webgpuGetCurrentTextureView() WebGPUTextureView;
-extern "webgpu" fn webgpuPresent() void;
+pub extern "webgpu" fn webgpuGetCurrentTextureView() WebGPUTextureView;
+pub extern "webgpu" fn webgpuPresent() void;
 
 // =============================================================================
 // Helper Functions

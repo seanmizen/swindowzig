@@ -659,19 +659,20 @@ pub const GPU = struct {
             var js_vertex_buffers = try std.heap.page_allocator.alloc(web.VertexBufferLayoutJS, desc.vertex.buffers.len);
             defer std.heap.page_allocator.free(js_vertex_buffers);
 
-            // Track all attributes allocations for deferred cleanup
-            var vertex_attributes_allocations = std.ArrayList([]web.VertexAttributeJS).init(std.heap.page_allocator);
+            // Track all attributes allocations for deferred cleanup.
+            // Zig 0.15.2 ArrayList API: init with `{}`, pass allocator per-op.
+            var vertex_attributes_allocations = std.ArrayList([]web.VertexAttributeJS){};
             defer {
                 for (vertex_attributes_allocations.items) |attrs| {
                     std.heap.page_allocator.free(attrs);
                 }
-                vertex_attributes_allocations.deinit();
+                vertex_attributes_allocations.deinit(std.heap.page_allocator);
             }
 
             for (desc.vertex.buffers, 0..) |buffer_layout, i| {
                 // Allocate and convert attributes
                 var js_attrs = try std.heap.page_allocator.alloc(web.VertexAttributeJS, buffer_layout.attributes.len);
-                try vertex_attributes_allocations.append(js_attrs);
+                try vertex_attributes_allocations.append(std.heap.page_allocator, js_attrs);
 
                 for (buffer_layout.attributes, 0..) |attr, j| {
                     js_attrs[j] = .{
@@ -1638,7 +1639,11 @@ pub const RenderPassEncoder = struct {
 
     pub fn setBindGroup(self: RenderPassEncoder, index: u32, bind_group: BindGroup) void {
         if (comptime is_wasm) {
-            web.webgpuRenderPassSetBindGroup(self.handle, index, bind_group.handle, null, 0);
+            // Can't pass null for a `[*]const u32` parameter — the web bridge
+            // signature expects a non-optional pointer even when count=0. Use
+            // a dummy non-null pointer; the JS side reads zero bytes.
+            const dummy: [*]const u32 = &[_]u32{};
+            web.webgpuRenderPassSetBindGroup(self.handle, index, bind_group.handle, dummy, 0);
         } else {
             native.wgpuRenderPassEncoderSetBindGroup(self.handle, index, bind_group.handle, 0, null);
         }
