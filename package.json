@@ -4,9 +4,12 @@
   "private": true,
   "scripts": {
     "build:wasm": "zig build web",
+    "build:wasm:voxel": "zig build web -Dexample=voxel -Doptimize=ReleaseFast",
     "build:js": "bun build backends/wasm/boot.ts --outdir=zig-out/bin --minify",
     "build": "bun run build:wasm && bun run build:js",
+    "build:voxel": "bun run build:wasm:voxel && bun run build:js",
     "dev": "bun run build && bun backends/wasm/dev-server.ts",
+    "dev:voxel": "bun run build:voxel && bun backends/wasm/dev-server.ts",
     "dev:watch": "bun --watch backends/wasm/dev-server.ts",
     "web:windows": "zig build web -Dexample=windows && bun build backends/wasm/boot.ts --outdir=zig-out/bin && bun backends/wasm/dev-server.ts",
     "native:windows": "zig build run -Dexample=windows",
