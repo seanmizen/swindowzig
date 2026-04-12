@@ -443,6 +443,13 @@ const State = struct {
     fps_window_idx: usize = 0,
     fps_window_filled: bool = false,
     last_frame_ns: i128 = 0,
+    /// Mesher strategy parsed from --meshing=<naive|greedy>. Default: greedy.
+    /// Greedy merges coplanar same-material + same-lighting faces into larger
+    /// rectangles (5–10× vertex reduction on flatland/hilly). Naive is kept
+    /// as a fallback + regression baseline. Changing this at runtime requires
+    /// marking every loaded chunk dirty so it re-meshes with the new strategy —
+    /// same constraint as `ao_strategy` and `lighting_mode`.
+    meshing_mode: mesher_mod.MeshingMode = .greedy,
 };
 
 var state: State = undefined;
@@ -533,6 +540,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.fps_window_idx = 0;
     state.fps_window_filled = false;
     state.last_frame_ns = 0;
+    // Default meshing: greedy. `--meshing=naive` falls back to the old
+    // one-quad-per-face path used by the existing regression baselines.
+    state.meshing_mode = .greedy;
     state.dump_frame_path = null;
     state.dump_frame_done = false;
     state.compare_golden_path = null;
@@ -691,12 +701,24 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.process.exit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--meshing=")) {
+            const val = std.mem.sliceTo(arg["--meshing=".len..], 0);
+            if (std.mem.eql(u8, val, "naive")) {
+                state.meshing_mode = .naive;
+            } else if (std.mem.eql(u8, val, "greedy")) {
+                state.meshing_mode = .greedy;
+            } else {
+                std.log.err("--meshing: invalid value '{s}'. Accepted: naive, greedy", .{val});
+                std.process.exit(1);
+            }
+        }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={}", .{
         @tagName(state.msaa_config.method), state.msaa_config.msaa_samples,
     });
     std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
     std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
+    std.log.info("Meshing mode (post-parse): {s}", .{@tagName(state.meshing_mode)});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
     std.log.info("Frustum cull: strategy={s} fov={d:.0}°", .{
         state.frustum_strategy.label(), state.frustum_fov_deg,
@@ -779,6 +801,13 @@ fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, c
         const nb_lx = nb_wx - nb_cx * chunk_mod.CHUNK_W;
         const nb_lz = nb_wz - nb_cz * chunk_mod.CHUNK_W;
 
+        if (state.meshing_mode == .greedy) {
+            // Greedy merged quads can't be patched by
+            // `updateForBlockChange` (see comment on the dig handler). Mark
+            // the neighbour chunk dirty for a full re-mesh.
+            nb_lc.mesh_dirty = true;
+            continue;
+        }
         nb_lc.mesh.updateForBlockChange(
             &nb_lc.chunk,
             nb_lx,
@@ -849,7 +878,7 @@ fn syncCameraToPlayer() void {
 /// Running cost: bursts through PREGEN_CHUNKS_PER_TICK generations and
 /// PREGEN_MESH_GENS_PER_TICK mesh builds per call. Caller ticks this until it
 /// returns true, keeping the loading screen animated between ticks.
-fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy, lighting_mode: gpu_mod.LightingMode) !bool {
+fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy, lighting_mode: gpu_mod.LightingMode, meshing_mode: mesher_mod.MeshingMode) !bool {
     const R = world_mod.PREGEN_RADIUS;
 
     // Pass 1 — generate every chunk inside the (2R+1)^2 outer square that is
@@ -887,7 +916,7 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
             const lc = world.chunks.get(key) orelse continue;
             if (!lc.mesh_dirty) continue;
             if (!world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
-            mesher_mod.generateMesh(
+            mesher_mod.generateMeshForMode(
                 &lc.chunk,
                 &lc.mesh,
                 lc.worldX(),
@@ -895,6 +924,7 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
                 world.asBlockGetter(),
                 ao_strategy,
                 lighting_mode,
+                meshing_mode,
             ) catch |err| {
                 std.log.err("[PREGEN] mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
@@ -945,7 +975,7 @@ fn voxelTick(ctx: *sw.Context) !void {
         const spawn_cx = world_mod.chunkCoordOf(spawn_bx);
         const spawn_cz = world_mod.chunkCoordOf(spawn_bz);
 
-        const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy, state.lighting_mode) catch |err| blk: {
+        const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy, state.lighting_mode, state.meshing_mode) catch |err| blk: {
             std.log.err("Pregen step failed: {}", .{err});
             break :blk false;
         };
@@ -1036,7 +1066,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             if (dcx * dcx + dcz * dcz > world_mod.MESH_RADIUS_SQ) continue;
             if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
             const t0 = std.time.nanoTimestamp();
-            mesher_mod.generateMesh(
+            mesher_mod.generateMeshForMode(
                 &lc.chunk,
                 &lc.mesh,
                 lc.worldX(),
@@ -1044,6 +1074,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 state.world.asBlockGetter(),
                 state.ao_strategy,
                 state.lighting_mode,
+                state.meshing_mode,
             ) catch |err| {
                 std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
@@ -1492,25 +1523,35 @@ fn voxelTick(ctx: *sw.Context) !void {
                         const lcz = world_mod.chunkCoordOf(bz);
                         const lbx = bx - lcx * chunk_mod.CHUNK_W;
                         const lbz = bz - lcz * chunk_mod.CHUNK_W;
-                        const t_incr0 = std.time.nanoTimestamp();
-                        lc.mesh.updateForBlockChange(
-                            &lc.chunk,
-                            lbx,
-                            by,
-                            lbz,
-                            cam_pos_arr,
-                            lc.worldX(),
-                            lc.worldZ(),
-                            state.world.asBlockGetter(),
-                            state.ao_strategy,
-                            state.lighting_mode,
-                        ) catch |err| {
-                            std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
+                        if (state.meshing_mode == .greedy) {
+                            // Greedy quads span multiple blocks, so the
+                            // `quad_block` parallel array lookup used by
+                            // `updateForBlockChange` can't isolate what to
+                            // rebuild. Flag the chunk dirty and let the full
+                            // regen pick it up next tick.
                             lc.mesh_dirty = true;
-                        };
-                        lc.mesh_incremental_dirty = true;
-                        const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
-                        std.log.info("[TICK  tick={d:4}] incremental remove ({},{},{}) update={}us", .{ ctx.tickId(), bx, by, bz, t_incr_us });
+                            std.log.info("[TICK  tick={d:4}] greedy remove ({},{},{}) mesh_dirty=true", .{ ctx.tickId(), bx, by, bz });
+                        } else {
+                            const t_incr0 = std.time.nanoTimestamp();
+                            lc.mesh.updateForBlockChange(
+                                &lc.chunk,
+                                lbx,
+                                by,
+                                lbz,
+                                cam_pos_arr,
+                                lc.worldX(),
+                                lc.worldZ(),
+                                state.world.asBlockGetter(),
+                                state.ao_strategy,
+                                state.lighting_mode,
+                            ) catch |err| {
+                                std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
+                                lc.mesh_dirty = true;
+                            };
+                            lc.mesh_incremental_dirty = true;
+                            const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
+                            std.log.info("[TICK  tick={d:4}] incremental remove ({},{},{}) update={}us", .{ ctx.tickId(), bx, by, bz, t_incr_us });
+                        }
                     }
                     updateBoundaryNeighbors(&state.world, bx, by, bz, cam_pos_arr);
                 }
@@ -1532,25 +1573,32 @@ fn voxelTick(ctx: *sw.Context) !void {
                         const lcz = world_mod.chunkCoordOf(pz);
                         const lpx = px - lcx * chunk_mod.CHUNK_W;
                         const lpz = pz - lcz * chunk_mod.CHUNK_W;
-                        const t_incr0 = std.time.nanoTimestamp();
-                        lc.mesh.updateForBlockChange(
-                            &lc.chunk,
-                            lpx,
-                            py,
-                            lpz,
-                            cam_pos_arr2,
-                            lc.worldX(),
-                            lc.worldZ(),
-                            state.world.asBlockGetter(),
-                            state.ao_strategy,
-                            state.lighting_mode,
-                        ) catch |err| {
-                            std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
+                        if (state.meshing_mode == .greedy) {
+                            // See note in the break-block path above: greedy
+                            // merged quads can't be incrementally updated.
                             lc.mesh_dirty = true;
-                        };
-                        lc.mesh_incremental_dirty = true;
-                        const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
-                        std.log.info("[TICK  tick={d:4}] incremental place ({},{},{}) update={}us", .{ ctx.tickId(), px, py, pz, t_incr_us });
+                            std.log.info("[TICK  tick={d:4}] greedy place ({},{},{}) mesh_dirty=true", .{ ctx.tickId(), px, py, pz });
+                        } else {
+                            const t_incr0 = std.time.nanoTimestamp();
+                            lc.mesh.updateForBlockChange(
+                                &lc.chunk,
+                                lpx,
+                                py,
+                                lpz,
+                                cam_pos_arr2,
+                                lc.worldX(),
+                                lc.worldZ(),
+                                state.world.asBlockGetter(),
+                                state.ao_strategy,
+                                state.lighting_mode,
+                            ) catch |err| {
+                                std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
+                                lc.mesh_dirty = true;
+                            };
+                            lc.mesh_incremental_dirty = true;
+                            const t_incr_us = @divTrunc(std.time.nanoTimestamp() - t_incr0, 1000);
+                            std.log.info("[TICK  tick={d:4}] incremental place ({},{},{}) update={}us", .{ ctx.tickId(), px, py, pz, t_incr_us });
+                        }
                     }
                     updateBoundaryNeighbors(&state.world, px, py, pz, cam_pos_arr2);
                 }

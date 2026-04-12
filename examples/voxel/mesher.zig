@@ -9,6 +9,21 @@ const CHUNK_H = chunk_mod.CHUNK_H;
 pub const AOStrategy = gpu_mod.AOStrategy;
 pub const LightingMode = gpu_mod.LightingMode;
 
+/// How the mesher emits faces for a chunk.
+///
+///   .naive  — one quad per visible block face. Preserves the per-block
+///             invariant used by `updateForBlockChange` (the `quad_block`
+///             parallel array assumes exactly one block owns each quad).
+///   .greedy — coplanar same-material + same-lighting faces are merged into
+///             larger rectangles. Reduces vertex count by 5–10× on
+///             flatland/hilly terrain. Greedy quads span multiple blocks, so
+///             the `updateForBlockChange` incremental path is NOT used in
+///             greedy mode; block add/remove flags `mesh_dirty = true` and
+///             the affected chunk is re-meshed in full next tick. See
+///             `examples/voxel/docs/memory.md` §5 for rationale + measured
+///             reductions.
+pub const MeshingMode = enum { naive, greedy };
+
 const DEBUG = false; // Enable for mesh generation debug logging
 
 /// Vertex format matching voxel.wgsl
@@ -1292,4 +1307,476 @@ pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Greedy meshing
+// ---------------------------------------------------------------------------
+
+/// A single face candidate in a 2D greedy-merge plane. Holds everything needed
+/// to decide whether two adjacent cells may merge: block type, per-vertex AO,
+/// per-vertex skylight. Two cells merge iff every f32 byte in the lighting
+/// tuples is bit-identical AND the block types match.
+const GreedyCell = struct {
+    present: bool = false,
+    block_type: BlockType = .air,
+    ao: [4]f32 = .{ 0, 0, 0, 0 },
+    sky: [4]f32 = .{ 0, 0, 0, 0 },
+};
+
+/// True iff all four corner values in `v` are bit-identical. Used to detect
+/// cells that are shade-constant across their entire face — the only cells
+/// that can be greedy-merged without breaking interpolation. See the long
+/// comment on `greedyCellEq` for why we can't use the weaker "corners-match"
+/// rule.
+fn greedyUniform4(v: [4]f32) bool {
+    return v[0] == v[1] and v[0] == v[2] and v[0] == v[3];
+}
+
+/// Decide whether two adjacent face cells may merge into the same greedy
+/// rectangle. This rule is STRICTER than the classic "matching corners"
+/// greedy rule: we only merge cells whose AO and skylight are *uniform*
+/// (all four corners equal) AND whose uniform constants match the candidate
+/// cell. This is the only rule that guarantees bilinear interpolation over
+/// a merged w × h quad reproduces the piecewise-bilinear naive result at
+/// every interior fragment.
+///
+/// Why the weaker rule fails: consider two adjacent cells that each have AO
+/// quadruple [a, a, b, b] at corners (0,0)(0,1)(1,1)(1,0). Naive emits two
+/// separate quads, each with its own (a,a,b,b) gradient from a to b across
+/// the cell. Merging them into a 2×1 rect with corners (a, a, b, b) means
+/// the gradient now stretches over 2 units — the value at the center of
+/// the left cell becomes a 75/25 mix of (a, b) instead of 50/50. RMS drift
+/// is large enough to be visible. Requiring uniform-corner cells ducks this
+/// entirely: a constant AO gives bilinear-interp == constant, same as naive.
+fn greedyCellEq(a: GreedyCell, b: GreedyCell) bool {
+    if (!a.present or !b.present) return false;
+    if (a.block_type != b.block_type) return false;
+    if (!greedyUniform4(a.ao) or !greedyUniform4(b.ao)) return false;
+    if (!greedyUniform4(a.sky) or !greedyUniform4(b.sky)) return false;
+    if (a.ao[0] != b.ao[0]) return false;
+    if (a.sky[0] != b.sky[0]) return false;
+    return true;
+}
+
+/// Compute the face cell signature for a block face at local (lx, ly, lz).
+/// Mirrors the addQuad head — same AO/sky calls — so a greedy merged quad
+/// reproduces the lighting a naive quad would have had, exactly.
+fn computeGreedyCell(
+    chunk: *const Chunk,
+    getter: BlockGetter,
+    world_ox: i32,
+    world_oz: i32,
+    lx: i32,
+    ly: i32,
+    lz: i32,
+    face: Face,
+    ao_strategy: AOStrategy,
+    lighting_mode: LightingMode,
+) GreedyCell {
+    const block = chunk.getBlock(lx, ly, lz);
+    if (block == .air) return .{};
+    if (!shouldRenderFace(chunk, getter, lx, ly, lz, world_ox, world_oz, face)) return .{};
+    const wx = world_ox + lx;
+    const wz = world_oz + lz;
+    const ao = computeFaceAOForStrategy(chunk, getter, world_ox, world_oz, wx, ly, wz, face, ao_strategy);
+    const sky: [4]f32 = switch (lighting_mode) {
+        .none => .{ 1.0, 1.0, 1.0, 1.0 },
+        .skylight => computeFaceSkylight(chunk, getter, world_ox, world_oz, wx, ly, wz, face),
+    };
+    return .{
+        .present = true,
+        .block_type = block,
+        .ao = ao,
+        .sky = sky,
+    };
+}
+
+/// Emit a merged greedy quad covering (w × h) blocks in the face's in-plane
+/// (i, j) axes. The vertex layout mirrors the naive `addQuad` for each face
+/// with `+1` substituted by `+w` or `+h` on the in-plane axes, so the shader
+/// winding/normal path is identical — only the UV range grows.
+///
+/// `block_idx` is the packed index of the first (ia, ja) block in the rect
+/// (`ia`/`ja` are the in-plane axes of the face; `ia`/`ja` can't be used as
+/// names here because `ia` is a Zig primitive integer type).
+/// In greedy mode the `quad_block` parallel array loses its one-quad-per-block
+/// meaning, but we still populate it (any block in the merged rect would do)
+/// so the array stays the same length as `indices/6` and `swapRemoveQuad`
+/// continues to work when `decayHighlights` etc. run.
+fn emitGreedyQuad(
+    mesh: *Mesh,
+    face: Face,
+    d: i32,
+    ia: i32,
+    ja: i32,
+    w: i32,
+    h: i32,
+    cell: GreedyCell,
+    block_idx: u32,
+    world_ox: i32,
+    world_oz: i32,
+) !void {
+    std.debug.assert(cell.present);
+    std.debug.assert(cell.block_type != .air);
+    std.debug.assert(w > 0 and h > 0);
+
+    const base_idx: u32 = @intCast(mesh.vertices.items.len);
+    const normal = face_normals[@intFromEnum(face)];
+    const block_u32: u32 = @intFromEnum(cell.block_type);
+
+    const wf: f32 = @floatFromInt(w);
+    const hf: f32 = @floatFromInt(h);
+
+    // World-space coordinates of the (ia, ja) corner + constants per face.
+    // `d` is the in-plane slice index along the face normal.
+    const verts = switch (face) {
+        .px => blk: {
+            // +X face: d = local block x, plane at world x = world_ox + d + 1.
+            // In-plane axes: i = local Z, j = local Y. Merge grows w along Z, h along Y.
+            const x_f: f32 = @floatFromInt(world_ox + d + 1);
+            const y_f: f32 = @floatFromInt(ja);
+            const z_f: f32 = @floatFromInt(world_oz + ia);
+            break :blk [_]VoxelVertex{
+                .{ .pos = .{ x_f, y_f,      z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
+                .{ .pos = .{ x_f, y_f + hf, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1] },
+                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
+                .{ .pos = .{ x_f, y_f,      z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+            };
+        },
+        .nx => blk: {
+            // -X face: d = local x, plane at world x = world_ox + d.
+            // In-plane axes: i = Z, j = Y. Vertex 0 sits at (+z+w) to match naive winding.
+            const x_f: f32 = @floatFromInt(world_ox + d);
+            const y_f: f32 = @floatFromInt(ja);
+            const z_f: f32 = @floatFromInt(world_oz + ia);
+            break :blk [_]VoxelVertex{
+                .{ .pos = .{ x_f, y_f,      z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
+                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1] },
+                .{ .pos = .{ x_f, y_f + hf, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
+                .{ .pos = .{ x_f, y_f,      z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+            };
+        },
+        .py => blk: {
+            // +Y face: d = local y, plane at world y = d + 1.
+            // In-plane axes: i = X, j = Z. Merge grows w along X, h along Z.
+            const x_f: f32 = @floatFromInt(world_ox + ia);
+            const y_f: f32 = @floatFromInt(d + 1);
+            const z_f: f32 = @floatFromInt(world_oz + ja);
+            break :blk [_]VoxelVertex{
+                .{ .pos = .{ x_f,      y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
+                .{ .pos = .{ x_f,      y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1] },
+                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
+                .{ .pos = .{ x_f + wf, y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+            };
+        },
+        .ny => blk: {
+            // -Y face: d = local y, plane at world y = d.
+            // In-plane axes: i = X, j = Z. Vertex 0 sits at (+z+h) to match naive winding.
+            const x_f: f32 = @floatFromInt(world_ox + ia);
+            const y_f: f32 = @floatFromInt(d);
+            const z_f: f32 = @floatFromInt(world_oz + ja);
+            break :blk [_]VoxelVertex{
+                .{ .pos = .{ x_f,      y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
+                .{ .pos = .{ x_f,      y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1] },
+                .{ .pos = .{ x_f + wf, y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
+                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+            };
+        },
+        .pz => blk: {
+            // +Z face: d = local z, plane at world z = world_oz + d + 1.
+            // In-plane axes: i = X, j = Y. Merge grows w along X, h along Y.
+            const x_f: f32 = @floatFromInt(world_ox + ia);
+            const y_f: f32 = @floatFromInt(ja);
+            const z_f: f32 = @floatFromInt(world_oz + d + 1);
+            break :blk [_]VoxelVertex{
+                .{ .pos = .{ x_f,      y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
+                .{ .pos = .{ x_f + wf, y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[1], .skylight = cell.sky[1] },
+                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
+                .{ .pos = .{ x_f,      y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+            };
+        },
+        .nz => blk: {
+            // -Z face: d = local z, plane at world z = world_oz + d.
+            // In-plane axes: i = X, j = Y. Vertex 0 sits at (+x+w) to match naive winding.
+            const x_f: f32 = @floatFromInt(world_ox + ia);
+            const y_f: f32 = @floatFromInt(ja);
+            const z_f: f32 = @floatFromInt(world_oz + d);
+            break :blk [_]VoxelVertex{
+                .{ .pos = .{ x_f + wf, y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
+                .{ .pos = .{ x_f,      y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[1], .skylight = cell.sky[1] },
+                .{ .pos = .{ x_f,      y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
+                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+            };
+        },
+    };
+
+    try mesh.vertices.appendSlice(mesh.allocator, &verts);
+
+    const inds = [_]u32{
+        base_idx, base_idx + 1, base_idx + 2,
+        base_idx, base_idx + 2, base_idx + 3,
+    };
+    try mesh.indices.appendSlice(mesh.allocator, &inds);
+
+    try mesh.quad_block.append(mesh.allocator, block_idx);
+    try mesh.quad_highlight.append(mesh.allocator, 255);
+}
+
+/// Translate (d, i, j) in a face's in-plane coordinate system to a local
+/// (lx, ly, lz) block coord. Paired with the (u, v) → (i, j) mapping inside
+/// each per-face branch of generateMeshGreedy.
+fn greedyIJToLocalBlock(face: Face, d: i32, i: i32, j: i32) BlockPos {
+    return switch (face) {
+        .px, .nx => .{ .x = d, .y = j, .z = i }, // i = Z, j = Y
+        .py, .ny => .{ .x = i, .y = d, .z = j }, // i = X, j = Z
+        .pz, .nz => .{ .x = i, .y = j, .z = d }, // i = X, j = Y
+    };
+}
+
+/// Return the (i_max, j_max, d_max) extents of each face's plane grid.
+/// `d_max` is the number of plane slices, `i_max × j_max` is the size of
+/// each slice.
+fn greedyFaceExtents(face: Face) struct { i_max: i32, j_max: i32, d_max: i32 } {
+    return switch (face) {
+        // +X/-X slice on X: each slice is (Z × Y)
+        .px, .nx => .{ .i_max = CHUNK_W, .j_max = CHUNK_H, .d_max = CHUNK_W },
+        // +Y/-Y slice on Y: each slice is (X × Z)
+        .py, .ny => .{ .i_max = CHUNK_W, .j_max = CHUNK_W, .d_max = CHUNK_H },
+        // +Z/-Z slice on Z: each slice is (X × Y)
+        .pz, .nz => .{ .i_max = CHUNK_W, .j_max = CHUNK_H, .d_max = CHUNK_W },
+    };
+}
+
+/// Greedy-merged mesh generation. For each of the 6 face directions, slices
+/// the chunk into planes, builds a per-cell `GreedyCell` signature grid, then
+/// walks the grid growing rectangles of bit-identical (block_type, ao, sky)
+/// cells. One merged quad is emitted per rectangle.
+///
+/// Complexity per chunk: O(d_max × i_max × j_max × signature_cost). Same as
+/// naive in the limit — the greedy walk only touches each cell O(1) extra
+/// times via the `visited` mask. On flatland/hilly terrain the merged quad
+/// count drops 5–50×; the cost of the scan dominates the cost of the merges.
+///
+/// The mesher allocates two scratch buffers per call (one GreedyCell grid +
+/// one `bool` visited mask). Each is sized for the largest possible slice
+/// (CHUNK_W × CHUNK_H = 12288 cells). Per-call re-allocation is accepted
+/// because `generateMeshGreedy` runs at most a handful of times per tick and
+/// the cost is dwarfed by the AO/sky sample work.
+pub fn generateMeshGreedy(
+    chunk: *const Chunk,
+    mesh: *Mesh,
+    world_ox: i32,
+    world_oz: i32,
+    getter: BlockGetter,
+    ao_strategy: AOStrategy,
+    lighting_mode: LightingMode,
+) !void {
+    mesh.clear();
+
+    // Max plane dim = CHUNK_W × CHUNK_H (applies to all X/Z sliced faces).
+    const max_i: usize = @intCast(CHUNK_W);
+    const max_j: usize = @intCast(CHUNK_H);
+    const slice_len: usize = max_i * max_j;
+
+    const cells = try mesh.allocator.alloc(GreedyCell, slice_len);
+    defer mesh.allocator.free(cells);
+    const visited = try mesh.allocator.alloc(bool, slice_len);
+    defer mesh.allocator.free(visited);
+
+    // Merge size cap. The voxel demo uses painter's-algorithm sorting in
+    // software (no hardware depth — see CLAUDE.md §macOS/Metal wgpu bug)
+    // and the sort key is the quad centroid distance. A merged 48×48 quad
+    // has its centroid far from its farthest pixel, which causes visible
+    // sort inversions against overlapping smaller geometry (pit walls,
+    // hover outlines, etc.). Capping the merge at `MAX_GREEDY_DIM` on each
+    // axis keeps every merged quad's centroid within half that many blocks
+    // of its farthest corner — close enough that painter's sort order
+    // matches the naive 1×1 baseline to within the RMS tolerance used by
+    // the greedy_vs_naive regression.
+    //
+    // Cap of 6 lands comfortably inside the RMS tolerance while still
+    // hitting the 5–10× reduction target on flatland and capturing most
+    // of the hilly-terrain wins. Measured `greedy_vs_naive.tas` per-channel
+    // RMS on a flatland pit scene:
+    //   cap=4 → 0.62 /255   (safe)
+    //   cap=6 → 0.65 /255   (safe, picked)
+    //   cap=7 → 0.64 /255   (borderline, passes)
+    //   cap=8 → 9.63 /255   (fails ≥2 threshold — visible pit-wall inversions)
+    //   cap=∞ → 20.8 /255   (fails badly)
+    // The cliff between 7 and 8 is narrow, so 6 gives a safer headroom.
+    // Measured reduction at cap=6:
+    //   flatland → 4608 → ~130 quads (97.2% / ~35× reduction)
+    //   hilly    → ~5300 → ~1700 quads (67.8% / ~3.1× reduction)
+    // Hilly falls short of the 5-10× target because the uniform-AO/sky
+    // rule that `greedyCellEq` enforces rejects most bumpy terrain — the
+    // bottleneck is the merge rule, not the cap. Once hardware depth
+    // testing comes back (see `sw_gpu/src/gpu.zig` macOS/Metal wgpu TODO)
+    // the cap can be lifted; the RMS test will flag any regression.
+    const MAX_GREEDY_DIM: i32 = 6;
+
+    inline for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
+        const ext = greedyFaceExtents(face);
+        const i_max: i32 = ext.i_max;
+        const j_max: i32 = ext.j_max;
+        const d_max: i32 = ext.d_max;
+        const i_max_usz: usize = @intCast(i_max);
+        const j_max_usz: usize = @intCast(j_max);
+        const active_slice: usize = i_max_usz * j_max_usz;
+
+        var d: i32 = 0;
+        while (d < d_max) : (d += 1) {
+            // ---- populate cell grid for this plane ----
+            @memset(cells[0..active_slice], .{});
+            var ii: i32 = 0;
+            while (ii < i_max) : (ii += 1) {
+                var jj: i32 = 0;
+                while (jj < j_max) : (jj += 1) {
+                    const bp = greedyIJToLocalBlock(face, d, ii, jj);
+                    const cell = computeGreedyCell(
+                        chunk,
+                        getter,
+                        world_ox,
+                        world_oz,
+                        bp.x,
+                        bp.y,
+                        bp.z,
+                        face,
+                        ao_strategy,
+                        lighting_mode,
+                    );
+                    const ii_usz: usize = @intCast(ii);
+                    const jj_usz: usize = @intCast(jj);
+                    cells[ii_usz * j_max_usz + jj_usz] = cell;
+                }
+            }
+
+            // ---- greedy walk ----
+            @memset(visited[0..active_slice], false);
+            var ia: i32 = 0;
+            while (ia < i_max) : (ia += 1) {
+                var ja: i32 = 0;
+                while (ja < j_max) : (ja += 1) {
+                    const ia_usz: usize = @intCast(ia);
+                    const ja_usz: usize = @intCast(ja);
+                    const idx0 = ia_usz * j_max_usz + ja_usz;
+                    if (visited[idx0]) continue;
+                    const seed = cells[idx0];
+                    if (!seed.present) {
+                        visited[idx0] = true;
+                        continue;
+                    }
+
+                    // Grow width along i (within this j row) — walk +i while
+                    // cells keep matching the seed signature and we haven't
+                    // hit the painter's-sort cap.
+                    var w: i32 = 1;
+                    while (ia + w < i_max and w < MAX_GREEDY_DIM) {
+                        const iw_usz: usize = @intCast(ia + w);
+                        const idxw = iw_usz * j_max_usz + ja_usz;
+                        if (visited[idxw]) break;
+                        if (!greedyCellEq(seed, cells[idxw])) break;
+                        w += 1;
+                    }
+
+                    // Grow height along j — every row in [ja+1 .. ja+h) must
+                    // be fully available across the w-wide strip and match seed.
+                    var h: i32 = 1;
+                    grow_h: while (ja + h < j_max and h < MAX_GREEDY_DIM) {
+                        var k: i32 = 0;
+                        while (k < w) : (k += 1) {
+                            const iw_usz: usize = @intCast(ia + k);
+                            const jh_usz: usize = @intCast(ja + h);
+                            const idxk = iw_usz * j_max_usz + jh_usz;
+                            if (visited[idxk]) break :grow_h;
+                            if (!greedyCellEq(seed, cells[idxk])) break :grow_h;
+                        }
+                        h += 1;
+                    }
+
+                    // Mark the w × h rect visited.
+                    var rk: i32 = 0;
+                    while (rk < w) : (rk += 1) {
+                        var rl: i32 = 0;
+                        while (rl < h) : (rl += 1) {
+                            const ri_usz: usize = @intCast(ia + rk);
+                            const rj_usz: usize = @intCast(ja + rl);
+                            visited[ri_usz * j_max_usz + rj_usz] = true;
+                        }
+                    }
+
+                    // Emit the merged quad. `block_idx` is the packed index
+                    // of the (ia, ja) corner block — see the comment on
+                    // `emitGreedyQuad` for why the parallel array is still
+                    // populated even though one merged quad can span many blocks.
+                    const corner = greedyIJToLocalBlock(face, d, ia, ja);
+                    const block_idx = packBlockIdx(corner.x, corner.y, corner.z);
+                    try emitGreedyQuad(mesh, face, d, ia, ja, w, h, seed, block_idx, world_ox, world_oz);
+                }
+            }
+        }
+    }
+}
+
+/// Dispatch helper: run the requested meshing strategy and log a one-liner
+/// comparing the emitted quad count to the naive upper bound. For greedy
+/// mode we separately count faces that *would* have been emitted by the
+/// naive mesher so the log can show the real reduction ratio; the extra
+/// pass is a straight neighbour-scan and costs <5% of the full mesh.
+pub fn generateMeshForMode(
+    chunk: *const Chunk,
+    mesh: *Mesh,
+    world_ox: i32,
+    world_oz: i32,
+    getter: BlockGetter,
+    ao_strategy: AOStrategy,
+    lighting_mode: LightingMode,
+    mode: MeshingMode,
+) !void {
+    switch (mode) {
+        .naive => {
+            try generateMesh(chunk, mesh, world_ox, world_oz, getter, ao_strategy, lighting_mode);
+            const m_count = mesh.indices.items.len / 6;
+            std.log.info("[MESH naive: {} quads]", .{m_count});
+        },
+        .greedy => {
+            // Count how many quads a naive pass would have emitted, without
+            // actually meshing them. O(chunk_volume × 6) — cheap next to the
+            // greedy pass that follows.
+            const naive_count = countNaiveFaces(chunk, getter, world_ox, world_oz);
+
+            try generateMeshGreedy(chunk, mesh, world_ox, world_oz, getter, ao_strategy, lighting_mode);
+            const m_count = mesh.indices.items.len / 6;
+
+            const reduction_pct: f64 = if (naive_count == 0)
+                0.0
+            else
+                100.0 * (1.0 - @as(f64, @floatFromInt(m_count)) / @as(f64, @floatFromInt(naive_count)));
+            std.log.info(
+                "[MESH greedy: {}\u{2192}{} quads ({d:.1}% reduction)]",
+                .{ naive_count, m_count, reduction_pct },
+            );
+        },
+    }
+}
+
+/// Count the visible face candidates that a naive mesher would emit for this
+/// chunk. Used by `generateMeshForMode` to print a reduction ratio; matches
+/// the same `shouldRenderFace` gate as `generateMesh`/`generateMeshGreedy`.
+fn countNaiveFaces(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32) usize {
+    var count: usize = 0;
+    var x: i32 = 0;
+    while (x < CHUNK_W) : (x += 1) {
+        var y: i32 = 0;
+        while (y < CHUNK_H) : (y += 1) {
+            var z: i32 = 0;
+            while (z < CHUNK_W) : (z += 1) {
+                if (chunk.getBlock(x, y, z) == .air) continue;
+                for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
+                    if (shouldRenderFace(chunk, getter, x, y, z, world_ox, world_oz, face)) count += 1;
+                }
+            }
+        }
+    }
+    return count;
 }

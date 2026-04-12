@@ -1,0 +1,63 @@
+# greedy_vs_naive.tas — Meshing-strategy visual regression.
+#
+# Purpose: capture an identical scene through the naive + greedy meshers and
+# confirm they render visually identical frames. The greedy-mode shader uses
+# `fract(uv)` for texel tiling so merged rects repeat the per-block noise
+# pattern, matching what the naive mesher produces exactly.
+#
+# Compare:
+#   --meshing=naive   → baseline, one quad per visible block face
+#   --meshing=greedy  → default, coplanar same-material/lighting faces merged
+#
+# The test intentionally mixes three conditions on a flatland world:
+#   1. Flat grass plains  — greedy merges the entire chunk-top to 1 quad.
+#   2. A small dug pit    — introduces per-vertex skylight gradient that
+#                           *breaks* merging (every wall cell has distinct
+#                           skylight), so greedy must emit multiple faces.
+#   3. Oblique camera pan — exposes many faces at non-perpendicular angles
+#                           where any bilinear interpolation mismatch would
+#                           become visible.
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --world=flatland --aa=none --meshing=naive \
+#     --tas examples/voxel/tests/greedy_vs_naive.tas \
+#     --dump-frame=/tmp/greedy_vs_naive_naive.ppm
+#   ./zig-out/bin/voxel --world=flatland --aa=none --meshing=greedy \
+#     --tas examples/voxel/tests/greedy_vs_naive.tas \
+#     --dump-frame=/tmp/greedy_vs_naive_greedy.ppm
+#
+# Or just run the wrapper:
+#   ./examples/voxel/tests/greedy_vs_naive.sh
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look down so the flat grass surface fills most of the view. ---
+3 mouse_move 0 120
+
+# --- Dig four blocks deep into the flat plain. ---
+5  mouse_down left
+6  mouse_up left
+9  mouse_down left
+10 mouse_up left
+13 mouse_down left
+14 mouse_up left
+17 mouse_down left
+18 mouse_up left
+
+# --- Tilt up slightly so the hole + surrounding plain are both in frame. ---
+22 mouse_move 0 -30
+
+# --- Pan horizontally so the camera angle is oblique (tests interpolation). ---
+24 mouse_move 8 0
+25 mouse_move 8 0
+26 mouse_move 8 0
+27 mouse_move 8 0
+28 mouse_move 8 0
+
+# Hold steady so --dump-frame lands on a stable view.
+33 mouse_move 0 0

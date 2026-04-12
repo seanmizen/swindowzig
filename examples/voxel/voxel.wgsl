@@ -153,7 +153,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Subdivide each block face into a 16x16 grid; hash each cell to a
     // deterministic brightness offset so the face looks like a low-res
     // pixel-art texture. No shimmer — hash is position-only, not time-based.
-    let texel = vec2<u32>(floor(in.uv * 16.0));
+    //
+    // Greedy-mesh tiling: merged faces span multiple blocks, so `uv` is in
+    // [0, w] × [0, h] rather than [0, 1] × [0, 1]. `fract` wraps the texel
+    // coordinate back into a 16-texel grid per unit block, so the same noise
+    // pattern tiles correctly across a merged face. Naive 1×1 quads have uv
+    // in [0, 1]² so `fract(uv) == uv` and the rendered output is byte-identical
+    // to the pre-greedy shader.
+    let texel = vec2<u32>(floor(fract(in.uv) * 16.0));
     let noise = texelHash(texel);
     // Map [0,1] → [0.875, 1.125]: ±12.5% brightness variation per texel.
     var texel_brightness = 0.875 + noise * 0.25;

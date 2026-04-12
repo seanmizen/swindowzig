@@ -162,6 +162,7 @@ Use letter/modifier combos (e.g. Cmd+D, Cmd+G, Cmd+T) instead.
 | `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (default — per-vertex Mojang face-plane AO), `moore` (extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
 | `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation; caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block triggers a full-chunk `computeSkylight()` + `computeBlockLight()` + mesh regen. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
+| `--meshing=<mode>` | Mesher strategy. Accepted: `naive` (one quad per visible block face — preserves the `quad_block` parallel-array invariant used by `updateForBlockChange`) and `greedy` (default — coplanar same-material + uniform-AO/skylight faces merged into larger rectangles, ~35× reduction on flatland, ~3× on hilly). Greedy quads span multiple blocks so `updateForBlockChange` can't patch them; dig/place events flag the chunk `mesh_dirty = true` for next-tick full regen. Merge dimension capped at 6 blocks to stay within the painter's-algorithm sort tolerance (see `examples/voxel/docs/memory.md` §Rank 5). |
 | `--place-block=<type>` | Block type emitted by right-click placement. Accepted: `stone` (default) and `glowstone`. Added with phase-3 block light so `tests/glowstone_cave.tas` can place an emitter from a TAS without needing an in-game block picker UI. |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish (so MSAA comparison runs capture the same deterministic state). |
 | `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none` (default — opt-in feature, draw every loaded chunk), `sphere` (radial cutoff at render_distance + slack; cheap sanity backstop), `cone` (sphere-vs-cone test against the camera forward, fov controlled by `--frustum-fov-deg`). The chunk the camera sits in plus its 8 horizontal neighbours are NEVER culled regardless of strategy — see `examples/voxel/frustum.zig` for the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
@@ -221,6 +222,12 @@ TAS scripts for regression live under `examples/voxel/`:
   byte-identical PPMs (the camera-inside-bounding-sphere shortcut and the
   3×3 camera-neighbourhood safety net both fire). Mean brightness ≈ 103/255
   on the default flatland scene; "black" would be < 5/255.
+- `tests/greedy_vs_naive.tas` + `tests/greedy_vs_naive.sh` — captures the
+  same flatland pit scene under `--meshing=naive` and `--meshing=greedy`
+  and runs an RMS diff; asserts `< 2/255` per channel (greedy is within
+  0.65/255 at the current cap=6 setting). Used to guard the painter's-sort
+  cap in `examples/voxel/mesher.zig` — bumping the cap too high causes
+  visible sort inversions against pit walls and this test catches them.
 - `tests/dig_relight.tas` — flatland small pit (4 dig clicks from a
   steep pitch-clamped look-down), used to verify `World.setBlock` now
   recomputes chunk skylight on dig. Diff vs. a local branch that

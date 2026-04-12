@@ -371,20 +371,78 @@ What this number does **not** include:
   raycaster, the player collision path, and serialization. Do NOT start this
   until Ranks 1/2 are done and benchmarked.
 
-### Rank 5 — Greedy meshing
+### Rank 5 — Greedy meshing *(LANDED)*
 
-- **Effort**: medium. Replace the "one quad per face" loop with a greedy
-  coplanar merge.
-- **Payoff**: measured 3–5× quad count reduction on typical terrain for
-  mainstream voxel engines. Based on our measured ~5,500 quads per chunk,
-  we'd land around 1,100–1,800 — about **3–5× VRAM reduction**.
-- **Risk**: medium. Breaks the current `quad_block` parallel array contract
-  and therefore `updateForBlockChange`. Greedy quads span multiple blocks,
-  so "find quads owned by block X" needs rethinking. Might force a return
-  to O(chunk_volume) full remeshes on block change — which kills the 78%
-  incremental win from `updateForBlockChange`.
-- **Note**: Minecraft explicitly does NOT do greedy meshing for this reason.
-  It's attractive on paper, painful in practice.
+Implemented on branch `voxel/greedy-mesh`. Opt in with `--meshing=greedy`
+(now the default); fall back to the per-block path with `--meshing=naive`.
+
+**Merge rule.** Two coplanar same-material cells may merge iff both have
+*uniform* AO and skylight (all four corner values equal) AND their uniform
+constants match. This is strictly narrower than classic greedy — classic
+allows any matching corner quadruple — but it's the only rule that
+preserves bilinear interpolation across the merged quad exactly. Under
+the weaker rule a merged w×h rect stretches the per-cell gradient over
+multiple blocks and interior fragments drift by `0.125 × ((a+b) - (c+d))`
+per channel relative to the naive output. See the block comment on
+`greedyCellEq` for the worked example.
+
+**Painter's-sort cap.** The voxel demo sorts quads in software
+(centroid-distance back-to-front — no hardware depth due to the macOS/Metal
+wgpu-native bug documented in the main CLAUDE.md) and a merged 48×48 grass
+top has its centroid far from its nearest edge. That causes visible sort
+inversions against smaller overlapping geometry (pit walls, dirt
+exposures, hover outlines). Capping each merge dimension at
+`MAX_GREEDY_DIM = 6` keeps every merged quad's centroid within ±3 blocks
+of its farthest corner — close enough that the greedy output stays within
+the RMS tolerance used by `examples/voxel/tests/greedy_vs_naive.sh`
+(`< 2/255` per channel). Measured per-channel RMS for the pit test at
+various caps:
+
+    cap=4 → 0.62/255   (safe)
+    cap=6 → 0.65/255   (safe, picked)
+    cap=7 → 0.64/255   (borderline, passes)
+    cap=8 → 9.63/255   (fails — pit-wall sort inversions)
+    cap=∞ → 20.8/255   (fails badly)
+
+The cliff between 7 and 8 is narrow, so 6 is the safest large cap. Lift
+the cap once hardware depth testing comes back.
+
+**Measured quad-count reduction** (48×256×48 chunk, cap=6, `framespike.tas`):
+
+| Preset   | Naive quads         | Greedy quads         | Reduction   | VRAM/chunk  |
+|----------|---------------------|----------------------|-------------|-------------|
+| flatland | 4608 baseline       | 128–137 (~130)       | **35×**     | 1.00 MB → 28 KB |
+| hilly    | ~5000–5900 (~5400)  | ~1000–2500 (~1700)   | **~3.2×**   | 1.19 MB → 370 KB |
+
+Flatland smashes the 5–10× target because the grass top + bedrock bottom
+are uniform-AO faces that merge into 35–40 rectangles of 6×6 blocks each
+(plus stray chunk-boundary tiles). Hilly falls short of the target at
+~3×: the uniform-AO rule rejects most bumpy surfaces before the cap even
+comes into play, so the bottleneck is the merge rule, not the cap.
+
+Measured on `examples/voxel/framespike.tas` (hilly):
+
+    2023-04: naive=5324 quads, greedy=1700 quads — 68.1% reduction
+    2023-04: naive=4995 quads, greedy=1007 quads — 79.8% reduction (best)
+    2023-04: naive=5673 quads, greedy=2539 quads — 55.2% reduction (worst)
+
+Pregen ring (9 meshed chunks) on hilly drops from ~10.7 MB VRAM → ~3.4 MB
+(greedy cap=6). Typical session (49 meshed chunks) drops from ~58.3 MB →
+~18 MB. On flatland the same ring drops from ~10.7 MB → ~0.27 MB.
+
+**`quad_block` parallel array.** Greedy quads span multiple blocks, so
+`updateForBlockChange`'s "find quads owned by block X" lookup loses
+meaning. In greedy mode the dig/place handlers flag the whole chunk
+`mesh_dirty = true` and let the next tick full-regen the mesh — this
+gives up the 78% incremental-update win from the naive path. The parallel
+array is still populated (with the first block of each rect) so
+`swapRemoveQuad` / `decayHighlights` continue to work as-is.
+
+**Risk/payoff summary**: was worth it on flatland and open spaces (gross
+VRAM reduction). Hilly terrain is a more modest win and pays a
+per-dig full-regen cost instead of the incremental path. A future session
+that restores hardware depth testing can raise the cap and revisit the
+merge rule.
 
 ### Rank 6 — Run-length / bitmask layers
 
