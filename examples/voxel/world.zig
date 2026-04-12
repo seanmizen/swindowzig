@@ -7,7 +7,16 @@ const Mesh = mesher_mod.Mesh;
 
 /// Render distance in chunks (circular radius).
 /// TODO: expose as an in-game setting via the HUD.
-pub const RENDER_DISTANCE: i32 = 4;
+///
+/// Scaling note (chunk-size-perf branch, April 2026): this value is
+/// *chunks*, not blocks. The visible disc is `RENDER_DISTANCE × CHUNK_W`
+/// blocks across. If you flip `chunk.CHUNK_W`, update this too to preserve
+/// the visible world volume — otherwise the player sees a much smaller or
+/// much larger fog ring. Currently tuned for CHUNK_W=16 (64-block view),
+/// previously 4 at CHUNK_W=48 (192-block view). See
+/// `examples/voxel/docs/chunk-size-investigation.md` for the fair
+/// comparison that justifies the current pair.
+pub const RENDER_DISTANCE: i32 = 12;
 
 /// Squared circular radius (in chunks) at which a chunk is eligible to be
 /// meshed. Equal to `RENDER_DISTANCE^2`. Matches the disc that
@@ -60,7 +69,12 @@ pub const CHUNKS_PER_TICK: usize = 2;
 ///   - A 5×5 square = 25 columns × ~576 KB per chunk ≈ 14 MB RAM. Comfortable.
 ///     Moving to 7×7 (radius 3, 49 chunks) would push it to ~28 MB and slow
 ///     the loading screen; not worth it until we palette-compress chunks.
-pub const PREGEN_RADIUS: i32 = 2;
+/// Horizontal pregen radius in CHUNKS (not blocks). Like `RENDER_DISTANCE`
+/// above, this is chunk-count and needs to track CHUNK_W if you want a
+/// stable pregen area. At CHUNK_W=16 we raise this to 6 to keep the spawn
+/// ring covering roughly the same 96-block radius the old 2-at-48 pair
+/// produced. See `examples/voxel/docs/chunk-size-investigation.md`.
+pub const PREGEN_RADIUS: i32 = 6;
 
 /// A RegionAnchor requests that all chunks within RENDER_DISTANCE be loaded.
 /// Currently only the player satisfies this. Future entities (beacons, spectators,
@@ -105,7 +119,7 @@ pub const ChunkMap = std.HashMap(ChunkKey, *LoadedChunk, ChunkKey.HashContext, s
 ///                 along chunk seams — the classic "sky gap" artifact).
 /// `.meshed`     — `mesh.vertices` / `mesh.indices` are valid. Ready to draw.
 ///
-/// Chunks in this codebase are 48×256×48 *columns*, not 3D cubes, so there is
+/// Chunks in this codebase are `CHUNK_W × 256 × CHUNK_W` *columns*, not 3D cubes, so there is
 /// no vertical neighbour to wait on — a column is meshable as soon as its four
 /// horizontal neighbours exist.
 pub const ChunkState = enum(u8) {

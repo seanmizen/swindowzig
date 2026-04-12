@@ -1,7 +1,19 @@
 const std = @import("std");
 const world_gen = @import("world_gen.zig");
 
-pub const CHUNK_W = 16; // X and Z dimension
+/// Horizontal (X/Z) edge length of a chunk, in blocks. Compile-time constant;
+/// all chunk-sized allocations, index math, AABB extents, and the mesher's
+/// inner loops reduce to this value plus `CHUNK_H` via constant folding, so
+/// flipping it is a full rebuild but not a refactor.
+///
+/// History — this was 48 from the first commit (paired with `CHUNK_H = 256`,
+/// giving 589 824 blocks per column). Sean asked "is 16×16 the right answer
+/// instead?" on the voxel/chunk-size-perf branch — the investigation doc at
+/// `examples/voxel/docs/chunk-size-investigation.md` walks through the
+/// experiment that answered it. Change this one line, rebuild, rerun
+/// `tests/flatland_forward.tas` with `--profile-csv` and the CSV reflects
+/// the new size.
+pub const CHUNK_W = 16;
 pub const CHUNK_H = 256; // Y dimension (matches classic Minecraft build height)
 
 pub const BlockType = enum(u8) {

@@ -219,13 +219,17 @@ const IsSolidWorld = struct {
 /// Max mesh generations per tick (keeps tick time bounded during chunk loading).
 /// Mesh gen runs in tick so render frames stay smooth.
 ///
-/// Rationale for M=1: meshing a 48×256×48 column scans 589,824 blocks and
-/// currently costs ~2.3ms on the dev laptop. At 120 Hz sim the frame budget
-/// is 8.3ms — one mesh per tick leaves plenty of headroom for physics and
-/// rendering. If the player sprints past the async outer ring faster than
-/// one-chunk-per-tick, they'll briefly see a seam; in practice running speed
-/// is capped well below that threshold. Bump if sprint speed increases.
-/// The pregen phase bypasses this cap and meshes everything in one go.
+/// Rationale for M=1: at `CHUNK_W = 16` (flipped April 2026 on the
+/// `voxel/chunk-size-perf` branch — previously 48), meshing a 16×256×16
+/// column scans 65 536 blocks and costs ~2 ms in Debug on flatland, ~0.3 ms
+/// in ReleaseFast. At 120 Hz sim the frame budget is 8.3 ms — one mesh per
+/// tick leaves plenty of headroom for physics and rendering, with a ~10×
+/// safety margin against the old 48-wide chunks' worst-case 20 ms mesh
+/// spike. See `examples/voxel/docs/chunk-size-investigation.md` for the
+/// measured ReleaseFast/Debug numbers and the "why 16 bounds tail spikes"
+/// writeup. If you bump `MESH_GENS_PER_TICK`, reconsider seam handling —
+/// you still only get one-chunk-per-tick of async outer ring growth, so
+/// sprinting past it briefly shows a seam.
 const MESH_GENS_PER_TICK: usize = 1;
 
 /// Pregen-phase chunk generation budget per tick. Runs only while
@@ -537,6 +541,41 @@ const State = struct {
     /// marking every loaded chunk dirty so it re-meshes with the new strategy —
     /// same constraint as `ao_strategy` and `lighting_mode`.
     meshing_mode: mesher_mod.MeshingMode = .greedy,
+
+    // --------------------------------------------------------------------
+    // --profile-csv=<path> instrumentation (chunk-size-perf investigation).
+    // --------------------------------------------------------------------
+    //
+    // Per-tick accumulators. voxelTick resets them at the top, accumulates
+    // generation + meshing costs inline, and voxelRender adds upload cost
+    // then writes a CSV row. Everything is in nanoseconds (u64 is plenty —
+    // u64 overflow at 9.2e9 seconds ≈ 292 years). See the docs next to
+    // examples/voxel/docs/chunk-size-investigation.md for the baseline
+    // numbers this exists to capture.
+    //
+    // The CSV columns are:
+    //   tick, loading, tick_ns, gen_ns, gen_count, mesh_ns, mesh_count,
+    //   upload_ns, upload_count, render_ns
+    //
+    // `loading` is 1 while the pregen loading screen is up and 0 after the
+    // player is released, so the analysis script can partition the dataset
+    // into "first-paint" and "flyover" halves without guessing.
+    profile_csv_path: ?[]const u8 = null,
+    profile_csv_file: ?std.fs.File = null,
+    tick_t0_ns: i128 = 0,
+    tick_ns: u64 = 0,
+    gen_ns: u64 = 0,
+    gen_count: u32 = 0,
+    mesh_ns: u64 = 0,
+    mesh_count: u32 = 0,
+    upload_ns: u64 = 0,
+    upload_count: u32 = 0,
+    render_t0_ns: i128 = 0,
+    render_ns: u64 = 0,
+    /// Set to the sim tick id of the first tick on which voxelRender
+    /// executed with world_loading == false. Used to report "first-paint
+    /// time" in the investigation doc.
+    first_paint_tick: ?u64 = null,
 };
 
 var state: State = undefined;
@@ -764,6 +803,36 @@ fn voxelInit(ctx: *sw.Context) !void {
             }
             state.frustum_fov_deg = parsed;
         }
+        if (std.mem.startsWith(u8, arg, "--profile-csv=")) {
+            // --profile-csv=<path>: write a per-tick timing row for the
+            // chunk-size-perf investigation. Columns (header written on
+            // file open):
+            //   tick, loading, tick_ns, gen_ns, gen_count, mesh_ns,
+            //   mesh_count, upload_ns, upload_count, render_ns
+            // See examples/voxel/docs/chunk-size-investigation.md for the
+            // baseline + experiment numbers this produces.
+            const raw: []const u8 = arg["--profile-csv=".len..];
+            const p = std.mem.sliceTo(raw, 0);
+            state.profile_csv_path = try ctx.allocator().dupe(u8, p);
+        }
+        if (std.mem.startsWith(u8, arg, "--debug-overlay=")) {
+            // Force the F3-style debug overlay on at boot. Default is off so
+            // production runs (and the framespike regression) aren't visually
+            // contaminated. Same shape as the other engine toggles.
+            const val = std.mem.sliceTo(arg["--debug-overlay=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                if (!state.game_state.isLayerActive(.debug_overlay)) {
+                    state.game_state.toggleDebugOverlay();
+                }
+            } else if (std.mem.eql(u8, val, "off")) {
+                if (state.game_state.isLayerActive(.debug_overlay)) {
+                    state.game_state.toggleDebugOverlay();
+                }
+            } else {
+                std.log.err("--debug-overlay: invalid value '{s}'. Accepted: on, off", .{val});
+                std.process.exit(1);
+            }
+        }
         if (std.mem.startsWith(u8, arg, "--place-block=")) {
             const val = arg["--place-block=".len..];
             if (std.mem.eql(u8, val, "stone")) {
@@ -800,6 +869,24 @@ fn voxelInit(ctx: *sw.Context) !void {
 
     // Initialize world with the selected preset (deferred until here so --world= works).
     state.world = try world_mod.World.init(ctx.allocator(), state.world_preset);
+
+    // Open the profile CSV if requested. Writing the header here means every
+    // subsequent row can be appended without a seek. Failures log a warning
+    // and disable the feature so a bad path doesn't crash the TAS run.
+    if (state.profile_csv_path) |p| {
+        if (std.fs.cwd().createFile(p, .{ .truncate = true })) |f| {
+            state.profile_csv_file = f;
+            const header = "tick,loading,chunk_w,tick_ns,gen_ns,gen_count,mesh_ns,mesh_count,upload_ns,upload_count,render_ns\n";
+            f.writeAll(header) catch |err| {
+                std.log.err("--profile-csv: header write failed: {}", .{err});
+            };
+            std.log.info("--profile-csv: writing to '{s}' (chunk_w={d})", .{ p, chunk_mod.CHUNK_W });
+        } else |err| {
+            std.log.err("--profile-csv: failed to open '{s}': {}", .{ p, err });
+            state.profile_csv_file = null;
+            state.profile_csv_path = null;
+        }
+    }
 
     // TAS loading — native only. `TasScript.parseFile` calls std.fs.cwd()
     // which pulls in posix symbols that don't exist on wasm32-freestanding.
@@ -1062,7 +1149,74 @@ fn doRespawn() void {
     });
 }
 
+/// Flush one per-tick row to the --profile-csv file. Called from a `defer`
+/// at the top of voxelRender so every render path — including the
+/// world_loading early-return — contributes a row. The row includes
+/// chunk_w so downstream analysis can join baseline and experiment CSVs
+/// without reading the filenames.
+fn flushProfileRow(ctx: *sw.Context) void {
+    const f = state.profile_csv_file orelse return;
+    // Tick time measured from the tick_t0_ns captured at the top of voxelTick
+    // to now (end of render). This bundles tick+render into one "frame" cost,
+    // which is what we actually care about for the "see it be slow" metric.
+    const now = std.time.nanoTimestamp();
+    const tick_ns: u64 = if (state.tick_t0_ns != 0) @intCast(now - state.tick_t0_ns) else 0;
+    const render_ns: u64 = if (state.render_t0_ns != 0) @intCast(now - state.render_t0_ns) else 0;
+    const tick_id = ctx.tickId();
+    const loading: u8 = if (state.world_loading) 1 else 0;
+    // Record first-paint tick the first time we run render with loading == 0.
+    if (!state.world_loading and state.first_paint_tick == null) {
+        state.first_paint_tick = tick_id;
+        std.log.info("[PROFILE] first-paint tick={} chunk_w={}", .{ tick_id, chunk_mod.CHUNK_W });
+    }
+    var buf: [256]u8 = undefined;
+    const line = std.fmt.bufPrint(
+        &buf,
+        "{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d}\n",
+        .{
+            tick_id,
+            loading,
+            chunk_mod.CHUNK_W,
+            tick_ns,
+            state.gen_ns,
+            state.gen_count,
+            state.mesh_ns,
+            state.mesh_count,
+            state.upload_ns,
+            state.upload_count,
+            render_ns,
+        },
+    ) catch return;
+    _ = f.writeAll(line) catch {};
+}
+
+/// Cheap helper used by the --profile-csv pregen-timing code: returns the
+/// number of LoadedChunks currently in `.meshed` state. O(n) over the loaded
+/// set, called at most twice per tick during pregen and never during
+/// gameplay — no need to maintain a cached count.
+fn countMeshedChunks(world: *world_mod.World) usize {
+    var n: usize = 0;
+    var it = world.chunks.valueIterator();
+    while (it.next()) |lc_ptr| {
+        if (lc_ptr.*.state == .meshed) n += 1;
+    }
+    return n;
+}
+
 fn voxelTick(ctx: *sw.Context) !void {
+    // --profile-csv: reset per-tick accumulators at the top so every phase
+    // we time inside this tick (world.update gen, mesh loop, and the pregen
+    // fast path during world loading) accumulates into a fresh row. render
+    // adds upload_ns then flushes the row.
+    if (state.profile_csv_file != null) {
+        state.tick_t0_ns = std.time.nanoTimestamp();
+        state.tick_ns = 0;
+        state.gen_ns = 0;
+        state.gen_count = 0;
+        state.mesh_ns = 0;
+        state.mesh_count = 0;
+    }
+
     // ====================================================================
     // World loading branch: pregen ring around spawn, mesh inner square,
     // release player. Runs while state.world_loading is true. No gameplay
@@ -1074,10 +1228,40 @@ fn voxelTick(ctx: *sw.Context) !void {
         const spawn_cx = world_mod.chunkCoordOf(spawn_bx);
         const spawn_cz = world_mod.chunkCoordOf(spawn_bz);
 
+        // Count pregen gen+mesh into the per-tick profile accumulators. The
+        // pregen path bypasses the gameplay mesh loop so we can't reuse the
+        // counters added below; we measure the whole pregenStep as a single
+        // gen+mesh bundle and split it by diffing chunk count and ring
+        // meshed-count before/after.
+        const pregen_gen_before: usize = if (state.profile_csv_file != null) state.world.chunks.count() else 0;
+        const pregen_mesh_before: usize = if (state.profile_csv_file != null) countMeshedChunks(&state.world) else 0;
+        const pregen_t0: i128 = if (state.profile_csv_file != null) std.time.nanoTimestamp() else 0;
         const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy, state.lighting_mode, state.meshing_mode) catch |err| blk: {
             std.log.err("Pregen step failed: {}", .{err});
             break :blk false;
         };
+        if (state.profile_csv_file != null) {
+            const pregen_t1 = std.time.nanoTimestamp();
+            const dt_ns: u64 = @intCast(pregen_t1 - pregen_t0);
+            const gen_after = state.world.chunks.count();
+            const mesh_after = countMeshedChunks(&state.world);
+            const gens_this_tick: u32 = @intCast(gen_after - pregen_gen_before);
+            const meshes_this_tick: u32 = @intCast(mesh_after - pregen_mesh_before);
+            // Split the pregen wall time proportionally between gen and mesh
+            // phases. Not perfect but good enough to separate the two big
+            // costs in the CSV — the exact split matters less than knowing
+            // "meshing dominated this tick" vs "generation dominated".
+            const total_ops = gens_this_tick + meshes_this_tick;
+            if (total_ops > 0) {
+                const gen_ns_approx: u64 = dt_ns * gens_this_tick / total_ops;
+                state.gen_ns +%= gen_ns_approx;
+                state.mesh_ns +%= dt_ns - gen_ns_approx;
+            } else {
+                state.gen_ns +%= dt_ns;
+            }
+            state.gen_count +%= gens_this_tick;
+            state.mesh_count +%= meshes_this_tick;
+        }
         if (!ring_ready) {
             // Still generating/meshing the spawn ring — keep the loading
             // screen visible and run pregenStep again next tick.
@@ -1137,9 +1321,17 @@ fn voxelTick(ctx: *sw.Context) !void {
     // Update world: load chunks progressively around active region anchors.
     // The player is currently the only anchor. This is the async background
     // fill that keeps the outer ring growing as the player walks.
+    const gen_before: usize = if (state.profile_csv_file != null) state.world.chunks.count() else 0;
+    const gen_t0: i128 = if (state.profile_csv_file != null) std.time.nanoTimestamp() else 0;
     try state.world.update(&[_]world_mod.RegionAnchor{
         .{ .position = state.player.feet_pos },
     });
+    if (state.profile_csv_file != null) {
+        const gen_t1 = std.time.nanoTimestamp();
+        state.gen_ns +%= @intCast(gen_t1 - gen_t0);
+        const gen_after = state.world.chunks.count();
+        state.gen_count +%= @intCast(gen_after - gen_before);
+    }
 
     // Player chunk coords — used by the mesh-radius gate below and by the
     // eviction pass that follows. Computed once per tick and reused.
@@ -1178,8 +1370,13 @@ fn voxelTick(ctx: *sw.Context) !void {
                 std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
-            const t_us = @divTrunc(perfNowNs() - t0, 1000);
+            const mesh_dt_ns: i128 = std.time.nanoTimestamp() - t0;
+            const t_us = @divTrunc(mesh_dt_ns, 1000);
             std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
+            if (state.profile_csv_file != null) {
+                state.mesh_ns +%= @intCast(mesh_dt_ns);
+                state.mesh_count +%= 1;
+            }
             lc.state = .meshed;
             lc.mesh_dirty = false;
             lc.mesh_incremental_dirty = true;
@@ -1908,6 +2105,17 @@ fn renderLoadingScreen(ctx: *sw.Context, g: *gpu_mod.GPU, overlay_w: f32, overla
 fn voxelRender(ctx: *sw.Context) !void {
     const g = ctx.gpu();
 
+    // --profile-csv: mark render entry (for render_ns) and reset upload
+    // accumulators. A defer-scoped flush at the bottom of this function
+    // writes the row regardless of which early-return path we take, so
+    // every tick is represented in the CSV even when render skips work.
+    if (state.profile_csv_file != null) {
+        state.render_t0_ns = std.time.nanoTimestamp();
+        state.upload_ns = 0;
+        state.upload_count = 0;
+    }
+    defer if (state.profile_csv_file != null) flushProfileRow(ctx);
+
     // FPS rolling-window sample (real-time deltas, independent of sim tick rate).
     // Sampled here so the F3 overlay shows real present cadence even if the
     // simulation runs at a different rate. 60-sample window ≈ 1 s at 60 Hz.
@@ -1977,10 +2185,17 @@ fn voxelRender(ctx: *sw.Context) !void {
 
             const gop = state.chunk_gpu.getOrPut(key) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = .{};
+            const needed_upload = lc.mesh_incremental_dirty;
+            const up_t0: i128 = if (state.profile_csv_file != null and needed_upload) std.time.nanoTimestamp() else 0;
             uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.mesh_incremental_dirty) catch |err| {
                 std.log.err("Upload failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
+            if (state.profile_csv_file != null and needed_upload) {
+                const up_t1 = std.time.nanoTimestamp();
+                state.upload_ns +%= @intCast(up_t1 - up_t0);
+                state.upload_count +%= 1;
+            }
             if (lc.mesh_incremental_dirty) lc.mesh_incremental_dirty = false;
         }
     }
@@ -2867,6 +3082,14 @@ fn voxelShutdown(ctx: *sw.Context) !void {
 
     if (state.tas_replayer) |*replayer| {
         replayer.deinit();
+    }
+
+    if (state.profile_csv_file) |f| {
+        f.close();
+        state.profile_csv_file = null;
+        if (state.profile_csv_path) |p| {
+            std.log.info("[PROFILE] csv closed: {s}", .{p});
+        }
     }
 
     std.log.info("Voxel demo shutdown", .{});

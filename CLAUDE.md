@@ -425,7 +425,10 @@ Key files and what they do — read this before opening anything.
 
 ### Voxel example (`examples/voxel/`)
 
-Chunk dimensions: **CHUNK_W = 16** (X/Z), **CHUNK_H = 256** (Y).
+Chunk dimensions: **CHUNK_W = 16** (X/Z), **CHUNK_H = 256** (Y). Was 48 on
+main prior to April 2026; flipped on `voxel/chunk-size-perf` — see
+[`docs/chunk-size-investigation.md`](examples/voxel/docs/chunk-size-investigation.md)
+for the experiment and "why MC's 16×16 is the right default" writeup.
 
 | File | Purpose |
 |------|---------|

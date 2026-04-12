@@ -4,9 +4,37 @@ Snapshot of the voxel demo's RAM and VRAM footprint, computed from the real
 code in `chunk.zig` and `mesher.zig`. Numbers here are the basis for the
 optimization shortlist at the bottom.
 
-All sizes are for the current codebase as of this document — 48×256×48 column
-chunks with a `BlockType` enum backed by `u8`. If you change `CHUNK_W`,
-`CHUNK_H`, or the block-ID width, redo the math.
+> **Chunk size changed April 2026.** This document still reads as if the
+> chunks are 48×256×48. They are not. The `voxel/chunk-size-perf` branch
+> flipped `CHUNK_W = 16` (paired with `RENDER_DISTANCE = 12`,
+> `PREGEN_RADIUS = 6` — same 192-block visible radius, same 96-block pregen
+> area). The per-chunk math in §1, §1b, and §2 is now **9× smaller** (`16²
+> × 256 = 65 536` cells / chunk, down from `48² × 256 = 589 824`). The disc
+> totals in §3 and §4 are **approximately unchanged** — you have ~9×
+> more chunks loaded, each ~9× smaller, so `N_chunks × KB_per_chunk` lands
+> back near the old number. See `chunk-size-investigation.md` for the full
+> measurement table and the "why MC was right" writeup. **This doc has not
+> been line-by-line rewritten for the new size yet** — do that pass as
+> follow-up work; the optimisation shortlist (Ranks 1–6) is still all
+> valid, only the absolute byte counts in §1–4 need updating.
+
+All sizes are for the current codebase as of this document — originally
+48×256×48 column chunks with a `BlockType` enum backed by `u8`. Now 16×256×16.
+If you change `CHUNK_W`, `CHUNK_H`, or the block-ID width, redo the math.
+
+### Quick per-chunk numbers at `CHUNK_W = 16`
+
+Measured by the `[CHUNK SIZE]` log line on a flatland run (April 2026,
+post chunk-size-perf):
+
+| scenario                        | palette_len | bits | block_bytes | total (block+skylight) |
+| ------------------------------- | ----------: | ---: | ----------: | ---------------------: |
+| Flatland (all generated)        |           5 |    3 |      25 224 |                 90 760 |
+| Uniform pre-gen `Chunk.init`    |           1 |    0 |         256 |                 65 792 |
+
+vs the old `CHUNK_W = 48` numbers (kept below for historical context):
+flatland chunks were 224 952 B block data, 814 776 B total. **~9× smaller
+per chunk, but ~9× more chunks loaded**.
 
 ---
 
