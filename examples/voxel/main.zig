@@ -408,6 +408,14 @@ const State = struct {
     /// game logic.
     frustum_drawn: u32 = 0,
     frustum_culled: u32 = 0,
+    /// F3-style debug overlay rolling FPS sampler. Captured at the top of
+    /// voxelRender from real-time deltas (not the fixed-step sim tick rate),
+    /// so the displayed FPS reflects actual present cadence even when the
+    /// simulation tick rate is unrelated. 60 samples ≈ 1 s window at 60 Hz.
+    fps_window_ns: [60]u64 = .{0} ** 60,
+    fps_window_idx: usize = 0,
+    fps_window_filled: bool = false,
+    last_frame_ns: i128 = 0,
 };
 
 var state: State = undefined;
@@ -494,6 +502,10 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.frozen_frustum = null;
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
+    state.fps_window_ns = .{0} ** 60;
+    state.fps_window_idx = 0;
+    state.fps_window_filled = false;
+    state.last_frame_ns = 0;
     state.dump_frame_path = null;
     state.dump_frame_done = false;
 
@@ -600,6 +612,24 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.process.exit(1);
             }
             state.frustum_fov_deg = parsed;
+        }
+        if (std.mem.startsWith(u8, arg, "--debug-overlay=")) {
+            // Force the F3-style debug overlay on at boot. Default is off so
+            // production runs (and the framespike regression) aren't visually
+            // contaminated. Same shape as the other engine toggles.
+            const val = std.mem.sliceTo(arg["--debug-overlay=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                if (!state.game_state.isLayerActive(.debug_overlay)) {
+                    state.game_state.toggleDebugOverlay();
+                }
+            } else if (std.mem.eql(u8, val, "off")) {
+                if (state.game_state.isLayerActive(.debug_overlay)) {
+                    state.game_state.toggleDebugOverlay();
+                }
+            } else {
+                std.log.err("--debug-overlay: invalid value '{s}'. Accepted: on, off", .{val});
+                std.process.exit(1);
+            }
         }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={}", .{
@@ -1141,6 +1171,15 @@ fn voxelTick(ctx: *sw.Context) !void {
         }
     }
 
+    // H — toggle the Minecraft-style F3 debug overlay. The voxel-demo CLAUDE.md
+    // forbids function keys, so we use a bare letter following the precedent
+    // of bare R for respawn. Suppressed while the pause menu is up so menu
+    // screens stay clean. CLI flag --debug-overlay=on|off sets the initial state.
+    if (input.keyPressed(.H) and !input.mods.ctrl and !input.mods.super and !input.mods.shift and !input.mods.alt and !state.game_state.isLayerActive(.pause_menu)) {
+        state.game_state.toggleDebugOverlay();
+        std.log.info("Debug overlay: {}", .{state.game_state.isLayerActive(.debug_overlay)});
+    }
+
     // Cmd+S (macOS) / Ctrl+S (Windows/Linux) — set spawn point to current position (debug override)
     if (input.keyPressed(.S) and (input.mods.super or input.mods.ctrl)) {
         state.spawn_point = state.player.feet_pos;
@@ -1663,6 +1702,22 @@ fn renderLoadingScreen(ctx: *sw.Context, g: *gpu_mod.GPU, overlay_w: f32, overla
 fn voxelRender(ctx: *sw.Context) !void {
     const g = ctx.gpu();
 
+    // FPS rolling-window sample (real-time deltas, independent of sim tick rate).
+    // Sampled here so the F3 overlay shows real present cadence even if the
+    // simulation runs at a different rate. 60-sample window ≈ 1 s at 60 Hz.
+    {
+        const now = std.time.nanoTimestamp();
+        if (state.last_frame_ns != 0) {
+            const delta_i = now - state.last_frame_ns;
+            if (delta_i > 0) {
+                state.fps_window_ns[state.fps_window_idx] = @intCast(delta_i);
+                state.fps_window_idx = (state.fps_window_idx + 1) % state.fps_window_ns.len;
+                if (state.fps_window_idx == 0) state.fps_window_filled = true;
+            }
+        }
+        state.last_frame_ns = now;
+    }
+
     // Check if GPU is ready
     if (!g.isReady()) {
         return;
@@ -2110,109 +2165,202 @@ fn voxelRender(ctx: *sw.Context) !void {
         drawCenteredText(&state.overlay, hint, hint_y, dim, hint_scale, overlay_w, overlay_h) catch {};
     }
 
-    // Debug overlay: sidebar with live game state values
-    if (state.game_state.isLayerActive(.debug_overlay)) {
-        const dbg_scale: f32 = 2.0;
-        const dbg_line_h: f32 = (GLYPH_H + 2) * dbg_scale; // 18 px per line
-        const dbg_margin_x: f32 = 10;
-        const dbg_margin_y: f32 = 10;
-        const dbg_bar_w: f32 = 210;
-        const dbg_col = [4]f32{ 0.9, 0.9, 0.9, 1.0 };
+    // F3-style debug overlay (top-left, mirrors Minecraft's debug screen).
+    // Suppressed while the pause menu is up so menu screens stay clean.
+    // All values are O(1): drawn/culled counters from this frame's cull pass,
+    // FPS from the rolling-window sampler at the top of voxelRender, hover
+    // block from the existing per-frame raycast. Loaded chunk count is
+    // HashMap.count(). Mem estimate is constant × loaded count.
+    //
+    // Toggle: H (function-keys ban rules out F3). CLI: --debug-overlay=on|off.
+    // Font: bitmap_font.zig has only ASCII 0x20-0x5A — no lowercase rendering
+    // (auto-uppercased), no degree sign (uses 'D'), no brackets (uses parens).
+    if (state.game_state.isLayerActive(.debug_overlay) and !state.game_state.isLayerActive(.pause_menu)) {
+        const dbg_scale: f32 = 1.5; // smaller than menu entries (3.0) and old sidebar (2.0)
+        const dbg_line_h: f32 = (GLYPH_H + 2) * dbg_scale; // ~13.5 px per line
+        const dbg_edge: f32 = 2; // 2-pixel gutter from screen edge per spec
+        const dbg_pad: f32 = 4; // inner padding inside the dark rect
+        const dbg_text_x: f32 = dbg_edge + dbg_pad;
+        const dbg_text_y0: f32 = dbg_edge + dbg_pad;
+        // Conservative fixed background: ~36 chars wide × 21 lines tall.
+        // Avoids a two-pass measure-then-draw.
+        const dbg_bg_w: f32 = 36 * (GLYPH_W + GLYPH_GAP) * dbg_scale + dbg_pad * 2;
+        const dbg_bg_h: f32 = 21 * dbg_line_h + dbg_pad * 2;
+        const dbg_col = [4]f32{ 0.95, 0.95, 0.95, 1.0 };
 
-        state.overlay.rect(0, 0, dbg_bar_w, overlay_h, .{ 0.0, 0.0, 0.0, 0.55 }, overlay_w, overlay_h) catch {};
+        state.overlay.rect(dbg_edge, dbg_edge, dbg_bg_w, dbg_bg_h, .{ 0.0, 0.0, 0.0, 0.5 }, overlay_w, overlay_h) catch {};
 
-        var dbg_buf: [64]u8 = undefined;
-        var line_y: f32 = dbg_margin_y;
+        var dbg_buf: [96]u8 = undefined;
+        var line_y: f32 = dbg_text_y0;
 
-        // Player position (eye height = feet + 1.6)
+        const drawLine = struct {
+            fn call(text: []const u8, x: f32, y: *f32, line_h: f32, scale: f32, col: [4]f32, ow: f32, oh: f32) void {
+                drawText(&state.overlay, text, x, y.*, col, scale, ow, oh) catch {};
+                y.* += line_h;
+            }
+        }.call;
+
+        // ── Header ────────────────────────────────────────────────────────
+        // Voxel + git sha row: cheap git read at startup is non-trivial in
+        // a worktree, and the spec explicitly allows skipping. Static title.
+        drawLine("VOXEL DEMO", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+
+        // FPS — rolling-window mean from the sampler at the top of voxelRender.
         {
-            const s = std.fmt.bufPrint(&dbg_buf, "X: {d:.1}", .{state.player.feet_pos[0]}) catch "X: ?";
-            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
+            const sample_count: usize = if (state.fps_window_filled) state.fps_window_ns.len else state.fps_window_idx;
+            var fps_str: []const u8 = "FPS: ?";
+            var ms_str: []const u8 = "MS: ?";
+            if (sample_count > 0) {
+                var sum_ns: u64 = 0;
+                for (state.fps_window_ns[0..sample_count]) |s| sum_ns += s;
+                const mean_ns: f64 = @as(f64, @floatFromInt(sum_ns)) / @as(f64, @floatFromInt(sample_count));
+                if (mean_ns > 0) {
+                    const fps: f64 = 1_000_000_000.0 / mean_ns;
+                    const ms: f64 = mean_ns / 1_000_000.0;
+                    fps_str = std.fmt.bufPrint(&dbg_buf, "FPS: {d:.0}", .{fps}) catch "FPS: ?";
+                    drawLine(fps_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                    var ms_buf: [32]u8 = undefined;
+                    ms_str = std.fmt.bufPrint(&ms_buf, "MS: {d:.2}", .{ms}) catch "MS: ?";
+                    drawLine(ms_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                } else {
+                    drawLine(fps_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                    drawLine(ms_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                }
+            } else {
+                drawLine(fps_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                drawLine(ms_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
         }
+
+        // Chunks: rendered / loaded (meshed) — `frustum_drawn` is set this
+        // frame by the cull, so we add it to `frustum_culled` to recover the
+        // total visited; loaded count is the live HashMap size. Meshed count
+        // requires a single iterator pass over the HashMap (still bounded by
+        // (2*RD+1)² ≤ 81 entries at the default render distance, so O(1)-ish).
         {
-            const s = std.fmt.bufPrint(&dbg_buf, "Y: {d:.1}", .{state.player.feet_pos[1] + 1.6}) catch "Y: ?";
-            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
-        }
-        {
-            const s = std.fmt.bufPrint(&dbg_buf, "Z: {d:.1}", .{state.player.feet_pos[2]}) catch "Z: ?";
-            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
+            const loaded_count: u32 = @intCast(state.world.chunks.count());
+            var meshed_count: u32 = 0;
+            var it = state.world.chunks.valueIterator();
+            while (it.next()) |lc_ptr| {
+                if (lc_ptr.*.state == .meshed) meshed_count += 1;
+            }
+            const rendered = state.frustum_drawn;
+            const s = std.fmt.bufPrint(&dbg_buf, "C: {}/{} ({} MESHED)", .{ rendered, loaded_count, meshed_count }) catch "C: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
 
-        // Chunk coordinates
+        // Render distance (compile-time constant; --render-distance is reserved).
         {
-            const pcx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
-            const pcz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
-            const s = std.fmt.bufPrint(&dbg_buf, "CHUNK: {},{}", .{ pcx, pcz }) catch "CHUNK: ?";
-            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
+            const s = std.fmt.bufPrint(&dbg_buf, "RD: {}", .{world_mod.RENDER_DISTANCE}) catch "RD: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
 
-        // Tick count
-        {
-            const s = std.fmt.bufPrint(&dbg_buf, "TICK: {}", .{ctx.tickId()}) catch "TICK: ?";
-            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
-        }
+        // Blank separator
+        drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
 
-        // Facing direction (yaw and pitch in integer degrees)
+        // ── Position ──────────────────────────────────────────────────────
+        // XYZ at eye height (feet + 1.6) — what the player actually sees from.
+        const eye_x = state.player.feet_pos[0];
+        const eye_y = state.player.feet_pos[1] + 1.6;
+        const eye_z = state.player.feet_pos[2];
         {
+            const s = std.fmt.bufPrint(&dbg_buf, "XYZ: {d:.3} / {d:.3} / {d:.3}", .{ eye_x, eye_y, eye_z }) catch "XYZ: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+        }
+        // Block coords (integer floor)
+        const block_x: i32 = @intFromFloat(@floor(eye_x));
+        const block_y: i32 = @intFromFloat(@floor(eye_y));
+        const block_z: i32 = @intFromFloat(@floor(eye_z));
+        {
+            const s = std.fmt.bufPrint(&dbg_buf, "BLOCK: {} {} {}", .{ block_x, block_y, block_z }) catch "BLOCK: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+        }
+        // Chunk coords + local block-in-chunk coords (parens, not brackets)
+        {
+            const cx = world_mod.chunkCoordOf(block_x);
+            const cz = world_mod.chunkCoordOf(block_z);
+            const lx = block_x - cx * chunk_mod.CHUNK_W;
+            const lz = block_z - cz * chunk_mod.CHUNK_W;
+            const s = std.fmt.bufPrint(&dbg_buf, "CHUNK: {}, {} IN ({}, {})", .{ cx, cz, lx, lz }) catch "CHUNK: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+        }
+        // Facing: cardinal + yaw/pitch in degrees ('D' since the font has no °).
+        // Camera convention: yaw=-π/2 looks toward -Z (= North in MC).
+        // forward.x = cos(yaw)*cos(pitch), forward.z = sin(yaw)*cos(pitch).
+        {
+            const fwd = state.camera.forward();
+            const cardinal: []const u8 = if (@abs(fwd.x) >= @abs(fwd.z))
+                (if (fwd.x >= 0) "EAST" else "WEST")
+            else
+                (if (fwd.z >= 0) "SOUTH" else "NORTH");
             const yaw_deg = @as(i32, @intFromFloat(std.math.round(state.camera.yaw * (180.0 / std.math.pi))));
-            const s = std.fmt.bufPrint(&dbg_buf, "YAW: {}", .{yaw_deg}) catch "YAW: ?";
-            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
-        }
-        {
             const pitch_deg = @as(i32, @intFromFloat(std.math.round(state.camera.pitch * (180.0 / std.math.pi))));
-            const s = std.fmt.bufPrint(&dbg_buf, "PITCH: {}", .{pitch_deg}) catch "PITCH: ?";
-            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
+            const s = std.fmt.bufPrint(&dbg_buf, "FACING: {s} ({}D / {}D)", .{ cardinal, yaw_deg, pitch_deg }) catch "FACING: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
 
-        // Frustum cull strategy + drawn/culled chunk counts. The freeze
-        // indicator goes on its own line in red so the user notices the
-        // diagnostic mode is engaged.
+        // Blank separator
+        drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+
+        // ── Render settings ──────────────────────────────────────────────
         {
-            const s = std.fmt.bufPrint(&dbg_buf, "FRUSTUM: {s} {d:.0}d", .{
-                state.frustum_strategy.label(),
-                state.frustum_fov_deg,
-            }) catch "FRUSTUM: ?";
-            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
+            const s = std.fmt.bufPrint(&dbg_buf, "AO: {s}", .{@tagName(state.ao_strategy)}) catch "AO: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
         {
-            const s = std.fmt.bufPrint(&dbg_buf, "CHUNKS: {}/{}", .{
-                state.frustum_drawn,
-                state.frustum_drawn + state.frustum_culled,
-            }) catch "CHUNKS: ?";
-            drawText(&state.overlay, s, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
+            const s = std.fmt.bufPrint(&dbg_buf, "LIGHT: {s}", .{@tagName(state.lighting_mode)}) catch "LIGHT: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
         }
+        {
+            const s = std.fmt.bufPrint(&dbg_buf, "AA: {s} ({}X)", .{ aaMethodLabel(state.msaa_config.method), state.msaa_config.msaa_samples }) catch "AA: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+        }
+
+        // Blank separator
+        drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+
+        // ── Targeted block + light at player ─────────────────────────────
+        {
+            if (state.hover_block) |hb| {
+                const tbx: i32 = @intFromFloat(@floor(hb.x));
+                const tby: i32 = @intFromFloat(@floor(hb.y));
+                const tbz: i32 = @intFromFloat(@floor(hb.z));
+                const bt = state.world.getBlock(tbx, tby, tbz);
+                const s = std.fmt.bufPrint(&dbg_buf, "TARGETED: {s} {} {} {}", .{ @tagName(bt), tbx, tby, tbz }) catch "TARGETED: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            } else {
+                drawLine("TARGETED: NONE", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+        }
+        // Skylight at the player's feet (clamped to world Y bounds; >CHUNK_H = open sky).
+        {
+            const sky_y = if (block_y < 0) @as(i32, 0) else block_y;
+            const sky = state.world.getSkylight(block_x, sky_y, block_z);
+            const s = std.fmt.bufPrint(&dbg_buf, "SKYLIGHT: {}", .{sky}) catch "SKYLIGHT: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+        }
+        // Block light: branch hasn't landed in this demo, show '-' so the row
+        // is reserved without lying. Update once block-light propagation lands.
+        drawLine("BLOCK LIGHT: -", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+
+        // Blank separator
+        drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+
+        // ── Memory estimate ──────────────────────────────────────────────
+        // 576 KB blocks + 576 KB skylight per chunk = ~1.13 MB/chunk.
+        // Spec rounds to 576 KB/chunk × loaded; we honour the spec figure.
+        {
+            const loaded_count: u32 = @intCast(state.world.chunks.count());
+            const kb_total: u64 = @as(u64, loaded_count) * 576;
+            const mb_total: f32 = @as(f32, @floatFromInt(kb_total)) / 1024.0;
+            const s = std.fmt.bufPrint(&dbg_buf, "MEM: CHUNKS {d:.1} MB", .{mb_total}) catch "MEM: ?";
+            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+        }
+
+        // Frustum freeze indicator (red, on its own line) — diagnostic mode.
         if (state.frozen_frustum != null) {
             const red = [4]f32{ 1.0, 0.4, 0.4, 1.0 };
-            drawText(&state.overlay, "FRUSTUM FROZEN", dbg_margin_x, line_y, red, dbg_scale, overlay_w, overlay_h) catch {};
-            line_y += dbg_line_h;
-        }
-
-        // Target block (from raycast hover)
-        {
-            const target_str: []const u8 = if (state.hover_block) |hb| blk: {
-                const bx: i32 = @intFromFloat(@floor(hb.x));
-                const by: i32 = @intFromFloat(@floor(hb.y));
-                const bz: i32 = @intFromFloat(@floor(hb.z));
-                const bt = state.world.getBlock(bx, by, bz);
-                break :blk switch (bt) {
-                    .air => "TARGET: AIR",
-                    .grass => "TARGET: GRASS",
-                    .dirt => "TARGET: DIRT",
-                    .stone => "TARGET: STONE",
-                    .bedrock => "TARGET: BEDROCK",
-                    .debug_marker => "TARGET: DEBUG",
-                };
-            } else "TARGET: NONE";
-            drawText(&state.overlay, target_str, dbg_margin_x, line_y, dbg_col, dbg_scale, overlay_w, overlay_h) catch {};
+            drawLine("FRUSTUM FROZEN", dbg_text_x, &line_y, dbg_line_h, dbg_scale, red, overlay_w, overlay_h);
         }
     }
 
