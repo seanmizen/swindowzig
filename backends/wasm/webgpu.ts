@@ -35,17 +35,17 @@ let canvasFormat: GPUTextureFormat | null = null;
 // utils/swindowzig/libs/sw_gpu/src/types.zig. Only the formats actually
 // used by the voxel engine are populated; add more as needed.
 const TEXTURE_FORMAT_MAP: Record<number, GPUTextureFormat> = {
-  0x12: 'rgba8unorm',
-  0x13: 'rgba8unorm-srgb',
-  0x17: 'bgra8unorm',
-  0x18: 'bgra8unorm-srgb',
-  0x1f: 'rgba16float',
-  0x22: 'rgba32float',
-  0x27: 'depth16unorm',
-  0x28: 'depth24plus',
-  0x29: 'depth24plus-stencil8',
-  0x2a: 'depth32float',
-  0x2b: 'depth32float-stencil8',
+  18: 'rgba8unorm',
+  19: 'rgba8unorm-srgb',
+  23: 'bgra8unorm',
+  24: 'bgra8unorm-srgb',
+  31: 'rgba16float',
+  34: 'rgba32float',
+  39: 'depth16unorm',
+  40: 'depth24plus',
+  41: 'depth24plus-stencil8',
+  42: 'depth32float',
+  43: 'depth32float-stencil8',
 };
 
 export async function initWebGPU(
