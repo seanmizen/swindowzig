@@ -48,7 +48,7 @@ swindowzig/
 ├── examples/
 │   ├── justabox/       # Default: single spinning colored box
 │   ├── windows/        # Triangle with mouse drag
-│   └── voxel/          # Voxel chunk demo (48×256×48)
+│   └── voxel/          # Voxel chunk demo (16×256×16)
 └── backends/
     └── wasm/           # Web platform boot + dev server
 ```
@@ -425,7 +425,7 @@ Key files and what they do — read this before opening anything.
 
 ### Voxel example (`examples/voxel/`)
 
-Chunk dimensions: **CHUNK_W = 48** (X/Z), **CHUNK_H = 256** (Y).
+Chunk dimensions: **CHUNK_W = 16** (X/Z), **CHUNK_H = 256** (Y).
 
 | File | Purpose |
 |------|---------|

@@ -1,7 +1,7 @@
 const std = @import("std");
 const world_gen = @import("world_gen.zig");
 
-pub const CHUNK_W = 48; // X and Z dimension
+pub const CHUNK_W = 16; // X and Z dimension
 pub const CHUNK_H = 256; // Y dimension (matches classic Minecraft build height)
 
 pub const BlockType = enum(u8) {

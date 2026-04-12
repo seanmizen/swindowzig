@@ -13,8 +13,8 @@
 //!
 //! Design notes / pitfalls:
 //!
-//! 1. Chunks here are full-height columns (CHUNK_W × CHUNK_H × CHUNK_W = 48 ×
-//!    256 × 48). The bounding-sphere radius is therefore ~132 blocks — *huge*
+//! 1. Chunks here are full-height columns (CHUNK_W × CHUNK_H × CHUNK_W). At
+//!    CHUNK_W=16 the bounding-sphere radius is ~128.5 blocks — *huge*
 //!    relative to the default RENDER_DISTANCE (4 chunks ≈ 192 blocks). Two
 //!    consequences:
 //!      a. Any chunk close to the camera passes trivially because the camera
@@ -51,7 +51,8 @@ const half_w_f: f32 = @as(f32, @floatFromInt(CHUNK_W)) * 0.5;
 const half_h_f: f32 = @as(f32, @floatFromInt(CHUNK_H)) * 0.5;
 
 /// Bounding-sphere radius for one full-height column chunk.
-/// sqrt(24² + 128² + 24²) ≈ 132.45 for the default 48×256×48 chunks.
+/// sqrt((W/2)² + (H/2)² + (W/2)²) — computed from CHUNK_W/CHUNK_H at compile time.
+/// At CHUNK_W=16: sqrt(8² + 128² + 8²) ≈ 128.5.
 pub const CHUNK_BOUND_RADIUS: f32 = @sqrt(half_w_f * half_w_f + half_h_f * half_h_f + half_w_f * half_w_f);
 
 pub const Strategy = enum {
