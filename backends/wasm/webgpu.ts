@@ -534,7 +534,7 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
 
       const entries: GPUBindGroupEntry[] = [];
 
-      // BindGroupEntryJS layout (extern struct, u64s first so no padding):
+      // BindGroupEntryJS layout (extern struct, align=8 from u64 fields):
       //   buffer_offset   u64  @  0
       //   buffer_size     u64  @  8
       //   binding         u32  @ 16
@@ -542,8 +542,9 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
       //   buffer handle   u32  @ 24
       //   sampler handle  u32  @ 28
       //   texture_view    u32  @ 32
-      // Total: 36 bytes.
-      const entrySize = 36;
+      //   (padding)       u32  @ 36  — trailing alignment padding
+      // Total: 40 bytes (@sizeOf with align=8).
+      const entrySize = 40;
 
       for (let i = 0; i < entryCount; i++) {
         const ptr = entriesPtr + i * entrySize;

@@ -1165,6 +1165,7 @@ pub const GPU = struct {
                     .buffer_size = entry.size,
                     .sampler = if (entry.sampler) |samp| samp.handle else 0,
                     .texture_view = if (entry.texture_view) |view| view.handle else 0,
+                    ._padding = 0,
                 };
             }
 

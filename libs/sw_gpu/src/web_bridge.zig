@@ -183,7 +183,8 @@ pub const BindGroupEntryJS = extern struct {
     buffer: WebGPUBuffer, // 24
     sampler: WebGPUSampler, // 28
     texture_view: WebGPUTextureView, // 32
-    // total = 36 bytes, no padding
+    _padding: u32, // 36 — trailing alignment padding (align=8 from u64 fields)
+    // total = 40 bytes
 };
 
 // Pipeline Layout Operations
