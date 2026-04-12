@@ -865,11 +865,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.async_pipeline = null;
     state.async_result_scratch = .{};
 
-    // Hotbar defaults: slot 1 = stone, slot 2 = grass, slot 3 = dirt.
-    // Slot 4 was reserved for glowstone but `voxel/block-light` has not been
-    // merged yet (no glowstone BlockType to assign), so it stays empty —
-    // TODO: switch to .glowstone once block-light lands. Slots 5-10 empty.
-    state.hotbar_slots = .{ .stone, .grass, .dirt, .air, .air, .air, .air, .air, .air, .air };
+    // Hotbar defaults: slot 1 = stone, slot 2 = grass, slot 3 = dirt,
+    // slot 4 = glowstone (block-light BFS is live). Slots 5-10 empty.
+    state.hotbar_slots = .{ .stone, .grass, .dirt, .glowstone, .air, .air, .air, .air, .air, .air };
     state.hotbar_selected = 0;
     state.hotbar_visible = true;
 
@@ -1574,17 +1572,26 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             lc.mesh_incremental_dirty = true;
             try world.chunks.put(key, lc);
 
-            // Mark the 4 axial neighbours dirty so they'll be re-enqueued
-            // as mesh-only jobs next tick — same as the sync path.
+            // Mark all 8 surrounding neighbours dirty so they'll be
+            // re-enqueued as mesh-only jobs next tick. Diagonals matter
+            // because AO sampling reaches ±2 cells — same rationale as
+            // world.zig:generateChunk.
             const adjacent = [_]world_mod.ChunkKey{
+                // Face-adjacent
                 .{ .cx = r.cx - 1, .cz = r.cz },
                 .{ .cx = r.cx + 1, .cz = r.cz },
                 .{ .cx = r.cx, .cz = r.cz - 1 },
                 .{ .cx = r.cx, .cz = r.cz + 1 },
+                // Diagonal corners
+                .{ .cx = r.cx - 1, .cz = r.cz - 1 },
+                .{ .cx = r.cx - 1, .cz = r.cz + 1 },
+                .{ .cx = r.cx + 1, .cz = r.cz - 1 },
+                .{ .cx = r.cx + 1, .cz = r.cz + 1 },
             };
             for (adjacent) |nk| {
                 if (world.chunks.get(nk)) |nlc| {
                     nlc.mesh_dirty = true;
+                    nlc.neighbor_ao_dirty = true;
                 }
             }
         } else {
@@ -1595,6 +1602,7 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
                 };
                 lc.state = .meshed;
                 lc.mesh_dirty = false;
+                lc.neighbor_ao_dirty = false;
                 lc.mesh_incremental_dirty = true;
             }
             std.heap.c_allocator.free(r.vertices);
@@ -1989,8 +1997,52 @@ fn voxelTick(ctx: *sw.Context) !void {
             }
             lc.state = .meshed;
             lc.mesh_dirty = false;
+            lc.neighbor_ao_dirty = false;
             lc.mesh_incremental_dirty = true;
             mesh_gens += 1;
+            tick_mesh_us += t_us;
+            tick_mesh_chunks += 1;
+        }
+
+        // AO re-mesh pass: handle neighbor_ao_dirty chunks that sit outside
+        // MESH_RADIUS_SQ (in the hysteresis dead zone). These already have
+        // meshes but their AO was computed against missing neighbours. Cap
+        // at 2 per tick to avoid frame spikes.
+        const AO_REMESH_CAP: usize = 2;
+        var ao_remeshes: usize = 0;
+        var ao_it = state.world.chunks.iterator();
+        while (ao_it.next()) |entry| {
+            if (ao_remeshes >= AO_REMESH_CAP) break;
+            const lc = entry.value_ptr.*;
+            if (!lc.neighbor_ao_dirty) continue;
+            if (!lc.mesh_dirty) continue;
+            if (lc.state != .meshed) continue;
+            if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
+            // Skip chunks already handled by the regular pass above.
+            const dcx = lc.cx - player_cx;
+            const dcz = lc.cz - player_cz;
+            if (dcx * dcx + dcz * dcz <= world_mod.MESH_RADIUS_SQ) continue;
+            const t0 = perfNowNs();
+            mesher_mod.generateMeshForMode(
+                &lc.chunk,
+                &lc.mesh,
+                lc.worldX(),
+                lc.worldZ(),
+                state.world.asBlockGetter(),
+                state.ao_strategy,
+                state.lighting_mode,
+                state.meshing_mode,
+            ) catch |err| {
+                std.log.err("AO re-mesh failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
+                continue;
+            };
+            const mesh_dt_ns: i128 = perfNowNs() - t0;
+            const t_us = @divTrunc(mesh_dt_ns, 1000);
+            std.log.info("[AO-REMESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
+            lc.mesh_dirty = false;
+            lc.neighbor_ao_dirty = false;
+            lc.mesh_incremental_dirty = true;
+            ao_remeshes += 1;
             tick_mesh_us += t_us;
             tick_mesh_chunks += 1;
         }
@@ -2026,6 +2078,16 @@ fn voxelTick(ctx: *sw.Context) !void {
             const dcx = lc.cx - player_cx;
             const dcz = lc.cz - player_cz;
             if (dcx * dcx + dcz * dcz <= world_mod.EVICT_RADIUS_SQ) continue;
+
+            // Skip chunks that are currently being re-meshed by the async
+            // worker — evicting mid-flight would discard their mesh buffers
+            // and the subsequent result drain would re-install them, causing
+            // a visible flicker (meshed → evicted → meshed → evicted cycle).
+            if (!comptime is_wasm) {
+                if (state.async_pipeline) |ap| {
+                    if (ap.isInFlight(lc.cx, lc.cz)) continue;
+                }
+            }
 
             // Drop GPU buffers if any are bound. The chunk_gpu entry can be
             // absent (e.g. chunk was meshed this tick but the upload pass
