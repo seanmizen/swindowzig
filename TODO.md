@@ -1,6 +1,30 @@
 # Voxel Project — Bug & Feature Tracker
 
+> **⚠️ DO NOT MARK ANY ITEM AS COMPLETE UNTIL HUMAN HAS VERIFIED.**
+
 ## Bugs (P0)
+
+### Glowstone blocks do not emit light
+
+Glowstone blocks exist and can be placed, but they do not actually emit light.
+The block-light BFS is either not running for player-placed glowstone or the
+light values are not being applied to the renderer.
+
+### Distant chunk borders still shadowed
+
+Chunk borders at distance are visually darker / shadowed. Likely an AO or
+lighting artefact at chunk seams that only manifests beyond a certain range.
+
+### Chunks do not reload after being purged
+
+Travelling ~150 blocks away from spawn and returning: chunks that were evicted
+from the render do not come back. They appear invisible. Possible cause: evicted
+chunks are not being re-queued for generation/meshing when the player re-enters
+their load radius.
+
+---
+
+## Bugs (resolved)
 
 ### ~~FXAA texture dimension mismatch (voxel:web crashes)~~ FIXED
 
