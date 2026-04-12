@@ -2,15 +2,9 @@
 
 ## Bugs (P0)
 
-### FXAA texture dimension mismatch (voxel:web crashes)
+### ~~FXAA texture dimension mismatch (voxel:web crashes)~~ FIXED
 
-The FXAA post-processing shader declares its texture binding as `TextureViewDimension::e1D` but the actual texture view is 2D.
-
-```
-Dimension (TextureViewDimension::e2D) of [TextureView] doesn't match the expected dimension (TextureViewDimension::e1D).
-```
-
-Crashes the entire render pipeline on web. Fix: change the dimension enum in the FXAA shader bind group layout to `e2D`. Also audit the Zig-side bind group layout creation in the FXAA pass.
+Fixed: `viewDimensionMap` in `webgpu.ts` was off-by-one (started keys at 1 instead of 0), causing Zig enum `.@"2d"` (value 1) to map to JS `'1d'` instead of `'2d'`. Regression test added: `yarn workspace swindowzig test:web`.
 
 ### AO broken at chunk seams
 

@@ -16,7 +16,8 @@
     "native:voxel": "zig build run -Dexample=voxel -Doptimize=ReleaseFast --",
     "native:justabox": "zig build run -Dexample=justabox",
     "build:native": "zig build native",
-    "test": "zig build test"
+    "test": "zig build test",
+    "test:web": "bash test-web-build.sh"
   },
   "devDependencies": {
     "@types/bun": "^1.3.5"

@@ -473,12 +473,12 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
             5: 'uint',
           };
           const viewDimensionMap: Record<number, GPUTextureViewDimension> = {
-            1: '1d',
-            2: '2d',
-            3: '2d-array',
-            4: 'cube',
-            5: 'cube-array',
-            6: '3d',
+            0: '1d',
+            1: '2d',
+            2: '2d-array',
+            3: 'cube',
+            4: 'cube-array',
+            5: '3d',
           };
           entry.texture = {
             sampleType: sampleTypeMap[textureSampleType],
@@ -495,12 +495,12 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
             3: 'read-write',
           };
           const viewDimensionMap: Record<number, GPUTextureViewDimension> = {
-            1: '1d',
-            2: '2d',
-            3: '2d-array',
-            4: 'cube',
-            5: 'cube-array',
-            6: '3d',
+            0: '1d',
+            1: '2d',
+            2: '2d-array',
+            3: 'cube',
+            4: 'cube-array',
+            5: '3d',
           };
           entry.storageTexture = {
             access: accessMap[storageAccess],
