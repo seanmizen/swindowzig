@@ -15,12 +15,14 @@
 //! ```
 
 const std = @import("std");
-const Event = @import("event.zig").Event;
-const EventPayload = @import("event.zig").EventPayload;
-const KeyCode = @import("event.zig").KeyCode;
-const MouseButtonType = @import("event.zig").MouseButton;
-const WheelMode = @import("event.zig").WheelMode;
-const Modifiers = @import("event.zig").Modifiers;
+const event_mod = @import("event.zig");
+const Event = event_mod.Event;
+const EventPayload = event_mod.EventPayload;
+const KeyCode = event_mod.KeyCode;
+const MouseButtonType = event_mod.MouseButton;
+const WheelMode = event_mod.WheelMode;
+const Modifiers = event_mod.Modifiers;
+const CommandKind = event_mod.CommandKind;
 
 /// TAS command types
 pub const TasCommand = union(enum) {
@@ -31,6 +33,7 @@ pub const TasCommand = union(enum) {
     mouse_up: MouseButton,
     mouse_wheel: f32,
     wait: u64, // Wait N ticks (syntactic sugar, doesn't generate event)
+    command: struct { kind: CommandKind, args: [4]f32 },
 
     pub fn toEvent(self: TasCommand, tick_id: u64, t_ns: u64, seq: u32) ?Event {
         const empty_mods = Modifiers{};
@@ -87,6 +90,12 @@ pub const TasCommand = union(enum) {
                 },
             }),
             .wait => null, // wait doesn't generate events
+            .command => |cmd| Event.init(tick_id, t_ns, seq, .{
+                .command = .{
+                    .kind = cmd.kind,
+                    .args = cmd.args,
+                },
+            }),
         };
     }
 };
@@ -311,6 +320,29 @@ fn parseCommand(cmd: []const u8, parts: *std.mem.TokenIterator(u8, .scalar), lin
         const ticks_str = parts.next() orelse return error.MissingArgument;
         const ticks = try std.fmt.parseInt(u64, ticks_str, 10);
         return .{ .wait = ticks };
+    } else if (std.mem.eql(u8, cmd, "cmd")) {
+        const name_str = parts.next() orelse {
+            std.log.err("Line {}: cmd requires a command name (tp, set_spawn)", .{line_num});
+            return error.MissingArgument;
+        };
+        const kind: CommandKind = if (std.mem.eql(u8, name_str, "tp"))
+            .tp
+        else if (std.mem.eql(u8, name_str, "set_spawn"))
+            .set_spawn
+        else {
+            std.log.err("Line {}: Unknown command name '{s}'", .{ line_num, name_str });
+            return error.UnknownCommand;
+        };
+        var args = [4]f32{ 0, 0, 0, 0 };
+        var ai: usize = 0;
+        while (ai < 4) : (ai += 1) {
+            const arg_str = parts.next() orelse break;
+            args[ai] = std.fmt.parseFloat(f32, arg_str) catch {
+                std.log.err("Line {}: Invalid float arg '{s}'", .{ line_num, arg_str });
+                return error.InvalidFormat;
+            };
+        }
+        return .{ .command = .{ .kind = kind, .args = args } };
     } else {
         std.log.err("Line {}: Unknown command '{s}'", .{ line_num, cmd });
         return error.UnknownCommand;
