@@ -153,6 +153,13 @@ pub const LoadedChunk = struct {
     mesh_dirty: bool,
     /// True when mesh was changed incrementally and GPU buffers need re-upload.
     mesh_incremental_dirty: bool,
+    /// True when a neighbour chunk was newly generated, meaning this chunk's
+    /// AO samples may have returned `.air` for previously-unloaded neighbours.
+    /// Unlike `mesh_dirty` alone, this flag bypasses the `MESH_RADIUS_SQ`
+    /// distance gate in the sync mesh loop — chunks in the hysteresis dead zone
+    /// (inside eviction radius but outside mesh radius) still get their AO
+    /// corrected when the missing neighbour finally loads.
+    neighbor_ao_dirty: bool,
 
     pub fn init(allocator: std.mem.Allocator, cx: i32, cz: i32) LoadedChunk {
         return .{
@@ -163,6 +170,7 @@ pub const LoadedChunk = struct {
             .state = .generated,
             .mesh_dirty = true,
             .mesh_incremental_dirty = false,
+            .neighbor_ao_dirty = false,
         };
     }
 
@@ -188,6 +196,7 @@ pub const LoadedChunk = struct {
         self.state = .generated;
         self.mesh_dirty = true;
         self.mesh_incremental_dirty = false;
+        self.neighbor_ao_dirty = false;
     }
 
     /// World-space X origin of this chunk in block units.
@@ -308,6 +317,7 @@ pub const World = struct {
         for (adjacent) |nk| {
             if (self.chunks.get(nk)) |nlc| {
                 nlc.mesh_dirty = true;
+                nlc.neighbor_ao_dirty = true;
             }
         }
         return true;

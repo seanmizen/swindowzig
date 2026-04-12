@@ -588,6 +588,21 @@ pub const Chunk = struct {
                 if (surface >= 1 and surface < CHUNK_H) {
                     try self.setBlock(x, surface, z, .grass);
                 }
+
+                // Scatter glowstone in the stone layer below Y=40 with
+                // ~0.2% probability per block. Uses a splitmix-style hash
+                // seeded from (wx, wz, y) for deterministic placement.
+                const glow_ceil: i32 = @min(40, surface - 4);
+                var gy: i32 = 2; // skip bedrock at Y=0, start above
+                while (gy < glow_ceil) : (gy += 1) {
+                    const seed = @as(u32, @bitCast(wx)) *% 374761393 +%
+                        @as(u32, @bitCast(wz)) *% 668265263 +%
+                        @as(u32, @bitCast(gy)) *% 2654435761;
+                    const h = (seed ^ (seed >> 16)) *% 0x45d9f3b;
+                    if ((h & 0x1FF) == 0) { // ~1/512 chance
+                        try self.setBlock(x, gy, z, .glowstone);
+                    }
+                }
             }
         }
         const t_fill_us = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else @divTrunc(std.time.nanoTimestamp() - t_fill_start, 1000);
@@ -597,10 +612,8 @@ pub const Chunk = struct {
         const t_sky_start = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else std.time.nanoTimestamp();
         self.computeSkylight();
         const t_sky_us = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else @divTrunc(std.time.nanoTimestamp() - t_sky_start, 1000);
-        // Block light: cheap no-op on freshly generated terrain (no emitters
-        // in the default worldgen), but runs anyway so `World.setBlock` has
-        // a zeroed grid to start from. Emitters placed later trigger the
-        // real cost on the setBlock-driven recompute.
+        // Block light: now seeds from glowstone emitters scattered during
+        // generation. The BFS propagates their light through nearby air cells.
         self.computeBlockLight();
 
         std.log.info("[GEN] chunk ({},{}) fill={}us sky={}us total={}us", .{
