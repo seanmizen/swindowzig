@@ -127,6 +127,15 @@ pub const GPU = struct {
     current_surface_texture: if (!is_wasm) ?native.WGPUTexture else void =
         if (!is_wasm) null else {},
 
+    // Headless-offscreen state (native only). Populated by GPU.init when called
+    // with `window == null`: a single bgra8unorm texture sized to width × height
+    // with usage RenderAttachment | CopySrc | TextureBinding. Stands in for the
+    // swapchain: getCurrentTextureView returns a fresh view over this texture,
+    // captureFrame reads it, present() is a no-op. See
+    // `examples/voxel/docs/headless-regressions.md`.
+    offscreen_color_texture: if (!is_wasm) ?Texture else void =
+        if (!is_wasm) null else {},
+
     /// Check if GPU is ready for use
     pub fn isReady(self: *const GPU) bool {
         return self.state == .ready;
@@ -327,22 +336,22 @@ pub const GPU = struct {
     /// the swapchain before writing, so `swap_view` must not have been used yet this
     /// frame.  Call this after the main render pass ends but before `encoder.finish`.
     pub fn runFXAAPass(self: *GPU, encoder: CommandEncoder, swap_view: *TextureView) !void {
-        const pipeline  = self.fxaa_pipeline  orelse return error.FXAANotConfigured;
+        const pipeline = self.fxaa_pipeline orelse return error.FXAANotConfigured;
         const bind_group = self.fxaa_bind_group orelse return error.FXAANotConfigured;
 
         const pass = try encoder.beginRenderPass(.{
             .label = "fxaa_pass",
             .color_attachments = &[_]RenderPassColorAttachment{.{
-                .view       = swap_view,
-                .load_op    = .clear,
-                .store_op   = .store,
+                .view = swap_view,
+                .load_op = .clear,
+                .store_op = .store,
                 .clear_value = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
             }},
         });
 
         pass.setPipeline(pipeline);
         pass.setBindGroup(0, bind_group);
-        pass.draw(3, 1, 0, 0);   // fullscreen triangle — no vertex buffer
+        pass.draw(3, 1, 0, 0); // fullscreen triangle — no vertex buffer
         pass.end();
     }
 
@@ -375,8 +384,11 @@ pub const GPU = struct {
             self.queue = queue;
             self.state = .ready;
         } else {
-            // Native: Initialize wgpu-native
-            if (window == null) return error.WindowRequired;
+            // Native: Initialize wgpu-native. `window == null` means "headless
+            // offscreen mode": skip surface creation and render to an offscreen
+            // bgra8unorm texture instead. Everything else (adapter, device,
+            // queue, MSAA, FXAA) is identical to the windowed path.
+            const headless_offscreen = (window == null);
 
             // Create instance with appropriate backend for platform
             const backend_flags = switch (builtin.os.tag) {
@@ -401,7 +413,11 @@ pub const GPU = struct {
             const instance = native.wgpuCreateInstance(&instance_desc);
             if (instance == null) return error.InstanceCreationFailed;
 
-            std.log.info("Instance created successfully", .{});
+            if (headless_offscreen) {
+                std.log.info("sw_gpu: headless-offscreen GPU init ({}×{} bgra8unorm)", .{ width, height });
+            } else {
+                std.log.info("Instance created successfully", .{});
+            }
 
             // Request adapter FIRST (without surface) to avoid backend detection issues
             var adapter_result = AdapterRequestResult{};
@@ -418,8 +434,13 @@ pub const GPU = struct {
             while (!adapter_result.received) {}
             if (adapter_result.adapter == null) return error.AdapterRequestFailed;
 
-            // Now create surface from SDL window
-            const surface = try native.createSurfaceFromSDLWindow(instance, window.?);
+            // Create surface from SDL window (windowed mode only). Headless
+            // offscreen mode leaves `self.surface = null` and renders to a
+            // persistent offscreen texture instead.
+            const surface: native.WGPUSurface = if (headless_offscreen)
+                null
+            else
+                try native.createSurfaceFromSDLWindow(instance, window.?);
 
             // Request device (using callback)
             var device_result = DeviceRequestResult{};
@@ -439,20 +460,22 @@ pub const GPU = struct {
             const queue = native.wgpuDeviceGetQueue(device_result.device.?);
             if (queue == null) return error.QueueCreationFailed;
 
-            // Configure surface (modern API, replaces swap chain)
-            const surface_config = native.WGPUSurfaceConfiguration{
-                .next_in_chain = null,
-                .device = device_result.device.?,
-                .format = .bgra8unorm,
-                .usage = native.WGPUTextureUsage_RenderAttachment | native.WGPUTextureUsage_CopySrc,
-                .view_format_count = 0,
-                .view_formats = null,
-                .alpha_mode = .auto,
-                .width = width,
-                .height = height,
-                .present_mode = .fifo,
-            };
-            native.wgpuSurfaceConfigure(surface, &surface_config);
+            if (!headless_offscreen) {
+                // Configure surface (modern API, replaces swap chain)
+                const surface_config = native.WGPUSurfaceConfiguration{
+                    .next_in_chain = null,
+                    .device = device_result.device.?,
+                    .format = .bgra8unorm,
+                    .usage = native.WGPUTextureUsage_RenderAttachment | native.WGPUTextureUsage_CopySrc,
+                    .view_format_count = 0,
+                    .view_formats = null,
+                    .alpha_mode = .auto,
+                    .width = width,
+                    .height = height,
+                    .present_mode = .fifo,
+                };
+                native.wgpuSurfaceConfigure(surface, &surface_config);
+            }
 
             // Store everything
             self.instance = instance;
@@ -463,6 +486,27 @@ pub const GPU = struct {
             self.width = width;
             self.height = height;
             self.state = .ready;
+
+            // Offscreen "swapchain" texture (headless mode only). Must happen
+            // AFTER self.state = .ready because createTexture gates on isReady.
+            // Usage mirrors the real swapchain + TextureBinding so the FXAA
+            // fullscreen pass can still sample it.
+            if (headless_offscreen) {
+                const tex = self.createTexture(.{
+                    .label = "offscreen_swapchain",
+                    .size = .{ .width = width, .height = height, .depth_or_array_layers = 1 },
+                    .format = .bgra8unorm,
+                    .usage = .{
+                        .render_attachment = true,
+                        .copy_src = true,
+                        .texture_binding = true,
+                    },
+                }) catch |err| {
+                    std.log.err("sw_gpu: failed to create offscreen swapchain texture: {}", .{err});
+                    return err;
+                };
+                self.offscreen_color_texture = tex;
+            }
         }
     }
 
@@ -978,12 +1022,12 @@ pub const GPU = struct {
                     // but WGPUTextureViewDimension has undefined=0, 1d=1, 2d=2, etc.
                     // Raw @intFromEnum would map .@"2d"→1 (WGPUTextureViewDimension.1d) — wrong.
                     native_entries[i].texture.view_dimension = switch (tex.view_dimension) {
-                        .@"1d"       => .@"1d",
-                        .@"2d"       => .@"2d",
+                        .@"1d" => .@"1d",
+                        .@"2d" => .@"2d",
                         .@"2d-array" => .@"2d_array",
-                        .cube        => .cube,
-                        .cube_array  => .cube_array,
-                        .@"3d"       => .@"3d",
+                        .cube => .cube,
+                        .cube_array => .cube_array,
+                        .@"3d" => .@"3d",
                     };
                     native_entries[i].texture.multisampled = if (tex.multisampled) @as(u32, 1) else 0;
                 }
@@ -995,12 +1039,12 @@ pub const GPU = struct {
                     };
                     native_entries[i].storage_texture.format = @enumFromInt(@intFromEnum(st.format));
                     native_entries[i].storage_texture.view_dimension = switch (st.view_dimension) {
-                        .@"1d"       => .@"1d",
-                        .@"2d"       => .@"2d",
+                        .@"1d" => .@"1d",
+                        .@"2d" => .@"2d",
                         .@"2d-array" => .@"2d_array",
-                        .cube        => .cube,
-                        .cube_array  => .cube_array,
-                        .@"3d"       => .@"3d",
+                        .cube => .cube,
+                        .cube_array => .cube_array,
+                        .@"3d" => .@"3d",
                     };
                 }
             }
@@ -1129,6 +1173,18 @@ pub const GPU = struct {
             const handle = web.webgpuGetCurrentTextureView();
             return TextureView{ .handle = handle };
         } else {
+            // Headless-offscreen mode: no surface. Return a fresh view of the
+            // persistent offscreen colour texture. Caller is expected to
+            // .release() it each frame (same contract as the windowed path);
+            // the underlying texture lives until GPU shutdown.
+            if (self.surface == null) {
+                const off_tex = self.offscreen_color_texture orelse return error.OffscreenTextureNotAllocated;
+                self.current_surface_texture = off_tex.handle;
+                const view = native.wgpuTextureCreateView(off_tex.handle, null);
+                if (view == null) return error.TextureViewCreationFailed;
+                return TextureView{ .handle = view };
+            }
+
             // Native: Get current texture from surface
             var surface_texture: native.WGPUSurfaceTexture = undefined;
             native.wgpuSurfaceGetCurrentTexture(self.surface, &surface_texture);
@@ -1160,10 +1216,18 @@ pub const GPU = struct {
     pub fn captureFrame(self: *GPU, allocator: std.mem.Allocator) ![]u8 {
         if (comptime is_wasm) return error.NotSupportedOnWasm;
 
-        // Reuse the texture that getCurrentTextureView() already fetched this frame.
-        // Calling wgpuSurfaceGetCurrentTexture() a second time within the same frame
-        // causes a validation error on Metal.
-        const tex = self.current_surface_texture orelse return error.NoCurrentTexture;
+        // Headless-offscreen mode reads directly from the persistent offscreen
+        // texture — there is no swapchain acquisition. Windowed mode reuses
+        // the texture that getCurrentTextureView() already fetched this frame
+        // (calling wgpuSurfaceGetCurrentTexture twice within a frame is a
+        // validation error on Metal).
+        const tex: native.WGPUTexture = blk: {
+            if (self.surface == null) {
+                const off = self.offscreen_color_texture orelse return error.OffscreenTextureNotAllocated;
+                break :blk off.handle;
+            }
+            break :blk self.current_surface_texture orelse return error.NoCurrentTexture;
+        };
 
         const w = self.width;
         const h = self.height;
@@ -1178,13 +1242,11 @@ pub const GPU = struct {
         buf_desc.size = buf_size;
         buf_desc.usage = native.WGPUBufferUsage_CopyDst | native.WGPUBufferUsage_MapRead;
         buf_desc.mapped_at_creation = 0;
-        const staging_buf = native.wgpuDeviceCreateBuffer(self.device, &buf_desc)
-            orelse return error.BufferCreationFailed;
+        const staging_buf = native.wgpuDeviceCreateBuffer(self.device, &buf_desc) orelse return error.BufferCreationFailed;
         defer native.wgpuBufferDestroy(staging_buf);
 
         // Record the copy command
-        const enc = native.wgpuDeviceCreateCommandEncoder(self.device, null)
-            orelse return error.EncoderCreationFailed;
+        const enc = native.wgpuDeviceCreateCommandEncoder(self.device, null) orelse return error.EncoderCreationFailed;
 
         var src = std.mem.zeroes(native.WGPUImageCopyTexture);
         src.texture = tex;
@@ -1199,8 +1261,7 @@ pub const GPU = struct {
         const extent = native.WGPUExtent3D{ .width = w, .height = h, .depth_or_array_layers = 1 };
         native.wgpuCommandEncoderCopyTextureToBuffer(enc, &src, &dst, &extent);
 
-        const cmd = native.wgpuCommandEncoderFinish(enc, null)
-            orelse return error.FinishFailed;
+        const cmd = native.wgpuCommandEncoderFinish(enc, null) orelse return error.FinishFailed;
         native.wgpuQueueSubmit(self.queue, 1, @ptrCast(&cmd));
         native.wgpuCommandBufferRelease(cmd);
         native.wgpuCommandEncoderRelease(enc);
@@ -1225,8 +1286,10 @@ pub const GPU = struct {
 
         // Copy pixels into output buffer, stripping the 256-byte row padding
         const out = try allocator.alloc(u8, w * h * bpp);
-        const ptr: [*]const u8 = @ptrCast(native.wgpuBufferGetMappedRange(staging_buf, 0, buf_size)
-            orelse { allocator.free(out); return error.MapFailed; });
+        const ptr: [*]const u8 = @ptrCast(native.wgpuBufferGetMappedRange(staging_buf, 0, buf_size) orelse {
+            allocator.free(out);
+            return error.MapFailed;
+        });
         for (0..h) |y| {
             const src_row = ptr[y * bytes_per_row ..][0 .. w * bpp];
             @memcpy(out[y * w * bpp ..][0 .. w * bpp], src_row);
@@ -1242,6 +1305,15 @@ pub const GPU = struct {
         if (comptime is_wasm) {
             web.webgpuPresent();
         } else {
+            // Headless-offscreen mode has no swapchain to present to. The
+            // submit() path already wgpuDevicePoll()s on wait=true, so work
+            // is flushed before the next frame starts. Just clear the cached
+            // surface texture so the next getCurrentTextureView() allocates
+            // a fresh view.
+            if (self.surface == null) {
+                self.current_surface_texture = null;
+                return;
+            }
             // Native: Present the surface
             native.wgpuSurfacePresent(self.surface);
             self.current_surface_texture = null;

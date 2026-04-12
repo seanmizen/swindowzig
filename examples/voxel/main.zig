@@ -5,20 +5,31 @@ const core = @import("sw_core");
 const math = @import("sw_math");
 
 pub fn main() !void {
-    // Read --headless flag before sw.run() so we can set Config accordingly.
+    // Read --headless / --dump-frame / --compare-golden flags before sw.run()
+    // so we can set Config accordingly. When --headless is combined with
+    // --dump-frame= (or --compare-golden=, which implies a capture), we
+    // auto-promote to headless-offscreen GPU mode: no window, but the GPU
+    // still initialises and renders to an offscreen texture so captureFrame
+    // can read it. See examples/voxel/docs/headless-regressions.md.
     const args = try std.process.argsAlloc(std.heap.page_allocator);
     defer std.process.argsFree(std.heap.page_allocator, args);
 
     var headless = false;
+    var has_dump = false;
+    var has_compare = false;
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--headless")) headless = true;
+        if (std.mem.startsWith(u8, arg, "--dump-frame=")) has_dump = true;
+        if (std.mem.startsWith(u8, arg, "--compare-golden=")) has_compare = true;
     }
+    const headless_gpu = headless and (has_dump or has_compare);
 
     try sw.run(.{
         .title = "Voxel Demo - Minecraft Creative Mode",
         .size = .{ .w = 1280, .h = 720 },
         .tick_hz = 120,
         .headless = headless,
+        .headless_gpu = headless_gpu,
         .tick_timing = if (headless) .unlimited else .realtime,
     }, Callbacks);
 }
@@ -382,6 +393,16 @@ const State = struct {
     /// --dump-frame=<path>: capture first rendered frame to a PPM file then exit.
     dump_frame_path: ?[]const u8 = null,
     dump_frame_done: bool = false,
+    /// --compare-golden=<path>: after capturing the frame, compare it pixel-for-pixel
+    /// against a golden PPM file. Exits 0 if within tolerance, 1 otherwise. Prints
+    /// per-run stats (differing px / total px, max/mean channel delta). Tolerance
+    /// knobs: --golden-max-diff-pct, --golden-max-channel-delta.
+    compare_golden_path: ?[]const u8 = null,
+    /// Max percentage of pixels allowed to differ (0.0 – 100.0). Default 0.5%.
+    golden_max_diff_pct: f32 = 0.5,
+    /// Max per-channel absolute delta (0 – 255). Pixels with any channel beyond
+    /// this threshold count as "differing". Default 2.
+    golden_max_channel_delta: u8 = 2,
     /// True while the first spawn chunk is being generated + meshed. Render loop
     /// shows a purple "WORLD LOADING" overlay and skips 3D rendering. Flipped
     /// false once the spawn chunk is meshed and the player has been placed at
@@ -508,6 +529,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.last_frame_ns = 0;
     state.dump_frame_path = null;
     state.dump_frame_done = false;
+    state.compare_golden_path = null;
+    state.golden_max_diff_pct = 0.5;
+    state.golden_max_channel_delta = 2;
 
     // Check for TAS script argument
     const args = try std.process.argsAlloc(ctx.allocator());
@@ -523,6 +547,25 @@ fn voxelInit(ctx: *sw.Context) !void {
             const p = std.mem.sliceTo(raw, 0);
             // dupe so the path survives argsFree at end of voxelInit
             state.dump_frame_path = try ctx.allocator().dupe(u8, p);
+        }
+        if (std.mem.startsWith(u8, arg, "--compare-golden=")) {
+            const raw: []const u8 = arg["--compare-golden=".len..];
+            const p = std.mem.sliceTo(raw, 0);
+            state.compare_golden_path = try ctx.allocator().dupe(u8, p);
+        }
+        if (std.mem.startsWith(u8, arg, "--golden-max-diff-pct=")) {
+            const val = std.mem.sliceTo(arg["--golden-max-diff-pct=".len..], 0);
+            state.golden_max_diff_pct = std.fmt.parseFloat(f32, val) catch {
+                std.log.err("--golden-max-diff-pct: cannot parse '{s}' as f32", .{val});
+                std.process.exit(1);
+            };
+        }
+        if (std.mem.startsWith(u8, arg, "--golden-max-channel-delta=")) {
+            const val = std.mem.sliceTo(arg["--golden-max-channel-delta=".len..], 0);
+            state.golden_max_channel_delta = std.fmt.parseInt(u8, val, 10) catch {
+                std.log.err("--golden-max-channel-delta: cannot parse '{s}' as u8", .{val});
+                std.process.exit(1);
+            };
         }
         if (std.mem.startsWith(u8, arg, "--world=")) {
             const val = std.mem.sliceTo(arg["--world=".len..], 0);
@@ -1360,8 +1403,12 @@ fn voxelTick(ctx: *sw.Context) !void {
                 .third_person_back => {
                     const d = camera_clip.safeCameraDistance(
                         solid_world,
-                        eye[0], eye[1], eye[2],
-                        -fwd_vec.x, -fwd_vec.y, -fwd_vec.z,
+                        eye[0],
+                        eye[1],
+                        eye[2],
+                        -fwd_vec.x,
+                        -fwd_vec.y,
+                        -fwd_vec.z,
                         cam_dist,
                         CAMERA_CLIP_SKIN,
                     );
@@ -1374,8 +1421,12 @@ fn voxelTick(ctx: *sw.Context) !void {
                 .third_person_front => {
                     const d = camera_clip.safeCameraDistance(
                         solid_world,
-                        eye[0], eye[1], eye[2],
-                        fwd_vec.x, fwd_vec.y, fwd_vec.z,
+                        eye[0],
+                        eye[1],
+                        eye[2],
+                        fwd_vec.x,
+                        fwd_vec.y,
+                        fwd_vec.z,
                         cam_dist,
                         CAMERA_CLIP_SKIN,
                     );
@@ -2425,7 +2476,8 @@ fn voxelRender(ctx: *sw.Context) !void {
         return;
     };
 
-    // --dump-frame: capture the surface texture BEFORE present, write PPM, then exit.
+    // --dump-frame / --compare-golden: capture the rendered texture BEFORE present,
+    // optionally write PPM, optionally compare against a golden, then exit.
     // When a TAS is running, defer capture until the TAS has finished so both MSAA
     // comparison runs dump the same deterministic game state. Without a TAS,
     // capture on the first post-loading frame.
@@ -2434,33 +2486,31 @@ fn voxelRender(ctx: *sw.Context) !void {
         if (state.tas_replayer) |*r| break :blk (r.state == .finished);
         break :blk true;
     };
-    if (state.dump_frame_path) |path| {
-        if (!state.dump_frame_done and dump_ready) {
-            state.dump_frame_done = true;
-            g.submit(&[_]gpu_mod.CommandBuffer{cmd});
-            // Capture pixels (surface has CopySrc usage; call before present)
-            const pixels = g.captureFrame(ctx.allocator()) catch |err| {
-                std.log.err("captureFrame failed: {}", .{err});
-                g.present();
-                return;
-            };
-            defer ctx.allocator().free(pixels);
+    const want_capture = (state.dump_frame_path != null) or (state.compare_golden_path != null);
+    if (want_capture and !state.dump_frame_done and dump_ready) {
+        state.dump_frame_done = true;
+        g.submit(&[_]gpu_mod.CommandBuffer{cmd});
+        // Capture pixels (target has CopySrc usage; call before present)
+        const pixels = g.captureFrame(ctx.allocator()) catch |err| {
+            std.log.err("captureFrame failed: {}", .{err});
             g.present();
+            return;
+        };
+        defer ctx.allocator().free(pixels);
+        g.present();
 
-            // Write PPM P6 (binary RGB). Build in a byte buffer then write once.
-            // Use GPU surface dimensions — on Retina, ctx.window().width/height are
-            // physical pixels, which match the GPU swapchain size captured above.
-            const w = g.getSurfaceWidth();
-            const h = g.getSurfaceHeight();
-            // Header: "P6\n<w> <h>\n255\n"
-            var hdr_buf: [64]u8 = undefined;
-            const hdr = std.fmt.bufPrint(&hdr_buf, "P6\n{} {}\n255\n", .{ w, h }) catch unreachable;
-            // Body: w*h*3 RGB bytes
-            const rgb = ctx.allocator().alloc(u8, w * h * 3) catch {
-                std.log.err("OOM allocating PPM buffer", .{});
-                std.process.exit(1);
-            };
-            defer ctx.allocator().free(rgb);
+        // Use GPU surface dimensions — on Retina, ctx.window().width/height are
+        // physical pixels, which match the GPU swapchain size captured above.
+        const w = g.getSurfaceWidth();
+        const h = g.getSurfaceHeight();
+        // BGRA → RGB conversion once; shared by both the PPM writer and the
+        // golden comparator.
+        const rgb = ctx.allocator().alloc(u8, w * h * 3) catch {
+            std.log.err("OOM allocating PPM buffer", .{});
+            std.process.exit(1);
+        };
+        defer ctx.allocator().free(rgb);
+        {
             var y: u32 = 0;
             while (y < h) : (y += 1) {
                 var x: u32 = 0;
@@ -2472,6 +2522,12 @@ fn voxelRender(ctx: *sw.Context) !void {
                     rgb[dst + 2] = pixels[src + 0]; // B (from R channel in BGRA)
                 }
             }
+        }
+
+        // Write PPM P6 if --dump-frame was given.
+        if (state.dump_frame_path) |path| {
+            var hdr_buf: [64]u8 = undefined;
+            const hdr = std.fmt.bufPrint(&hdr_buf, "P6\n{} {}\n255\n", .{ w, h }) catch unreachable;
             const file = std.fs.cwd().createFile(path, .{}) catch |err| {
                 std.log.err("Cannot create {s}: {}", .{ path, err });
                 std.process.exit(1);
@@ -2480,12 +2536,151 @@ fn voxelRender(ctx: *sw.Context) !void {
             file.writeAll(rgb) catch unreachable;
             file.close();
             std.log.info("Frame captured: {s} ({}×{} px)", .{ path, w, h });
-            std.process.exit(0);
         }
+
+        // Compare against golden PPM if --compare-golden was given.
+        if (state.compare_golden_path) |golden_path| {
+            const exit_code = compareAgainstGolden(
+                ctx.allocator(),
+                golden_path,
+                rgb,
+                w,
+                h,
+                state.golden_max_diff_pct,
+                state.golden_max_channel_delta,
+            ) catch |err| {
+                std.log.err("compare-golden failed: {s}: {}", .{ golden_path, err });
+                std.process.exit(2);
+            };
+            std.process.exit(exit_code);
+        }
+
+        std.process.exit(0);
     }
 
     g.submit(&[_]gpu_mod.CommandBuffer{cmd});
     g.present();
+}
+
+/// Compare captured RGB frame against a golden PPM P6 file.
+///
+/// Returns the process exit code to use: 0 = within tolerance, 1 = exceeds
+/// tolerance, non-zero error = propagated via error union. Prints a single
+/// pass/fail line to stderr and a second stats line with differing-pixel
+/// count, percentage, max and mean channel delta.
+///
+/// Tolerance has two knobs:
+///   - max_channel_delta: per-channel abs diff below which the pixel is "equal"
+///   - max_diff_pct: percentage of pixels allowed to exceed max_channel_delta
+///
+/// Only supports P6 ASCII-header PPMs because that is what --dump-frame writes.
+fn compareAgainstGolden(
+    allocator: std.mem.Allocator,
+    golden_path: []const u8,
+    captured_rgb: []const u8,
+    w: u32,
+    h: u32,
+    max_diff_pct: f32,
+    max_channel_delta: u8,
+) !u8 {
+    // Read golden file
+    const file = std.fs.cwd().openFile(golden_path, .{}) catch |err| {
+        std.log.err("golden {s} cannot be opened: {}", .{ golden_path, err });
+        return error.GoldenNotFound;
+    };
+    defer file.close();
+    const contents = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+    defer allocator.free(contents);
+
+    // Parse P6 header: "P6\n<w> <h>\n255\n" (plus optional comment lines starting with '#')
+    var idx: usize = 0;
+    // magic
+    if (contents.len < 3 or contents[0] != 'P' or contents[1] != '6') {
+        std.log.err("golden {s}: not a P6 PPM", .{golden_path});
+        return error.NotP6;
+    }
+    idx = 2;
+    // skip whitespace + comments, then read 3 numbers
+    var nums: [3]u32 = undefined;
+    var n: usize = 0;
+    while (n < 3 and idx < contents.len) {
+        const c = contents[idx];
+        if (c == '#') {
+            while (idx < contents.len and contents[idx] != '\n') : (idx += 1) {}
+            if (idx < contents.len) idx += 1;
+            continue;
+        }
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            idx += 1;
+            continue;
+        }
+        // parse decimal
+        const start = idx;
+        while (idx < contents.len and contents[idx] >= '0' and contents[idx] <= '9') : (idx += 1) {}
+        if (idx == start) {
+            std.log.err("golden {s}: malformed header near byte {}", .{ golden_path, idx });
+            return error.MalformedHeader;
+        }
+        nums[n] = try std.fmt.parseInt(u32, contents[start..idx], 10);
+        n += 1;
+    }
+    if (n != 3) return error.MalformedHeader;
+    // One more whitespace byte, then pixel data.
+    if (idx >= contents.len) return error.MalformedHeader;
+    idx += 1;
+
+    const gw = nums[0];
+    const gh = nums[1];
+    const gmax = nums[2];
+    if (gw != w or gh != h) {
+        std.log.err("golden {s}: size mismatch — golden is {}×{}, captured is {}×{}", .{
+            golden_path, gw, gh, w, h,
+        });
+        std.debug.print("FAIL: {s}: size mismatch (golden {}×{} vs captured {}×{})\n", .{
+            golden_path, gw, gh, w, h,
+        });
+        return 1;
+    }
+    if (gmax != 255) {
+        std.log.err("golden {s}: unsupported maxval {}", .{ golden_path, gmax });
+        return error.UnsupportedMaxval;
+    }
+
+    const expected_bytes: usize = @as(usize, gw) * @as(usize, gh) * 3;
+    if (contents.len - idx < expected_bytes) {
+        std.log.err("golden {s}: truncated pixel data ({} bytes, expected {})", .{
+            golden_path, contents.len - idx, expected_bytes,
+        });
+        return error.TruncatedPixels;
+    }
+    const golden_rgb = contents[idx .. idx + expected_bytes];
+
+    // Diff
+    var differing_px: u64 = 0;
+    var max_delta: u32 = 0;
+    var total_delta: u64 = 0;
+    const total_px: u64 = @as(u64, gw) * @as(u64, gh);
+    var i: usize = 0;
+    while (i < expected_bytes) : (i += 3) {
+        const dr = @abs(@as(i32, captured_rgb[i + 0]) - @as(i32, golden_rgb[i + 0]));
+        const dg = @abs(@as(i32, captured_rgb[i + 1]) - @as(i32, golden_rgb[i + 1]));
+        const db = @abs(@as(i32, captured_rgb[i + 2]) - @as(i32, golden_rgb[i + 2]));
+        const pixel_max: u32 = @intCast(@max(dr, @max(dg, db)));
+        total_delta += @as(u64, @intCast(dr + dg + db));
+        if (pixel_max > max_delta) max_delta = pixel_max;
+        if (pixel_max > @as(u32, max_channel_delta)) differing_px += 1;
+    }
+
+    const diff_pct: f32 = @as(f32, @floatFromInt(differing_px)) * 100.0 / @as(f32, @floatFromInt(total_px));
+    const mean_delta: f32 = @as(f32, @floatFromInt(total_delta)) / @as(f32, @floatFromInt(total_px * 3));
+
+    const pass = diff_pct <= max_diff_pct;
+    const tag = if (pass) "PASS" else "FAIL";
+    std.debug.print(
+        "{s}: {s}\n  differing px: {}/{} ({d:.4}%, tol {d:.4}%)\n  max Δ: {} / 255 (tol {})\n  mean Δ: {d:.4} / 255\n",
+        .{ tag, golden_path, differing_px, total_px, diff_pct, max_diff_pct, max_delta, max_channel_delta, mean_delta },
+    );
+    return if (pass) @as(u8, 0) else @as(u8, 1);
 }
 
 fn voxelShutdown(ctx: *sw.Context) !void {
