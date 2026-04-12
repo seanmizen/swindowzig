@@ -281,13 +281,29 @@ pub const World = struct {
             },
         );
 
-        // Mark adjacent already-loaded chunks dirty so their seam faces will
-        // be re-evaluated against this new neighbour on the next mesh pass.
+        // Mark all 8 surrounding chunks dirty so their seam faces will be
+        // re-evaluated against this new neighbour on the next mesh pass.
+        //
+        // Why diagonals too: AO sampling (both classic and Moore) computes
+        // per-vertex brightness by calling `isSolid` at positions ±1 (classic)
+        // and ±2 (Moore) from the face plane in the face-parallel axes. A
+        // corner vertex on a chunk that shares ONLY a diagonal with the newly
+        // loaded chunk will sample positions *inside* that diagonal chunk. If
+        // the diagonal chunk was missing when the mesh was first built, those
+        // samples returned .air and the corner vertices came out too bright.
+        // Dirtying the diagonal here triggers a re-mesh that reads the correct
+        // solid/air values once both chunks exist.
         const adjacent = [_]ChunkKey{
+            // Face-adjacent
             .{ .cx = cx - 1, .cz = cz },
             .{ .cx = cx + 1, .cz = cz },
             .{ .cx = cx, .cz = cz - 1 },
             .{ .cx = cx, .cz = cz + 1 },
+            // Diagonal corners
+            .{ .cx = cx - 1, .cz = cz - 1 },
+            .{ .cx = cx - 1, .cz = cz + 1 },
+            .{ .cx = cx + 1, .cz = cz - 1 },
+            .{ .cx = cx + 1, .cz = cz + 1 },
         };
         for (adjacent) |nk| {
             if (self.chunks.get(nk)) |nlc| {
@@ -369,12 +385,18 @@ pub const World = struct {
     /// wrong, and click-to-dig is already bottlenecked by the macOS trackpad
     /// latency (80–120 ms) so the extra cost is invisible in practice.
     ///
-    /// Cross-chunk skylight seams are still out of scope (phase-1 limitation):
-    /// a dig right at a chunk edge will update the owning chunk's grid but
-    /// will not propagate light into the neighbouring chunk. The mesher's
-    /// `skylightSample` falls back to the neighbour chunk's own grid via
-    /// `BlockGetter.getSkylight`, so the neighbour renders with its existing
-    /// (stale from its own last computeSkylight) values.
+    /// Cross-chunk skylight propagation is still out of scope (phase-1
+    /// limitation): the owning chunk's skylight grid is fully recomputed but
+    /// the BFS stops at chunk boundaries, so a dig that opens a sky channel
+    /// across a seam will leave the neighbouring chunk with stale light
+    /// values. The mesher falls back to the neighbour's own grid via
+    /// `BlockGetter.getSkylight`, which gives a near-correct result in most
+    /// cases. A future cross-chunk BFS phase would fix the rare divergence.
+    ///
+    /// Neighbouring mesh dirty-marking: any chunk whose mesh may sample the
+    /// modified block (face culling, AO, skylight) is marked `mesh_dirty`.
+    /// This covers face-adjacent chunks within AO reach (2 cells) and
+    /// diagonal chunks when the modification is within 2 cells of a corner.
     pub fn setBlock(self: *World, wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) !bool {
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
@@ -392,6 +414,39 @@ pub const World = struct {
         // the same TODO as skylight's cross-chunk fix.
         lc_ptr.*.chunk.computeBlockLight();
         lc_ptr.*.mesh_dirty = true;
+
+        // Dirty neighbouring chunks whose meshes may reference the modified
+        // block. AO (Moore mode) samples up to 2 cells from a face, so any
+        // chunk whose edge is within 2 blocks of this position needs a
+        // re-mesh to pick up the correct solid/air value.
+        const W = chunk_mod.CHUNK_W;
+        const R: i32 = 2; // AO sampling reach
+        if (lx < R) {
+            if (self.chunks.get(.{ .cx = cx - 1, .cz = cz })) |nlc| nlc.mesh_dirty = true;
+        }
+        if (lx >= W - R) {
+            if (self.chunks.get(.{ .cx = cx + 1, .cz = cz })) |nlc| nlc.mesh_dirty = true;
+        }
+        if (lz < R) {
+            if (self.chunks.get(.{ .cx = cx, .cz = cz - 1 })) |nlc| nlc.mesh_dirty = true;
+        }
+        if (lz >= W - R) {
+            if (self.chunks.get(.{ .cx = cx, .cz = cz + 1 })) |nlc| nlc.mesh_dirty = true;
+        }
+        // Diagonal corners: dirty when within AO reach of both edges at once.
+        if (lx < R and lz < R) {
+            if (self.chunks.get(.{ .cx = cx - 1, .cz = cz - 1 })) |nlc| nlc.mesh_dirty = true;
+        }
+        if (lx < R and lz >= W - R) {
+            if (self.chunks.get(.{ .cx = cx - 1, .cz = cz + 1 })) |nlc| nlc.mesh_dirty = true;
+        }
+        if (lx >= W - R and lz < R) {
+            if (self.chunks.get(.{ .cx = cx + 1, .cz = cz - 1 })) |nlc| nlc.mesh_dirty = true;
+        }
+        if (lx >= W - R and lz >= W - R) {
+            if (self.chunks.get(.{ .cx = cx + 1, .cz = cz + 1 })) |nlc| nlc.mesh_dirty = true;
+        }
+
         return true;
     }
 
