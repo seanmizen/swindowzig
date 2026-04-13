@@ -2149,8 +2149,13 @@ fn voxelTick(ctx: *sw.Context) !void {
     //     grids stay in RAM.
     //   - Re-entry path: a chunk that's been evicted has `state = .generated`
     //     and `mesh_dirty = true`. When the player walks back inside the
-    //     mesh disc, the gated mesh loop above picks it up automatically on
-    //     the next tick — no separate code path needed.
+    //     mesh disc:
+    //       Sync path: the gated mesh loop above picks it up automatically.
+    //       Async path: asyncTick step 3 picks it up once the chunk is
+    //         within EVICT_RADIUS_SQ (its distance gate). This prevents the
+    //         thrash cycle where evicted chunks outside EVICT_RADIUS_SQ keep
+    //         getting re-meshed, consuming all re-mesh queue slots and
+    //         preventing visible chunks from recovering on player return.
     {
         var evicted_this_tick: usize = 0;
         var it = state.world.chunks.valueIterator();
