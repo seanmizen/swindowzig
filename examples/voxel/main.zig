@@ -3249,9 +3249,14 @@ fn voxelRender(ctx: *sw.Context) !void {
     const overlay_h = screen_h / window_info.dpi_scale;
     state.camera.aspect = aspect;
 
-    // Create GPU resources on first render
+    // Create GPU resources on first render.
+    // IMPORTANT: use the GPU surface dimensions (g.getSurfaceWidth/Height), NOT
+    // window_info.width/height. On Retina/HiDPI, window_info reports drawable
+    // pixels (2560×1440) but the wgpu surface is configured at logical resolution
+    // (1280×720). The depth texture, MSAA target, and FXAA offscreen target must
+    // all match the surface — not the drawable.
     if (state.pipeline == null) {
-        setupGPUResources(g, window_info.width, window_info.height) catch |err| {
+        setupGPUResources(g, g.getSurfaceWidth(), g.getSurfaceHeight()) catch |err| {
             std.log.err("Failed to setup GPU resources: {}", .{err});
             return;
         };
@@ -3264,7 +3269,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     if (state.aa_dirty) {
         state.aa_dirty = false;
         if (state.msaa_config.method == .fxaa) {
-            g.configureFXAA(window_info.width, window_info.height, state.msaa_config.fxaa_quality) catch |err| {
+            g.configureFXAA(g.getSurfaceWidth(), g.getSurfaceHeight(), state.msaa_config.fxaa_quality) catch |err| {
                 std.log.err("FXAA reconfigure failed: {}", .{err});
             };
         }
@@ -4434,6 +4439,16 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             .cull_mode = .none,
         },
         .multisample = .{ .count = sample_count },
+        // Must match the scene render pass depth attachment (depth24plus).
+        // depth_write disabled + compare=always so debug overlays render on top of
+        // everything without occluding voxel geometry.
+        .depth_stencil = .{
+            .format = .depth24plus,
+            .depth_write_enabled = false,
+            .depth_compare = .always,
+            .stencil_read_mask = 0,
+            .stencil_write_mask = 0,
+        },
     });
 
     // Pre-allocate fixed-size cylinder GPU buffers (size never changes)
