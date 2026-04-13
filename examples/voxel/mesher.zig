@@ -108,9 +108,15 @@ pub const Mesh = struct {
         self.sort_valid = false;
     }
 
-    /// Sort faces by depth (painter's algorithm) for correct rendering without
-    /// hardware depth testing. Reuses pre-allocated scratch buffers each frame.
-    pub fn sortByDepth(self: *Mesh, camera_pos: [3]f32) !void {
+    /// Sort faces by depth for correct rendering with hardware depth testing disabled.
+    /// Uses view-space depth (dot product of centroid delta with camera forward) rather
+    /// than 3D Euclidean distance. View-space depth is the correct painter's-algorithm
+    /// sort key: it matches the Z component used by the GPU projection, so faces that
+    /// are geometrically in front of each other in the view direction sort correctly
+    /// even when they are laterally offset from the camera axis.
+    ///
+    /// Reuses pre-allocated scratch buffers each frame.
+    pub fn sortByDepth(self: *Mesh, camera_pos: [3]f32, camera_fwd: [3]f32) !void {
         if (self.indices.items.len == 0) return;
 
         const quad_count = self.indices.items.len / 6;
@@ -128,8 +134,8 @@ pub const Mesh = struct {
         const scratch = self.sort_scratch[0..quad_count];
 
         if (self.sort_valid) {
-            // Scratch holds the sorted order from last frame — just update distances in place.
-            // The .idx fields still point to the correct quads; only distances changed.
+            // Scratch holds the sorted order from last frame — just update depths in place.
+            // The .idx fields still point to the correct quads; only depths changed.
             for (scratch) |*entry| {
                 const base_idx = entry.idx * 6;
                 const idx0 = self.indices.items[base_idx];
@@ -145,7 +151,8 @@ pub const Mesh = struct {
                 const dx = (v0[0] + v1[0] + v2[0] + v3[0]) / 4.0 - camera_pos[0];
                 const dy = (v0[1] + v1[1] + v2[1] + v3[1]) / 4.0 - camera_pos[1];
                 const dz = (v0[2] + v1[2] + v2[2] + v3[2]) / 4.0 - camera_pos[2];
-                entry.dist = dx * dx + dy * dy + dz * dz;
+                // View-space depth: dot(centroid_delta, camera_forward). Positive = in front.
+                entry.dist = dx * camera_fwd[0] + dy * camera_fwd[1] + dz * camera_fwd[2];
             }
 
             // Insertion sort: O(n) for nearly-sorted data (camera moved a little)
@@ -175,7 +182,7 @@ pub const Mesh = struct {
                 const dx = (v0[0] + v1[0] + v2[0] + v3[0]) / 4.0 - camera_pos[0];
                 const dy = (v0[1] + v1[1] + v2[1] + v3[1]) / 4.0 - camera_pos[1];
                 const dz = (v0[2] + v1[2] + v2[2] + v3[2]) / 4.0 - camera_pos[2];
-                scratch[i] = .{ .idx = i, .dist = dx * dx + dy * dy + dz * dz };
+                scratch[i] = .{ .idx = i, .dist = dx * camera_fwd[0] + dy * camera_fwd[1] + dz * camera_fwd[2] };
             }
 
             std.mem.sort(SortEntry, scratch, {}, struct {

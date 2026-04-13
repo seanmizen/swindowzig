@@ -1674,15 +1674,23 @@ pub const CommandEncoder = struct {
 
             var depth_stencil: ?native.WGPURenderPassDepthStencilAttachment = null;
             if (desc.depth_stencil_attachment) |ds| {
+                // When `stencil_read_only` is set, the caller signals this is a
+                // depth-only format (e.g. depth24plus has no stencil component on most
+                // backends). wgpu-native v22 requires stencil ops to be `.undefined` (0)
+                // for depth-only textures; any other value triggers a validation error.
+                // The Zig `LoadOp`/`StoreOp` enums start at 1 (no undefined variant),
+                // so we special-case here instead of polluting the public enum.
+                const stencil_load: native.WGPULoadOp = if (ds.stencil_read_only) .undefined else @enumFromInt(@intFromEnum(ds.stencil_load_op));
+                const stencil_store: native.WGPUStoreOp = if (ds.stencil_read_only) .undefined else @enumFromInt(@intFromEnum(ds.stencil_store_op));
                 depth_stencil = .{
                     .view = ds.view.handle,
                     .depth_load_op = @enumFromInt(@intFromEnum(ds.depth_load_op)),
                     .depth_store_op = @enumFromInt(@intFromEnum(ds.depth_store_op)),
                     .depth_clear_value = ds.depth_clear_value,
                     .depth_read_only = if (ds.depth_read_only) @as(u32, 1) else 0,
-                    .stencil_load_op = @enumFromInt(@intFromEnum(ds.stencil_load_op)),
-                    .stencil_store_op = @enumFromInt(@intFromEnum(ds.stencil_store_op)),
-                    .stencil_clear_value = ds.stencil_clear_value,
+                    .stencil_load_op = stencil_load,
+                    .stencil_store_op = stencil_store,
+                    .stencil_clear_value = if (ds.stencil_read_only) 0 else ds.stencil_clear_value,
                     .stencil_read_only = if (ds.stencil_read_only) @as(u32, 1) else 0,
                 };
             }

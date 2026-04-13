@@ -83,10 +83,18 @@ with "Texture binding N expects dimension = D1, but given a view with dimension 
 and `.storage_texture.view_dimension`. Do not use raw `@intFromEnum` for these.
 
 ### Hardware depth testing (macOS/Metal)
-`wgpuDeviceCreateRenderPipeline` crashes (bus error at 0x29) when depth stencil
-is enabled — wgpu-native v0.19.4.1 bug on Metal. **Workaround: painter's
-algorithm** (sort quads back-to-front in software before uploading index buffer).
-See `examples/voxel/mesher.zig` `sortByDepth()`.
+Hardware depth testing is **enabled** in the voxel pipeline (`depth24plus`,
+`depth_write_enabled = true`, `depth_compare = .less`). The Metal crash
+(`wgpuDeviceCreateRenderPipeline` bus error at 0x29) was a wgpu-native v0.19.4.1
+bug and is fixed in the current pinned version (v22.1.0.5).
+
+The depth texture `sample_count` must match the MSAA sample count of the colour
+attachment — otherwise wgpu-native raises a validation error on render-pass begin.
+
+`sortByDepth()` in `examples/voxel/mesher.zig` is **kept for performance** (reduces
+GPU overdraw, especially on painter's-algorithm-sorted transparent-ish geometry) but
+is no longer required for correctness. Sort key is view-space depth
+(dot product with camera forward) rather than 3D Euclidean distance.
 
 ### Voxel face winding (fixed in mesher.zig)
 +Y, -Y, +Z, -Z faces had CW winding (inside-out). Fixed by reversing vertex

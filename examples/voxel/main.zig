@@ -3171,6 +3171,8 @@ fn voxelRender(ctx: *sw.Context) !void {
     var render_sort_us: i128 = 0;
     var render_upload_us: i128 = 0;
     var render_upload_chunks: usize = 0;
+    const cam_fwd_v = state.camera.forward();
+    const cam_fwd = [3]f32{ cam_fwd_v.x, cam_fwd_v.y, cam_fwd_v.z };
     {
         var it = state.world.chunks.iterator();
         while (it.next()) |entry| {
@@ -3183,7 +3185,7 @@ fn voxelRender(ctx: *sw.Context) !void {
                 state.camera.position.x,
                 state.camera.position.y,
                 state.camera.position.z,
-            }) catch |err| {
+            }, cam_fwd) catch |err| {
                 std.log.err("Sort failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
@@ -3276,6 +3278,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     const color_store: gpu_mod.StoreOp =
         if (use_fxaa) .store else if (use_msaa) .discard else .store;
 
+    var depth_view_for_pass = state.depth_view.?;
     const pass = encoder.beginRenderPass(.{
         .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
             .view = color_view,
@@ -3284,13 +3287,17 @@ fn voxelRender(ctx: *sw.Context) !void {
             .store_op = color_store,
             .clear_value = .{ .r = 0.5, .g = 0.7, .b = 1.0, .a = 1.0 }, // Sky blue
         }},
-        // WORKAROUND: Depth attachment disabled (see depth_stencil comment in pipeline creation)
-        // .depth_stencil_attachment = .{
-        //     .view = &state.depth_view.?,
-        //     .depth_load_op = .clear,
-        //     .depth_store_op = .store,
-        //     .depth_clear_value = 1.0,
-        // },
+        // Hardware depth testing: clear to far-plane (1.0) each frame, discard at end
+        // (MSAA depth resolves automatically; non-MSAA depth is transient — no need to store).
+        // stencil_read_only=true tells the GPU wrapper to pass undefined stencil ops,
+        // which is required for depth24plus (a depth-only format with no stencil component).
+        .depth_stencil_attachment = .{
+            .view = &depth_view_for_pass,
+            .depth_load_op = .clear,
+            .depth_store_op = .discard,
+            .depth_clear_value = 1.0,
+            .stencil_read_only = true,
+        },
     }) catch |err| {
         std.log.err("Failed to begin render pass: {}", .{err});
         return;
@@ -3337,14 +3344,27 @@ fn voxelRender(ctx: *sw.Context) !void {
         }
     }
     const cam_pos = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
-    std.mem.sort(*world_mod.LoadedChunk, sorted_chunks.items, cam_pos, struct {
-        fn lt(cam: [3]f32, a: *world_mod.LoadedChunk, b: *world_mod.LoadedChunk) bool {
-            const half: f32 = @as(f32, @floatFromInt(chunk_mod.CHUNK_W)) * 0.5;
-            const ax = a.worldXf() + half - cam[0];
-            const az = a.worldZf() + half - cam[2];
-            const bx = b.worldXf() + half - cam[0];
-            const bz = b.worldZf() + half - cam[2];
-            return (ax * ax + az * az) > (bx * bx + bz * bz); // far-first
+    // Chunk-level sort uses view-space depth of the chunk centroid (dot product with
+    // camera forward), which is the correct painter's-algorithm depth for diagonal views.
+    // The chunk Y-centre is fixed at CHUNK_H/2 (128) — including Y makes the sort correct
+    // when the camera pitch causes Y to dominate the depth ordering (e.g. steep look-down).
+    const ChunkSortCtx = struct { cam: [3]f32, fwd: [3]f32 };
+    std.mem.sort(*world_mod.LoadedChunk, sorted_chunks.items, ChunkSortCtx{
+        .cam = cam_pos,
+        .fwd = cam_fwd,
+    }, struct {
+        fn lt(ctx_val: ChunkSortCtx, a: *world_mod.LoadedChunk, b: *world_mod.LoadedChunk) bool {
+            const half_xz: f32 = @as(f32, @floatFromInt(chunk_mod.CHUNK_W)) * 0.5;
+            const chunk_cy: f32 = @as(f32, @floatFromInt(chunk_mod.CHUNK_H)) * 0.5;
+            const ax = a.worldXf() + half_xz - ctx_val.cam[0];
+            const ay = chunk_cy - ctx_val.cam[1];
+            const az = a.worldZf() + half_xz - ctx_val.cam[2];
+            const bx = b.worldXf() + half_xz - ctx_val.cam[0];
+            const by = chunk_cy - ctx_val.cam[1];
+            const bz = b.worldZf() + half_xz - ctx_val.cam[2];
+            const da = ax * ctx_val.fwd[0] + ay * ctx_val.fwd[1] + az * ctx_val.fwd[2];
+            const db = bx * ctx_val.fwd[0] + by * ctx_val.fwd[1] + bz * ctx_val.fwd[2];
+            return da > db; // far-first (larger depth = drawn first)
         }
     }.lt);
 
@@ -4170,11 +4190,14 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     std.log.info("Loading shader: {} bytes", .{shader_code.len});
     var shader = try g.createShaderModule(.{ .code = shader_code });
 
-    // Create depth texture (trying depth24plus for better compatibility)
+    // Create depth texture. sample_count must match the MSAA sample count so the
+    // depth attachment is compatible with the colour target in the render pass.
+    // depth24plus is a required WebGPU format (no stencil component on most backends).
     const depth_tex = try g.createTexture(.{
         .size = .{ .width = width, .height = height, .depth_or_array_layers = 1 },
         .format = .depth24plus,
         .usage = .{ .render_attachment = true },
+        .sample_count = sample_count,
     });
     state.depth_texture = depth_tex;
     state.depth_view = try depth_tex.createView(.{});
@@ -4248,8 +4271,19 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             .cull_mode = .back,
         },
         .multisample = .{ .count = sample_count },
-        // WORKAROUND: Hardware depth testing crashes on Metal (wgpu-native v0.19.4.1 bug)
-        // Using software depth sorting (painter's algorithm) instead - see sortByDepth()
+        // Hardware depth testing. The Metal crash (wgpu-native v0.19.4.1 "bus error at 0x29")
+        // was fixed upstream; wgpu-native v22.1.0.5 (current pinned version) no longer crashes.
+        // Depth testing eliminates the painter's-algorithm sort-order failures that caused
+        // AO shadow faces to bleed through occluding roof geometry (README bug #2).
+        .depth_stencil = .{
+            .format = .depth24plus,
+            .depth_write_enabled = true,
+            .depth_compare = .less,
+            // depth24plus has no stencil component; zero the masks so wgpu-native
+            // does not flag stencil test/write as enabled on a stencil-less format.
+            .stencil_read_mask = 0,
+            .stencil_write_mask = 0,
+        },
     });
 
     // Cylinder pipeline: no face culling + alpha blending so the hitbox is semi-transparent
