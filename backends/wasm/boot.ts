@@ -59,6 +59,19 @@ async function main() {
     fps: 0,
   };
 
+  // Cursor visibility: show when pointer is not locked (pause menu / startup),
+  // hide when locked (gameplay). We explicitly set canvas.style.cursor so
+  // the state is correct even if requestPointerLock() fails (browser policy,
+  // no prior gesture) or exitPointerLock() is async and slow to propagate.
+  const setCursorVisible = (visible: boolean) => {
+    canvas.style.cursor = visible ? 'auto' : 'none';
+  };
+  document.addEventListener('pointerlockchange', () => {
+    setCursorVisible(document.pointerLockElement !== canvas);
+  });
+  // Start with cursor visible (no pointer lock acquired yet).
+  setCursorVisible(true);
+
   // Create WASM imports
   const imports = {
     env: {
@@ -66,10 +79,15 @@ async function main() {
       jsSetPointerLock: (lock: number) => {
         if (lock) {
           canvas.requestPointerLock();
+          // Optimistically hide until pointerlockchange confirms.
+          setCursorVisible(false);
         } else {
           if (document.pointerLockElement === canvas) {
             document.exitPointerLock();
           }
+          // Show immediately — don't wait for pointerlockchange which can lag
+          // by one or two frames in some browsers.
+          setCursorVisible(true);
         }
       },
       jsLog: (ptr: number, len: number) => {

@@ -330,69 +330,99 @@ const MenuScreen = enum { main, settings, exit_confirm };
 const MENU_MAIN_COUNT: u8 = 3;
 const MENU_EXIT_COUNT: u8 = 2;
 
-// Settings entries. The rendered order depends on the current AA method so
-// that a method-specific quality row (MSAA samples / FXAA quality) only takes
-// up a slot when it is actually meaningful. Fixed tail entries come after:
+// Settings tabs — organise entries into Game / Video / Audio categories.
+// The tab_selector entry (always index 0 in the settings list) lets the player
+// cycle between tabs with Left/Right (or Enter). Each tab shows its own set of
+// value-picker rows followed by a Back entry.
+const SettingsTab = enum { game, video, audio };
+
+fn settingsTabLabel(tab: SettingsTab) []const u8 {
+    return switch (tab) {
+        .game => "Game",
+        .video => "Video",
+        .audio => "Audio",
+    };
+}
+
+// Settings entries. The rendered order depends on the active tab AND the current
+// AA method (a method-specific quality row only appears when relevant).
+//
+// Index 0 is always `tab_selector` (cycles between Game/Video/Audio tabs).
+// Remaining entries depend on the active tab:
+//
+//   Video tab:
+//     tab_selector                                   (always, index 0)
 //     AA Method                                      (always)
 //     → MSAA Samples   (only when method == .msaa)
 //     → FXAA Quality   (only when method == .fxaa)
 //     AO Strategy      (always)
 //     Lighting         (always)
 //     Frustum          (always)
+//     Fog Distance     (always)
 //     Render Distance  (always)
 //     Back             (always)
 //
-// `settingsEntryAt(i)` returns the logical entry at visual index `i` under
-// the current method; `settingsEntryCount()` returns the row total. Both are
-// pure functions of the current `state.msaa_config.method`, so navigation,
-// rendering, and input dispatch all stay in sync automatically.
+//   Game tab:  tab_selector + Back
+//   Audio tab: tab_selector + Back  (no audio system yet)
+//
+// `settingsEntryAt(i)` and `settingsEntryCount()` are pure functions of current
+// state so navigation, rendering, and input dispatch all stay in sync.
 const SettingsEntry = enum {
+    tab_selector,
     aa_method,
     msaa_samples,
     fxaa_quality,
     ao_strategy,
     lighting,
     frustum,
+    fog_dist,
     render_dist,
     back,
 };
 
 fn settingsEntryCount() u8 {
-    // 6 fixed entries (AA Method, AO Strategy, Lighting, Frustum, Render Distance, Back)
-    // plus one optional quality entry when MSAA or FXAA is active.
-    return switch (state.msaa_config.method) {
-        .msaa, .fxaa => 7,
-        else => 6,
+    return switch (state.settings_tab) {
+        .game, .audio => 2, // tab_selector + back
+        .video => switch (state.msaa_config.method) {
+            // tab_selector + aa_method + quality + ao + lighting + frustum + fog + render_dist + back
+            .msaa, .fxaa => 9,
+            // tab_selector + aa_method + ao + lighting + frustum + fog + render_dist + back
+            else => 8,
+        },
     };
 }
 
 fn settingsEntryAt(i: u8) SettingsEntry {
-    // Row 0 is always AA Method. Row 1 is the method-specific quality when
-    // either MSAA or FXAA is active, otherwise we skip directly into the
-    // fixed tail. From the first fixed tail row onward the layout is the
-    // same regardless of method, so we compute a single offset-aware index.
-    if (i == 0) return .aa_method;
-    const has_quality = switch (state.msaa_config.method) {
-        .msaa, .fxaa => true,
-        else => false,
-    };
-    if (has_quality and i == 1) {
-        return switch (state.msaa_config.method) {
-            .msaa => .msaa_samples,
-            .fxaa => .fxaa_quality,
-            else => unreachable,
-        };
+    if (i == 0) return .tab_selector;
+    switch (state.settings_tab) {
+        .game, .audio => return .back,
+        .video => {
+            // Video tab: aa_method, [quality], ao, lighting, frustum, fog_dist, render_dist, back
+            const has_quality = switch (state.msaa_config.method) {
+                .msaa, .fxaa => true,
+                else => false,
+            };
+            if (i == 1) return .aa_method;
+            if (has_quality and i == 2) {
+                return switch (state.msaa_config.method) {
+                    .msaa => .msaa_samples,
+                    .fxaa => .fxaa_quality,
+                    else => unreachable,
+                };
+            }
+            const tail_start: u8 = if (has_quality) 3 else 2;
+            const tail_idx: u8 = i - tail_start;
+            return switch (tail_idx) {
+                0 => .ao_strategy,
+                1 => .lighting,
+                2 => .frustum,
+                3 => .fog_dist,
+                4 => .render_dist,
+                5 => .back,
+                else => .back,
+            };
+        },
     }
-    const tail_start: u8 = if (has_quality) 2 else 1;
-    const tail_idx: u8 = i - tail_start;
-    return switch (tail_idx) {
-        0 => .ao_strategy,
-        1 => .lighting,
-        2 => .frustum,
-        3 => .render_dist,
-        4 => .back,
-        else => .back,
-    };
 }
 
 fn menuEntryCount(screen: MenuScreen) u8 {
@@ -426,6 +456,18 @@ fn aaMethodLabel(method: gpu_mod.AAMethod) []const u8 {
 fn cycleSettingsValue(idx: u8, dir: i32) void {
     const entry = settingsEntryAt(idx);
     switch (entry) {
+        .tab_selector => {
+            // Cycle through tabs and reset the sub-selection to entry 1
+            // (first entry after the tab selector) so the player lands
+            // somewhere sensible after switching.
+            state.settings_tab = switch (state.settings_tab) {
+                .game => if (dir > 0) .video else .audio,
+                .video => if (dir > 0) .audio else .game,
+                .audio => if (dir > 0) .game else .video,
+            };
+            state.menu_settings_idx = 1;
+            std.log.info("Settings: Tab -> {s}", .{settingsTabLabel(state.settings_tab)});
+        },
         .aa_method => {
             // Cycle: none → msaa → fxaa → none …
             // When landing on MSAA the sample count snaps to 4 (the widest-
@@ -518,6 +560,27 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
                 state.frustum_strategy.label(),
                 state.frustum_fov_deg,
             });
+        },
+        .fog_dist => {
+            // Step through five presets. Use nearest-match so CLI --fog values
+            // that sit between presets still land on the closest one.
+            const presets = [_]f32{ 0.50, 0.75, 1.00, 1.50, 2.00 };
+            var cur_idx: usize = 0;
+            var best_diff: f32 = 1e6;
+            for (presets, 0..) |p, j| {
+                const d = @abs(p - state.fog_distance_mult);
+                if (d < best_diff) {
+                    best_diff = d;
+                    cur_idx = j;
+                }
+            }
+            if (dir > 0) {
+                cur_idx = (cur_idx + 1) % presets.len;
+            } else {
+                cur_idx = (cur_idx + presets.len - 1) % presets.len;
+            }
+            state.fog_distance_mult = presets[cur_idx];
+            std.log.info("Settings: Fog Distance -> {d:.2}x", .{state.fog_distance_mult});
         },
         .render_dist => {
             const min_rd: i32 = 1;
@@ -752,6 +815,14 @@ const State = struct {
     async_pipeline: ?*async_chunks_mod.Pipeline = null,
     /// Scratch list reused every tick to receive drained async results.
     async_result_scratch: std.ArrayList(async_chunks_mod.Result) = .{},
+    /// Active settings tab (Game / Video / Audio). Controls which entries appear
+    /// in the Settings screen. Default: Video (most settings live there).
+    settings_tab: SettingsTab = .video,
+    /// Fog distance multiplier applied on top of the render-distance-derived
+    /// fog curve. 1.0 = default (fog starts at 50% and ends at 85% of render
+    /// distance in blocks). Values < 1 pull the fog in; values > 1 push it out.
+    /// Exposed via --fog=<mult> CLI flag and the Video settings tab.
+    fog_distance_mult: f32 = 1.00,
 };
 
 var state: State = undefined;
@@ -815,6 +886,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.menu_main_idx = 0;
     state.menu_settings_idx = 0;
     state.menu_exit_idx = 0;
+    state.settings_tab = .video;
+    state.fog_distance_mult = 1.00;
     // Runtime render distance: default from world_mod, overridden by
     // `--render-distance=N` below. `render_distance_stub` shadows the same
     // value for the Settings picker label.
@@ -988,6 +1061,18 @@ fn voxelInit(ctx: *sw.Context) !void {
             }
             state.render_distance = n;
             state.render_distance_stub = n;
+        }
+        if (std.mem.startsWith(u8, arg, "--fog=")) {
+            const val = std.mem.sliceTo(arg["--fog=".len..], 0);
+            const parsed = std.fmt.parseFloat(f32, val) catch {
+                std.log.err("--fog: not a number: '{s}'", .{val});
+                std.process.exit(1);
+            };
+            if (parsed < 0.1 or parsed > 4.0) {
+                std.log.err("--fog: must be in [0.1, 4.0], got {d}", .{parsed});
+                std.process.exit(1);
+            }
+            state.fog_distance_mult = parsed;
         }
         if (std.mem.startsWith(u8, arg, "--ao=")) {
             const val = arg["--ao=".len..];
@@ -1830,6 +1915,70 @@ fn countMeshedChunks(world: *world_mod.World) usize {
     return n;
 }
 
+/// Activate the currently-selected menu entry on the active screen.
+/// Used by both the Enter key handler and the mouse-click hit test so
+/// activation logic lives in exactly one place.
+fn activateMenuEntry(ctx: *sw.Context) void {
+    switch (state.menu_screen) {
+        .main => switch (state.menu_main_idx) {
+            0 => {
+                // Resume
+                state.game_state.togglePauseMenu();
+                if (state.paused_with_mouse) {
+                    ctx.setMouseCapture(true);
+                    state.mouse_captured = true;
+                    state.paused_with_mouse = false;
+                }
+                std.log.info("Resumed (ENTER)", .{});
+            },
+            1 => {
+                // Settings
+                state.menu_screen = .settings;
+                state.menu_settings_idx = 0;
+                std.log.info("Menu: -> settings", .{});
+            },
+            2 => {
+                // Exit -> confirm screen, default to "No"
+                state.menu_screen = .exit_confirm;
+                state.menu_exit_idx = 0;
+                std.log.info("Menu: -> exit_confirm", .{});
+            },
+            else => {},
+        },
+        .settings => {
+            // Dynamic layout — resolve the entry via settingsEntryAt
+            // so the active index is interpreted through the same
+            // tab+method-aware lens as rendering and left/right cycling.
+            const entry = settingsEntryAt(state.menu_settings_idx);
+            if (entry == .back) {
+                state.menu_screen = .main;
+                std.log.info("Menu: -> main (Back)", .{});
+            } else {
+                // Pickers: Enter/click cycles forward (same as Right) so a
+                // one-key workflow works on keyboards without arrow keys.
+                cycleSettingsValue(state.menu_settings_idx, 1);
+                // Tab or AA method toggle can shrink/grow the menu — clamp
+                // so the selection stays within bounds.
+                const cnt = settingsEntryCount();
+                if (state.menu_settings_idx >= cnt) state.menu_settings_idx = cnt - 1;
+            }
+        },
+        .exit_confirm => switch (state.menu_exit_idx) {
+            0 => {
+                // No -> back to main
+                state.menu_screen = .main;
+                std.log.info("Menu: -> main (No)", .{});
+            },
+            1 => {
+                // Yes -> exit
+                std.log.info("Quit (ENTER on confirm)", .{});
+                fatalExit(0);
+            },
+            else => {},
+        },
+    }
+}
+
 fn voxelTick(ctx: *sw.Context) !void {
     // --profile-csv: reset per-tick accumulators at the top so every phase
     // we time inside this tick (world.update gen, mesh loop, and the pregen
@@ -2391,10 +2540,9 @@ fn voxelTick(ctx: *sw.Context) !void {
     // =========================================================================
     // 2. Pause menu input — only when pause menu is showing
     // =========================================================================
-    // Keyboard nav only. Mouse clicks on menu entries are intentionally not wired —
-    // see voxel TODO #4. Up/Down navigates within the current screen (with wraparound),
-    // Left/Right cycles values for value-picker entries on the Settings screen,
-    // Enter activates, and Esc is handled in the global keys block above.
+    // Keyboard: Up/Down navigate, Left/Right cycle values (Settings screen),
+    // Enter activates, Esc is handled in the global keys block above.
+    // Mouse: left-click on an entry selects and activates it (same as Enter).
     if (state.game_state.isLayerActive(.pause_menu)) {
         const sel_ptr: *u8 = switch (state.menu_screen) {
             .main => &state.menu_main_idx,
@@ -2418,9 +2566,8 @@ fn voxelTick(ctx: *sw.Context) !void {
             if (left or right) {
                 const dir: i32 = if (right) 1 else -1;
                 cycleSettingsValue(state.menu_settings_idx, dir);
-                // AA Method toggle changes the row count (the method-specific
-                // quality row appears/disappears). Clamp the selection so the
-                // cursor can't end up past the new last row.
+                // Tab or AA Method toggle can change row count — clamp so the
+                // selection can't end up past the new last row.
                 const cnt = settingsEntryCount();
                 if (state.menu_settings_idx >= cnt) state.menu_settings_idx = cnt - 1;
             }
@@ -2428,64 +2575,30 @@ fn voxelTick(ctx: *sw.Context) !void {
 
         // Enter: activate current entry.
         if (input.keyPressed(.Enter)) {
-            switch (state.menu_screen) {
-                .main => switch (state.menu_main_idx) {
-                    0 => {
-                        // Resume
-                        state.game_state.togglePauseMenu();
-                        if (state.paused_with_mouse) {
-                            ctx.setMouseCapture(true);
-                            state.mouse_captured = true;
-                            state.paused_with_mouse = false;
-                        }
-                        std.log.info("Resumed (ENTER)", .{});
-                    },
-                    1 => {
-                        // Settings
-                        state.menu_screen = .settings;
-                        state.menu_settings_idx = 0;
-                        std.log.info("Menu: -> settings", .{});
-                    },
-                    2 => {
-                        // Exit -> confirm screen, default to "No"
-                        state.menu_screen = .exit_confirm;
-                        state.menu_exit_idx = 0;
-                        std.log.info("Menu: -> exit_confirm", .{});
-                    },
-                    else => {},
-                },
-                .settings => {
-                    // Dynamic layout — resolve the entry via settingsEntryAt
-                    // so the active index is interpreted through the same
-                    // method-aware lens as rendering and left/right cycling.
-                    const entry = settingsEntryAt(state.menu_settings_idx);
-                    if (entry == .back) {
-                        state.menu_screen = .main;
-                        std.log.info("Menu: -> main (Back)", .{});
-                    } else {
-                        // Pickers: Enter cycles forward (same as Right) so a
-                        // one-key workflow works on keyboards without arrows.
-                        cycleSettingsValue(state.menu_settings_idx, 1);
-                        // AA method toggle can shrink/grow the menu (the
-                        // quality row appears/disappears). Clamp the
-                        // selection so navigation doesn't wrap off the end.
-                        const cnt = settingsEntryCount();
-                        if (state.menu_settings_idx >= cnt) state.menu_settings_idx = cnt - 1;
-                    }
-                },
-                .exit_confirm => switch (state.menu_exit_idx) {
-                    0 => {
-                        // No -> back to main
-                        state.menu_screen = .main;
-                        std.log.info("Menu: -> main (No)", .{});
-                    },
-                    1 => {
-                        // Yes -> exit
-                        std.log.info("Quit (ENTER on confirm)", .{});
-                        fatalExit(0);
-                    },
-                    else => {},
-                },
+            activateMenuEntry(ctx);
+        }
+
+        // Mouse click: hit-test each entry row and activate the one clicked.
+        // Entry Y positions are computed with the same constants as voxelRender so
+        // the hit boxes match the rendered text exactly.
+        if (input.buttonPressed(.left)) {
+            const wi = ctx.window();
+            const ov_h: f32 = @as(f32, @floatFromInt(wi.height)) / wi.dpi_scale;
+            const entry_scale: f32 = 3.0;
+            const glyph_h_f: f32 = GLYPH_H;
+            const entry_line_h: f32 = (glyph_h_f + 4) * entry_scale;
+            const title_h: f32 = glyph_h_f * 4.0;
+            const total_h = title_h + 40 + entry_line_h * @as(f32, @floatFromInt(count));
+            const first_entry_y = (ov_h - total_h) / 2.0 + title_h + 40;
+            const my = input.mouse.y;
+            var ci: u8 = 0;
+            while (ci < count) : (ci += 1) {
+                const ey = first_entry_y + entry_line_h * @as(f32, @floatFromInt(ci));
+                if (my >= ey and my < ey + entry_line_h) {
+                    sel_ptr.* = ci;
+                    activateMenuEntry(ctx);
+                    break;
+                }
             }
         }
     }
@@ -3230,9 +3343,10 @@ fn voxelRender(ctx: *sw.Context) !void {
     const hover_pos = state.hover_block orelse Vec3.init(0, 0, 0);
 
     // Fog distances derived from render distance so fog always matches the loaded world.
+    // fog_distance_mult stretches or contracts the curve (1.0 = default, >1 = farther).
     const render_dist_blocks: f32 = @as(f32, @floatFromInt(state.world.render_distance)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
-    const fog_start: f32 = render_dist_blocks * 0.50;
-    const fog_end: f32 = render_dist_blocks * 0.85;
+    const fog_start: f32 = render_dist_blocks * 0.50 * state.fog_distance_mult;
+    const fog_end: f32 = render_dist_blocks * 0.85 * state.fog_distance_mult;
 
     const uniforms = [_]f32{
         // view_proj (16 floats)
@@ -3568,6 +3682,11 @@ fn voxelRender(ctx: *sw.Context) !void {
                     else => "",
                 },
                 .settings => switch (settingsEntryAt(i)) {
+                    .tab_selector => blk: {
+                        const tab_label = settingsTabLabel(state.settings_tab);
+                        const s = std.fmt.bufPrint(&entry_buf, "Tab: {s}", .{tab_label}) catch "Tab: ?";
+                        break :blk s;
+                    },
                     .aa_method => blk: {
                         const aa_label = aaMethodLabel(state.msaa_config.method);
                         const s = std.fmt.bufPrint(&entry_buf, "AA Method: {s}", .{aa_label}) catch "AA Method: ?";
@@ -3597,9 +3716,12 @@ fn voxelRender(ctx: *sw.Context) !void {
                         }) catch "Frustum: ?";
                         break :blk s;
                     },
+                    .fog_dist => blk: {
+                        const s = std.fmt.bufPrint(&entry_buf, "Fog Distance: {d:.2}x", .{state.fog_distance_mult}) catch "Fog Distance: ?";
+                        break :blk s;
+                    },
                     .render_dist => blk: {
-                        const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {} (restart required)", .{state.render_distance_stub}) catch "Render Distance: ?";
-
+                        const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {} (restart)", .{state.render_distance_stub}) catch "Render Distance: ?";
                         break :blk s;
                     },
                     .back => "Back",
