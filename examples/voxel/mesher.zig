@@ -534,7 +534,8 @@ fn computeFaceAOForStrategy(
         .none => .{ 1.0, 1.0, 1.0, 1.0 },
         .classic => computeFaceAOClassic(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
         .moore => computeFaceAOMoore(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
-        .propagated, .ssao => blk: {
+        .propagated => computeFaceAOPropagated(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
+        .ssao => blk: {
             // Lazily warn once per process about unimplemented strategies.
             unimplemented_warned.warn(strategy);
             break :blk computeFaceAOClassic(chunk, getter, world_ox, world_oz, wx, wy, wz, face);
@@ -544,15 +545,10 @@ fn computeFaceAOForStrategy(
 
 /// One-shot warning state for strategies that fall back to classic.
 const UnimplementedWarn = struct {
-    propagated: bool = false,
     ssao: bool = false,
 
     fn warn(self: *UnimplementedWarn, strat: AOStrategy) void {
         switch (strat) {
-            .propagated => if (!self.propagated) {
-                self.propagated = true;
-                std.log.warn("AO strategy '.propagated' not yet implemented — falling back to .classic", .{});
-            },
             .ssao => if (!self.ssao) {
                 self.ssao = true;
                 std.log.warn("AO strategy '.ssao' not yet implemented — falling back to .classic", .{});
@@ -840,6 +836,237 @@ fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, w
                 aoMooreValue(s_xm, s_ym, s_xm_ym, d_xm, d_ym, d_xm_ym),
                 aoMooreValue(s_xm, s_yp, s_xm_yp, d_xm, d_yp, d_xm_yp),
                 aoMooreValue(s_xp, s_yp, s_xp_yp, d_xp, d_yp, d_xp_yp),
+            };
+        },
+    };
+}
+
+/// Propagated per-vertex AO formula.
+///
+/// Extends the Moore two-slab approach to a third slab at outward+3, with
+/// geometrically-decaying weights (1.0, 0.5, 0.25).  The hard-zero on
+/// `s1 ∧ s2` (immediate face-touching corner contact) is preserved from
+/// classic/moore so concave hard corners stay maximally dark.
+///
+///   occlusion = (near_occ × 1.0) + (mid_occ × 0.5) + (far_occ × 0.25)
+///   near/mid/far each ∈ [0, 3]
+///   max_occ = 3×1.0 + 3×0.5 + 3×0.25 = 5.25
+///   ao = clamp((max_occ - occlusion) / max_occ, 0, 1)
+///
+/// On flat open terrain all three slabs return air so near=mid=far=0 and
+/// ao=1.0 — identical to classic/moore, no regression.  In indoor corners
+/// the third slab picks up the ceiling/walls two more hops out, darkening
+/// the shadowed pocket smoothly over ~3 blocks instead of the moore's ~2.
+fn aoPropValue(
+    s1: bool, s2: bool, c: bool,
+    ds1: bool, ds2: bool, dc: bool,
+    fs1: bool, fs2: bool, fc: bool,
+) f32 {
+    if (s1 and s2) return 0.0;
+    const near: f32 = @floatFromInt(@as(u32, @intFromBool(s1)) + @as(u32, @intFromBool(s2)) + @as(u32, @intFromBool(c)));
+    const mid: f32 = @floatFromInt(@as(u32, @intFromBool(ds1)) + @as(u32, @intFromBool(ds2)) + @as(u32, @intFromBool(dc)));
+    const far: f32 = @floatFromInt(@as(u32, @intFromBool(fs1)) + @as(u32, @intFromBool(fs2)) + @as(u32, @intFromBool(fc)));
+    const occ = near * 1.0 + mid * 0.5 + far * 0.25;
+    const max_occ: f32 = 3.0 * 1.0 + 3.0 * 0.5 + 3.0 * 0.25; // 5.25
+    return std.math.clamp((max_occ - occ) / max_occ, 0.0, 1.0);
+}
+
+/// Propagated per-vertex AO for a face quad. Three concentric face-plane
+/// slabs at outward+1, +2, +3, weighted 1.0 / 0.5 / 0.25. Returns [4]f32
+/// in the same vertex order as addQuad.
+fn computeFaceAOPropagated(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
+    return switch (face) {
+        .px => blk: {
+            // Near (+1), mid (+2), far (+3) planes, all at varying Y and Z.
+            const n_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
+            const n_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
+            const n_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
+            const n_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
+            const n_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const n_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const n_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const n_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const m_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy - 1, wz);
+            const m_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz);
+            const m_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy, wz - 1);
+            const m_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy, wz + 1);
+            const m_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy - 1, wz - 1);
+            const m_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz - 1);
+            const m_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy + 1, wz + 1);
+            const m_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 2, wy - 1, wz + 1);
+            const f_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 3, wy - 1, wz);
+            const f_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 3, wy + 1, wz);
+            const f_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 3, wy, wz - 1);
+            const f_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 3, wy, wz + 1);
+            const f_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 3, wy - 1, wz - 1);
+            const f_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 3, wy + 1, wz - 1);
+            const f_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 3, wy + 1, wz + 1);
+            const f_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 3, wy - 1, wz + 1);
+            break :blk .{
+                aoPropValue(n_ym, n_zm, n_ym_zm, m_ym, m_zm, m_ym_zm, f_ym, f_zm, f_ym_zm),
+                aoPropValue(n_yp, n_zm, n_yp_zm, m_yp, m_zm, m_yp_zm, f_yp, f_zm, f_yp_zm),
+                aoPropValue(n_yp, n_zp, n_yp_zp, m_yp, m_zp, m_yp_zp, f_yp, f_zp, f_yp_zp),
+                aoPropValue(n_ym, n_zp, n_ym_zp, m_ym, m_zp, m_ym_zp, f_ym, f_zp, f_ym_zp),
+            };
+        },
+        .nx => blk: {
+            const n_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const n_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
+            const n_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
+            const n_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
+            const n_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const n_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const n_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const n_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const m_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy - 1, wz);
+            const m_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz);
+            const m_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy, wz - 1);
+            const m_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy, wz + 1);
+            const m_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy - 1, wz - 1);
+            const m_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz - 1);
+            const m_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy + 1, wz + 1);
+            const m_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 2, wy - 1, wz + 1);
+            const f_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 3, wy - 1, wz);
+            const f_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 3, wy + 1, wz);
+            const f_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 3, wy, wz - 1);
+            const f_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 3, wy, wz + 1);
+            const f_ym_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 3, wy - 1, wz - 1);
+            const f_yp_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 3, wy + 1, wz - 1);
+            const f_yp_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 3, wy + 1, wz + 1);
+            const f_ym_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 3, wy - 1, wz + 1);
+            break :blk .{
+                aoPropValue(n_ym, n_zp, n_ym_zp, m_ym, m_zp, m_ym_zp, f_ym, f_zp, f_ym_zp),
+                aoPropValue(n_yp, n_zp, n_yp_zp, m_yp, m_zp, m_yp_zp, f_yp, f_zp, f_yp_zp),
+                aoPropValue(n_yp, n_zm, n_yp_zm, m_yp, m_zm, m_yp_zm, f_yp, f_zm, f_yp_zm),
+                aoPropValue(n_ym, n_zm, n_ym_zm, m_ym, m_zm, m_ym_zm, f_ym, f_zm, f_ym_zm),
+            };
+        },
+        .py => blk: {
+            const n_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
+            const n_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
+            const n_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
+            const n_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
+            const n_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const n_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const n_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const n_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const m_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz);
+            const m_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 2, wz);
+            const m_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 2, wz - 1);
+            const m_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 2, wz + 1);
+            const m_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz - 1);
+            const m_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 2, wz + 1);
+            const m_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 2, wz + 1);
+            const m_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 2, wz - 1);
+            const f_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 3, wz);
+            const f_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 3, wz);
+            const f_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 3, wz - 1);
+            const f_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 3, wz + 1);
+            const f_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 3, wz - 1);
+            const f_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 3, wz + 1);
+            const f_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 3, wz + 1);
+            const f_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 3, wz - 1);
+            break :blk .{
+                aoPropValue(n_xm, n_zm, n_xm_zm, m_xm, m_zm, m_xm_zm, f_xm, f_zm, f_xm_zm),
+                aoPropValue(n_xm, n_zp, n_xm_zp, m_xm, m_zp, m_xm_zp, f_xm, f_zp, f_xm_zp),
+                aoPropValue(n_xp, n_zp, n_xp_zp, m_xp, m_zp, m_xp_zp, f_xp, f_zp, f_xp_zp),
+                aoPropValue(n_xp, n_zm, n_xp_zm, m_xp, m_zm, m_xp_zm, f_xp, f_zm, f_xp_zm),
+            };
+        },
+        .ny => blk: {
+            const n_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
+            const n_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
+            const n_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
+            const n_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
+            const n_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const n_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const n_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const n_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const m_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz);
+            const m_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 2, wz);
+            const m_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 2, wz - 1);
+            const m_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 2, wz + 1);
+            const m_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz - 1);
+            const m_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 2, wz + 1);
+            const m_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 2, wz - 1);
+            const m_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 2, wz + 1);
+            const f_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 3, wz);
+            const f_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 3, wz);
+            const f_zm = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 3, wz - 1);
+            const f_zp = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 3, wz + 1);
+            const f_xm_zm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 3, wz - 1);
+            const f_xm_zp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 3, wz + 1);
+            const f_xp_zm = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 3, wz - 1);
+            const f_xp_zp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 3, wz + 1);
+            break :blk .{
+                aoPropValue(n_xm, n_zp, n_xm_zp, m_xm, m_zp, m_xm_zp, f_xm, f_zp, f_xm_zp),
+                aoPropValue(n_xm, n_zm, n_xm_zm, m_xm, m_zm, m_xm_zm, f_xm, f_zm, f_xm_zm),
+                aoPropValue(n_xp, n_zm, n_xp_zm, m_xp, m_zm, m_xp_zm, f_xp, f_zm, f_xp_zm),
+                aoPropValue(n_xp, n_zp, n_xp_zp, m_xp, m_zp, m_xp_zp, f_xp, f_zp, f_xp_zp),
+            };
+        },
+        .pz => blk: {
+            const n_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
+            const n_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
+            const n_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
+            const n_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
+            const n_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
+            const n_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
+            const n_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
+            const n_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
+            const m_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 2);
+            const m_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 2);
+            const m_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 2);
+            const m_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 2);
+            const m_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 2);
+            const m_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 2);
+            const m_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 2);
+            const m_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 2);
+            const f_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 3);
+            const f_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 3);
+            const f_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 3);
+            const f_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 3);
+            const f_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 3);
+            const f_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 3);
+            const f_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 3);
+            const f_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 3);
+            break :blk .{
+                aoPropValue(n_xm, n_ym, n_xm_ym, m_xm, m_ym, m_xm_ym, f_xm, f_ym, f_xm_ym),
+                aoPropValue(n_xp, n_ym, n_xp_ym, m_xp, m_ym, m_xp_ym, f_xp, f_ym, f_xp_ym),
+                aoPropValue(n_xp, n_yp, n_xp_yp, m_xp, m_yp, m_xp_yp, f_xp, f_yp, f_xp_yp),
+                aoPropValue(n_xm, n_yp, n_xm_yp, m_xm, m_yp, m_xm_yp, f_xm, f_yp, f_xm_yp),
+            };
+        },
+        .nz => blk: {
+            const n_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
+            const n_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
+            const n_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
+            const n_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
+            const n_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
+            const n_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
+            const n_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
+            const n_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
+            const m_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 2);
+            const m_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 2);
+            const m_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 2);
+            const m_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 2);
+            const m_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 2);
+            const m_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 2);
+            const m_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 2);
+            const m_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 2);
+            const f_xm = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 3);
+            const f_xp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 3);
+            const f_ym = isSolid(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 3);
+            const f_yp = isSolid(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 3);
+            const f_xm_ym = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 3);
+            const f_xp_ym = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 3);
+            const f_xm_yp = isSolid(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 3);
+            const f_xp_yp = isSolid(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 3);
+            break :blk .{
+                aoPropValue(n_xp, n_ym, n_xp_ym, m_xp, m_ym, m_xp_ym, f_xp, f_ym, f_xp_ym),
+                aoPropValue(n_xm, n_ym, n_xm_ym, m_xm, m_ym, m_xm_ym, f_xm, f_ym, f_xm_ym),
+                aoPropValue(n_xm, n_yp, n_xm_yp, m_xm, m_yp, m_xm_yp, f_xm, f_yp, f_xm_yp),
+                aoPropValue(n_xp, n_yp, n_xp_yp, m_xp, m_yp, m_xp_yp, f_xp, f_yp, f_xp_yp),
             };
         },
     };
@@ -1315,13 +1542,18 @@ pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i
 
 /// A single face candidate in a 2D greedy-merge plane. Holds everything needed
 /// to decide whether two adjacent cells may merge: block type, per-vertex AO,
-/// per-vertex skylight. Two cells merge iff every f32 byte in the lighting
-/// tuples is bit-identical AND the block types match.
+/// per-vertex skylight, per-vertex block-light. Two cells merge iff every f32
+/// byte in the lighting tuples is bit-identical AND the block types match.
 const GreedyCell = struct {
     present: bool = false,
     block_type: BlockType = .air,
     ao: [4]f32 = .{ 0, 0, 0, 0 },
     sky: [4]f32 = .{ 0, 0, 0, 0 },
+    /// Per-vertex block-light brightness 0..1. Baked from the chunk's
+    /// `block_light` grid (seeded by emissive blocks, BFS-propagated through
+    /// air). Omitting this from the merge key was the P0 bug: all greedy quads
+    /// defaulted to block_light=0 even near glowstone.
+    bl: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
 /// True iff all four corner values in `v` are bit-identical. Used to detect
@@ -1354,8 +1586,10 @@ fn greedyCellEq(a: GreedyCell, b: GreedyCell) bool {
     if (a.block_type != b.block_type) return false;
     if (!greedyUniform4(a.ao) or !greedyUniform4(b.ao)) return false;
     if (!greedyUniform4(a.sky) or !greedyUniform4(b.sky)) return false;
+    if (!greedyUniform4(a.bl) or !greedyUniform4(b.bl)) return false;
     if (a.ao[0] != b.ao[0]) return false;
     if (a.sky[0] != b.sky[0]) return false;
+    if (a.bl[0] != b.bl[0]) return false;
     return true;
 }
 
@@ -1384,11 +1618,16 @@ fn computeGreedyCell(
         .none => .{ 1.0, 1.0, 1.0, 1.0 },
         .skylight => computeFaceSkylight(chunk, getter, world_ox, world_oz, wx, ly, wz, face),
     };
+    const bl: [4]f32 = switch (lighting_mode) {
+        .none => .{ 0.0, 0.0, 0.0, 0.0 },
+        .skylight => computeFaceBlockLight(chunk, getter, world_ox, world_oz, wx, ly, wz, face),
+    };
     return .{
         .present = true,
         .block_type = block,
         .ao = ao,
         .sky = sky,
+        .bl = bl,
     };
 }
 
@@ -1438,10 +1677,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(ja);
             const z_f: f32 = @floatFromInt(world_oz + ia);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f, y_f,      z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
-                .{ .pos = .{ x_f, y_f + hf, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1] },
-                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
-                .{ .pos = .{ x_f, y_f,      z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+                .{ .pos = .{ x_f, y_f,      z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f, y_f + hf, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
+                .{ .pos = .{ x_f, y_f,      z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .nx => blk: {
@@ -1451,10 +1690,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(ja);
             const z_f: f32 = @floatFromInt(world_oz + ia);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f, y_f,      z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
-                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1] },
-                .{ .pos = .{ x_f, y_f + hf, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
-                .{ .pos = .{ x_f, y_f,      z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+                .{ .pos = .{ x_f, y_f,      z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f, y_f + hf, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
+                .{ .pos = .{ x_f, y_f,      z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .py => blk: {
@@ -1464,10 +1703,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(d + 1);
             const z_f: f32 = @floatFromInt(world_oz + ja);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f,      y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
-                .{ .pos = .{ x_f,      y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1] },
-                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
-                .{ .pos = .{ x_f + wf, y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+                .{ .pos = .{ x_f,      y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f,      y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
+                .{ .pos = .{ x_f + wf, y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .ny => blk: {
@@ -1477,10 +1716,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(d);
             const z_f: f32 = @floatFromInt(world_oz + ja);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f,      y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
-                .{ .pos = .{ x_f,      y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1] },
-                .{ .pos = .{ x_f + wf, y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
-                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+                .{ .pos = .{ x_f,      y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f,      y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f + wf, y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
+                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .pz => blk: {
@@ -1490,10 +1729,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(ja);
             const z_f: f32 = @floatFromInt(world_oz + d + 1);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f,      y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
-                .{ .pos = .{ x_f + wf, y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[1], .skylight = cell.sky[1] },
-                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
-                .{ .pos = .{ x_f,      y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+                .{ .pos = .{ x_f,      y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f + wf, y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
+                .{ .pos = .{ x_f,      y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .nz => blk: {
@@ -1503,10 +1742,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(ja);
             const z_f: f32 = @floatFromInt(world_oz + d);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f + wf, y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0] },
-                .{ .pos = .{ x_f,      y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[1], .skylight = cell.sky[1] },
-                .{ .pos = .{ x_f,      y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2] },
-                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[3], .skylight = cell.sky[3] },
+                .{ .pos = .{ x_f + wf, y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f,      y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f,      y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
+                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
     };

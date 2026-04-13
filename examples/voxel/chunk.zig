@@ -545,6 +545,168 @@ pub const Chunk = struct {
         }
     }
 
+    /// Recompute block-light for this chunk, seeding additional light from
+    /// the four horizontal neighbour chunks.  Call this instead of
+    /// `computeBlockLight` when a block mutation may push light across a
+    /// chunk boundary (i.e. whenever `World.setBlock` runs).
+    ///
+    /// Algorithm:
+    ///   Pass 1 — same as `computeBlockLight`: seed own emitters, zero the rest.
+    ///   Pass 1b — for each of the four edges that has a live neighbour chunk,
+    ///             walk the shared border row.  If the neighbour's adjacent cell
+    ///             has block_light >= 2, seed our border cell with (neighbour - 1)
+    ///             when our cell is air and the seed would raise its value.
+    ///             This is a one-hop hand-off; the BFS in pass 2 propagates the
+    ///             seeded values inward, so light travelling from the neighbour
+    ///             fills as many of our cells as the remaining budget allows.
+    ///   Pass 2 — standard bucket-sort BFS, same as `computeBlockLight`.
+    ///
+    /// Cross-chunk propagation notes:
+    ///   - Only the four horizontal neighbours (±X, ±Z) are considered.
+    ///     Vertical light does not cross chunks (chunks span all 256 Y levels).
+    ///   - Light originating in a neighbour that was itself seeded from a
+    ///     further-away chunk is NOT re-propagated here (we only look at the
+    ///     neighbour's already-computed values, not its neighbours).  This is
+    ///     correct for the common case: glowstone is at most CHUNK_W-1 = 15
+    ///     cells from an edge, and MAX_BLOCK_LIGHT = 15, so the light budget
+    ///     reaching the far side of the adjacent chunk would already be ≤ 1
+    ///     and therefore zero after our one-hop decay.
+    pub fn computeBlockLightWithNeighbors(
+        self: *Chunk,
+        nx_neg: ?*const Chunk, // chunk at cx-1: their x=CHUNK_W-1 is our x=0 border
+        nx_pos: ?*const Chunk, // chunk at cx+1: their x=0 is our x=CHUNK_W-1 border
+        nz_neg: ?*const Chunk, // chunk at cz-1: their z=CHUNK_W-1 is our z=0 border
+        nz_pos: ?*const Chunk, // chunk at cz+1: their z=0 is our z=CHUNK_W-1 border
+    ) void {
+        // Pass 1 — seed own emitters, zero everything else (same as computeBlockLight).
+        var any_emitter = false;
+        var x: i32 = 0;
+        while (x < CHUNK_W) : (x += 1) {
+            var y: i32 = 0;
+            while (y < CHUNK_H) : (y += 1) {
+                var z: i32 = 0;
+                while (z < CHUNK_W) : (z += 1) {
+                    const xu: usize = @intCast(x);
+                    const yu: usize = @intCast(y);
+                    const zu: usize = @intCast(z);
+                    const emit = emissionLevel(self.resolveBlockRaw(x, y, z));
+                    self.block_light[xu][yu][zu] = emit;
+                    if (emit > 0) any_emitter = true;
+                }
+            }
+        }
+
+        // Pass 1b — seed border cells from each live neighbour's adjacent edge.
+        // nx_neg is the chunk to our left (-X); their rightmost column
+        // (x = CHUNK_W-1) is adjacent to our leftmost column (x = 0).
+        if (nx_neg) |nb| {
+            var yy: usize = 0;
+            while (yy < CHUNK_H) : (yy += 1) {
+                var zz: usize = 0;
+                while (zz < CHUNK_W) : (zz += 1) {
+                    const nv = nb.block_light[CHUNK_W - 1][yy][zz];
+                    if (nv >= 2 and self.resolveBlockRaw(0, @intCast(yy), @intCast(zz)) == .air) {
+                        const seed: u8 = nv - 1;
+                        if (seed > self.block_light[0][yy][zz]) {
+                            self.block_light[0][yy][zz] = seed;
+                            any_emitter = true;
+                        }
+                    }
+                }
+            }
+        }
+        if (nx_pos) |nb| {
+            var yy: usize = 0;
+            while (yy < CHUNK_H) : (yy += 1) {
+                var zz: usize = 0;
+                while (zz < CHUNK_W) : (zz += 1) {
+                    const nv = nb.block_light[0][yy][zz];
+                    if (nv >= 2 and self.resolveBlockRaw(CHUNK_W - 1, @intCast(yy), @intCast(zz)) == .air) {
+                        const seed: u8 = nv - 1;
+                        if (seed > self.block_light[CHUNK_W - 1][yy][zz]) {
+                            self.block_light[CHUNK_W - 1][yy][zz] = seed;
+                            any_emitter = true;
+                        }
+                    }
+                }
+            }
+        }
+        if (nz_neg) |nb| {
+            var xx: usize = 0;
+            while (xx < CHUNK_W) : (xx += 1) {
+                var yy: usize = 0;
+                while (yy < CHUNK_H) : (yy += 1) {
+                    const nv = nb.block_light[xx][yy][CHUNK_W - 1];
+                    if (nv >= 2 and self.resolveBlockRaw(@intCast(xx), @intCast(yy), 0) == .air) {
+                        const seed: u8 = nv - 1;
+                        if (seed > self.block_light[xx][yy][0]) {
+                            self.block_light[xx][yy][0] = seed;
+                            any_emitter = true;
+                        }
+                    }
+                }
+            }
+        }
+        if (nz_pos) |nb| {
+            var xx: usize = 0;
+            while (xx < CHUNK_W) : (xx += 1) {
+                var yy: usize = 0;
+                while (yy < CHUNK_H) : (yy += 1) {
+                    const nv = nb.block_light[xx][yy][0];
+                    if (nv >= 2 and self.resolveBlockRaw(@intCast(xx), @intCast(yy), CHUNK_W - 1) == .air) {
+                        const seed: u8 = nv - 1;
+                        if (seed > self.block_light[xx][yy][CHUNK_W - 1]) {
+                            self.block_light[xx][yy][CHUNK_W - 1] = seed;
+                            any_emitter = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fast path: no emitters or neighbour seeds, nothing to propagate.
+        if (!any_emitter) return;
+
+        // Pass 2 — bucket-sort BFS, identical to computeBlockLight.
+        var level: u8 = MAX_BLOCK_LIGHT;
+        while (level >= 2) : (level -= 1) {
+            const target: u8 = level - 1;
+            var ix: i32 = 0;
+            while (ix < CHUNK_W) : (ix += 1) {
+                var iy: i32 = 0;
+                while (iy < CHUNK_H) : (iy += 1) {
+                    var iz: i32 = 0;
+                    while (iz < CHUNK_W) : (iz += 1) {
+                        const xu: usize = @intCast(ix);
+                        const yu: usize = @intCast(iy);
+                        const zu: usize = @intCast(iz);
+                        if (self.block_light[xu][yu][zu] != level) continue;
+                        const neighbours = [_][3]i32{
+                            .{ ix + 1, iy, iz },
+                            .{ ix - 1, iy, iz },
+                            .{ ix, iy + 1, iz },
+                            .{ ix, iy - 1, iz },
+                            .{ ix, iy, iz + 1 },
+                            .{ ix, iy, iz - 1 },
+                        };
+                        for (neighbours) |n| {
+                            const nx2 = n[0];
+                            const ny = n[1];
+                            const nz = n[2];
+                            if (nx2 < 0 or nx2 >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
+                            const nxu: usize = @intCast(nx2);
+                            const nyu: usize = @intCast(ny);
+                            const nzu: usize = @intCast(nz);
+                            if (self.resolveBlockRaw(nx2, ny, nz) != .air) continue;
+                            if (self.block_light[nxu][nyu][nzu] >= target) continue;
+                            self.block_light[nxu][nyu][nzu] = target;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Generate terrain for this chunk at chunk grid position (cx, cz).
     ///
     /// Layout per column (surface = noise-sampled height):

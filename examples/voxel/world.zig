@@ -418,30 +418,78 @@ pub const World = struct {
         // swallowing it; OOM here is the caller's problem, not ours.
         try lc_ptr.*.chunk.setBlock(lx, wy, lz, block);
         lc_ptr.*.chunk.computeSkylight();
-        // Block light also needs a full recompute: placing a glowstone adds
-        // a seed, removing one erases the flood region. Phase 3 keeps this
-        // chunk-scoped; cross-chunk block-light seam repair is tracked as
-        // the same TODO as skylight's cross-chunk fix.
-        lc_ptr.*.chunk.computeBlockLight();
+
+        // Gather live horizontal neighbours (null if unloaded) for cross-chunk
+        // block-light seeding. We fetch them once here to avoid repeated HashMap
+        // lookups below.
+        const nb_xn = self.chunks.get(.{ .cx = cx - 1, .cz = cz });
+        const nb_xp = self.chunks.get(.{ .cx = cx + 1, .cz = cz });
+        const nb_zn = self.chunks.get(.{ .cx = cx, .cz = cz - 1 });
+        const nb_zp = self.chunks.get(.{ .cx = cx, .cz = cz + 1 });
+
+        // Recompute block-light for the owning chunk, seeding from neighbour
+        // edges so a glowstone placed near a chunk border illuminates air cells
+        // in the adjacent chunk properly.
+        lc_ptr.*.chunk.computeBlockLightWithNeighbors(
+            if (nb_xn) |lc| &lc.chunk else null,
+            if (nb_xp) |lc| &lc.chunk else null,
+            if (nb_zn) |lc| &lc.chunk else null,
+            if (nb_zp) |lc| &lc.chunk else null,
+        );
         lc_ptr.*.mesh_dirty = true;
 
+        // Re-run block-light for each live horizontal neighbour, seeding from
+        // this chunk's newly-updated edges. This propagates light across the
+        // boundary in both directions: a glowstone placed at our x=0 will push
+        // level-14 light into the cx-1 chunk; a glowstone in cx-1 near x=CHUNK_W-1
+        // will push into our chunk (handled above). Each neighbour is only one
+        // hop away so no further cascading is needed.
+        const own_chunk_ptr: *const chunk_mod.Chunk = &lc_ptr.*.chunk;
+        if (nb_xn) |nlc| {
+            const far_xn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 2, .cz = cz })) |lc2| &lc2.chunk else null;
+            const diag_zn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
+            const diag_zp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
+            nlc.chunk.computeBlockLightWithNeighbors(far_xn, own_chunk_ptr, diag_zn, diag_zp);
+            nlc.mesh_dirty = true;
+        }
+        if (nb_xp) |nlc| {
+            const far_xp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 2, .cz = cz })) |lc2| &lc2.chunk else null;
+            const diag_zn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
+            const diag_zp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
+            nlc.chunk.computeBlockLightWithNeighbors(own_chunk_ptr, far_xp, diag_zn, diag_zp);
+            nlc.mesh_dirty = true;
+        }
+        if (nb_zn) |nlc| {
+            const diag_xn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
+            const diag_xp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
+            const far_zn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx, .cz = cz - 2 })) |lc2| &lc2.chunk else null;
+            nlc.chunk.computeBlockLightWithNeighbors(diag_xn, diag_xp, far_zn, own_chunk_ptr);
+            nlc.mesh_dirty = true;
+        }
+        if (nb_zp) |nlc| {
+            const diag_xn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
+            const diag_xp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
+            const far_zp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx, .cz = cz + 2 })) |lc2| &lc2.chunk else null;
+            nlc.chunk.computeBlockLightWithNeighbors(diag_xn, diag_xp, own_chunk_ptr, far_zp);
+            nlc.mesh_dirty = true;
+        }
+
         // Dirty neighbouring chunks whose meshes may reference the modified
-        // block. AO (Moore mode) samples up to 2 cells from a face, so any
-        // chunk whose edge is within 2 blocks of this position needs a
-        // re-mesh to pick up the correct solid/air value.
+        // block. AO (Moore/propagated mode) samples up to 3 cells from a face;
+        // use R=3 to cover propagated AO reach.
         const W = chunk_mod.CHUNK_W;
-        const R: i32 = 2; // AO sampling reach
+        const R: i32 = 3; // propagated AO sampling reach
         if (lx < R) {
-            if (self.chunks.get(.{ .cx = cx - 1, .cz = cz })) |nlc| nlc.mesh_dirty = true;
+            if (nb_xn) |nlc| nlc.mesh_dirty = true;
         }
         if (lx >= W - R) {
-            if (self.chunks.get(.{ .cx = cx + 1, .cz = cz })) |nlc| nlc.mesh_dirty = true;
+            if (nb_xp) |nlc| nlc.mesh_dirty = true;
         }
         if (lz < R) {
-            if (self.chunks.get(.{ .cx = cx, .cz = cz - 1 })) |nlc| nlc.mesh_dirty = true;
+            if (nb_zn) |nlc| nlc.mesh_dirty = true;
         }
         if (lz >= W - R) {
-            if (self.chunks.get(.{ .cx = cx, .cz = cz + 1 })) |nlc| nlc.mesh_dirty = true;
+            if (nb_zp) |nlc| nlc.mesh_dirty = true;
         }
         // Diagonal corners: dirty when within AO reach of both edges at once.
         if (lx < R and lz < R) {
