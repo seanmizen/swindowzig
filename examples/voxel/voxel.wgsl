@@ -53,6 +53,12 @@ fn getBlockColor(block_type: u32) -> vec3<f32> {
         case 5u: { // Glowstone — warm yellow-gold base; fs_main bumps per-texel variance for chunky pixel art.
             return vec3<f32>(1.0, 0.88, 0.42);
         }
+        case 6u: { // Wood / oak log — warm brown bark colour.
+            return vec3<f32>(0.45, 0.30, 0.12);
+        }
+        case 7u: { // Leaves — dark forest green.
+            return vec3<f32>(0.18, 0.50, 0.12);
+        }
         case 99u: { // Debug marker
             return vec3<f32>(1.0, 0.0, 0.0);
         }

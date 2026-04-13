@@ -26,6 +26,12 @@ pub const BlockType = enum(u8) {
     /// emits `MAX_BLOCK_LIGHT` from its own cell. Seeded during
     /// `computeBlockLight` and propagated outward through adjacent air.
     glowstone = 5,
+    /// Oak log / tree trunk. Brown block placed during tree generation.
+    /// Solid and opaque — no special light properties.
+    wood = 6,
+    /// Oak leaf block. Dark green, placed in the spherical canopy around tree tops.
+    /// Solid for face-culling purposes (keeps mesh generation simple).
+    leaves = 7,
     debug_marker = 99,
 };
 
@@ -768,6 +774,79 @@ pub const Chunk = struct {
             }
         }
         const t_fill_us = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else @divTrunc(std.time.nanoTimestamp() - t_fill_start, 1000);
+
+        // Cave carver: run after terrain fill so we only carve into solid blocks.
+        // Only active for non-flat terrain (noise_octaves > 0).
+        if (config.noise_octaves > 0) {
+            var cx_idx: i32 = 0;
+            while (cx_idx < CHUNK_W) : (cx_idx += 1) {
+                var cz_idx: i32 = 0;
+                while (cz_idx < CHUNK_W) : (cz_idx += 1) {
+                    const wx = cx * CHUNK_W + cx_idx;
+                    const wz = cz * CHUNK_W + cz_idx;
+                    const surface = world_gen.sampleHeight(wx, wz, config);
+                    // Carve from Y=4 (above bedrock zone) to surface-5 (preserve topsoil).
+                    var wy: i32 = 4;
+                    while (wy < surface - 4) : (wy += 1) {
+                        if (world_gen.shouldCarve(wx, wy, wz)) {
+                            try self.setBlock(cx_idx, wy, cz_idx, .air);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tree planter: place oak trees seeded from world coordinates.
+        // Searches a halo around the chunk so canopy from trees in adjacent
+        // chunks is correctly placed here as well.
+        // Only active for non-flat terrain.
+        if (config.noise_octaves > 0) {
+            const TREE_SEARCH: i32 = 11; // max trunk_height + canopy_radius
+            var tree_wx: i32 = cx * CHUNK_W - TREE_SEARCH;
+            while (tree_wx < cx * CHUNK_W + CHUNK_W + TREE_SEARCH) : (tree_wx += 1) {
+                var tree_wz: i32 = cz * CHUNK_W - TREE_SEARCH;
+                while (tree_wz < cz * CHUNK_W + CHUNK_W + TREE_SEARCH) : (tree_wz += 1) {
+                    if (!world_gen.isTreeCenter(tree_wx, tree_wz)) continue;
+
+                    const tree_surface = world_gen.sampleHeight(tree_wx, tree_wz, config);
+                    const trunk_h = world_gen.treeHeight(tree_wx, tree_wz);
+                    const trunk_base = tree_surface + 1;
+                    const trunk_top = tree_surface + trunk_h;
+
+                    // Place trunk — setBlock ignores out-of-chunk coords silently.
+                    var ty: i32 = trunk_base;
+                    while (ty <= trunk_top) : (ty += 1) {
+                        const lx = tree_wx - cx * CHUNK_W;
+                        const lz = tree_wz - cz * CHUNK_W;
+                        if (self.getBlock(lx, ty, lz) == .air) {
+                            try self.setBlock(lx, ty, lz, .wood);
+                        }
+                    }
+
+                    // Place spherical leaf canopy (radius ~3) around trunk top.
+                    const CANOPY_R: i32 = 3;
+                    var dy: i32 = -CANOPY_R;
+                    while (dy <= CANOPY_R) : (dy += 1) {
+                        var dx: i32 = -CANOPY_R;
+                        while (dx <= CANOPY_R) : (dx += 1) {
+                            var dz: i32 = -CANOPY_R;
+                            while (dz <= CANOPY_R) : (dz += 1) {
+                                if (dx * dx + dy * dy + dz * dz > CANOPY_R * CANOPY_R) continue;
+                                // Don't overwrite trunk column blocks.
+                                if (dx == 0 and dz == 0 and dy <= 0) continue;
+                                const lx = tree_wx + dx - cx * CHUNK_W;
+                                const ly = trunk_top + dy;
+                                const lz = tree_wz + dz - cz * CHUNK_W;
+                                if (ly < 1 or ly >= CHUNK_H) continue;
+                                if (self.getBlock(lx, ly, lz) == .air) {
+                                    try self.setBlock(lx, ly, lz, .leaves);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Skylight: must run after the blocks array is fully populated, since
         // the BFS reads `blocks` to know which cells block propagation.
