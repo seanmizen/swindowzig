@@ -237,6 +237,19 @@ pub const World = struct {
     /// to tweak generation without changing the preset.
     gen_config: world_gen.WorldGenConfig,
 
+    /// Squared mesh radius derived from the runtime render_distance.
+    /// Replaces the compile-time MESH_RADIUS_SQ for distance gates.
+    pub fn meshRadiusSq(self: *const World) i32 {
+        return self.render_distance * self.render_distance;
+    }
+
+    /// Squared eviction radius — one chunk wider than the mesh radius.
+    /// Replaces the compile-time EVICT_RADIUS_SQ for eviction checks.
+    pub fn evictRadiusSq(self: *const World) i32 {
+        const r = self.render_distance + 1;
+        return r * r;
+    }
+
     pub fn init(allocator: std.mem.Allocator, preset: world_gen.Preset, render_distance: i32) !World {
         return .{
             .allocator = allocator,
@@ -323,18 +336,33 @@ pub const World = struct {
         return true;
     }
 
-    /// True iff `lc` has all four horizontal neighbours generated (or better).
-    /// Since chunks here are full-height columns, "all six neighbours" from
-    /// classic 3D-chunk voxel engines collapses to four horizontal neighbours.
+    /// True iff `lc` has all eight horizontal neighbours generated (or better).
+    /// Since chunks here are full-height columns, the vertical axis is free.
     /// A chunk must meet this condition before its mesh is built — otherwise
-    /// seam faces would cull against `.air` for the missing sides and produce
-    /// visible holes along chunk boundaries.
+    /// seam faces would cull against `.air` for the missing sides and AO
+    /// sampling would read `.air` for missing diagonals, producing visible
+    /// bright seams at every chunk boundary.
+    ///
+    /// All 8 neighbours (face-adjacent + diagonals) are required because AO
+    /// sampling (both classic and Moore) reads blocks ±1/±2 cells from the
+    /// face plane in the face-parallel axes. A corner vertex on a chunk that
+    /// shares only a diagonal with a missing neighbour will sample into that
+    /// neighbour's space; if it doesn't exist the sample returns .air and the
+    /// vertex comes out too bright. Checking all 8 here ensures every mesh
+    /// has complete AO data in one pass instead of needing repeated re-mesh
+    /// rounds as diagonals trickle in.
     pub fn hasAllNeighborsGenerated(self: *const World, cx: i32, cz: i32) bool {
         const neighbors = [_]ChunkKey{
+            // Face-adjacent
             .{ .cx = cx - 1, .cz = cz },
             .{ .cx = cx + 1, .cz = cz },
             .{ .cx = cx, .cz = cz - 1 },
             .{ .cx = cx, .cz = cz + 1 },
+            // Diagonal
+            .{ .cx = cx - 1, .cz = cz - 1 },
+            .{ .cx = cx - 1, .cz = cz + 1 },
+            .{ .cx = cx + 1, .cz = cz - 1 },
+            .{ .cx = cx + 1, .cz = cz + 1 },
         };
         for (neighbors) |nk| {
             if (!self.chunks.contains(nk)) return false;

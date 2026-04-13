@@ -1655,13 +1655,21 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
         enqueued_new += 1;
     }
 
-    // ─── 3. Enqueue mesh-only jobs for dirty chunks with all 4 axials ───
+    // ─── 3. Enqueue mesh-only jobs for dirty chunks with all 8 neighbours ──
     var enqueued_mesh: usize = 0;
+    const evict_r_sq = world.evictRadiusSq();
     var it = world.chunks.iterator();
     while (it.next()) |entry| {
         if (enqueued_mesh >= ASYNC_MESH_ONLY_ENQUEUE_PER_TICK) break;
         const lc = entry.value_ptr.*;
         if (!lc.mesh_dirty) continue;
+        // Distance gate: don't waste worker cycles on chunks outside the
+        // eviction radius — they'd just be evicted the same tick the result
+        // lands, causing a meshed→evicted→meshed oscillation that starves
+        // the mesh-only budget for chunks the player can actually see.
+        const dcx = lc.cx - player_cx;
+        const dcz = lc.cz - player_cz;
+        if (dcx * dcx + dcz * dcz > evict_r_sq) continue;
         if (!world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
         if (p.isInFlight(lc.cx, lc.cz)) continue;
 
@@ -2046,7 +2054,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             if (!lc.mesh_dirty) continue;
             const dcx = lc.cx - player_cx;
             const dcz = lc.cz - player_cz;
-            if (dcx * dcx + dcz * dcz > world_mod.MESH_RADIUS_SQ) continue;
+            if (dcx * dcx + dcz * dcz > state.world.meshRadiusSq()) continue;
             if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
             const t0 = perfNowNs();
             mesher_mod.generateMeshForMode(
@@ -2095,7 +2103,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             // Skip chunks already handled by the regular pass above.
             const dcx = lc.cx - player_cx;
             const dcz = lc.cz - player_cz;
-            if (dcx * dcx + dcz * dcz <= world_mod.MESH_RADIUS_SQ) continue;
+            if (dcx * dcx + dcz * dcz <= state.world.meshRadiusSq()) continue;
             const t0 = perfNowNs();
             mesher_mod.generateMeshForMode(
                 &lc.chunk,
@@ -2132,8 +2140,8 @@ fn voxelTick(ctx: *sw.Context) !void {
     //
     //   - Cheap enough to run every tick: a typical session has ~50 loaded
     //     chunks, each check is two int multiplies + a hashmap lookup.
-    //   - Hysteresis: mesh-eligible inside MESH_RADIUS_SQ (= 16 for R=4),
-    //     evict outside EVICT_RADIUS_SQ (= 25). Dead zone 17..25 prevents
+    //   - Hysteresis: mesh-eligible inside meshRadiusSq (= R²),
+    //     evict outside evictRadiusSq (= (R+1)²). Dead zone prevents
     //     boundary-wobble flicker.
     //   - On eviction we (a) destroy GPU vertex+index buffers and drop the
     //     entry from `state.chunk_gpu`, then (b) call `evictMesh` on the
@@ -2151,7 +2159,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             if (lc.state != .meshed) continue;
             const dcx = lc.cx - player_cx;
             const dcz = lc.cz - player_cz;
-            if (dcx * dcx + dcz * dcz <= world_mod.EVICT_RADIUS_SQ) continue;
+            if (dcx * dcx + dcz * dcz <= state.world.evictRadiusSq()) continue;
 
             // Skip chunks that are currently being re-meshed by the async
             // worker — evicting mid-flight would discard their mesh buffers
@@ -2337,7 +2345,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 eye,
                 fwd,
                 state.frustum_fov_deg,
-                world_mod.RENDER_DISTANCE,
+                state.world.render_distance,
             );
             std.log.info("Frustum freeze: ON @ ({d:.1},{d:.1},{d:.1}) fwd=({d:.2},{d:.2},{d:.2})", .{
                 eye[0], eye[1], eye[2], fwd[0], fwd[1], fwd[2],
@@ -3300,7 +3308,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             eye,
             fwd,
             state.frustum_fov_deg,
-            world_mod.RENDER_DISTANCE,
+            state.world.render_distance,
         );
     };
 
