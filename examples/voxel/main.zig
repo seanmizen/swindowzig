@@ -3497,7 +3497,6 @@ fn voxelRender(ctx: *sw.Context) !void {
         pass.setIndexBuffer(cg.index_buffer.?, .uint32, 0, lc.mesh.indices.items.len * @sizeOf(u32));
         pass.drawIndexed(@intCast(lc.mesh.indices.items.len), 1, 0, 0, 0);
     }
-
     // =========================================================================
     // Player hitbox cylinder (drawn after voxels; no face culling so always visible)
     // =========================================================================

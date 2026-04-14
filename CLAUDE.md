@@ -82,6 +82,16 @@ with "Texture binding N expects dimension = D1, but given a view with dimension 
 `createBindGroupLayout` now uses explicit switch maps for both `.texture.view_dimension`
 and `.storage_texture.view_dimension`. Do not use raw `@intFromEnum` for these.
 
+### CompareFunction enum mismatch (fixed in gpu.zig — createRenderPipeline)
+`types.CompareFunction` starts at 0 (`never=0, less=1, …, always=7`), but native
+`WGPUCompareFunction` has `undefined=0, never=1, less=2, …, always=8`. Additionally,
+the order of `equal`, `not_equal`, and `greater_equal` differs between the two enums.
+Raw `@intFromEnum` would map `.less→1 = never` — silently making the depth test always
+reject every fragment (blank sky-only output). `createRenderPipeline` now uses
+`toNativeCompareFunction()`, an explicit named switch, for all three CompareFunction
+fields (depth_compare, stencil_front.compare, stencil_back.compare).
+Do not use raw `@intFromEnum` for CompareFunction conversions.
+
 ### Hardware depth testing (macOS/Metal)
 Hardware depth testing is **enabled** in the voxel pipeline (`depth24plus`,
 `depth_write_enabled = true`, `depth_compare = .less`). The Metal crash

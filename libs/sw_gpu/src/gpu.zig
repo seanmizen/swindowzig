@@ -56,6 +56,24 @@ const DeviceRequestResult = if (!is_wasm) struct {
     device: native.WGPUDevice = null,
 } else struct {};
 
+/// Map types.CompareFunction to WGPUCompareFunction.
+/// The Zig types enum starts at 0 (never=0), but WGPUCompareFunction has
+/// undefined=0 and never=1, so a raw @intFromEnum cast is off by one.
+/// Additionally, `equal`, `not_equal`, and `greater_equal` are in a
+/// different order between the two enums, so only a named switch is safe.
+fn toNativeCompareFunction(cf: types.CompareFunction) native.WGPUCompareFunction {
+    return switch (cf) {
+        .never => .never,
+        .less => .less,
+        .equal => .equal,
+        .less_equal => .less_equal,
+        .greater => .greater,
+        .not_equal => .not_equal,
+        .greater_equal => .greater_equal,
+        .always => .always,
+    };
+}
+
 fn adapterRequestCallback(
     status: native.WGPURequestAdapterStatus,
     adapter: native.WGPUAdapter,
@@ -955,16 +973,16 @@ pub const GPU = struct {
                 depth_stencil_state_storage = std.mem.zeroes(native.WGPUDepthStencilState);
                 depth_stencil_state_storage.format = @enumFromInt(@intFromEnum(depth_stencil.format));
                 depth_stencil_state_storage.depth_write_enabled = if (depth_stencil.depth_write_enabled) @as(u32, 1) else 0;
-                depth_stencil_state_storage.depth_compare = @enumFromInt(@intFromEnum(depth_stencil.depth_compare));
+                depth_stencil_state_storage.depth_compare = toNativeCompareFunction(depth_stencil.depth_compare);
 
                 // Stencil front state
-                depth_stencil_state_storage.stencil_front.compare = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.compare));
+                depth_stencil_state_storage.stencil_front.compare = toNativeCompareFunction(depth_stencil.stencil_front.compare);
                 depth_stencil_state_storage.stencil_front.fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.fail_op));
                 depth_stencil_state_storage.stencil_front.depth_fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.depth_fail_op));
                 depth_stencil_state_storage.stencil_front.pass_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.pass_op));
 
                 // Stencil back state
-                depth_stencil_state_storage.stencil_back.compare = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.compare));
+                depth_stencil_state_storage.stencil_back.compare = toNativeCompareFunction(depth_stencil.stencil_back.compare);
                 depth_stencil_state_storage.stencil_back.fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.fail_op));
                 depth_stencil_state_storage.stencil_back.depth_fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.depth_fail_op));
                 depth_stencil_state_storage.stencil_back.pass_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.pass_op));
