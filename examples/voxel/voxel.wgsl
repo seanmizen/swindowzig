@@ -59,6 +59,9 @@ fn getBlockColor(block_type: u32) -> vec3<f32> {
         case 7u: { // Leaves — dark forest green.
             return vec3<f32>(0.18, 0.50, 0.12);
         }
+        case 8u: { // Sand — warm sandy yellow.
+            return vec3<f32>(0.85, 0.78, 0.48);
+        }
         case 99u: { // Debug marker
             return vec3<f32>(1.0, 0.0, 0.0);
         }

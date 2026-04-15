@@ -1439,6 +1439,7 @@ fn hotbarBlockColor(bt: chunk_mod.BlockType) [3]f32 {
         .glowstone => .{ 1.0, 0.9, 0.3 },
         .wood => .{ 0.45, 0.30, 0.12 },
         .leaves => .{ 0.18, 0.50, 0.12 },
+        .sand => .{ 0.85, 0.78, 0.48 },
         .debug_marker => .{ 1.0, 0.0, 0.0 },
         .air => .{ 0.0, 0.0, 0.0 },
     };

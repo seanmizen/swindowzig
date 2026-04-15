@@ -33,7 +33,7 @@ pub const WorldGenConfig = struct {
     noise_octaves: u32,
     /// Amplitude multiplier per octave (0..1 — higher = rougher high-freq detail).
     noise_persistence: f32,
-    /// Frequency multiplier per octave (>1 — higher = finer detail).
+    /// Frequency multiplier per octave (>1 — finer detail).
     noise_lacunarity: f32,
 };
 
@@ -250,4 +250,189 @@ pub fn sampleHeight(wx: i32, wz: i32, config: WorldGenConfig) i32 {
     const normalized = total / max_value; // [0, 1]
     const height_range = config.terrain_height_max - config.terrain_height_min;
     return config.terrain_height_min + @as(i32, @intFromFloat(normalized * @as(f32, @floatFromInt(height_range))));
+}
+
+// ---------------------------------------------------------------------------
+// Biome system
+// ---------------------------------------------------------------------------
+
+/// The four biomes that can appear in hilly world generation.
+/// Flatland worlds are always grass plains — no biome system applies there.
+///
+/// Biome influences:
+///   - Surface block type (grass, stone, sand)
+///   - Whether trees spawn
+///   - Terrain height range (badlands are slightly flatter/rockier)
+pub const Biome = enum {
+    plains,
+    forest,
+    badlands,
+    desert,
+};
+
+/// Scale of the large-scale biome noise field. Lower = larger biome regions.
+/// At 0.003, biome regions span roughly 80–160 blocks, producing a smooth
+/// mosaic that blends across ~20–40 block transition zones (a la Minecraft's
+/// temperature/humidity biome map, just simpler).
+const BIOME_NOISE_SCALE: f32 = 0.003;
+
+/// Hash offset to decouple biome noise from terrain height noise.
+const BIOME_OFFSET_X: f32 = 1234.5;
+const BIOME_OFFSET_Z: f32 = 9876.5;
+
+/// Second hash offset for the biome humidity axis (perpendicular in noise
+/// space — different constants to avoid correlation with temperature).
+const BIOME_HUM_OFFSET_X: f32 = 5555.5;
+const BIOME_HUM_OFFSET_Z: f32 = 3333.3;
+
+/// Sample the biome at a world-space (wx, wz) column.
+///
+/// Two independent low-frequency noise fields form a 2D "biome map":
+///   temperature (t): controls warm/cold (desert vs. plains/forest)
+///   humidity   (h): controls wet/dry within the temperature band
+///
+/// Mapping:
+///   t ≥ 0.6               → desert  (warm & any humidity)
+///   t < 0.6 and h ≥ 0.55  → forest  (cool & wet)
+///   t < 0.6 and h < 0.25  → badlands (cool & very dry, rocky)
+///   otherwise              → plains
+///
+/// Note: this produces hard biome boundaries at the threshold. The blending
+/// in `sampleBiomeBlended` softens those boundaries into smooth transitions.
+pub fn sampleBiome(wx: i32, wz: i32) Biome {
+    const fx = @as(f32, @floatFromInt(wx));
+    const fz = @as(f32, @floatFromInt(wz));
+
+    const t = valueNoise2D(fx * BIOME_NOISE_SCALE + BIOME_OFFSET_X, fz * BIOME_NOISE_SCALE + BIOME_OFFSET_Z);
+    const h = valueNoise2D(fx * BIOME_NOISE_SCALE + BIOME_HUM_OFFSET_X, fz * BIOME_NOISE_SCALE + BIOME_HUM_OFFSET_Z);
+
+    if (t >= 0.6) return .desert;
+    if (h >= 0.55) return .forest;
+    if (h < 0.25) return .badlands;
+    return .plains;
+}
+
+/// Blended biome sample: returns soft weights for each biome at a world column.
+///
+/// Instead of a hard threshold, we evaluate the biome noise at a ring of
+/// sample points around (wx, wz) with radius BLEND_RADIUS and tally how many
+/// fall in each biome. The resulting normalised counts are the blend weights.
+///
+/// This implements the Minecraft-style "sample neighbours and average" approach:
+/// with BLEND_RADIUS = 16 and N_SAMPLES = 12 the transition zones span about
+/// 20–40 blocks, matching the visual feel of vanilla biome blending without
+/// needing a voronoi distance field or Perlin-style multi-channel noise.
+///
+/// Returned as a [4]f32 indexed by Biome enum ordinal (plains=0, forest=1,
+/// badlands=2, desert=3). Values sum to 1.0.
+pub fn sampleBiomeWeights(wx: i32, wz: i32) [4]f32 {
+    const BLEND_RADIUS: f32 = 16.0;
+    // Sample on a ring + centre. Evenly-spaced angles on the ring plus the
+    // centre itself so the centre biome always has some weight.
+    const N_RING: usize = 12;
+    const N_TOTAL: usize = N_RING + 1;
+
+    var counts = [_]f32{0.0} ** 4;
+
+    // Centre point
+    const centre_biome = sampleBiome(wx, wz);
+    counts[@intFromEnum(centre_biome)] += 1.0;
+
+    // Ring of samples at evenly spaced angles
+    var i: usize = 0;
+    while (i < N_RING) : (i += 1) {
+        const angle = @as(f32, @floatFromInt(i)) * (2.0 * std.math.pi / @as(f32, @floatFromInt(N_RING)));
+        const sx = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(wx)) + @cos(angle) * BLEND_RADIUS)));
+        const sz = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(wz)) + @sin(angle) * BLEND_RADIUS)));
+        const b = sampleBiome(sx, sz);
+        counts[@intFromEnum(b)] += 1.0;
+    }
+
+    // Normalise to sum to 1.0
+    const total = @as(f32, @floatFromInt(N_TOTAL));
+    return .{
+        counts[0] / total,
+        counts[1] / total,
+        counts[2] / total,
+        counts[3] / total,
+    };
+}
+
+/// Per-biome terrain parameters used for height blending.
+const BiomeTerrainParams = struct {
+    height_min: i32,
+    height_max: i32,
+};
+
+fn biomeTerrainParams(b: Biome) BiomeTerrainParams {
+    return switch (b) {
+        .plains => .{ .height_min = 60, .height_max = 75 },
+        .forest => .{ .height_min = 62, .height_max = 80 },
+        // Badlands: stone exposed at top — higher variance, more dramatic
+        .badlands => .{ .height_min = 58, .height_max = 90 },
+        // Desert: gently rolling dunes, low variance
+        .desert => .{ .height_min = 62, .height_max = 72 },
+    };
+}
+
+/// Sample blended terrain height at (wx, wz), honouring biome influence.
+///
+/// For the flatland preset (noise_octaves = 0) this short-circuits to the
+/// flat Y level exactly as before — flatland is always grass-only and has
+/// no biome variation.
+///
+/// For the hilly preset, the base noise is evaluated once, then its [0,1]
+/// normalised value is mapped through a weighted blend of the four biomes'
+/// height ranges. This produces seamless height transitions that track the
+/// biome transitions — desert dunes flow into forest hills without a cliff.
+pub fn sampleHeightBiomeBlended(wx: i32, wz: i32, config: WorldGenConfig) i32 {
+    if (config.noise_octaves == 0) return config.terrain_height_min;
+
+    // Evaluate raw noise in [0, 1]
+    var amplitude: f32 = 1.0;
+    var frequency: f32 = config.noise_scale;
+    var total: f32 = 0.0;
+    var max_value: f32 = 0.0;
+
+    for (0..config.noise_octaves) |_| {
+        const nx = @as(f32, @floatFromInt(wx)) * frequency;
+        const nz = @as(f32, @floatFromInt(wz)) * frequency;
+        total += valueNoise2D(nx, nz) * amplitude;
+        max_value += amplitude;
+        amplitude *= config.noise_persistence;
+        frequency *= config.noise_lacunarity;
+    }
+
+    const normalized = total / max_value; // [0, 1]
+
+    // Blend biome height ranges using the soft biome weights
+    const weights = sampleBiomeWeights(wx, wz);
+    const biomes = [_]Biome{ .plains, .forest, .badlands, .desert };
+
+    var blended_min: f32 = 0.0;
+    var blended_max: f32 = 0.0;
+    for (biomes, 0..) |b, idx| {
+        const params = biomeTerrainParams(b);
+        blended_min += weights[idx] * @as(f32, @floatFromInt(params.height_min));
+        blended_max += weights[idx] * @as(f32, @floatFromInt(params.height_max));
+    }
+
+    const height_range = blended_max - blended_min;
+    return @as(i32, @intFromFloat(blended_min + normalized * height_range));
+}
+
+/// Determine the dominant biome at a world column using blended weights.
+/// Returns the biome with the highest weight — used by terrain generation
+/// to pick surface block type and to gate tree spawning.
+pub fn dominantBiome(wx: i32, wz: i32) Biome {
+    const weights = sampleBiomeWeights(wx, wz);
+    var best_idx: usize = 0;
+    var best_w: f32 = weights[0];
+    for (weights[1..], 1..) |w, idx| {
+        if (w > best_w) {
+            best_w = w;
+            best_idx = idx;
+        }
+    }
+    return @enumFromInt(best_idx);
 }

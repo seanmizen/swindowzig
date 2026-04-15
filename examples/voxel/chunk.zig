@@ -32,6 +32,9 @@ pub const BlockType = enum(u8) {
     /// Oak leaf block. Dark green, placed in the spherical canopy around tree tops.
     /// Solid for face-culling purposes (keeps mesh generation simple).
     leaves = 7,
+    /// Sand block. Used as the surface layer in desert biomes.
+    /// No special physics (falling sand is out of scope for terrain generation).
+    sand = 8,
     debug_marker = 99,
 };
 
@@ -715,14 +718,14 @@ pub const Chunk = struct {
 
     /// Generate terrain for this chunk at chunk grid position (cx, cz).
     ///
-    /// Layout per column (surface = noise-sampled height):
-    ///   Y=0             bedrock
+    /// Layout per column (surface = biome-blended noise-sampled height):
+    ///   Y=0              bedrock
     ///   Y=1..(surface-4) stone
-    ///   Y=(surface-3)..(surface-1) dirt (3 layers)
-    ///   Y=surface       grass
+    ///   Y=(surface-3)..(surface-1) dirt (3 layers; sand in desert; stone in badlands)
+    ///   Y=surface        grass (plains/forest), sand (desert), stone (badlands)
     ///
     /// For the flatland preset (noise_octaves=0), surface is always
-    /// terrain_height_min=63, reproducing the original Minecraft superflat layout.
+    /// terrain_height_min=63 with grass everywhere — no biomes apply.
     ///
     /// Returns `!void` because `setBlock` on the paletted store allocates
     /// when the palette grows past a power-of-two boundary (out-of-memory
@@ -736,25 +739,54 @@ pub const Chunk = struct {
             while (z < CHUNK_W) : (z += 1) {
                 const wx = cx * CHUNK_W + x;
                 const wz = cz * CHUNK_W + z;
-                const surface = world_gen.sampleHeight(wx, wz, config);
+
+                // For hilly terrain, use biome-blended height; flatland is always flat.
+                const surface = world_gen.sampleHeightBiomeBlended(wx, wz, config);
+
+                // Determine dominant biome for surface block selection.
+                // For flatland (noise_octaves == 0) we skip biome sampling entirely —
+                // flatland is always grass-only as specified.
+                const biome: world_gen.Biome = if (config.noise_octaves > 0)
+                    world_gen.dominantBiome(wx, wz)
+                else
+                    .plains;
 
                 try self.setBlock(x, 0, z, .bedrock);
 
-                // Stone fills from Y=1 up to (but not including) the 3-dirt band.
-                var y: i32 = 1;
-                while (y < surface - 3) : (y += 1) {
-                    try self.setBlock(x, y, z, .stone);
-                }
-
-                // Three dirt layers immediately below the surface.
-                y = @max(1, surface - 3);
-                while (y < surface) : (y += 1) {
-                    try self.setBlock(x, y, z, .dirt);
-                }
-
-                // Grass cap.
-                if (surface >= 1 and surface < CHUNK_H) {
-                    try self.setBlock(x, surface, z, .grass);
+                switch (biome) {
+                    .plains, .forest => {
+                        // Standard Minecraft layout: stone, 3× dirt, grass cap.
+                        var y: i32 = 1;
+                        while (y < surface - 3) : (y += 1) {
+                            try self.setBlock(x, y, z, .stone);
+                        }
+                        y = @max(1, surface - 3);
+                        while (y < surface) : (y += 1) {
+                            try self.setBlock(x, y, z, .dirt);
+                        }
+                        if (surface >= 1 and surface < CHUNK_H) {
+                            try self.setBlock(x, surface, z, .grass);
+                        }
+                    },
+                    .badlands => {
+                        // Badlands: stone exposed all the way to the top — no dirt, no grass.
+                        // This gives the rocky/eroded mesa look.
+                        var y: i32 = 1;
+                        while (y <= surface and y < CHUNK_H) : (y += 1) {
+                            try self.setBlock(x, y, z, .stone);
+                        }
+                    },
+                    .desert => {
+                        // Desert: stone base, 3 layers of sand below the surface, sand cap.
+                        var y: i32 = 1;
+                        while (y < surface - 3) : (y += 1) {
+                            try self.setBlock(x, y, z, .stone);
+                        }
+                        y = @max(1, surface - 3);
+                        while (y <= surface and y < CHUNK_H) : (y += 1) {
+                            try self.setBlock(x, y, z, .sand);
+                        }
+                    },
                 }
 
                 // Scatter glowstone in the stone layer below Y=40 with
@@ -784,7 +816,7 @@ pub const Chunk = struct {
                 while (cz_idx < CHUNK_W) : (cz_idx += 1) {
                     const wx = cx * CHUNK_W + cx_idx;
                     const wz = cz * CHUNK_W + cz_idx;
-                    const surface = world_gen.sampleHeight(wx, wz, config);
+                    const surface = world_gen.sampleHeightBiomeBlended(wx, wz, config);
                     // Carve from Y=4 (above bedrock zone) to surface-5 (preserve topsoil).
                     var wy: i32 = 4;
                     while (wy < surface - 4) : (wy += 1) {
@@ -799,7 +831,7 @@ pub const Chunk = struct {
         // Tree planter: place oak trees seeded from world coordinates.
         // Searches a halo around the chunk so canopy from trees in adjacent
         // chunks is correctly placed here as well.
-        // Only active for non-flat terrain.
+        // Only active for non-flat terrain AND only in forest biome columns.
         if (config.noise_octaves > 0) {
             const TREE_SEARCH: i32 = 11; // max trunk_height + canopy_radius
             var tree_wx: i32 = cx * CHUNK_W - TREE_SEARCH;
@@ -808,7 +840,12 @@ pub const Chunk = struct {
                 while (tree_wz < cz * CHUNK_W + CHUNK_W + TREE_SEARCH) : (tree_wz += 1) {
                     if (!world_gen.isTreeCenter(tree_wx, tree_wz)) continue;
 
-                    const tree_surface = world_gen.sampleHeight(tree_wx, tree_wz, config);
+                    // Trees only spawn in forest biome — check the dominant biome
+                    // at the tree's root column before placing it.
+                    const tree_biome = world_gen.dominantBiome(tree_wx, tree_wz);
+                    if (tree_biome != .forest) continue;
+
+                    const tree_surface = world_gen.sampleHeightBiomeBlended(tree_wx, tree_wz, config);
                     const trunk_h = world_gen.treeHeight(tree_wx, tree_wz);
                     const trunk_base = tree_surface + 1;
                     const trunk_top = tree_surface + trunk_h;
