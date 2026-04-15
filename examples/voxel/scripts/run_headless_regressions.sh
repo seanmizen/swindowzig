@@ -80,6 +80,11 @@ declare -a RUNS=(
     "cave_skylight_none|examples/voxel/tests/cave_skylight.tas|--aa=none --lighting=none --world=flatland|0.1|2"
     "cave_skylight_skylight|examples/voxel/tests/cave_skylight.tas|--aa=none --lighting=skylight --world=flatland|0.1|2"
     "dig_relight|examples/voxel/tests/dig_relight.tas|--aa=none --world=flatland|0.1|2"
+    # depth-stencil regression: capture the same scene under both on/off modes.
+    # The goldens are captured with depth-stencil=on (the default); the off run
+    # compares against a separate golden so any visual difference is explicit.
+    "depth_stencil_on|examples/voxel/tests/depth_stencil_regression.tas|--aa=none --depth-stencil=on --world=flatland|0.1|2"
+    "depth_stencil_off|examples/voxel/tests/depth_stencil_regression.tas|--aa=none --depth-stencil=off --world=flatland|2.0|4"
 )
 
 PASS=0; FAIL=0; MISS=0

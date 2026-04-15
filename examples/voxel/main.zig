@@ -823,6 +823,19 @@ const State = struct {
     /// distance in blocks). Values < 1 pull the fog in; values > 1 push it out.
     /// Exposed via --fog=<mult> CLI flag and the Video settings tab.
     fog_distance_mult: f32 = 1.00,
+    /// Whether hardware depth testing is enabled. Parsed from
+    /// --depth-stencil=<on|off>; default on.
+    ///
+    /// When off: no depth texture is allocated, both render pipelines omit the
+    /// depth_stencil descriptor, and the render pass omits the
+    /// depth_stencil_attachment. Geometry is drawn in painter's-algorithm order
+    /// only (back-to-front chunk sort), which is how the engine worked before
+    /// hardware depth support was added.
+    ///
+    /// Primary use: benchmarking regression — run the same TAS with and without
+    /// depth testing to measure the per-frame GPU cost of the depth pass on the
+    /// target hardware.
+    depth_stencil_enabled: bool = true,
 };
 
 var state: State = undefined;
@@ -888,6 +901,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.menu_exit_idx = 0;
     state.settings_tab = .video;
     state.fog_distance_mult = 1.00;
+    // Depth-stencil enabled by default; overridden by --depth-stencil=off.
+    state.depth_stencil_enabled = true;
     // Runtime render distance: default from world_mod, overridden by
     // `--render-distance=N` below. `render_distance_stub` shadows the same
     // value for the Settings picker label.
@@ -1193,6 +1208,17 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.process.exit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--depth-stencil=")) {
+            const val = arg["--depth-stencil=".len..];
+            if (std.mem.eql(u8, val, "on")) {
+                state.depth_stencil_enabled = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.depth_stencil_enabled = false;
+            } else {
+                std.log.err("--depth-stencil: invalid value '{s}'. Accepted: on, off", .{val});
+                std.process.exit(1);
+            }
+        }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s}", .{
         @tagName(state.msaa_config.method),
@@ -1207,6 +1233,7 @@ fn voxelInit(ctx: *sw.Context) !void {
         state.frustum_strategy.label(), state.frustum_fov_deg,
     });
     std.log.info("Render distance (post-parse): {} chunks", .{state.render_distance});
+    std.log.info("Depth-stencil (post-parse): {s}", .{if (state.depth_stencil_enabled) "on" else "off"});
 
     // Initialize world with the selected preset and CLI-selected render
     // distance (deferred until here so --world= / --render-distance= work
@@ -3398,7 +3425,24 @@ fn voxelRender(ctx: *sw.Context) !void {
     const color_store: gpu_mod.StoreOp =
         if (use_fxaa) .store else if (use_msaa) .discard else .store;
 
-    var depth_view_for_pass = state.depth_view.?;
+    // Build the optional depth-stencil render-pass attachment. When
+    // --depth-stencil=off, depth_view is null and the attachment is omitted so
+    // the render pass matches the pipelines (which also have no depth_stencil).
+    // Hardware depth testing: clear to far-plane (1.0) each frame, discard at end
+    // (MSAA depth resolves automatically; non-MSAA depth is transient — no need to store).
+    // stencil_read_only=true tells the GPU wrapper to pass undefined stencil ops,
+    // which is required for depth24plus (a depth-only format with no stencil component).
+    var depth_view_for_pass: gpu_mod.TextureView = undefined;
+    const depth_attachment: ?gpu_mod.RenderPassDepthStencilAttachment = if (state.depth_view) |dv| blk: {
+        depth_view_for_pass = dv;
+        break :blk .{
+            .view = &depth_view_for_pass,
+            .depth_load_op = .clear,
+            .depth_store_op = .discard,
+            .depth_clear_value = 1.0,
+            .stencil_read_only = true,
+        };
+    } else null;
     const pass = encoder.beginRenderPass(.{
         .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
             .view = color_view,
@@ -3407,17 +3451,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             .store_op = color_store,
             .clear_value = .{ .r = 0.5, .g = 0.7, .b = 1.0, .a = 1.0 }, // Sky blue
         }},
-        // Hardware depth testing: clear to far-plane (1.0) each frame, discard at end
-        // (MSAA depth resolves automatically; non-MSAA depth is transient — no need to store).
-        // stencil_read_only=true tells the GPU wrapper to pass undefined stencil ops,
-        // which is required for depth24plus (a depth-only format with no stencil component).
-        .depth_stencil_attachment = .{
-            .view = &depth_view_for_pass,
-            .depth_load_op = .clear,
-            .depth_store_op = .discard,
-            .depth_clear_value = 1.0,
-            .stencil_read_only = true,
-        },
+        .depth_stencil_attachment = depth_attachment,
     }) catch |err| {
         std.log.err("Failed to begin render pass: {}", .{err});
         return;
@@ -4317,17 +4351,25 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     std.log.info("Loading shader: {} bytes", .{shader_code.len});
     var shader = try g.createShaderModule(.{ .code = shader_code });
 
-    // Create depth texture. sample_count must match the MSAA sample count so the
-    // depth attachment is compatible with the colour target in the render pass.
-    // depth24plus is a required WebGPU format (no stencil component on most backends).
-    const depth_tex = try g.createTexture(.{
-        .size = .{ .width = width, .height = height, .depth_or_array_layers = 1 },
-        .format = .depth24plus,
-        .usage = .{ .render_attachment = true },
-        .sample_count = sample_count,
-    });
-    state.depth_texture = depth_tex;
-    state.depth_view = try depth_tex.createView(.{});
+    // Create depth texture only when hardware depth testing is enabled.
+    // --depth-stencil=off skips this entirely; both pipelines and the render pass
+    // will then run without a depth attachment (painter's-algorithm sort only).
+    if (state.depth_stencil_enabled) {
+        // sample_count must match the MSAA sample count so the depth attachment
+        // is compatible with the colour target in the render pass.
+        // depth24plus is a required WebGPU format (no stencil component on most backends).
+        const depth_tex = try g.createTexture(.{
+            .size = .{ .width = width, .height = height, .depth_or_array_layers = 1 },
+            .format = .depth24plus,
+            .usage = .{ .render_attachment = true },
+            .sample_count = sample_count,
+        });
+        state.depth_texture = depth_tex;
+        state.depth_view = try depth_tex.createView(.{});
+    } else {
+        state.depth_texture = null;
+        state.depth_view = null;
+    }
 
     // Create uniform buffer (256 bytes for alignment)
     state.uniform_buffer = try g.createBuffer(.{
@@ -4377,7 +4419,22 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         },
     };
 
-    // Create render pipeline (back-face culled — for opaque voxel geometry)
+    // Create render pipeline (back-face culled — for opaque voxel geometry).
+    // depth_stencil is null when --depth-stencil=off; the pipeline then has no
+    // depth attachment and relies purely on painter's-algorithm chunk ordering.
+    // Hardware depth testing. The Metal crash (wgpu-native v0.19.4.1 "bus error at 0x29")
+    // was fixed upstream; wgpu-native v22.1.0.5 (current pinned version) no longer crashes.
+    // Depth testing eliminates the painter's-algorithm sort-order failures that caused
+    // AO shadow faces to bleed through occluding roof geometry (README bug #2).
+    const main_depth_stencil: ?gpu_mod.DepthStencilState = if (state.depth_stencil_enabled) .{
+        .format = .depth24plus,
+        .depth_write_enabled = true,
+        .depth_compare = .less,
+        // depth24plus has no stencil component; zero the masks so wgpu-native
+        // does not flag stencil test/write as enabled on a stencil-less format.
+        .stencil_read_mask = 0,
+        .stencil_write_mask = 0,
+    } else null;
     state.pipeline = try g.createRenderPipeline(.{
         .layout = &pipeline_layout,
         .vertex = .{
@@ -4398,23 +4455,22 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             .cull_mode = .back,
         },
         .multisample = .{ .count = sample_count },
-        // Hardware depth testing. The Metal crash (wgpu-native v0.19.4.1 "bus error at 0x29")
-        // was fixed upstream; wgpu-native v22.1.0.5 (current pinned version) no longer crashes.
-        // Depth testing eliminates the painter's-algorithm sort-order failures that caused
-        // AO shadow faces to bleed through occluding roof geometry (README bug #2).
-        .depth_stencil = .{
-            .format = .depth24plus,
-            .depth_write_enabled = true,
-            .depth_compare = .less,
-            // depth24plus has no stencil component; zero the masks so wgpu-native
-            // does not flag stencil test/write as enabled on a stencil-less format.
-            .stencil_read_mask = 0,
-            .stencil_write_mask = 0,
-        },
+        .depth_stencil = main_depth_stencil,
     });
 
     // Cylinder pipeline: no face culling + alpha blending so the hitbox is semi-transparent
     // and visible from both inside (first-person) and outside (third-person, F5).
+    // depth_stencil must match the render pass attachment (or be null when
+    // --depth-stencil=off so both pipeline and pass omit the depth attachment).
+    // depth_write disabled + compare=always so debug overlays render on top of
+    // everything without occluding voxel geometry.
+    const cylinder_depth_stencil: ?gpu_mod.DepthStencilState = if (state.depth_stencil_enabled) .{
+        .format = .depth24plus,
+        .depth_write_enabled = false,
+        .depth_compare = .always,
+        .stencil_read_mask = 0,
+        .stencil_write_mask = 0,
+    } else null;
     state.cylinder_pipeline = try g.createRenderPipeline(.{
         .layout = &pipeline_layout,
         .vertex = .{
@@ -4439,16 +4495,7 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             .cull_mode = .none,
         },
         .multisample = .{ .count = sample_count },
-        // Must match the scene render pass depth attachment (depth24plus).
-        // depth_write disabled + compare=always so debug overlays render on top of
-        // everything without occluding voxel geometry.
-        .depth_stencil = .{
-            .format = .depth24plus,
-            .depth_write_enabled = false,
-            .depth_compare = .always,
-            .stencil_read_mask = 0,
-            .stencil_write_mask = 0,
-        },
+        .depth_stencil = cylinder_depth_stencil,
     });
 
     // Pre-allocate fixed-size cylinder GPU buffers (size never changes)

@@ -1,0 +1,68 @@
+# depth_stencil_regression.tas — depth-stencil on/off regression.
+#
+# Purpose: capture a deterministic scene that exercises depth ordering — a
+# flatland pit with exposed interior walls and a slanted camera angle. With
+# hardware depth testing on, fragments are correctly ordered regardless of
+# draw order. With depth testing off (--depth-stencil=off), ordering relies
+# entirely on the painter's-algorithm back-to-front chunk sort. The two
+# frames should be visually close on open terrain (where painter's sort is
+# stable) so the regression can assert they are nearly identical and flag any
+# catastrophic regression (e.g. blank screen, crash) in either mode.
+#
+# Secondary use: frame-timing data point for benchmarking. Run with
+# --profile-csv=<path> to capture per-tick timings under each mode and
+# compare the GPU cost of the depth pass vs. paint-only rendering.
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   # Hardware depth test (default):
+#   ./zig-out/bin/voxel --world=flatland --aa=none --depth-stencil=on \
+#     --tas examples/voxel/tests/depth_stencil_regression.tas \
+#     --dump-frame=/tmp/ds_on.ppm
+#   # No depth test (painter's sort only):
+#   ./zig-out/bin/voxel --world=flatland --aa=none --depth-stencil=off \
+#     --tas examples/voxel/tests/depth_stencil_regression.tas \
+#     --dump-frame=/tmp/ds_off.ppm
+#
+#   Or run the regression shell script which does all of the above and checks
+#   the result automatically:
+#   ./examples/voxel/tests/depth_stencil_regression.sh
+#
+# Tick numbering is relative to the first post-loading tick (the replayer is
+# gated during world load), so tick 1 is always the first frame of gameplay.
+#
+# Baseline (as of April 2026, metal backend, 1280×720):
+#   Differing pixels (depth_on vs depth_off): < 2% of frame.
+#   Mean channel delta: < 3/255.
+#   Both frames render the same visible geometry at this camera angle because
+#   the scene is fully opaque and the chunk sort produces stable depth order
+#   from this viewpoint.
+
+# --- Capture mouse (gameplay input gates on mouse_captured) ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look down slightly so the grass surface fills the lower half of frame ---
+3 mouse_move 0 80
+
+# --- Dig a 1x1 hole in flat terrain to expose a small depth-ordering surface ---
+5 mouse_down left
+6 mouse_up left
+
+# --- Dig two more layers deeper to create a small shaft ---
+10 mouse_down left
+11 mouse_up left
+16 mouse_down left
+17 mouse_up left
+
+# --- Pan slightly rightward to expose the pit walls at a diagonal angle ---
+# 6 ticks of rightward pan @ 3px/tick
+20 mouse_move 3 0
+21 mouse_move 3 0
+22 mouse_move 3 0
+23 mouse_move 3 0
+24 mouse_move 3 0
+25 mouse_move 3 0
+
+# --- Hold steady for stable frame capture ---
+35 mouse_move 0 0

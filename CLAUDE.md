@@ -193,6 +193,7 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--place-block=<type>` | Block type emitted by right-click placement. Accepted: `stone` (default) and `glowstone`. Added with phase-3 block light so `tests/glowstone_cave.tas` can place an emitter from a TAS without needing an in-game block picker UI. |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete; if a TAS is running, waits for TAS to finish; if `--async-chunks=on`, also waits for the background pipeline to fully drain so the captured state is deterministic. |
 | `--async-chunks=<on\|off>` | Run chunk gen+mesh on a background worker thread (default: `on`). When on, the main thread only drains results and enqueues new jobs — the 30–150 ms per-chunk mesh spike is moved off the render thread. `off` restores the legacy time-budgeted sync loop (`MESH_GENS_PER_TICK`) as an escape hatch. Design + web-worker port plan: [`examples/voxel/docs/async-chunks.md`](examples/voxel/docs/async-chunks.md). |
+| `--depth-stencil=<on\|off>` | Enable or disable hardware depth testing (default: `on`). When `off`, no depth texture is allocated, both render pipelines omit the depth_stencil descriptor, and the render pass omits the depth_stencil_attachment. Geometry is ordered by painter's-algorithm chunk sort only. Primary use: benchmarking — compare frame timing with and without the depth pass to isolate the GPU cost. Regression: `tests/depth_stencil_regression.sh`. |
 | `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none` (default — opt-in feature, draw every loaded chunk), `sphere` (radial cutoff at render_distance + slack; cheap sanity backstop), `cone` (sphere-vs-cone test against the camera forward, fov controlled by `--frustum-fov-deg`). The chunk the camera sits in plus its 8 horizontal neighbours are NEVER culled regardless of strategy — see `examples/voxel/frustum.zig` for the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
 | `--frustum-fov-deg=<degrees>` | Total fov of the cone strategy in degrees. Default 180° (a deliberate no-op short-circuit so an accidental `--frustum=cone` cannot drop chunks before the user tightens the fov). Range [0, 360]. Half-angle ≥ 90° always returns true. |
 
@@ -271,6 +272,14 @@ TAS scripts for regression live under `examples/voxel/`:
   42), wall rim at ~distance-4 (lum ≈44 vs 15), and far grass (unchanged
   — verifies block light did NOT leak beyond the BFS radius or across
   chunk boundaries). Run with `./examples/voxel/tests/glowstone_cave.sh`
+  (or `--skip-build` to reuse an existing binary).
+- `tests/depth_stencil_regression.tas` + `tests/depth_stencil_regression.sh` —
+  depth-stencil on/off regression. The runner captures the same scene under both
+  `--depth-stencil=on` (hardware depth test) and `--depth-stencil=off` (painter's
+  sort only), asserts the frames are visually close (< 2% pixel difference), and
+  confirms that sky brightness is roughly equal in both modes (the depth test must
+  not perceptibly change the lit scene). Run with
+  `./examples/voxel/tests/depth_stencil_regression.sh`
   (or `--skip-build` to reuse an existing binary).
 
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
