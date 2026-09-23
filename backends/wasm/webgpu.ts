@@ -27,7 +27,6 @@ function getHandle<T>(handle: number): T {
 
 // Global state
 let gpuDevice: GPUDevice | null = null;
-let gpuQueue: GPUQueue | null = null;
 let gpuContext: GPUCanvasContext | null = null;
 let canvasFormat: GPUTextureFormat | null = null;
 
@@ -75,7 +74,6 @@ export async function initWebGPU(
 
   // Store global references
   gpuDevice = device;
-  gpuQueue = device.queue;
   gpuContext = context;
   canvasFormat = format;
 
@@ -621,7 +619,7 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
       vertexBuffersPtr: number,
       vertexBufferCount: number,
       topology: number,
-      stripIndexFormat: number,
+      _stripIndexFormat: number,
       frontFace: number,
       cullMode: number,
       fragmentModuleHandle: number,
@@ -629,9 +627,9 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
       fragmentEntryLen: number,
       fragmentTargetsPtr: number,
       fragmentTargetCount: number,
-      depthStencilFormat: number,
-      depthWriteEnabled: boolean,
-      depthCompare: number,
+      _depthStencilFormat: number,
+      _depthWriteEnabled: boolean,
+      _depthCompare: number,
       sampleCount: number,
       sampleMask: number,
       alphaToCoverageEnabled: boolean,

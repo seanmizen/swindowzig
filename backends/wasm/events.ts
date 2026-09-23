@@ -135,22 +135,6 @@ export function attachEventListeners(
   // Resize is handled in boot.ts via window resize listener
 }
 
-// Map keycodes to readable names
-const keyNames: Record<string, string> = {
-  '32': 'Space',
-  '37': 'Left',
-  '38': 'Up',
-  '39': 'Right',
-  '40': 'Down',
-  '87': 'W',
-  '65': 'A',
-  '83': 'S',
-  '68': 'D',
-  '16': 'Shift',
-  '17': 'Ctrl',
-  '18': 'Alt',
-};
-
 function updateKeysDisplay() {
   // Keys are tracked in keysDown Set for blur detection
   // Display handled by WASM debug info (if enabled)
