@@ -66,6 +66,8 @@ pub const Job = struct {
     gen_config: world_gen.WorldGenConfig,
     ao: gpu_mod.AOStrategy,
     lighting: gpu_mod.LightingMode,
+    /// The mesher to use: the same `--meshing` mode as the sync path.
+    meshing: mesher_mod.MeshingMode,
     center: ?*Chunk = null,
     borders: [9]?*Border = @splat(null),
 };
@@ -504,7 +506,7 @@ fn processJob(pipeline: *Pipeline, job: *Job) !void {
     var scratch_mesh = mesher_mod.Mesh.init(std.heap.c_allocator);
     defer scratch_mesh.deinit();
 
-    try mesher_mod.generateMesh(
+    try mesher_mod.generateMeshForMode(
         target_ptr,
         &scratch_mesh,
         job.cx * CHUNK_W,
@@ -512,6 +514,7 @@ fn processJob(pipeline: *Pipeline, job: *Job) !void {
         getter,
         job.ao,
         job.lighting,
+        job.meshing,
     );
 
     // Extract owned slices. After `toOwnedSlice` the ArrayLists are empty,

@@ -1743,7 +1743,7 @@ fn countJobCopy(c: JobCopy) void {
 /// One async tick: drain completed results, install them, enqueue new jobs
 /// (fresh chunks innermost-first + any dirty chunks whose 4 axial neighbours
 /// are all present). Replaces the synchronous `world.update` + mesh loop.
-fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos: [3]f32, ao: gpu_mod.AOStrategy, lighting: gpu_mod.LightingMode, alloc: std.mem.Allocator) !void {
+fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos: [3]f32, ao: gpu_mod.AOStrategy, lighting: gpu_mod.LightingMode, meshing: mesher_mod.MeshingMode, alloc: std.mem.Allocator) !void {
     const t_tick_start = perfNowNs();
 
     // ─── 1. Drain completed results ─────────────────────────────────────
@@ -1854,6 +1854,7 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             .gen_config = world.gen_config,
             .ao = ao,
             .lighting = lighting,
+            .meshing = meshing,
             .borders = full,
         };
         const copy = jobCopy(&job);
@@ -1908,6 +1909,7 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             .gen_config = world.gen_config,
             .ao = ao,
             .lighting = lighting,
+            .meshing = meshing,
             .center = center,
             .borders = full,
         };
@@ -2296,6 +2298,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             state.player.feet_pos,
             state.ao_strategy,
             state.lighting_mode,
+            state.meshing_mode,
             ctx.allocator(),
         );
     } else {
