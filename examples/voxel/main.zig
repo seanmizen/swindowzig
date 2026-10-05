@@ -16,8 +16,14 @@ const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 // missing posix symbols. On wasm we route everything through a jsLog extern.
 // On native the default log path still works — this override only kicks in
 // when something actually calls std.log.*.
+//
+// The web build logs warn and err only. Its info lines (one or more per
+// chunk) cost a format and a console.log each, and a visitor has no use for
+// them. The native build keeps the default level: the regression runner and
+// the TAS tools read its info lines.
 pub const std_options: std.Options = .{
     .logFn = swindowzigLogFn,
+    .log_level = if (is_wasm) .warn else std.log.default_level,
 };
 
 extern fn jsLog(ptr: [*]const u8, len: u32) void;
