@@ -126,6 +126,13 @@ next bottleneck. See §3 totals below for how this shifts the balance.
 
 ## 2. Per-chunk peak GPU mesh size (VRAM)
 
+> **Out of date for the GPU side.** The GPU now holds one 16-byte
+> `PackedQuad` per quad plus a 16-byte header per chunk, not 216 bytes per
+> quad (see `mesher.zig`, "Packed quads for the GPU"). Measured on the hilly
+> fly-through: 457 279 quads in 7.3 MB of GPU buffers, against about 98.8 MB
+> at 216 bytes per quad. The CPU mesh below is unchanged. The 216-byte figures
+> in this file are the old GPU size.
+
 **Source**: `mesher.zig`
 ```
 pub const VoxelVertex = extern struct {
@@ -267,8 +274,8 @@ chunk; any whose chunk-grid distance² from the player exceeds
 - `Mesh.freeHostBuffers()` releases the four parallel `ArrayList`s + the
   `sort_scratch`/`sort_indices` slices back to the allocator (capacity
   drops to zero, not just `len`).
-- The owning `chunk_gpu` entry is removed and both vertex + index
-  `wgpu_native` buffers are `destroy()`ed.
+- The owning `chunk_gpu` entry is removed. Its quad buffer is destroyed
+  and its bind group is released (`ChunkGPU.release`).
 - `chunk.blocks` and `chunk.skylight` are intentionally retained — they
   are deterministic from the seed but expensive to recompute, and the
   whole point of eviction is to drop *mesh* storage, not block data.

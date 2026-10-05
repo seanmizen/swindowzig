@@ -175,6 +175,18 @@ pub fn build(b: *std.Build) void {
         const run_unit_tests = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run_unit_tests.step);
     }
+
+    // Voxel mesher tests: the packed-quad round trip checks that vs_chunk's
+    // decode (mirrored in mesher.unpackCorner) gives back the CPU vertices.
+    const mesher_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/mesher.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    mesher_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    test_step.dependOn(&b.addRunArtifact(mesher_tests).step);
 }
 
 const Libs = struct {

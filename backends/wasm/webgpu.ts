@@ -161,6 +161,13 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
     webgpuBufferDestroy: (bufferHandle: number): void => {
       const buffer = getHandle<GPUBuffer>(bufferHandle);
       buffer.destroy();
+      handles.delete(bufferHandle);
+    },
+
+    // A bind group has no destroy in WebGPU. Drop the handle so the browser
+    // can collect it.
+    webgpuBindGroupRelease: (bindGroupHandle: number): void => {
+      handles.delete(bindGroupHandle);
     },
 
     webgpuWriteBuffer: (
@@ -1092,7 +1099,14 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
         }
       }
 
-      pass.setBindGroup(index, bindGroup, dynamicOffsets);
+      // Pass dynamicOffsets only when there are some. With an explicit
+      // undefined third argument, Chrome 154 throws "cannot be converted to a
+      // sequence" from the render loop (not from a standalone test).
+      if (dynamicOffsets) {
+        pass.setBindGroup(index, bindGroup, dynamicOffsets);
+      } else {
+        pass.setBindGroup(index, bindGroup);
+      }
     },
 
     webgpuRenderPassSetVertexBuffer: (
@@ -1212,7 +1226,14 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
         }
       }
 
-      pass.setBindGroup(index, bindGroup, dynamicOffsets);
+      // Pass dynamicOffsets only when there are some. With an explicit
+      // undefined third argument, Chrome 154 throws "cannot be converted to a
+      // sequence" from the render loop (not from a standalone test).
+      if (dynamicOffsets) {
+        pass.setBindGroup(index, bindGroup, dynamicOffsets);
+      } else {
+        pass.setBindGroup(index, bindGroup);
+      }
     },
 
     webgpuComputePassDispatch: (

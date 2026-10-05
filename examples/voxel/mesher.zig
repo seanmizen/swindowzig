@@ -2026,3 +2026,263 @@ fn countNaiveFaces(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, worl
     }
     return count;
 }
+
+// ============================================================================
+// Packed quads for the GPU (REQ: one 16-byte record per quad)
+// ============================================================================
+//
+// The CPU mesh keeps 4 VoxelVertex (48 bytes each) and 6 u32 indices per quad,
+// because the incremental edit, the depth-off sort and the GPU debug highlight
+// work on it. The GPU gets one 16-byte PackedQuad per quad instead (216 -> 16
+// bytes). vs_chunk in voxel.wgsl makes the 6 vertices of the 2 triangles from
+// it. unpackCorner below is the same decode in Zig, so a test can check that
+// the decode gives back the exact CPU vertices.
+//
+// Layout (bit 0 = LSB). The cell is the block that owns the face, relative to
+// the chunk origin. W and H are the quad size along the face's in-plane axes.
+//   word 0: cell x (4) | cell y (8) | cell z (4) | face (3) | W-1 (4) | H-1 (8)
+//   words 1-3: 12 six-bit light fields, 5 + 5 + 2 per word, in this order:
+//              ao0..3, sky0..3, bl0..3
+//   word 3, bits 12-19: block type. Bits 20-27: GPU debug highlight.
+// ao = field / 42, sky = field / 60, block light = field / 60. Every value the
+// mesher makes is one of these ratios, so the decode gives the same f32.
+
+pub const PackedQuad = [4]u32;
+
+pub const AO_STEPS: f32 = 42.0;
+pub const LIGHT_STEPS: f32 = 60.0;
+
+/// Per face: the axis of the face normal, the in-plane axes i (W) and j (H),
+/// and per corner the position step (0 or 1) along i and j and the uv step.
+/// voxel.wgsl has the corner steps as bit constants (FACE_POS_*, FACE_UV_*):
+/// see cornerBits, and the test that checks them.
+const FaceLayout = struct {
+    normal_axis: u2,
+    i_axis: u2,
+    j_axis: u2,
+    positive: bool,
+    pos: [4][2]u1,
+    uv: [4][2]u1,
+};
+
+const face_layouts = [6]FaceLayout{
+    // px: i = Z, j = Y
+    .{ .normal_axis = 0, .i_axis = 2, .j_axis = 1, .positive = true, .pos = .{ .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 } }, .uv = .{ .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 } } },
+    // nx: i = Z, j = Y
+    .{ .normal_axis = 0, .i_axis = 2, .j_axis = 1, .positive = false, .pos = .{ .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 }, .{ 0, 0 } }, .uv = .{ .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 } } },
+    // py: i = X, j = Z
+    .{ .normal_axis = 1, .i_axis = 0, .j_axis = 2, .positive = true, .pos = .{ .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 } }, .uv = .{ .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 } } },
+    // ny: i = X, j = Z
+    .{ .normal_axis = 1, .i_axis = 0, .j_axis = 2, .positive = false, .pos = .{ .{ 0, 1 }, .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 } }, .uv = .{ .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 } } },
+    // pz: i = X, j = Y
+    .{ .normal_axis = 2, .i_axis = 0, .j_axis = 1, .positive = true, .pos = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } }, .uv = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } } },
+    // nz: i = X, j = Y
+    .{ .normal_axis = 2, .i_axis = 0, .j_axis = 1, .positive = false, .pos = .{ .{ 1, 0 }, .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 } }, .uv = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } } },
+};
+
+/// The corner steps of face_layouts as voxel.wgsl stores them: 2 bits per
+/// corner (i | j << 1), 8 bits per face, faces 0-3 in A and faces 4-5 in B.
+fn cornerBits(comptime which: enum { pos, uv }) [2]u32 {
+    var out = [2]u32{ 0, 0 };
+    for (face_layouts, 0..) |fl, f| {
+        const steps = if (which == .pos) fl.pos else fl.uv;
+        var byte: u32 = 0;
+        for (steps, 0..) |st, c| byte |= (@as(u32, st[0]) | (@as(u32, st[1]) << 1)) << @intCast(2 * c);
+        out[f / 4] |= byte << @intCast(8 * (f % 4));
+    }
+    return out;
+}
+
+fn faceFromNormal(n: [3]f32) Face {
+    for (face_normals, 0..) |fnorm, i| {
+        if (fnorm[0] == n[0] and fnorm[1] == n[1] and fnorm[2] == n[2]) return @enumFromInt(i);
+    }
+    unreachable;
+}
+
+fn quantize(v: f32, steps: f32) u32 {
+    return @intFromFloat(@round(v * steps));
+}
+
+/// Pack one quad (its 4 CPU vertices) for a chunk at world (world_ox, world_oz).
+pub fn packQuad(v: *const [4]VoxelVertex, world_ox: i32, world_oz: i32, highlight: u8) PackedQuad {
+    const face = faceFromNormal(v[0].normal);
+    const fl = face_layouts[@intFromEnum(face)];
+    var lo = v[0].pos;
+    var hi = v[0].pos;
+    for (v[1..]) |vert| {
+        for (0..3) |a| {
+            lo[a] = @min(lo[a], vert.pos[a]);
+            hi[a] = @max(hi[a], vert.pos[a]);
+        }
+    }
+    var cell = [3]i32{
+        @as(i32, @intFromFloat(lo[0])) - world_ox,
+        @as(i32, @intFromFloat(lo[1])),
+        @as(i32, @intFromFloat(lo[2])) - world_oz,
+    };
+    if (fl.positive) cell[fl.normal_axis] -= 1;
+    const w: u32 = @intFromFloat(hi[fl.i_axis] - lo[fl.i_axis]);
+    const h: u32 = @intFromFloat(hi[fl.j_axis] - lo[fl.j_axis]);
+
+    var fields: [12]u32 = undefined;
+    for (0..4) |c| {
+        fields[c] = quantize(v[c].ao, AO_STEPS);
+        fields[4 + c] = quantize(v[c].skylight, LIGHT_STEPS);
+        fields[8 + c] = quantize(v[c].block_light, LIGHT_STEPS);
+    }
+    var q: PackedQuad = .{ 0, 0, 0, 0 };
+    q[0] = @as(u32, @intCast(cell[0])) | (@as(u32, @intCast(cell[1])) << 4) |
+        (@as(u32, @intCast(cell[2])) << 12) | (@as(u32, @intFromEnum(face)) << 16) |
+        ((w - 1) << 19) | ((h - 1) << 23);
+    for (fields, 0..) |f, i| q[1 + i / 5] |= f << @intCast(6 * (i % 5));
+    q[3] |= ((v[0].block_type & 0xFF) << 12) | (@as(u32, highlight) << 20);
+    return q;
+}
+
+/// Decode corner `corner` (0..3) of a packed quad. Mirrors vs_chunk.
+pub fn unpackCorner(q: PackedQuad, corner: usize, world_ox: i32, world_oz: i32) VoxelVertex {
+    const cell = [3]i32{
+        @intCast(q[0] & 0xF),
+        @intCast((q[0] >> 4) & 0xFF),
+        @intCast((q[0] >> 12) & 0xF),
+    };
+    const face: u3 = @intCast((q[0] >> 16) & 0x7);
+    const w: f32 = @floatFromInt(((q[0] >> 19) & 0xF) + 1);
+    const h: f32 = @floatFromInt(((q[0] >> 23) & 0xFF) + 1);
+    const fl = face_layouts[face];
+    var pos = [3]f32{
+        @floatFromInt(cell[0] + world_ox),
+        @floatFromInt(cell[1]),
+        @floatFromInt(cell[2] + world_oz),
+    };
+    if (fl.positive) pos[fl.normal_axis] += 1;
+    pos[fl.i_axis] += @as(f32, @floatFromInt(fl.pos[corner][0])) * w;
+    pos[fl.j_axis] += @as(f32, @floatFromInt(fl.pos[corner][1])) * h;
+    const field = struct {
+        fn get(qq: PackedQuad, i: usize) u32 {
+            return (qq[1 + i / 5] >> @intCast(6 * (i % 5))) & 0x3F;
+        }
+    }.get;
+    return .{
+        .pos = pos,
+        .normal = face_normals[face],
+        .block_type = (q[3] >> 12) & 0xFF,
+        .uv = .{ @as(f32, @floatFromInt(fl.uv[corner][0])) * w, @as(f32, @floatFromInt(fl.uv[corner][1])) * h },
+        .ao = @as(f32, @floatFromInt(field(q, corner))) / AO_STEPS,
+        .skylight = @as(f32, @floatFromInt(field(q, 4 + corner))) / LIGHT_STEPS,
+        .block_light = @as(f32, @floatFromInt(field(q, 8 + corner))) / LIGHT_STEPS,
+    };
+}
+
+/// Pack every quad of `mesh` into `out` (out.len >= quad count). `order` is
+/// the quad order to write: null for the mesh order, or the sorted index list
+/// from sortByDepth (6 indices per quad). With `gpu_debug`, each quad carries
+/// its quad_highlight value. Returns the number of quads written.
+pub fn packQuads(mesh: *const Mesh, out: []PackedQuad, world_ox: i32, world_oz: i32, order: ?[]const u32, gpu_debug: bool) usize {
+    const quad_count = mesh.indices.items.len / 6;
+    for (0..quad_count) |n| {
+        const qi: usize = if (order) |o| o[n * 6] / 4 else n;
+        const verts: *const [4]VoxelVertex = mesh.vertices.items[qi * 4 ..][0..4];
+        const hl: u8 = if (gpu_debug) mesh.quad_highlight.items[qi] else 0;
+        out[n] = packQuad(verts, world_ox, world_oz, hl);
+    }
+    return quad_count;
+}
+
+/// Test getter for one chunk at world (ox, oz): outside the chunk is air in
+/// full skylight, with no block light.
+const TestGetter = struct {
+    chunk: *const Chunk,
+    ox: i32,
+    oz: i32,
+
+    fn local(self: *const TestGetter, x: i32, y: i32, z: i32) ?[3]i32 {
+        const lx = x - self.ox;
+        const lz = z - self.oz;
+        if (lx < 0 or lz < 0 or lx >= CHUNK_W or lz >= CHUNK_W or y < 0 or y >= CHUNK_H) return null;
+        return .{ lx, y, lz };
+    }
+    fn block(ctx: *const anyopaque, x: i32, y: i32, z: i32) BlockType {
+        const self: *const TestGetter = @ptrCast(@alignCast(ctx));
+        const l = self.local(x, y, z) orelse return .air;
+        return self.chunk.getBlock(l[0], l[1], l[2]);
+    }
+    fn sky(ctx: *const anyopaque, x: i32, y: i32, z: i32) u8 {
+        const self: *const TestGetter = @ptrCast(@alignCast(ctx));
+        const l = self.local(x, y, z) orelse return chunk_mod.MAX_SKYLIGHT;
+        return self.chunk.getSkylight(l[0], l[1], l[2]);
+    }
+    fn blockLight(ctx: *const anyopaque, x: i32, y: i32, z: i32) u8 {
+        const self: *const TestGetter = @ptrCast(@alignCast(ctx));
+        const l = self.local(x, y, z) orelse return 0;
+        return self.chunk.getBlockLight(l[0], l[1], l[2]);
+    }
+    fn getter(self: *const TestGetter) BlockGetter {
+        return .{ .ctx = self, .getFn = block, .getSkylightFn = sky, .getBlockLightFn = blockLight };
+    }
+};
+
+fn wgslHexConst(src: []const u8, comptime name: []const u8) !u32 {
+    const key = "const " ++ name ++ ": u32 = 0x";
+    const start = (std.mem.indexOf(u8, src, key) orelse return error.MissingConstant) + key.len;
+    var v: u32 = 0;
+    for (src[start..]) |ch| {
+        if (ch == '_') continue;
+        const d = std.fmt.charToDigit(ch, 16) catch break;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
+test "voxel.wgsl corner constants match face_layouts" {
+    const src = @embedFile("voxel.wgsl");
+    const pos = comptime cornerBits(.pos);
+    const uv = comptime cornerBits(.uv);
+    try std.testing.expectEqual(pos[0], try wgslHexConst(src, "FACE_POS_A"));
+    try std.testing.expectEqual(pos[1], try wgslHexConst(src, "FACE_POS_B"));
+    try std.testing.expectEqual(uv[0], try wgslHexConst(src, "FACE_UV_A"));
+    try std.testing.expectEqual(uv[1], try wgslHexConst(src, "FACE_UV_B"));
+}
+
+test "packQuad then unpackCorner gives back every vertex of a real mesh" {
+    const allocator = std.testing.allocator;
+    const ox: i32 = 32;
+    const oz: i32 = -48;
+    for ([_]MeshingMode{ .naive, .greedy }) |mode| {
+        for ([_]AOStrategy{ .classic, .moore, .propagated }) |ao| {
+            var chunk = Chunk.init(allocator);
+            defer chunk.deinit();
+            // A stepped hill with an overhang and a glowstone, so every face,
+            // merged quads, AO and both light channels occur.
+            for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
+                const top: usize = 60 + (x + z) / 4;
+                for (0..top) |y| try chunk.setBlock(@intCast(x), @intCast(y), @intCast(z), if (y + 1 == top) .grass else .stone);
+            };
+            for (4..9) |x| for (4..9) |z| try chunk.setBlock(@intCast(x), 75, @intCast(z), .stone);
+            try chunk.setBlock(6, 70, 6, .glowstone);
+            chunk.computeSkylight();
+            chunk.computeBlockLight();
+            const tg = TestGetter{ .chunk = &chunk, .ox = ox, .oz = oz };
+            var mesh = Mesh.init(allocator);
+            defer mesh.deinit();
+            try generateMeshForMode(&chunk, &mesh, ox, oz, tg.getter(), ao, .skylight, mode);
+            const quad_count = mesh.indices.items.len / 6;
+            try std.testing.expect(quad_count > 0);
+            const out = try allocator.alloc(PackedQuad, quad_count);
+            defer allocator.free(out);
+            _ = packQuads(&mesh, out, ox, oz, null, false);
+            for (0..quad_count) |qi| for (0..4) |c| {
+                const want = mesh.vertices.items[qi * 4 + c];
+                const got = unpackCorner(out[qi], c, ox, oz);
+                try std.testing.expectEqual(want.pos, got.pos);
+                try std.testing.expectEqual(want.normal, got.normal);
+                try std.testing.expectEqual(want.block_type, got.block_type);
+                try std.testing.expectEqual(want.uv, got.uv);
+                try std.testing.expectEqual(want.ao, got.ao);
+                try std.testing.expectEqual(want.skylight, got.skylight);
+                try std.testing.expectEqual(want.block_light, got.block_light);
+            };
+        }
+    }
+}

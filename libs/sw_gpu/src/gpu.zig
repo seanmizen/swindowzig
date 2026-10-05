@@ -1663,6 +1663,16 @@ pub const BindGroupLayout = struct {
 
 pub const BindGroup = struct {
     handle: if (is_wasm) web.WebGPUBindGroup else native.WGPUBindGroup,
+
+    /// Drop this reference. The GPU keeps the bind group alive while a
+    /// submitted command still uses it.
+    pub fn release(self: BindGroup) void {
+        if (comptime is_wasm) {
+            web.webgpuBindGroupRelease(self.handle);
+        } else {
+            native.wgpuBindGroupRelease(self.handle);
+        }
+    }
 };
 
 pub const PipelineLayout = struct {

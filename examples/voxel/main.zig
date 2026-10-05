@@ -602,9 +602,20 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
     }
 }
 
+/// GPU copy of one chunk mesh: a 16-byte header (the chunk origin) and one
+/// 16-byte PackedQuad per quad, bound at group 1 for vs_chunk.
 const ChunkGPU = struct {
-    vertex_buffer: ?gpu_mod.Buffer = null,
-    index_buffer: ?gpu_mod.Buffer = null,
+    quad_buffer: ?gpu_mod.Buffer = null,
+    bind_group: ?gpu_mod.BindGroup = null,
+    /// Quads the buffer can hold, and quads in it now.
+    capacity: usize = 0,
+    quad_count: u32 = 0,
+
+    fn release(self: *ChunkGPU) void {
+        if (self.bind_group) |bg| bg.release();
+        if (self.quad_buffer) |buf| buf.destroy();
+        self.* = .{};
+    }
 };
 
 // Application state
@@ -615,6 +626,11 @@ const State = struct {
     player: Player = undefined, // set by voxelInit
     pipeline: ?gpu_mod.RenderPipeline = null,
     cylinder_pipeline: ?gpu_mod.RenderPipeline = null,
+    /// Chunk meshes: vs_chunk, with the packed quads at group 1.
+    chunk_pipeline: ?gpu_mod.RenderPipeline = null,
+    chunk_bg_layout: ?gpu_mod.BindGroupLayout = null,
+    /// Scratch for packing a chunk's quads before an upload.
+    pack_scratch: std.ArrayList(mesher_mod.PackedQuad) = .empty,
     uniform_buffer: ?gpu_mod.Buffer = null,
     bind_group: ?gpu_mod.BindGroup = null,
     depth_texture: ?gpu_mod.Texture = null,
@@ -2368,8 +2384,8 @@ fn voxelTick(ctx: *sw.Context) !void {
             // hasn't run yet); that's fine — the host-side eviction below
             // is still safe.
             if (state.chunk_gpu.fetchRemove(.{ .cx = lc.cx, .cz = lc.cz })) |kv| {
-                if (kv.value.vertex_buffer) |buf| buf.destroy();
-                if (kv.value.index_buffer) |buf| buf.destroy();
+                var cg = kv.value;
+                cg.release();
             }
 
             lc.evictMesh();
@@ -3354,11 +3370,11 @@ fn voxelRender(ctx: *sw.Context) !void {
 
             const gop = state.chunk_gpu.getOrPut(key) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = .{};
-            const first_upload = gop.value_ptr.vertex_buffer == null;
+            const first_upload = gop.value_ptr.quad_buffer == null;
             if (!(lc.mesh_incremental_dirty or first_upload or sort_quads or state.gpu_debug)) continue;
             const needed_upload = lc.mesh_incremental_dirty;
             const up_t0: i128 = if (state.profile_csv_file != null and needed_upload) perfNowNs() else 0;
-            uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.mesh_incremental_dirty, sort_quads) catch |err| {
+            uploadChunkMeshToGPU(g, ctx.allocator(), lc, gop.value_ptr, lc.mesh_incremental_dirty, sort_quads) catch |err| {
                 std.log.err("Upload failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
@@ -3541,15 +3557,14 @@ fn voxelRender(ctx: *sw.Context) !void {
         }
     }.lt);
 
-    pass.setPipeline(state.pipeline.?);
+    pass.setPipeline(state.chunk_pipeline.?);
     pass.setBindGroup(0, state.bind_group.?);
     for (sorted_chunks.items) |lc| {
         const key = world_mod.ChunkKey{ .cx = lc.cx, .cz = lc.cz };
         const cg = state.chunk_gpu.get(key) orelse continue;
-        if (cg.vertex_buffer == null or cg.index_buffer == null) continue;
-        pass.setVertexBuffer(0, cg.vertex_buffer.?, 0, lc.mesh.vertices.items.len * @sizeOf(VoxelVertex));
-        pass.setIndexBuffer(cg.index_buffer.?, .uint32, 0, lc.mesh.indices.items.len * @sizeOf(u32));
-        pass.drawIndexed(@intCast(lc.mesh.indices.items.len), 1, 0, 0, 0);
+        if (cg.bind_group == null or cg.quad_count == 0) continue;
+        pass.setBindGroup(1, cg.bind_group.?);
+        pass.draw(cg.quad_count * 6, 1, 0, 0);
     }
     // =========================================================================
     // Player hitbox cylinder (drawn after voxels; no face culling so always visible)
@@ -4192,6 +4207,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             fatalExit(exit_code);
         }
 
+        logGpuMeshStats();
         fatalExit(0);
     };
 
@@ -4332,11 +4348,10 @@ fn voxelShutdown(ctx: *sw.Context) !void {
 
     // Destroy per-chunk GPU buffers
     var it = state.chunk_gpu.iterator();
-    while (it.next()) |entry| {
-        if (entry.value_ptr.vertex_buffer) |buf| buf.destroy();
-        if (entry.value_ptr.index_buffer) |buf| buf.destroy();
-    }
+    logGpuMeshStats();
+    while (it.next()) |entry| entry.value_ptr.release();
     state.chunk_gpu.deinit();
+    state.pack_scratch.deinit(ctx.allocator());
     state.world.deinit();
 
     state.overlay.deinit();
@@ -4478,6 +4493,42 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         .depth_stencil = main_depth_stencil,
     });
 
+    // Chunk pipeline: the same fragment stage, depth and MSAA as the main
+    // pipeline, but vs_chunk reads packed quads from a storage buffer at
+    // group 1 (see mesher.PackedQuad). There is no vertex or index buffer.
+    state.chunk_bg_layout = try g.createBindGroupLayout(.{
+        .entries = &[_]sw.gpu_types.BindGroupLayoutEntry{.{
+            .binding = 0,
+            .visibility = .{ .vertex = true },
+            .buffer = .{ .type = .read_only_storage },
+        }},
+    });
+    var chunk_pipeline_layout = try g.createPipelineLayout(.{
+        .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{ &bg_layout, &state.chunk_bg_layout.? },
+    });
+    state.chunk_pipeline = try g.createRenderPipeline(.{
+        .layout = &chunk_pipeline_layout,
+        .vertex = .{
+            .module = &shader,
+            .entry_point = "vs_chunk",
+            .buffers = &[_]sw.gpu_types.VertexBufferLayout{},
+        },
+        .fragment = .{
+            .module = &shader,
+            .entry_point = "fs_main",
+            .targets = &[_]sw.gpu_types.ColorTargetState{.{
+                .format = .bgra8unorm,
+            }},
+        },
+        .primitive = .{
+            .topology = .triangle_list,
+            .front_face = .ccw,
+            .cull_mode = .back,
+        },
+        .multisample = .{ .count = sample_count },
+        .depth_stencil = main_depth_stencil,
+    });
+
     // Cylinder pipeline: no face culling + alpha blending so the hitbox is semi-transparent
     // and visible from both inside (first-person) and outside (third-person, F5).
     // depth_stencil must match the render pass attachment (or be null when
@@ -4533,56 +4584,56 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
 
 /// `sorted`: upload the per-quad back-to-front order from sortByDepth (depth
 /// off) instead of the mesh's own index order (depth on).
-fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, structure_changed: bool, sorted: bool) !void {
-    const vertex_count = lc.mesh.vertices.items.len;
-    const index_count = lc.mesh.indices.items.len;
-    if (index_count == 0) return;
-    const indices = if (sorted) lc.mesh.sort_indices[0..index_count] else lc.mesh.indices.items;
-    const recreate = structure_changed or cg.vertex_buffer == null;
+/// Log the chunk meshes on the GPU: chunk count, quad count and buffer bytes.
+fn logGpuMeshStats() void {
+    var quads: u64 = 0;
+    var bytes: u64 = 0;
+    var it = state.chunk_gpu.valueIterator();
+    while (it.next()) |cg| {
+        quads += cg.quad_count;
+        if (cg.quad_buffer != null) bytes += (cg.capacity + 1) * @sizeOf(mesher_mod.PackedQuad);
+    }
+    std.log.info("[GPU MESH] chunks={} quads={} bytes={}", .{ state.chunk_gpu.count(), quads, bytes });
+}
+
+/// Pack a chunk's quads and write them to its quad buffer. `sorted`: write
+/// the quads in the back-to-front order from sortByDepth (depth off).
+/// The buffer and its bind group are made again when the quad count grows
+/// past the buffer, or when `structure_changed`.
+fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, allocator: std.mem.Allocator, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, structure_changed: bool, sorted: bool) !void {
+    const quad_count = lc.mesh.indices.items.len / 6;
+    if (quad_count == 0) return;
+    const recreate = structure_changed or cg.quad_buffer == null or quad_count > cg.capacity;
 
     if (recreate) {
-        if (cg.vertex_buffer) |old| old.destroy();
-        cg.vertex_buffer = try g.createBuffer(.{
-            .size = vertex_count * @sizeOf(VoxelVertex),
-            .usage = .{ .vertex = true, .copy_dst = true },
+        cg.release();
+        // The header element holds the chunk origin (x, unused, z, unused).
+        const buffer = try g.createBuffer(.{
+            .size = (quad_count + 1) * @sizeOf(mesher_mod.PackedQuad),
+            .usage = .{ .storage = true, .copy_dst = true },
         });
-        if (cg.index_buffer) |old| old.destroy();
-        cg.index_buffer = try g.createBuffer(.{
-            .size = index_count * @sizeOf(u32),
-            .usage = .{ .index = true, .copy_dst = true },
+        var buffer_ref = buffer;
+        cg.quad_buffer = buffer;
+        cg.bind_group = try g.createBindGroup(.{
+            .layout = &state.chunk_bg_layout.?,
+            .entries = &[_]gpu_mod.BindGroupEntry{.{
+                .binding = 0,
+                .buffer = &buffer_ref,
+                .size = (quad_count + 1) * @sizeOf(mesher_mod.PackedQuad),
+            }},
         });
+        cg.capacity = quad_count;
     }
 
-    if (recreate or state.gpu_debug) {
-        if (state.gpu_debug) {
-            const quad_count = vertex_count / 4;
-            for (0..quad_count) |qi| {
-                const hl = lc.mesh.quad_highlight.items[qi];
-                if (hl > 0) {
-                    const hl32 = @as(u32, hl) << 16;
-                    const base = qi * 4;
-                    for (base..base + 4) |vi| {
-                        lc.mesh.vertices.items[vi].block_type |= hl32;
-                    }
-                }
-            }
-        }
-        g.writeBuffer(cg.vertex_buffer.?, 0, std.mem.sliceAsBytes(lc.mesh.vertices.items));
-        if (state.gpu_debug) {
-            const quad_count = vertex_count / 4;
-            for (0..quad_count) |qi| {
-                const hl = lc.mesh.quad_highlight.items[qi];
-                if (hl > 0) {
-                    const base = qi * 4;
-                    for (base..base + 4) |vi| {
-                        lc.mesh.vertices.items[vi].block_type &= 0xFFFF;
-                    }
-                }
-            }
-        }
-    }
-
-    if (recreate or sorted) g.writeBuffer(cg.index_buffer.?, 0, std.mem.sliceAsBytes(indices));
+    if (!(recreate or sorted or state.gpu_debug)) return;
+    try state.pack_scratch.resize(allocator, quad_count + 1);
+    const world_ox = lc.cx * chunk_mod.CHUNK_W;
+    const world_oz = lc.cz * chunk_mod.CHUNK_W;
+    state.pack_scratch.items[0] = .{ @bitCast(world_ox), 0, @bitCast(world_oz), 0 };
+    const order: ?[]const u32 = if (sorted) lc.mesh.sort_indices[0 .. quad_count * 6] else null;
+    _ = mesher_mod.packQuads(&lc.mesh, state.pack_scratch.items[1..], world_ox, world_oz, order, state.gpu_debug);
+    g.writeBuffer(cg.quad_buffer.?, 0, std.mem.sliceAsBytes(state.pack_scratch.items));
+    cg.quad_count = @intCast(quad_count);
 }
 
 // ----------------------------------------------------------------------------

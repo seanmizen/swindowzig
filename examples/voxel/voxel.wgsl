@@ -82,6 +82,82 @@ fn getBlockColor(block_type: u32) -> vec3<f32> {
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
+    return shadeVertex(in);
+}
+
+// Chunk meshes: one 16-byte packed quad per quad, read from a storage buffer.
+// The layout is in mesher.zig (PackedQuad), and mesher.unpackCorner is the
+// same decode in Zig: change both together. A draw of quad_count * 6 vertices
+// with no vertex or index buffer makes the 2 triangles of each quad.
+struct ChunkQuads {
+    origin: vec4<i32>, // chunk origin in world blocks: x, unused, z, unused
+    quads: array<vec4<u32>>,
+};
+
+@group(1) @binding(0) var<storage, read> chunk: ChunkQuads;
+
+// Faces are numbered px, nx, py, ny, pz, nz (0..5). The normal axis is
+// face / 2 and the face is positive when face is even. The in-plane axes are
+// i (W) and j (H): i = z for x faces, else x. j = z for y faces, else y.
+// Per face and corner, the 0/1 step along i and j is 2 bits (i | j << 1),
+// 8 bits per face: faces 0-3 in the _A constant, faces 4-5 in _B.
+// mesher.zig computes the same constants from face_layouts, and a test checks
+// these literals. No arrays: a runtime index into an array costs a copy of
+// the array per vertex on some backends.
+const FACE_POS_A: u32 = 0xd2782d78u;
+const FACE_POS_B: u32 = 0x0000e1b4u;
+const FACE_UV_A: u32 = 0x78787878u;
+const FACE_UV_B: u32 = 0x0000b4b4u;
+// The 2 triangles of a quad: corners 0,1,2 and 0,2,3, 2 bits per vertex.
+const TRI_CORNERS: u32 = 0x00000e24u;
+
+fn axisVec(axis: u32) -> vec3<f32> {
+    return vec3<f32>(f32(axis == 0u), f32(axis == 1u), f32(axis == 2u));
+}
+
+fn cornerStep(a: u32, b: u32, face: u32, corner: u32) -> vec2<f32> {
+    let bits = select(b >> ((face - 4u) * 8u), a >> (face * 8u), face < 4u) >> (corner * 2u);
+    return vec2<f32>(f32(bits & 1u), f32((bits >> 1u) & 1u));
+}
+
+fn lightField(q: vec4<u32>, i: u32) -> u32 {
+    let word = select(select(q.w, q.z, i < 10u), q.y, i < 5u);
+    return (word >> (6u * (i % 5u))) & 0x3Fu;
+}
+
+@vertex
+fn vs_chunk(@builtin(vertex_index) vi: u32) -> VertexOutput {
+    let q = chunk.quads[vi / 6u];
+    let corner = (TRI_CORNERS >> ((vi % 6u) * 2u)) & 3u;
+    let face = (q.x >> 16u) & 0x7u;
+    let w = f32(((q.x >> 19u) & 0xFu) + 1u);
+    let h = f32(((q.x >> 23u) & 0xFFu) + 1u);
+    let normal_axis = face / 2u;
+    let positive = (face & 1u) == 0u;
+    let i_axis = select(0u, 2u, normal_axis == 0u);
+    let j_axis = select(1u, 2u, normal_axis == 1u);
+    let n = axisVec(normal_axis);
+
+    let cell = vec3<f32>(
+        f32(i32(q.x & 0xFu) + chunk.origin.x),
+        f32((q.x >> 4u) & 0xFFu),
+        f32(i32((q.x >> 12u) & 0xFu) + chunk.origin.z),
+    );
+    let p = cornerStep(FACE_POS_A, FACE_POS_B, face, corner);
+    let t = cornerStep(FACE_UV_A, FACE_UV_B, face, corner);
+
+    var in: VertexInput;
+    in.position = cell + select(vec3<f32>(0.0), n, positive) + axisVec(i_axis) * (p.x * w) + axisVec(j_axis) * (p.y * h);
+    in.normal = select(-n, n, positive);
+    in.block_type = ((q.w >> 12u) & 0xFFu) | (((q.w >> 20u) & 0xFFu) << 16u);
+    in.uv = vec2<f32>(t.x * w, t.y * h);
+    in.ao = f32(lightField(q, corner)) / 42.0;
+    in.skylight = f32(lightField(q, 4u + corner)) / 60.0;
+    in.block_light = f32(lightField(q, 8u + corner)) / 60.0;
+    return shadeVertex(in);
+}
+
+fn shadeVertex(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
 
     out.world_pos = in.position;

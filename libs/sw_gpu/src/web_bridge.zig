@@ -58,6 +58,7 @@ pub extern "webgpu" fn webgpuBufferGetMappedRange(
 
 pub extern "webgpu" fn webgpuBufferUnmap(buffer: WebGPUBuffer) void;
 pub extern "webgpu" fn webgpuBufferDestroy(buffer: WebGPUBuffer) void;
+pub extern "webgpu" fn webgpuBindGroupRelease(bind_group: WebGPUBindGroup) void;
 
 pub extern "webgpu" fn webgpuWriteBuffer(
     queue: WebGPUQueue,

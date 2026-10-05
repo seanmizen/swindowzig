@@ -64,6 +64,7 @@ pub extern fn wgpuBufferGetMappedRange(buffer: WGPUBuffer, offset: usize, size: 
 pub extern fn wgpuBufferMapAsync(buffer: WGPUBuffer, mode: u32, offset: usize, size: usize, callback: WGPUBufferMapCallback, userdata: ?*anyopaque) void;
 pub extern fn wgpuBufferUnmap(buffer: WGPUBuffer) void;
 pub extern fn wgpuBufferDestroy(buffer: WGPUBuffer) void;
+pub extern fn wgpuBindGroupRelease(bind_group: WGPUBindGroup) void;
 
 pub const WGPUMapMode_Read: u32 = 0x00000001;
 pub const WGPUBufferMapCallback = *const fn (status: u32, userdata: ?*anyopaque) callconv(.c) void;
