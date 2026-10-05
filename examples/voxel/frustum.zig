@@ -2,14 +2,15 @@
 //!
 //! Three strategies are exposed via `Strategy`:
 //!
-//!   .none   — no culling. Every loaded chunk is drawn. This is the default
-//!             so the feature is opt-in.
+//!   .none   — no culling. Every loaded chunk is drawn.
 //!   .sphere — radial cutoff at `render_distance + slack`. Cheap sanity test;
 //!             the world only loads chunks inside RENDER_DISTANCE so this
 //!             matters mainly as a backstop in case eviction lags.
 //!   .cone   — sphere-vs-cone test against a half-angle (fov/2) cone around
 //!             the camera forward vector. The chunk's bounding sphere is
 //!             treated as a single sphere for the test (no per-quad work).
+//!             This is the default. main.zig sets the fov to the screen
+//!             diagonal each frame, so the cone contains the view frustum.
 //!
 //! Design notes / pitfalls:
 //!

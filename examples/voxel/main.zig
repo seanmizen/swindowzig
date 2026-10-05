@@ -43,6 +43,21 @@ fn fatalExitNative(code: u8) noreturn {
 /// Perf-logging timestamp. See clock.zig: the web build reports 0.
 const perfNowNs = clock.nowNs;
 
+/// The direction the rendered view looks. The third-person front view looks
+/// back at the player, so it is the reverse of camera.forward().
+fn viewForward() [3]f32 {
+    const f = state.camera.forward();
+    return if (state.camera_view == .third_person_front) .{ -f.x, -f.y, -f.z } else .{ f.x, f.y, f.z };
+}
+
+/// Total fov in degrees across the screen diagonal, from the vertical fov
+/// (radians) and the aspect ratio. A cone with this aperture contains the
+/// whole view frustum.
+fn screenDiagonalFovDeg(vfov_rad: f32, aspect: f32) f32 {
+    const half_diag = std.math.atan(@tan(vfov_rad * 0.5) * @sqrt(1.0 + aspect * aspect));
+    return 2.0 * half_diag * (180.0 / std.math.pi);
+}
+
 fn swindowzigLogFn(
     comptime level: std.log.Level,
     comptime scope: @TypeOf(.enum_literal),
@@ -714,12 +729,13 @@ const State = struct {
     /// Frustum-cull strategy parsed from --frustum=<none|sphere|cone>.
     /// Default is `.none` so the feature is opt-in — see frustum.zig header
     /// for the rationale and the cone-vs-sphere math notes.
-    frustum_strategy: frustum_mod.Strategy = .none,
-    /// Total fov in degrees for the cone strategy. Parsed from
-    /// --frustum-fov-deg=<degrees>; default 180 (a no-op short-circuit
-    /// chosen so an accidental `--frustum=cone` cannot drop chunks the
-    /// player can still see).
+    frustum_strategy: frustum_mod.Strategy = .cone,
+    /// Total fov in degrees for the cone strategy. While frustum_fov_auto is
+    /// true, each frame sets it to the screen-diagonal fov of the camera
+    /// (see screenDiagonalFovDeg). --frustum-fov-deg=<degrees> sets a fixed
+    /// value and turns frustum_fov_auto off.
     frustum_fov_deg: f32 = 180.0,
+    frustum_fov_auto: bool = true,
     /// When non-null, render reuses this snapshot every frame instead of
     /// rebuilding from the live camera. Toggled by Cmd+F (Ctrl+F on
     /// Win/Linux). Diagnostic only — lets the player fly around and watch
@@ -921,11 +937,12 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.ao_strategy = .moore;
     // Default lighting: skylight (caves dark). `--lighting=none` overrides.
     state.lighting_mode = .skylight;
-    // Frustum-cull defaults: opt-in (.none) and a 180° fov no-op so any
-    // future user toggling on .cone via the menu without changing fov gets
-    // a safe identity cull until they tighten it.
-    state.frustum_strategy = .none;
+    // Frustum-cull defaults: the cone strategy, with a cone that covers the
+    // screen diagonal (frustum_fov_auto). The cone test uses each chunk's
+    // full-height bounding sphere, so it keeps every chunk that is on screen.
+    state.frustum_strategy = .cone;
     state.frustum_fov_deg = 180.0;
+    state.frustum_fov_auto = true;
     state.frozen_frustum = null;
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
@@ -1134,6 +1151,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
             state.frustum_fov_deg = parsed;
+            state.frustum_fov_auto = false;
         }
         if (std.mem.startsWith(u8, arg, "--profile-csv=")) {
             // --profile-csv=<path>: write a per-tick timing row for the
@@ -1219,9 +1237,11 @@ fn voxelInit(ctx: *sw.Context) !void {
     std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
     std.log.info("Meshing mode (post-parse): {s}", .{@tagName(state.meshing_mode)});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
-    std.log.info("Frustum cull: strategy={s} fov={d:.0}°", .{
-        state.frustum_strategy.label(), state.frustum_fov_deg,
-    });
+    if (state.frustum_fov_auto) {
+        std.log.info("Frustum cull: strategy={s} fov=auto (screen diagonal)", .{state.frustum_strategy.label()});
+    } else {
+        std.log.info("Frustum cull: strategy={s} fov={d:.0}°", .{ state.frustum_strategy.label(), state.frustum_fov_deg });
+    }
     std.log.info("Render distance (post-parse): {} chunks", .{state.render_distance});
     std.log.info("Depth-stencil (post-parse): {s}", .{if (state.depth_stencil_enabled) "on" else "off"});
 
@@ -2511,8 +2531,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 state.camera.position.y,
                 state.camera.position.z,
             };
-            const fwd_v = state.camera.forward();
-            const fwd = [3]f32{ fwd_v.x, fwd_v.y, fwd_v.z };
+            const fwd = viewForward();
             state.frozen_frustum = frustum_mod.Frustum.capture(
                 eye,
                 fwd,
@@ -3303,12 +3322,16 @@ fn voxelRender(ctx: *sw.Context) !void {
         return;
     }
 
-    // Sort and upload each chunk's mesh.
+    // Upload each chunk's mesh when it changes. With depth on, the pipeline is
+    // opaque and the depth test resolves occlusion, so no per-quad sort runs
+    // and an unchanged chunk costs nothing here. With --depth-stencil=off the
+    // draw order is the only occlusion: each chunk sorts its quads back to
+    // front and uploads its indices every frame.
+    const sort_quads = !state.depth_stencil_enabled;
     var render_sort_us: i128 = 0;
     var render_upload_us: i128 = 0;
     var render_upload_chunks: usize = 0;
-    const cam_fwd_v = state.camera.forward();
-    const cam_fwd = [3]f32{ cam_fwd_v.x, cam_fwd_v.y, cam_fwd_v.z };
+    const cam_fwd = viewForward();
     {
         var it = state.world.chunks.iterator();
         while (it.next()) |entry| {
@@ -3316,22 +3339,26 @@ fn voxelRender(ctx: *sw.Context) !void {
             const lc = entry.value_ptr.*;
             if (lc.mesh.vertices.items.len == 0) continue;
 
-            const t_sort = perfNowNs();
-            lc.mesh.sortByDepth(.{
-                state.camera.position.x,
-                state.camera.position.y,
-                state.camera.position.z,
-            }, cam_fwd) catch |err| {
-                std.log.err("Sort failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
-                continue;
-            };
-            render_sort_us += @divTrunc(perfNowNs() - t_sort, 1000);
+            if (sort_quads) {
+                const t_sort = perfNowNs();
+                lc.mesh.sortByDepth(.{
+                    state.camera.position.x,
+                    state.camera.position.y,
+                    state.camera.position.z,
+                }, cam_fwd) catch |err| {
+                    std.log.err("Sort failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
+                    continue;
+                };
+                render_sort_us += @divTrunc(perfNowNs() - t_sort, 1000);
+            }
 
             const gop = state.chunk_gpu.getOrPut(key) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = .{};
+            const first_upload = gop.value_ptr.vertex_buffer == null;
+            if (!(lc.mesh_incremental_dirty or first_upload or sort_quads or state.gpu_debug)) continue;
             const needed_upload = lc.mesh_incremental_dirty;
             const up_t0: i128 = if (state.profile_csv_file != null and needed_upload) perfNowNs() else 0;
-            uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.mesh_incremental_dirty) catch |err| {
+            uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.mesh_incremental_dirty, sort_quads) catch |err| {
                 std.log.err("Upload failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
@@ -3452,14 +3479,14 @@ fn voxelRender(ctx: *sw.Context) !void {
     // the chunk-grid origin to the *frozen* eye, NOT the live camera, so
     // moving around does not silently re-enable nearby chunks via the 3×3
     // safety net — that would defeat the diagnostic.
+    if (state.frustum_fov_auto) state.frustum_fov_deg = screenDiagonalFovDeg(state.camera.fov, state.camera.aspect);
     const live_frustum: frustum_mod.Frustum = if (state.frozen_frustum) |fz| fz else blk: {
         const eye = [3]f32{
             state.camera.position.x,
             state.camera.position.y,
             state.camera.position.z,
         };
-        const fwd_v = state.camera.forward();
-        const fwd = [3]f32{ fwd_v.x, fwd_v.y, fwd_v.z };
+        const fwd = viewForward();
         break :blk frustum_mod.Frustum.capture(
             eye,
             fwd,
@@ -3468,9 +3495,10 @@ fn voxelRender(ctx: *sw.Context) !void {
         );
     };
 
-    // Draw chunks back-to-front (painter's algorithm at chunk level).
-    // Build a temporary sorted list of chunks by distance from camera,
-    // filtering out chunks rejected by the configured cull strategy.
+    // Draw order: with depth on, front to back, so the depth test rejects
+    // hidden fragments before they shade. With depth off, back to front
+    // (painter's algorithm at chunk level). The list leaves out the chunks
+    // that the cull strategy rejects.
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
     var sorted_chunks: std.ArrayList(*world_mod.LoadedChunk) = .empty;
@@ -3492,10 +3520,11 @@ fn voxelRender(ctx: *sw.Context) !void {
     // camera forward), which is the correct painter's-algorithm depth for diagonal views.
     // The chunk Y-centre is fixed at CHUNK_H/2 (128) — including Y makes the sort correct
     // when the camera pitch causes Y to dominate the depth ordering (e.g. steep look-down).
-    const ChunkSortCtx = struct { cam: [3]f32, fwd: [3]f32 };
+    const ChunkSortCtx = struct { cam: [3]f32, fwd: [3]f32, near_first: bool };
     std.mem.sort(*world_mod.LoadedChunk, sorted_chunks.items, ChunkSortCtx{
         .cam = cam_pos,
         .fwd = cam_fwd,
+        .near_first = state.depth_stencil_enabled,
     }, struct {
         fn lt(ctx_val: ChunkSortCtx, a: *world_mod.LoadedChunk, b: *world_mod.LoadedChunk) bool {
             const half_xz: f32 = @as(f32, @floatFromInt(chunk_mod.CHUNK_W)) * 0.5;
@@ -3508,7 +3537,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             const bz = b.worldZf() + half_xz - ctx_val.cam[2];
             const da = ax * ctx_val.fwd[0] + ay * ctx_val.fwd[1] + az * ctx_val.fwd[2];
             const db = bx * ctx_val.fwd[0] + by * ctx_val.fwd[1] + bz * ctx_val.fwd[2];
-            return da > db; // far-first (larger depth = drawn first)
+            return if (ctx_val.near_first) da < db else da > db;
         }
     }.lt);
 
@@ -4502,13 +4531,16 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     std.log.info("GPU resources created", .{});
 }
 
-fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, structure_changed: bool) !void {
+/// `sorted`: upload the per-quad back-to-front order from sortByDepth (depth
+/// off) instead of the mesh's own index order (depth on).
+fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, structure_changed: bool, sorted: bool) !void {
     const vertex_count = lc.mesh.vertices.items.len;
     const index_count = lc.mesh.indices.items.len;
     if (index_count == 0) return;
-    const sorted = lc.mesh.sort_indices[0..index_count];
+    const indices = if (sorted) lc.mesh.sort_indices[0..index_count] else lc.mesh.indices.items;
+    const recreate = structure_changed or cg.vertex_buffer == null;
 
-    if (structure_changed or cg.vertex_buffer == null) {
+    if (recreate) {
         if (cg.vertex_buffer) |old| old.destroy();
         cg.vertex_buffer = try g.createBuffer(.{
             .size = vertex_count * @sizeOf(VoxelVertex),
@@ -4521,7 +4553,7 @@ fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkG
         });
     }
 
-    if (structure_changed or state.gpu_debug) {
+    if (recreate or state.gpu_debug) {
         if (state.gpu_debug) {
             const quad_count = vertex_count / 4;
             for (0..quad_count) |qi| {
@@ -4550,7 +4582,7 @@ fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkG
         }
     }
 
-    g.writeBuffer(cg.index_buffer.?, 0, std.mem.sliceAsBytes(sorted));
+    if (recreate or sorted) g.writeBuffer(cg.index_buffer.?, 0, std.mem.sliceAsBytes(indices));
 }
 
 // ----------------------------------------------------------------------------

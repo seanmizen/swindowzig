@@ -123,6 +123,12 @@ pub extern fn wgpuComputePassEncoderEnd(pass: WGPUComputePassEncoder) void;
 
 // Queue
 pub extern fn wgpuQueueSubmit(queue: WGPUQueue, command_count: usize, commands: [*]const WGPUCommandBuffer) void;
+pub const WGPUSubmissionIndex = u64;
+pub const WGPUWrappedSubmissionIndex = extern struct {
+    queue: WGPUQueue,
+    submission_index: WGPUSubmissionIndex,
+};
+pub extern fn wgpuQueueSubmitForIndex(queue: WGPUQueue, command_count: usize, commands: [*]const WGPUCommandBuffer) WGPUSubmissionIndex;
 pub extern fn wgpuQueueWriteBuffer(queue: WGPUQueue, buffer: WGPUBuffer, buffer_offset: u64, data: *const anyopaque, size: usize) void;
 pub extern fn wgpuQueueWriteTexture(queue: WGPUQueue, destination: *const WGPUImageCopyTexture, data: *const anyopaque, data_size: usize, data_layout: *const WGPUTextureDataLayout, write_size: *const WGPUExtent3D) void;
 

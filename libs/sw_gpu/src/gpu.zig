@@ -116,6 +116,9 @@ pub const GPUState = enum {
 };
 
 /// Main GPU context - access via ctx.gpu()
+/// Native: the most submits that run on the GPU at once. See GPU.submit().
+const MAX_FRAMES_IN_FLIGHT = 2;
+
 pub const GPU = struct {
     state: GPUState = .uninitialized,
     device: if (is_wasm) web.WebGPUDevice else native.WGPUDevice = if (is_wasm) 0 else null,
@@ -129,6 +132,11 @@ pub const GPU = struct {
     // the browser sizes. The web glue keeps it current with setSurfaceSize().
     width: u32 = 0,
     height: u32 = 0,
+
+    // Native: submission indices of the last MAX_FRAMES_IN_FLIGHT submits, in
+    // a ring. submit() waits for the oldest before it reuses its slot.
+    in_flight: [MAX_FRAMES_IN_FLIGHT]?u64 = @splat(null),
+    submit_count: u64 = 0,
 
     // MSAA state — populated by configureMSAA(); null if MSAA is off (sample_count == 1)
     msaa_sample_count: u32 = 1,
@@ -1424,11 +1432,10 @@ pub const GPU = struct {
         if (comptime is_wasm) {
             web.webgpuPresent();
         } else {
-            // Headless-offscreen mode has no swapchain to present to. The
-            // submit() path already wgpuDevicePoll()s on wait=true, so work
-            // is flushed before the next frame starts. Just clear the cached
-            // surface texture so the next getCurrentTextureView() allocates
-            // a fresh view.
+            // Headless-offscreen mode has no swapchain to present to. submit()
+            // limits the frames in flight, so there is nothing to wait for
+            // here. Just clear the cached surface texture so the next
+            // getCurrentTextureView() allocates a fresh view.
             if (self.surface == null) {
                 self.current_surface_texture = null;
                 return;
@@ -1460,15 +1467,27 @@ pub const GPU = struct {
             for (command_buffers[0..count], 0..) |buf, i| {
                 c_buffers[i] = buf.handle;
             }
-            native.wgpuQueueSubmit(self.queue, count, &c_buffers);
+            const index = native.wgpuQueueSubmitForIndex(self.queue, count, &c_buffers);
 
-            // Poll device to process submitted work (wgpu-native extension)
-            _ = native.wgpuDevicePoll(self.device, 1, null); // wait=true
-
-            // Release command buffers after processing
+            // wgpu keeps a submitted command buffer alive until the GPU is
+            // done with it, so release our reference now.
             for (command_buffers[0..count]) |buf| {
                 native.wgpuCommandBufferRelease(buf.handle);
             }
+
+            // The CPU does not wait for this submit. It waits for the submit
+            // MAX_FRAMES_IN_FLIGHT back, so the CPU makes the next frame while
+            // the GPU draws this one, and cannot get further ahead. A
+            // non-blocking poll frees the work that the GPU completed.
+            const slot: usize = @intCast(self.submit_count % MAX_FRAMES_IN_FLIGHT);
+            if (self.in_flight[slot]) |oldest| {
+                const wrapped = native.WGPUWrappedSubmissionIndex{ .queue = self.queue, .submission_index = oldest };
+                _ = native.wgpuDevicePoll(self.device, 1, @ptrCast(&wrapped));
+            } else {
+                _ = native.wgpuDevicePoll(self.device, 0, null);
+            }
+            self.in_flight[slot] = index;
+            self.submit_count += 1;
         }
     }
 
