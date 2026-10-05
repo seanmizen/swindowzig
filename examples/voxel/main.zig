@@ -594,10 +594,10 @@ const ChunkGPU = struct {
 
 // Application state
 const State = struct {
-    world: world_mod.World,
-    chunk_gpu: std.HashMap(world_mod.ChunkKey, ChunkGPU, world_mod.ChunkKey.HashContext, std.hash_map.default_max_load_percentage),
-    camera: CameraType,
-    player: Player,
+    world: world_mod.World = undefined, // set by voxelInit
+    chunk_gpu: std.HashMap(world_mod.ChunkKey, ChunkGPU, world_mod.ChunkKey.HashContext, std.hash_map.default_max_load_percentage) = undefined, // set by voxelInit
+    camera: CameraType = undefined, // set by voxelInit
+    player: Player = undefined, // set by voxelInit
     pipeline: ?gpu_mod.RenderPipeline = null,
     cylinder_pipeline: ?gpu_mod.RenderPipeline = null,
     uniform_buffer: ?gpu_mod.Buffer = null,
@@ -830,7 +830,9 @@ const State = struct {
     depth_stencil_enabled: bool = true,
 };
 
-var state: State = undefined;
+// Field defaults apply. With `= undefined`, a field that voxelInit does not
+// set (for example profile_csv_path) held garbage: a crash on Linux.
+var state: State = .{};
 
 fn voxelInit(ctx: *sw.Context) !void {
     std.log.info("Voxel demo init", .{});

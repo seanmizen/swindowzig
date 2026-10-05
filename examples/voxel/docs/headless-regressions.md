@@ -7,6 +7,28 @@
 > below for the reproducible commands. The rest of the document is kept as the
 > record of why the design looks the way it does.
 
+## Status: the CI gate (current)
+
+The `swindowzig-check` workflow (`.github/workflows/swindowzig-check.yml`) runs
+on each PR to `main` that touches `utils/swindowzig`, and on push to `main`. On
+an Ubuntu runner with lavapipe it runs `zig build test`, the web build, and
+`run_headless_regressions.sh`. A scene that does not match its golden fails
+the job.
+
+- The goldens are in `examples/voxel/assets/goldens/lavapipe/`. CI makes them.
+  The Metal goldens went stale with no check, so this change deleted them. On macOS
+  the runner stops with a message.
+- Every run uses `--async-chunks=off --debug=off`. The async chunk worker and
+  the debug overlay (FPS, frame ms) change the frame from run to run. With
+  these flags, two CI runs give the same pixels. CI thus does not render
+  through the async chunk path.
+- To accept a deliberate visual change: the failed job uploads new goldens
+  and prints a `gh run download` command. Run it from the repo root, look at
+  the frames, and commit them on the same branch.
+
+The sections below are the record of how the design came about. The Metal and
+macOS steps in them are out of date.
+
 ## Status: Tier 2 landed
 
 **Branch:** `voxel/headless-offscreen`

@@ -2,14 +2,22 @@
 # run_headless_regressions.sh — CI-ready headless voxel regression runner
 #
 # Runs every enumerated TAS regression under `--headless --dump-frame` and
-# diffs the result against a backend-specific golden PPM under
-# examples/voxel/assets/goldens/<backend>/. Backend is detected from `uname`:
-# Darwin → metal, Linux → lavapipe (the wgpu-native backend picks matches the
-# host automatically; the label is for golden selection only).
+# diffs the result against a golden PPM in examples/voxel/assets/goldens/lavapipe/.
+#
+# Where: Linux with lavapipe (Mesa software Vulkan). The swindowzig-check
+#        workflow runs it on every PR that touches utils/swindowzig.
+# When:  CI runs it. Run it yourself on a Linux box to debug a CI failure.
+# Why:   lavapipe gives the same pixels on every CI runner, so the goldens
+#        catch any change to the rendered frame. A GPU gives different pixels
+#        per adapter, so there are no goldens for macOS (Metal).
+#
+# To accept a deliberate visual change, download the goldens that the failed
+# CI run uploaded. The job log prints the command.
 #
 # Usage (from utils/swindowzig):
-#   ./examples/voxel/scripts/run_headless_regressions.sh           # compare mode
-#   ./examples/voxel/scripts/run_headless_regressions.sh --update  # regenerate goldens for this backend
+#   ./examples/voxel/scripts/run_headless_regressions.sh                # compare mode
+#   ./examples/voxel/scripts/run_headless_regressions.sh --update       # regenerate the goldens
+#   ./examples/voxel/scripts/run_headless_regressions.sh --out DIR      # keep frames and logs in DIR
 #
 # Exit codes:
 #   0 — all runs passed (or updated)
@@ -27,19 +35,34 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 cd "$ROOT"
 
-case "$(uname -s)" in
-    Darwin) BACKEND=metal ;;
-    Linux)  BACKEND=lavapipe ;;
-    *)
-        echo "run_headless_regressions.sh: unsupported OS $(uname -s)"
-        exit 2
-        ;;
-esac
+if [[ "$(uname -s)" != Linux ]]; then
+    echo "run_headless_regressions.sh: the goldens are lavapipe frames, and only Linux has lavapipe."
+    echo "The swindowzig-check workflow runs this script on every PR that touches utils/swindowzig."
+    exit 2
+fi
+BACKEND=lavapipe
 
 BIN="./zig-out/bin/voxel"
 GOLDENS_DIR="examples/voxel/assets/goldens/${BACKEND}"
-TMP_DIR="$(mktemp -d -t voxel-headless-regression.XXXXXX)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+UPDATE=0
+OUT_DIR=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --update) UPDATE=1; shift ;;
+        --out) OUT_DIR="$2"; shift 2 ;;
+        *) echo "run_headless_regressions.sh: unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+# Frames and logs go to --out DIR when given (CI uploads it), else to a temp
+# dir that the EXIT trap removes.
+if [[ -n "$OUT_DIR" ]]; then
+    mkdir -p "$OUT_DIR"
+    TMP_DIR="$OUT_DIR"
+else
+    TMP_DIR="$(mktemp -d -t voxel-headless-regression.XXXXXX)"
+    trap 'rm -rf "$TMP_DIR"' EXIT
+fi
 
 # Goldens are stored as gzipped PPMs (.ppm.gz) to keep the repo under control
 # — a full 1280×720 BGRA P6 is ~2.6 MB uncompressed, ~200 KB gzipped. voxel's
@@ -47,11 +70,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 # golden into the temp dir once per run; update mode writes a plain PPM then
 # gzips it into the goldens dir.
 
-UPDATE=0
-if [[ "${1:-}" == "--update" ]]; then
-    UPDATE=1
-    mkdir -p "$GOLDENS_DIR"
-fi
+[[ $UPDATE -eq 0 ]] || mkdir -p "$GOLDENS_DIR"
 
 if [[ ! -x "$BIN" ]]; then
     echo "[build] $BIN missing — running zig build native -Dexample=voxel"
@@ -87,6 +106,14 @@ declare -a RUNS=(
     "depth_stencil_off|examples/voxel/tests/depth_stencil_regression.tas|--aa=none --depth-stencil=off --world=flatland|2.0|4"
 )
 
+# Flags for every run, so that one TAS gives the same frame every time:
+#   --async-chunks=off  the async chunk worker is a thread, so the number of
+#                       chunks loaded at capture time changes from run to run.
+#                       The sync loop loads a fixed number of chunks per tick.
+#   --debug=off         a TAS turns on the debug overlay, which shows wall-clock
+#                       values (FPS, frame ms). debug_overlay.sh tests the overlay.
+COMMON_ARGS="--async-chunks=off --debug=off"
+
 PASS=0; FAIL=0; MISS=0
 
 # Pretty-print header
@@ -104,8 +131,9 @@ for entry in "${RUNS[@]}"; do
     if [[ $UPDATE -eq 1 ]]; then
         # Regenerate the golden for this backend.
         # shellcheck disable=SC2086
-        if ! "$BIN" --headless --tas "$tas_path" --dump-frame="$out_ppm" $args > "$out_log" 2>&1; then
+        if ! "$BIN" --headless --tas "$tas_path" --dump-frame="$out_ppm" $COMMON_ARGS $args > "$out_log" 2>&1; then
             printf "%-28s %-9s %s\n" "$name" "ERROR" "capture crashed — see $out_log"
+            tail -n 15 "$out_log" | sed 's/^/    /'
             FAIL=$((FAIL + 1))
             continue
         fi
@@ -137,7 +165,7 @@ for entry in "${RUNS[@]}"; do
         --compare-golden="$golden_plain" \
         --golden-max-diff-pct="$max_diff_pct" \
         --golden-max-channel-delta="$max_channel_delta" \
-        $args > "$out_log" 2>&1
+        $COMMON_ARGS $args > "$out_log" 2>&1
     rc=$?
     set -e
 
@@ -153,6 +181,7 @@ for entry in "${RUNS[@]}"; do
             ;;
         *)
             printf "%-28s %-9s %s\n" "$name" "ERROR" "voxel exited $rc — see $out_log"
+            tail -n 15 "$out_log" | sed 's/^/    /'
             FAIL=$((FAIL + 1))
             ;;
     esac
