@@ -95,6 +95,11 @@ pub const Serializer = struct {
             .tick => |t| {
                 try self.writer.writeInt(u64, t.dt_ns, .little);
             },
+            // command is not an extern struct, so write its fields one by one.
+            .command => |c| {
+                try self.writer.writeInt(u8, @intFromEnum(c.kind), .little);
+                for (c.args) |arg| try self.writer.writeInt(u32, @bitCast(arg), .little);
+            },
         }
 
         self.last_tick = e.tick_id;
@@ -143,13 +148,13 @@ pub const Deserializer = struct {
     fn readPayload(self: *Deserializer, tag: u8) !event.EventPayload {
         const dummy: event.EventPayload = undefined;
         return switch (tag) {
-            0 => .{ .pointer_move = try self.reader.takeStruct(@TypeOf(dummy.pointer_move, .little)) },
-            1 => .{ .pointer_button = try self.reader.takeStruct(@TypeOf(dummy.pointer_button, .little)) },
-            2 => .{ .wheel = try self.reader.takeStruct(@TypeOf(dummy.wheel, .little)) },
-            3 => .{ .key = try self.reader.takeStruct(@TypeOf(dummy.key, .little)) },
-            4 => .{ .text = try self.reader.takeStruct(@TypeOf(dummy.text, .little)) },
-            5 => .{ .resize = try self.reader.takeStruct(@TypeOf(dummy.resize, .little)) },
-            6 => .{ .focus = try self.reader.takeStruct(@TypeOf(dummy.focus, .little)) },
+            0 => .{ .pointer_move = try self.reader.takeStruct(@TypeOf(dummy.pointer_move), .little) },
+            1 => .{ .pointer_button = try self.reader.takeStruct(@TypeOf(dummy.pointer_button), .little) },
+            2 => .{ .wheel = try self.reader.takeStruct(@TypeOf(dummy.wheel), .little) },
+            3 => .{ .key = try self.reader.takeStruct(@TypeOf(dummy.key), .little) },
+            4 => .{ .text = try self.reader.takeStruct(@TypeOf(dummy.text), .little) },
+            5 => .{ .resize = try self.reader.takeStruct(@TypeOf(dummy.resize), .little) },
+            6 => .{ .focus = try self.reader.takeStruct(@TypeOf(dummy.focus), .little) },
             7 => blk: {
                 const val = try self.reader.takeInt(u8, .little);
                 break :blk .{ .lifecycle = @enumFromInt(val) };
@@ -157,6 +162,12 @@ pub const Deserializer = struct {
             8 => blk: {
                 const dt_ns = try self.reader.takeInt(u64, .little);
                 break :blk .{ .tick = .{ .dt_ns = dt_ns } };
+            },
+            9 => blk: {
+                const kind = try self.reader.takeEnum(event.CommandKind, .little);
+                var args: [4]f32 = undefined;
+                for (&args) |*arg| arg.* = @bitCast(try self.reader.takeInt(u32, .little));
+                break :blk .{ .command = .{ .kind = kind, .args = args } };
             },
             else => error.InvalidPayloadTag,
         };
@@ -204,4 +215,25 @@ test "Serialize and deserialize events with delta encoding" {
     try std.testing.expectEqual(e1.t_ns, de1.t_ns);
     try std.testing.expectEqual(e2.tick_id, de2.tick_id);
     try std.testing.expectEqual(e3.tick_id, de3.tick_id);
+}
+
+test "Serialize and deserialize a command event" {
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
+
+    var serializer = Serializer.init(&buffer.writer);
+    try serializer.writeHeader(120);
+    const sent = Event.init(3, 4000, 2, .{ .command = .{ .kind = .tp, .args = .{ 1.5, -64.0, 1e6, 0.0 } } });
+    try serializer.writeEvent(sent);
+
+    var reader: std.Io.Reader = .fixed(buffer.written());
+    var deserializer = Deserializer.init(&reader);
+    _ = try deserializer.readHeader();
+    const got = try deserializer.readEvent();
+
+    try std.testing.expectEqual(sent.tick_id, got.tick_id);
+    try std.testing.expectEqual(sent.t_ns, got.t_ns);
+    try std.testing.expectEqual(sent.seq, got.seq);
+    try std.testing.expectEqual(event.CommandKind.tp, got.payload.command.kind);
+    try std.testing.expectEqual(sent.payload.command.args, got.payload.command.args);
 }
