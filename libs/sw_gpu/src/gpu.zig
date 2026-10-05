@@ -125,8 +125,10 @@ pub const GPU = struct {
     instance: if (!is_wasm) native.WGPUInstance else void = if (!is_wasm) null else {},
     adapter: if (!is_wasm) native.WGPUAdapter else void = if (!is_wasm) null else {},
     surface: if (!is_wasm) native.WGPUSurface else void = if (!is_wasm) null else {},
-    width: if (!is_wasm) u32 else void = if (!is_wasm) 0 else {},
-    height: if (!is_wasm) u32 else void = if (!is_wasm) 0 else {},
+    // Surface size in pixels. Native: the wgpu surface. Web: the canvas, which
+    // the browser sizes. The web glue keeps it current with setSurfaceSize().
+    width: u32 = 0,
+    height: u32 = 0,
 
     // MSAA state — populated by configureMSAA(); null if MSAA is off (sample_count == 1)
     msaa_sample_count: u32 = 1,
@@ -464,14 +466,21 @@ pub const GPU = struct {
     /// Returns the swapchain/surface width in pixels (matches wgpu texture dimensions).
     /// On Retina/HiDPI displays this is the physical pixel count, NOT logical pixels.
     pub fn getSurfaceWidth(self: *const GPU) u32 {
-        if (comptime is_wasm) return 0;
         return self.width;
     }
 
     /// Returns the swapchain/surface height in pixels.
     pub fn getSurfaceHeight(self: *const GPU) u32 {
-        if (comptime is_wasm) return 0;
         return self.height;
+    }
+
+    /// Web only: record the canvas size in pixels. The browser owns the canvas
+    /// swapchain, so there is no surface to configure. Call this when the canvas
+    /// size changes, before the frame that uses getSurfaceWidth/Height.
+    pub fn setSurfaceSize(self: *GPU, width: u32, height: u32) void {
+        if (comptime !is_wasm) @compileError("setSurfaceSize is for the web build only");
+        self.width = width;
+        self.height = height;
     }
 
     /// Initialize WebGPU (call once at startup)
@@ -488,6 +497,8 @@ pub const GPU = struct {
 
             self.device = device;
             self.queue = queue;
+            self.width = width;
+            self.height = height;
             self.state = .ready;
         } else {
             // Native: Initialize wgpu-native. `window == null` means "headless
@@ -1668,8 +1679,11 @@ pub const CommandEncoder = struct {
                 if (desc.depth_stencil_attachment) |ds| @intFromEnum(ds.depth_load_op) else 0,
                 if (desc.depth_stencil_attachment) |ds| @intFromEnum(ds.depth_store_op) else 0,
                 if (desc.depth_stencil_attachment) |ds| ds.depth_clear_value else 0,
-                if (desc.depth_stencil_attachment) |ds| @intFromEnum(ds.stencil_load_op) else 0,
-                if (desc.depth_stencil_attachment) |ds| @intFromEnum(ds.stencil_store_op) else 0,
+                // 0 maps to no stencil op in webgpu.ts. stencil_read_only must
+                // give no ops, the same as the native path: a depth-only
+                // format (depth24plus) rejects any stencil op.
+                if (desc.depth_stencil_attachment) |ds| (if (ds.stencil_read_only) 0 else @intFromEnum(ds.stencil_load_op)) else 0,
+                if (desc.depth_stencil_attachment) |ds| (if (ds.stencil_read_only) 0 else @intFromEnum(ds.stencil_store_op)) else 0,
                 if (desc.depth_stencil_attachment) |ds| ds.stencil_clear_value else 0,
             );
             return RenderPassEncoder{ .handle = handle };

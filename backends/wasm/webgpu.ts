@@ -47,6 +47,18 @@ const TEXTURE_FORMAT_MAP: Record<number, GPUTextureFormat> = {
   43: 'depth32float-stencil8',
 };
 
+// Index = the value of `CompareFunction` in libs/sw_gpu/src/types.zig.
+const COMPARE_FUNCTIONS: GPUCompareFunction[] = [
+  'never',
+  'less',
+  'equal',
+  'less-equal',
+  'greater',
+  'not-equal',
+  'greater-equal',
+  'always',
+];
+
 export async function initWebGPU(
   canvas: HTMLCanvasElement,
 ): Promise<GPUBridge> {
@@ -627,9 +639,9 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
       fragmentEntryLen: number,
       fragmentTargetsPtr: number,
       fragmentTargetCount: number,
-      _depthStencilFormat: number,
-      _depthWriteEnabled: boolean,
-      _depthCompare: number,
+      depthStencilFormat: number,
+      depthWriteEnabled: boolean,
+      depthCompare: number,
       sampleCount: number,
       sampleMask: number,
       alphaToCoverageEnabled: boolean,
@@ -875,6 +887,21 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
           module: fragmentModule,
           entryPoint: fragmentEntry,
           targets,
+        };
+      }
+
+      // Depth state. Format 0 means the pipeline has no depth attachment. The
+      // order of COMPARE_FUNCTIONS must match `CompareFunction` in
+      // libs/sw_gpu/src/types.zig. WASM passes a bool as 0 or 1.
+      if (depthStencilFormat !== 0) {
+        const format = TEXTURE_FORMAT_MAP[depthStencilFormat];
+        if (!format) {
+          throw new Error(`Unknown depth format: ${depthStencilFormat}`);
+        }
+        pipelineDesc.depthStencil = {
+          format,
+          depthWriteEnabled: Boolean(depthWriteEnabled),
+          depthCompare: COMPARE_FUNCTIONS[depthCompare],
         };
       }
 

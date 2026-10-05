@@ -4637,6 +4637,12 @@ fn wasmFrameImpl(timestamp_ms: f64) callconv(.c) void {
 
     wasm_backend.pollEvents(&wasm_bus) catch return;
 
+    // The canvas size arrives as a resize event, after init. The GPU resources
+    // (depth, FXAA target) take their size from getSurfaceWidth/Height on the
+    // first render, so the GPU must know the canvas size first.
+    const info = wasm_backend.getWindowInfo();
+    wasm_gpu.setSurfaceSize(info.width, info.height);
+
     const now = wasm_backend.getTime();
     const dt = now - wasm_last_time_ns;
     wasm_last_time_ns = now;
