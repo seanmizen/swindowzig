@@ -341,6 +341,45 @@ pub const Chunk = struct {
         return self.blocks.get(blockLinearIdx(x, y, z));
     }
 
+    /// For each column (x, z), a 256-bit mask over y: bit y is set when the
+    /// block is not air. It reads the packed data once in storage order, with
+    /// no division per block, so it is much faster than 65 536 getBlock calls.
+    pub fn solidColumns(self: *const Chunk, out: *[CHUNK_W][CHUNK_W][4]u64) void {
+        comptime std.debug.assert(CHUNK_W == 16 and CHUNK_H == 256);
+        const pb = &self.blocks;
+        if (pb.bits_per_entry == 0) {
+            const fill: u64 = if (pb.palette[0] == .air) 0 else ~@as(u64, 0);
+            for (out) |*row| for (row) |*col| {
+                col.* = .{ fill, fill, fill, fill };
+            };
+            return;
+        }
+        var solid: [256]bool = undefined;
+        for (pb.palette, 0..) |b, i| solid[i] = b != .air;
+        for (out) |*row| for (row) |*col| {
+            col.* = .{ 0, 0, 0, 0 };
+        };
+        const bits: u6 = @intCast(pb.bits_per_entry);
+        const epw: usize = 64 / @as(usize, bits);
+        const mask: u64 = (@as(u64, 1) << bits) - 1;
+        var idx: usize = 0;
+        for (pb.data) |word| {
+            var w = word;
+            var k: usize = 0;
+            while (k < epw and idx < BLOCKS_PER_CHUNK) : (k += 1) {
+                if (solid[@intCast(w & mask)]) {
+                    // idx = x * (H * W) + y * W + z
+                    const x = idx >> 12;
+                    const y = (idx >> 4) & 0xFF;
+                    const z = idx & 0xF;
+                    out[x][z][y >> 6] |= @as(u64, 1) << @intCast(y & 63);
+                }
+                w >>= bits;
+                idx += 1;
+            }
+        }
+    }
+
     pub fn setBlock(self: *Chunk, x: i32, y: i32, z: i32, block: BlockType) !void {
         if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) {
             return;

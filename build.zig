@@ -176,6 +176,19 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_unit_tests.step);
     }
 
+    // Mesher benchmark (no GPU): zig build bench-mesher -Doptimize=ReleaseFast
+    const bench_mesher = b.addExecutable(.{
+        .name = "bench_mesher",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/bench_mesher.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    bench_mesher.root_module.addImport("sw_gpu", web_libs.gpu);
+    const bench_mesher_step = b.step("bench-mesher", "Time the voxel mesher on a fixed world (no GPU)");
+    bench_mesher_step.dependOn(&b.addRunArtifact(bench_mesher).step);
+
     // Voxel mesher tests: the packed-quad round trip checks that vs_chunk's
     // decode (mirrored in mesher.unpackCorner) gives back the CPU vertices.
     const mesher_tests = b.addTest(.{
