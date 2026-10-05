@@ -1,6 +1,6 @@
 //! Configurable per-chunk culling for the voxel demo.
 //!
-//! Three strategies are exposed via `Strategy`:
+//! Four strategies are exposed via `Strategy`:
 //!
 //!   .none   — no culling. Every loaded chunk is drawn.
 //!   .sphere — radial cutoff at `render_distance + slack`. Cheap sanity test;
@@ -9,8 +9,13 @@
 //!   .cone   — sphere-vs-cone test against a half-angle (fov/2) cone around
 //!             the camera forward vector. The chunk's bounding sphere is
 //!             treated as a single sphere for the test (no per-quad work).
-//!             This is the default. main.zig sets the fov to the screen
-//!             diagonal each frame, so the cone contains the view frustum.
+//!             main.zig sets the fov to the screen diagonal each frame, so
+//!             the cone contains the view frustum.
+//!   .frustum — the default. Tests the chunk's box (its x and z, and the y
+//!             range of its mesh) against the left, right, bottom, top and
+//!             near planes of the view-projection matrix. Much tighter than
+//!             the cone: a chunk's content is under y = 80 on hilly terrain,
+//!             but the cone tests a 256-high bounding sphere.
 //!
 //! Design notes / pitfalls:
 //!
@@ -60,28 +65,22 @@ pub const Strategy = enum {
     none,
     sphere,
     cone,
+    /// The default. Tests each chunk's box (x and z of the chunk, y from its
+    /// mesh) against the planes of the view-projection matrix.
+    frustum,
 
     pub fn fromString(s: []const u8) ?Strategy {
-        if (std.mem.eql(u8, s, "none")) return .none;
-        if (std.mem.eql(u8, s, "sphere")) return .sphere;
-        if (std.mem.eql(u8, s, "cone")) return .cone;
-        return null;
+        return std.meta.stringToEnum(Strategy, s);
     }
 
     pub fn label(self: Strategy) []const u8 {
-        return switch (self) {
-            .none => "none",
-            .sphere => "sphere",
-            .cone => "cone",
-        };
+        return @tagName(self);
     }
 
     pub fn cycle(self: Strategy, dir: i32) Strategy {
-        return switch (self) {
-            .none => if (dir > 0) Strategy.sphere else Strategy.cone,
-            .sphere => if (dir > 0) Strategy.cone else Strategy.none,
-            .cone => if (dir > 0) Strategy.none else Strategy.sphere,
-        };
+        const n: i32 = @intCast(std.enums.values(Strategy).len);
+        const i: i32 = @intFromEnum(self);
+        return @enumFromInt(@mod(i + (if (dir > 0) @as(i32, 1) else -1), n));
     }
 };
 
@@ -106,6 +105,11 @@ pub const Frustum = struct {
     /// is exempt from culling regardless of strategy.
     cam_cx: i32,
     cam_cz: i32,
+    /// Frustum strategy: left, right, bottom, top and near planes (a, b, c,
+    /// d), with a·x + b·y + c·z + d >= 0 inside. From the rows of the
+    /// view-projection matrix, for WebGPU clip space (0 <= z <= w). There is
+    /// no far plane: the world loads only chunks inside the render distance.
+    planes: [5][4]f32 = @splat(.{ 0, 0, 0, 1 }),
 
     /// Build a frustum from the live camera state.
     ///
@@ -158,12 +162,47 @@ pub const Frustum = struct {
             .cam_cz = cam_cz,
         };
     }
+
+    /// Set the planes of the frustum strategy from a view-projection matrix
+    /// given as rows: `rows[r][c]` is row r, column c, and clip = M · v.
+    pub fn setPlanes(self: *Frustum, rows: [4][4]f32) void {
+        const r0 = rows[0];
+        const r1 = rows[1];
+        const r2 = rows[2];
+        const r3 = rows[3];
+        const add = struct {
+            fn f(a: [4]f32, b: [4]f32, sign: f32) [4]f32 {
+                return .{ a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3] };
+            }
+        }.f;
+        self.planes = .{
+            add(r3, r0, 1), // left:   w + x >= 0
+            add(r3, r0, -1), // right:  w - x >= 0
+            add(r3, r1, 1), // bottom: w + y >= 0
+            add(r3, r1, -1), // top:    w - y >= 0
+            r2, // near: z >= 0
+        };
+    }
 };
+
+/// True when the box [lo, hi] is fully outside one of the frustum planes.
+fn boxOutside(planes: [5][4]f32, lo: [3]f32, hi: [3]f32) bool {
+    for (planes) |p| {
+        // The corner furthest along the plane normal.
+        const x = if (p[0] >= 0) hi[0] else lo[0];
+        const y = if (p[1] >= 0) hi[1] else lo[1];
+        const z = if (p[2] >= 0) hi[2] else lo[2];
+        if (p[0] * x + p[1] * y + p[2] * z + p[3] < 0) return true;
+    }
+    return false;
+}
 
 /// Returns true if the chunk at chunk-grid coordinates (cx, cz) should be
 /// drawn under the given strategy. Cheap and branch-light: the camera-chunk
 /// short-circuit handles the common case in two integer compares.
-pub fn keepChunk(strategy: Strategy, frustum: Frustum, cx: i32, cz: i32) bool {
+/// `y_min`/`y_max`: the y range of the chunk's mesh (only the frustum
+/// strategy uses it).
+pub fn keepChunk(strategy: Strategy, frustum: Frustum, cx: i32, cz: i32, y_min: f32, y_max: f32) bool {
     // --- Safety net: never cull the camera chunk or its 8 horizontal
     // neighbours. See the file header for the rationale.
     const dcx = cx - frustum.cam_cx;
@@ -171,6 +210,13 @@ pub fn keepChunk(strategy: Strategy, frustum: Frustum, cx: i32, cz: i32) bool {
     if (dcx >= -1 and dcx <= 1 and dcz >= -1 and dcz <= 1) return true;
 
     if (strategy == .none) return true;
+
+    if (strategy == .frustum) {
+        const x0: f32 = @floatFromInt(cx * CHUNK_W);
+        const z0: f32 = @floatFromInt(cz * CHUNK_W);
+        const w: f32 = @floatFromInt(CHUNK_W);
+        return !boxOutside(frustum.planes, .{ x0, y_min, z0 }, .{ x0 + w, y_max, z0 + w });
+    }
 
     // World-space chunk centre. Y is fixed at half the column height.
     const cwx: f32 = @as(f32, @floatFromInt(cx * CHUNK_W)) + half_w_f;
@@ -230,12 +276,12 @@ pub fn keepChunk(strategy: Strategy, frustum: Frustum, cx: i32, cz: i32) bool {
 test "180° fov is a strict no-op (cone keeps every loaded chunk)" {
     const f = Frustum.capture(.{ 24.0, 64.0, 24.0 }, .{ 0.0, -1.0, 0.0 }, 180.0, 4);
     // Far chunk in every horizontal direction inside the render radius.
-    try std.testing.expect(keepChunk(.cone, f, 4, 0));
-    try std.testing.expect(keepChunk(.cone, f, -4, 0));
-    try std.testing.expect(keepChunk(.cone, f, 0, 4));
-    try std.testing.expect(keepChunk(.cone, f, 0, -4));
-    try std.testing.expect(keepChunk(.cone, f, 3, 3));
-    try std.testing.expect(keepChunk(.cone, f, -3, -3));
+    try std.testing.expect(keepChunk(.cone, f, 4, 0, 0, CHUNK_H));
+    try std.testing.expect(keepChunk(.cone, f, -4, 0, 0, CHUNK_H));
+    try std.testing.expect(keepChunk(.cone, f, 0, 4, 0, CHUNK_H));
+    try std.testing.expect(keepChunk(.cone, f, 0, -4, 0, CHUNK_H));
+    try std.testing.expect(keepChunk(.cone, f, 3, 3, 0, CHUNK_H));
+    try std.testing.expect(keepChunk(.cone, f, -3, -3, 0, CHUNK_H));
 }
 
 test "camera 3x3 neighbourhood always survives a narrow cone facing away" {
@@ -244,7 +290,7 @@ test "camera 3x3 neighbourhood always survives a narrow cone facing away" {
     while (dx <= 1) : (dx += 1) {
         var dz: i32 = -1;
         while (dz <= 1) : (dz += 1) {
-            try std.testing.expect(keepChunk(.cone, f, dx, dz));
+            try std.testing.expect(keepChunk(.cone, f, dx, dz, 0, CHUNK_H));
         }
     }
 }
@@ -254,7 +300,7 @@ test "narrow cone looking +x culls a far chunk directly behind" {
     // 10 chunks in the -x direction is well outside RENDER_DISTANCE so it
     // also fails the sphere cutoff — but the cone test should reject it
     // independently before we get there.
-    try std.testing.expect(!keepChunk(.cone, f, -10, 0));
+    try std.testing.expect(!keepChunk(.cone, f, -10, 0, 0, CHUNK_H));
 }
 
 test "looking straight down keeps the column we are above" {
@@ -262,28 +308,95 @@ test "looking straight down keeps the column we are above" {
     // Chunk (0,0) — directly below us, but the camera is way above its
     // bounding sphere centre. The bounding-sphere short-circuit must catch
     // this; if it does not, narrow-cone-looking-down is broken.
-    try std.testing.expect(keepChunk(.cone, f, 0, 0));
+    try std.testing.expect(keepChunk(.cone, f, 0, 0, 0, CHUNK_H));
 }
 
 test "looking straight down keeps the four immediately-adjacent columns" {
     const f = Frustum.capture(.{ 24.0, 64.0, 24.0 }, .{ 0.0, -1.0, 0.0 }, 30.0, 4);
     // Even at 30° fov, the 3×3 safety net must keep all immediate neighbours.
-    try std.testing.expect(keepChunk(.cone, f, 1, 0));
-    try std.testing.expect(keepChunk(.cone, f, -1, 0));
-    try std.testing.expect(keepChunk(.cone, f, 0, 1));
-    try std.testing.expect(keepChunk(.cone, f, 0, -1));
+    try std.testing.expect(keepChunk(.cone, f, 1, 0, 0, CHUNK_H));
+    try std.testing.expect(keepChunk(.cone, f, -1, 0, 0, CHUNK_H));
+    try std.testing.expect(keepChunk(.cone, f, 0, 1, 0, CHUNK_H));
+    try std.testing.expect(keepChunk(.cone, f, 0, -1, 0, CHUNK_H));
 }
 
 test "sphere strategy honours the outer radius" {
     const f = Frustum.capture(.{ 0.0, 64.0, 0.0 }, .{ 1.0, 0.0, 0.0 }, 60.0, 4);
     // Inside the radius (with slack): keep.
-    try std.testing.expect(keepChunk(.sphere, f, 3, 0));
+    try std.testing.expect(keepChunk(.sphere, f, 3, 0, 0, CHUNK_H));
     // Way outside: cull.
-    try std.testing.expect(!keepChunk(.sphere, f, 50, 0));
+    try std.testing.expect(!keepChunk(.sphere, f, 50, 0, 0, CHUNK_H));
 }
 
 test "none strategy never culls" {
     const f = Frustum.capture(.{ 0.0, 64.0, 0.0 }, .{ 1.0, 0.0, 0.0 }, 1.0, 4);
-    try std.testing.expect(keepChunk(.none, f, 1000, 1000));
-    try std.testing.expect(keepChunk(.none, f, -1000, -1000));
+    try std.testing.expect(keepChunk(.none, f, 1000, 1000, 0, CHUNK_H));
+    try std.testing.expect(keepChunk(.none, f, -1000, -1000, 0, CHUNK_H));
+}
+
+/// Rows of a view-projection matrix for the tests: perspective (60° vertical
+/// fov, 16:9, WebGPU depth 0..1, near 0.1) times a view from `eye` along
+/// -z or +x. Built by hand so the test does not depend on sw_math.
+fn testRows(eye: [3]f32, look_x: bool) [4][4]f32 {
+    const f: f32 = 1.0 / @tan(@as(f32, std.math.pi) / 6.0);
+    const aspect: f32 = 16.0 / 9.0;
+    const near: f32 = 0.1;
+    const far: f32 = 1000.0;
+    // Projection rows (right-handed, looking down -z in view space).
+    const p = [4][4]f32{
+        .{ f / aspect, 0, 0, 0 },
+        .{ 0, f, 0, 0 },
+        .{ 0, 0, far / (near - far), near * far / (near - far) },
+        .{ 0, 0, -1, 0 },
+    };
+    // View rows: world -> view. Looking -z: identity rotation. Looking +x:
+    // view -z = world +x, so view x = world z (right-handed).
+    const rot = if (look_x) [3][3]f32{ .{ 0, 0, 1 }, .{ 0, 1, 0 }, .{ -1, 0, 0 } } else [3][3]f32{ .{ 1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, 0, 1 } };
+    var v: [4][4]f32 = undefined;
+    for (0..3) |r| {
+        v[r] = .{ rot[r][0], rot[r][1], rot[r][2], -(rot[r][0] * eye[0] + rot[r][1] * eye[1] + rot[r][2] * eye[2]) };
+    }
+    v[3] = .{ 0, 0, 0, 1 };
+    var out: [4][4]f32 = undefined;
+    for (0..4) |r| for (0..4) |c| {
+        var sum: f32 = 0;
+        for (0..4) |k| sum += p[r][k] * v[k][c];
+        out[r][c] = sum;
+    };
+    return out;
+}
+
+test "frustum strategy keeps a chunk ahead and culls one behind" {
+    const eye = [3]f32{ 8, 70, 8 };
+    var f = Frustum.capture(eye, .{ 0, 0, -1 }, 100, 12);
+    f.setPlanes(testRows(eye, false));
+    try std.testing.expect(keepChunk(.frustum, f, 0, -5, 0, 80)); // straight ahead (-z)
+    try std.testing.expect(!keepChunk(.frustum, f, 0, 5, 0, 80)); // straight behind
+    try std.testing.expect(!keepChunk(.frustum, f, 6, -3, 0, 80)); // far off to the right side
+}
+
+test "frustum strategy culls by the chunk's y range" {
+    const eye = [3]f32{ 8, 70, 8 };
+    var f = Frustum.capture(eye, .{ 1, 0, 0 }, 100, 12);
+    f.setPlanes(testRows(eye, true));
+    // A chunk ahead (+x): visible when its mesh reaches eye height, culled
+    // when its mesh is only deep below and far enough that it is under the
+    // bottom plane.
+    try std.testing.expect(keepChunk(.frustum, f, 4, 0, 0, 80));
+    try std.testing.expect(!keepChunk(.frustum, f, 4, 0, 0, 2));
+}
+
+test "frustum strategy keeps the camera's 3x3 neighbourhood" {
+    const eye = [3]f32{ 8, 70, 8 };
+    var f = Frustum.capture(eye, .{ 0, 0, -1 }, 100, 12);
+    f.setPlanes(testRows(eye, false));
+    try std.testing.expect(keepChunk(.frustum, f, 0, 1, 0, 80)); // behind, but a neighbour
+}
+
+test "cycle visits every strategy in both directions" {
+    var s: Strategy = .none;
+    for (0..std.enums.values(Strategy).len) |_| s = s.cycle(1);
+    try std.testing.expectEqual(Strategy.none, s);
+    try std.testing.expectEqual(Strategy.frustum, Strategy.none.cycle(-1));
+    try std.testing.expectEqual(Strategy.frustum, Strategy.fromString("frustum").?);
 }

@@ -49,6 +49,32 @@ fn fatalExitNative(code: u8) noreturn {
 /// Perf-logging timestamp. See clock.zig: the web build reports 0.
 const perfNowNs = clock.nowNs;
 
+/// The view-projection matrix of the rendered view. The third-person front
+/// view looks back at the player, so it has its own view matrix.
+fn currentViewProj() Mat4 {
+    if (state.camera_view == .third_person_front) {
+        const fwd = state.camera.forward();
+        const target = state.camera.position.add(Vec3.init(-fwd.x, -fwd.y, -fwd.z));
+        const view = math.lookAt(state.camera.position, target, Vec3.init(0, 1, 0));
+        return state.camera.getProjectionMatrix().mul(view);
+    }
+    return state.camera.getViewProjectionMatrix();
+}
+
+/// Capture the cull frustum of the rendered view: the cone fields from the
+/// eye and view direction, and the planes from the view-projection matrix.
+fn captureFrustum() frustum_mod.Frustum {
+    const eye = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
+    var f = frustum_mod.Frustum.capture(eye, viewForward(), state.frustum_fov_deg, state.world.render_distance);
+    const vp = currentViewProj();
+    var rows: [4][4]f32 = undefined;
+    for (0..4) |r| for (0..4) |c| {
+        rows[r][c] = vp.get(r, c);
+    };
+    f.setPlanes(rows);
+    return f;
+}
+
 /// The direction the rendered view looks. The third-person front view looks
 /// back at the player, so it is the reverse of camera.forward().
 fn viewForward() [3]f32 {
@@ -616,6 +642,9 @@ const ChunkGPU = struct {
     /// Quads the buffer can hold, and quads in it now.
     capacity: usize = 0,
     quad_count: u32 = 0,
+    /// The y range of the mesh, for the frustum cull.
+    y_min: f32 = 0,
+    y_max: f32 = chunk_mod.CHUNK_H,
 
     fn release(self: *ChunkGPU) void {
         if (self.bind_group) |bg| bg.release();
@@ -751,7 +780,7 @@ const State = struct {
     /// Frustum-cull strategy parsed from --frustum=<none|sphere|cone>.
     /// Default is `.none` so the feature is opt-in — see frustum.zig header
     /// for the rationale and the cone-vs-sphere math notes.
-    frustum_strategy: frustum_mod.Strategy = .cone,
+    frustum_strategy: frustum_mod.Strategy = .frustum,
     /// Total fov in degrees for the cone strategy. While frustum_fov_auto is
     /// true, each frame sets it to the screen-diagonal fov of the camera
     /// (see screenDiagonalFovDeg). --frustum-fov-deg=<degrees> sets a fixed
@@ -962,7 +991,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Frustum-cull defaults: the cone strategy, with a cone that covers the
     // screen diagonal (frustum_fov_auto). The cone test uses each chunk's
     // full-height bounding sphere, so it keeps every chunk that is on screen.
-    state.frustum_strategy = .cone;
+    state.frustum_strategy = .frustum;
     state.frustum_fov_deg = 180.0;
     state.frustum_fov_auto = true;
     state.frozen_frustum = null;
@@ -2554,12 +2583,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 state.camera.position.z,
             };
             const fwd = viewForward();
-            state.frozen_frustum = frustum_mod.Frustum.capture(
-                eye,
-                fwd,
-                state.frustum_fov_deg,
-                state.world.render_distance,
-            );
+            state.frozen_frustum = captureFrustum();
             std.log.info("Frustum freeze: ON @ ({d:.1},{d:.1},{d:.1}) fwd=({d:.2},{d:.2},{d:.2})", .{
                 eye[0], eye[1], eye[2], fwd[0], fwd[1], fwd[2],
             });
@@ -3404,12 +3428,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     // Update uniforms — front-facing view needs a flipped lookAt direction.
-    const view_proj = if (state.camera_view == .third_person_front) blk: {
-        const fwd = state.camera.forward();
-        const target = state.camera.position.add(Vec3.init(-fwd.x, -fwd.y, -fwd.z));
-        const view = math.lookAt(state.camera.position, target, Vec3.init(0, 1, 0));
-        break :blk state.camera.getProjectionMatrix().mul(view);
-    } else state.camera.getViewProjectionMatrix();
+    const view_proj = currentViewProj();
 
     const hover_active: f32 = if (state.hover_block != null) 1.0 else 0.0;
     const hover_pos = state.hover_block orelse Vec3.init(0, 0, 0);
@@ -3502,20 +3521,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     // moving around does not silently re-enable nearby chunks via the 3×3
     // safety net — that would defeat the diagnostic.
     if (state.frustum_fov_auto) state.frustum_fov_deg = screenDiagonalFovDeg(state.camera.fov, state.camera.aspect);
-    const live_frustum: frustum_mod.Frustum = if (state.frozen_frustum) |fz| fz else blk: {
-        const eye = [3]f32{
-            state.camera.position.x,
-            state.camera.position.y,
-            state.camera.position.z,
-        };
-        const fwd = viewForward();
-        break :blk frustum_mod.Frustum.capture(
-            eye,
-            fwd,
-            state.frustum_fov_deg,
-            state.world.render_distance,
-        );
-    };
+    const live_frustum: frustum_mod.Frustum = if (state.frozen_frustum) |fz| fz else captureFrustum();
 
     // Draw order: with depth on, front to back, so the depth test rejects
     // hidden fragments before they shade. With depth off, back to front
@@ -3529,7 +3535,12 @@ fn voxelRender(ctx: *sw.Context) !void {
         var it = state.world.chunks.valueIterator();
         while (it.next()) |lc_ptr| {
             if (lc_ptr.*.mesh.vertices.items.len == 0) continue;
-            if (!frustum_mod.keepChunk(state.frustum_strategy, live_frustum, lc_ptr.*.cx, lc_ptr.*.cz)) {
+            // The y range of the chunk's uploaded mesh. A chunk with no upload
+            // yet is not drawn anyway, so the full height is only a default.
+            const cg = state.chunk_gpu.get(.{ .cx = lc_ptr.*.cx, .cz = lc_ptr.*.cz });
+            const y_min: f32 = if (cg) |c| c.y_min else 0;
+            const y_max: f32 = if (cg) |c| c.y_max else chunk_mod.CHUNK_H;
+            if (!frustum_mod.keepChunk(state.frustum_strategy, live_frustum, lc_ptr.*.cx, lc_ptr.*.cz, y_min, y_max)) {
                 state.frustum_culled += 1;
                 continue;
             }
@@ -4599,7 +4610,9 @@ fn logGpuMeshStats() void {
         quads += cg.quad_count;
         if (cg.quad_buffer != null) bytes += (cg.capacity + 1) * @sizeOf(mesher_mod.PackedQuad);
     }
-    std.log.info("[GPU MESH] chunks={} quads={} bytes={}", .{ state.chunk_gpu.count(), quads, bytes });
+    std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s})", .{
+        state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(),
+    });
 }
 
 /// Pack a chunk's quads and write them to its quad buffer. `sorted`: write
@@ -4640,6 +4653,14 @@ fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, allocator: std.mem.Allocator, lc: *worl
     _ = mesher_mod.packQuads(&lc.mesh, state.pack_scratch.items[1..], world_ox, world_oz, order, state.gpu_debug);
     g.writeBuffer(cg.quad_buffer.?, 0, std.mem.sliceAsBytes(state.pack_scratch.items));
     cg.quad_count = @intCast(quad_count);
+    var y_min: f32 = chunk_mod.CHUNK_H;
+    var y_max: f32 = 0;
+    for (lc.mesh.vertices.items) |v| {
+        y_min = @min(y_min, v.pos[1]);
+        y_max = @max(y_max, v.pos[1]);
+    }
+    cg.y_min = y_min;
+    cg.y_max = y_max;
 }
 
 // ----------------------------------------------------------------------------

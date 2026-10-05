@@ -200,6 +200,14 @@ pub fn build(b: *std.Build) void {
     });
     mesher_tests.root_module.addImport("sw_gpu", web_libs.gpu);
     test_step.dependOn(&b.addRunArtifact(mesher_tests).step);
+    const frustum_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/frustum.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(frustum_tests).step);
 }
 
 const Libs = struct {
