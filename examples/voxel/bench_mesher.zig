@@ -59,6 +59,30 @@ pub fn main(init: std.process.Init) !void {
         }
         out.* = @intCast(clock.nowNs() - t0);
     }
+    // Skylight: compute it again for every generated chunk, REPS times. The
+    // hash of the grids shows that a change gives the same values.
+    var sky_ns: [REPS]u64 = undefined;
+    var sky_hash: u64 = 0;
+    var sky_chunks: usize = 0;
+    for (&sky_ns, 0..) |*out, r| {
+        sky_chunks = 0;
+        const t0 = clock.nowNs();
+        var it = world.chunks.valueIterator();
+        while (it.next()) |lcp| {
+            lcp.*.chunk.computeSkylight();
+            sky_chunks += 1;
+            if (r == 0) sky_hash +%= std.hash.Wyhash.hash(0, std.mem.asBytes(&lcp.*.chunk.skylight));
+        }
+        out.* = @intCast(clock.nowNs() - t0);
+    }
+    std.mem.sort(u64, &sky_ns, {}, std.sort.asc(u64));
+    std.debug.print("bench_mesher: computeSkylight {d} chunks, hash {x:0>16}, per chunk median {d:.1} us, min {d:.1} us\n", .{
+        sky_chunks,
+        sky_hash,
+        @as(f64, @floatFromInt(sky_ns[REPS / 2])) / @as(f64, @floatFromInt(sky_chunks)) / 1000.0,
+        @as(f64, @floatFromInt(sky_ns[0])) / @as(f64, @floatFromInt(sky_chunks)) / 1000.0,
+    });
+
     std.mem.sort(u64, &rep_ns, {}, std.sort.asc(u64));
     const per = struct {
         fn us(ns: u64, n: usize) f64 {

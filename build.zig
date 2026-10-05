@@ -208,6 +208,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(frustum_tests).step);
+    // Chunk tests: the fast skylight matches the bucket-pass reference.
+    const chunk_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/chunk.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(chunk_tests).step);
     // Async chunk tests: meshing through border copies matches full chunks.
     const async_tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -431,6 +431,97 @@ pub const Chunk = struct {
     /// Allocator-free by design so it can be called from `generateTerrain`
     /// without changing the existing call sites.
     pub fn computeSkylight(self: *Chunk) void {
+        // The same result as the bucket passes in computeSkylightReference
+        // (a test checks it), from one breadth-first pass:
+        // 1. A cell is MAX_SKYLIGHT when no solid block is above it in its
+        //    column, else 0. Solid blocks are 0.
+        // 2. Light spreads from the MAX_SKYLIGHT cells through air, one level
+        //    less per step, to a minimum of 1. The queue is in order of
+        //    level, so a cell gets its final value when it is first set.
+        // Only sky cells next to an air cell at 0 can give light, so only
+        // they go in the queue first. Solidity comes from bit masks.
+        comptime std.debug.assert(CHUNK_W == 16 and CHUNK_H == 256);
+        var solid: [CHUNK_W][CHUNK_W][4]u64 = undefined;
+        self.solidColumns(&solid);
+        const isSolid = struct {
+            fn f(cols: *const [CHUNK_W][CHUNK_W][4]u64, x: usize, y: usize, z: usize) bool {
+                return (cols[x][z][y >> 6] >> @intCast(y & 63)) & 1 != 0;
+            }
+        }.f;
+
+        // Pass 1: column seed. top[x][z] = the y above the highest solid block.
+        var top: [CHUNK_W][CHUNK_W]u16 = undefined;
+        for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
+            const c = solid[x][z];
+            var t: u16 = 0;
+            var w: usize = 4;
+            while (w > 0) {
+                w -= 1;
+                if (c[w] != 0) {
+                    t = @intCast(w * 64 + 64 - @clz(c[w]));
+                    break;
+                }
+            }
+            top[x][z] = t;
+            for (0..CHUNK_H) |y| self.skylight[x][y][z] = if (y >= t) MAX_SKYLIGHT else 0;
+        };
+
+        // Queue of cells, packed x << 12 | y << 4 | z. A cell enters at most
+        // once, so CHUNK_W * CHUNK_H * CHUNK_W entries are enough.
+        var queue: [CHUNK_W * CHUNK_H * CHUNK_W]u16 = undefined;
+        var head: usize = 0;
+        var tail: usize = 0;
+
+        // Seeds: sky cells with an air neighbour at 0. Inside a column the
+        // cell below the lowest sky cell is solid (or y = -1), so only the
+        // four sides can be shadowed air. A neighbour column with a higher
+        // top has shadowed air next to every sky cell of this column under
+        // that top.
+        for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
+            const t: usize = top[x][z];
+            if (t >= CHUNK_H) continue;
+            var hi: usize = t;
+            if (x > 0) hi = @max(hi, top[x - 1][z]);
+            if (x + 1 < CHUNK_W) hi = @max(hi, top[x + 1][z]);
+            if (z > 0) hi = @max(hi, top[x][z - 1]);
+            if (z + 1 < CHUNK_W) hi = @max(hi, top[x][z + 1]);
+            for (t..@min(hi, CHUNK_H)) |y| {
+                queue[tail] = @intCast((x << 12) | (y << 4) | z);
+                tail += 1;
+            }
+        };
+
+        // Pass 2: breadth-first spread.
+        while (head < tail) {
+            const v = queue[head];
+            head += 1;
+            const x: usize = v >> 12;
+            const y: usize = (v >> 4) & 0xFF;
+            const z: usize = v & 0xF;
+            const level = self.skylight[x][y][z];
+            if (level < 2) continue;
+            const target = level - 1;
+            const nbs = [6][3]i32{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, -1, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } };
+            for (nbs) |d| {
+                const nx = @as(i32, @intCast(x)) + d[0];
+                const ny = @as(i32, @intCast(y)) + d[1];
+                const nz = @as(i32, @intCast(z)) + d[2];
+                if (nx < 0 or nx >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
+                const nxu: usize = @intCast(nx);
+                const nyu: usize = @intCast(ny);
+                const nzu: usize = @intCast(nz);
+                if (isSolid(&solid, nxu, nyu, nzu)) continue;
+                if (self.skylight[nxu][nyu][nzu] >= target) continue;
+                self.skylight[nxu][nyu][nzu] = target;
+                queue[tail] = @intCast((nxu << 12) | (nyu << 4) | nzu);
+                tail += 1;
+            }
+        }
+    }
+
+    /// The bucket-pass skylight that computeSkylight replaced. Tests only:
+    /// the reference for the fast version.
+    fn computeSkylightReference(self: *Chunk) void {
         // Pass 1 — top-down column seed.
         var x: i32 = 0;
         while (x < CHUNK_W) : (x += 1) {
@@ -964,3 +1055,40 @@ pub const BlockGetter = struct {
         return self.getBlockLightFn(self.ctx, x, y, z);
     }
 };
+
+test "computeSkylight gives the same values as the bucket-pass reference" {
+    const a = std.testing.allocator;
+    const config = world_gen.presetConfig(.hilly);
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const r = prng.random();
+    var case: usize = 0;
+    while (case < 24) : (case += 1) {
+        var ch = Chunk.init(a);
+        defer ch.deinit();
+        const cx: i32 = @as(i32, @intCast(case % 6)) - 3;
+        const cz: i32 = @as(i32, @intCast(case / 6)) - 2;
+        try ch.generateTerrain(cx, cz, config);
+        // Caves, overhangs and holes: random solid boxes and air boxes.
+        if (case >= 8) {
+            var k: usize = 0;
+            while (k < 40) : (k += 1) {
+                const x0 = r.intRangeLessThan(i32, 0, CHUNK_W);
+                const y0 = r.intRangeLessThan(i32, 20, 120);
+                const z0 = r.intRangeLessThan(i32, 0, CHUNK_W);
+                const block: BlockType = if (r.boolean()) .air else .stone;
+                var x = x0;
+                while (x < @min(CHUNK_W, x0 + 5)) : (x += 1) {
+                    var y = y0;
+                    while (y < y0 + 4) : (y += 1) {
+                        var z = z0;
+                        while (z < @min(CHUNK_W, z0 + 5)) : (z += 1) try ch.setBlock(x, y, z, block);
+                    }
+                }
+            }
+        }
+        ch.computeSkylight();
+        const fast = ch.skylight;
+        ch.computeSkylightReference();
+        try std.testing.expectEqualSlices(u8, std.mem.asBytes(&ch.skylight), std.mem.asBytes(&fast));
+    }
+}
