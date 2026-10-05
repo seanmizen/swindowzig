@@ -137,7 +137,9 @@ for entry in "${RUNS[@]}"; do
             FAIL=$((FAIL + 1))
             continue
         fi
-        gzip -c "$out_ppm" > "$golden_gz"
+        # -n: no name or time in the gzip header, so the same pixels give the
+        # same bytes, and a golden update changes only the goldens it must.
+        gzip -n -c "$out_ppm" > "$golden_gz"
         printf "%-28s %-9s %s\n" "$name" "UPDATED" "$golden_gz"
         PASS=$((PASS + 1))
         continue

@@ -1441,9 +1441,26 @@ fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, c
 
         if (state.meshing_mode == .greedy) {
             // Greedy merged quads can't be patched by
-            // `updateForBlockChange` (see comment on the dig handler). Mark
-            // the neighbour chunk dirty for a full re-mesh.
-            nb_lc.mesh_dirty = true;
+            // `updateForBlockChange` (see comment on the dig handler). Mesh
+            // the neighbour again now, as the dig handler does for its own
+            // chunk. mesh_dirty would wait for the mesh loop, which meshes
+            // one chunk per tick: while new chunks load, the neighbour
+            // shows a hole where its face to the edited block belongs.
+            mesher_mod.generateMeshForMode(
+                &nb_lc.chunk,
+                &nb_lc.mesh,
+                nb_lc.worldX(),
+                nb_lc.worldZ(),
+                world.asBlockGetter(),
+                state.ao_strategy,
+                state.lighting_mode,
+                state.meshing_mode,
+            ) catch {
+                nb_lc.mesh_dirty = true;
+                continue;
+            };
+            nb_lc.mesh_dirty = false;
+            nb_lc.mesh_incremental_dirty = true;
             continue;
         }
         nb_lc.mesh.updateForBlockChange(
