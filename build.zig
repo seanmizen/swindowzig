@@ -208,6 +208,17 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(frustum_tests).step);
+    // Async chunk tests: meshing through border copies matches full chunks.
+    const async_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/async_chunks.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    async_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    test_step.dependOn(&b.addRunArtifact(async_tests).step);
 }
 
 const Libs = struct {

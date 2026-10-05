@@ -355,20 +355,24 @@ worker side, the `BlockGetter.ctx` has to point at something that can
 answer `getSkylight(wx, wy, wz)` without touching the main thread's
 chunk map.
 
-**Phase 1 approach:** each mesh job captures **5 Chunk value-copies**
-(self + up to 4 neighbours), owned by the job. The worker's
-`BlockGetter` routes lookups through a stack struct that holds the
-5 copies. Value-copies are cheap-ish: ~1.15 MB × 5 ≈ 5.75 MB of
-`memcpy` per mesh job. At `memcpy` ~10 GB/s that's ~600 µs per job of
-pure copy cost — acceptable given the 34 ms saved. Total allocator
-pressure is bounded by `ASYNC_MAX_IN_FLIGHT × 5 × 1.15 MB ≈ 46 MB`.
+**Current approach:** a job owns everything it reads, and nothing in it
+points into a live chunk:
 
-**Why value-copy and not pointer-share:** it eliminates the entire
-"main thread must not mutate these 5 chunks while the worker holds
-them" coordination problem. Digging or future relight only touches
-the main-thread Mesh for already-loaded chunks; those are never
-passed to the worker. The 5 copies are immutable snapshots for the
-worker's exclusive use.
+- Mesh-only jobs get a deep copy of the target chunk (`cloneChunk`). A
+  `Chunk` keeps its packed blocks in a heap slice, so a struct copy would
+  share that slice with the live chunk. The main thread frees the slice
+  when the palette grows (a new block type) or the chunk is evicted.
+- Each present neighbour is a `Border`: the cells within `BORDER` (3)
+  blocks of the target, for all y. Blocks are decoded, so a read is an
+  array index. A side border is 16 × 256 × 3 cells, a corner border
+  3 × 256 × 3, at 3 bytes per cell (block, skylight, block light).
+- A test meshes through borders and through full chunks and checks that
+  the meshes are the same, for naive and greedy meshing and every AO
+  strategy. If the mesher ever reads deeper than `BORDER`, a debug build
+  stops on the assertion in `SnapshotGetter`.
+
+Measured on the hilly fly-through (690 jobs): 134 MB copied, where whole
+chunks would be 547 MB.
 
 **Future optimisation** (not in phase 1): use a read-locked
 pointer-share for the common case and fall back to copy only when a

@@ -304,10 +304,8 @@ const PREGEN_CHUNKS_PER_TICK: usize = 8;
 const PREGEN_MESH_GENS_PER_TICK: usize = 4;
 
 /// Max gen+mesh jobs the async path will enqueue per tick during gameplay.
-/// Each enqueue copies up to 8 × ~1.15 MB neighbour snapshots for the job, so
-/// the per-tick memcpy cost scales linearly with this. 4 keeps memcpy under
-/// ~40 MB/tick = ~3.6 ms worst case on a 10 GB/s memcpy, but in practice the
-/// typical chunk has 4–6 neighbours populated so the real cost is lower.
+/// Each enqueue copies the borders of up to 8 neighbours (about 190 KB per
+/// job, see async_chunks.Border), so the per-tick copy cost scales with this.
 const ASYNC_GEN_ENQUEUE_PER_TICK: usize = 4;
 
 /// Max mesh-only (remesh-for-dirty-neighbour) jobs the async path will
@@ -664,6 +662,11 @@ const State = struct {
     /// Chunk meshes: vs_chunk, with the packed quads at group 1.
     chunk_pipeline: ?gpu_mod.RenderPipeline = null,
     chunk_bg_layout: ?gpu_mod.BindGroupLayout = null,
+    /// Async jobs enqueued, the bytes they copied from the world, and the
+    /// bytes a copy of each whole chunk would have been (see countJobCopy).
+    async_jobs: u64 = 0,
+    async_copy_bytes: u64 = 0,
+    async_whole_chunk_bytes: u64 = 0,
     /// Scratch for packing a chunk's quads before an upload.
     pack_scratch: std.ArrayList(mesher_mod.PackedQuad) = .empty,
     uniform_buffer: ?gpu_mod.Buffer = null,
@@ -1654,10 +1657,10 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
 ///
 /// On error, any snapshots already allocated are freed and the error is
 /// propagated — this is what keeps the partial-failure path leak-free.
-fn buildNeighbourSnapshots(world: *const world_mod.World, cx: i32, cz: i32) ![8]?*chunk_mod.Chunk {
-    var out: [8]?*chunk_mod.Chunk = .{ null, null, null, null, null, null, null, null };
+fn buildNeighbourSnapshots(world: *const world_mod.World, cx: i32, cz: i32) ![8]?*async_chunks_mod.Border {
+    var out: [8]?*async_chunks_mod.Border = @splat(null);
     errdefer for (out) |slot| {
-        if (slot) |p| async_chunks_mod.freeChunk(p);
+        if (slot) |b| b.free();
     };
 
     var idx: usize = 0;
@@ -1668,7 +1671,7 @@ fn buildNeighbourSnapshots(world: *const world_mod.World, cx: i32, cz: i32) ![8]
             if (dcx == 0 and dcz == 0) continue;
             const nk = world_mod.ChunkKey{ .cx = cx + dcx, .cz = cz + dcz };
             if (world.chunks.get(nk)) |nlc| {
-                out[idx] = try async_chunks_mod.cloneChunk(&nlc.chunk);
+                out[idx] = try async_chunks_mod.Border.fromChunk(&nlc.chunk, dcx, dcz);
             }
             idx += 1;
         }
@@ -1679,8 +1682,8 @@ fn buildNeighbourSnapshots(world: *const world_mod.World, cx: i32, cz: i32) ![8]
 /// Unpack a linear `[8]?*Chunk` (skipping center) into the full 9-slot
 /// `[9]?*Chunk` layout the pipeline expects. Slot 4 is the center and is
 /// filled by the caller.
-fn expandNeighboursToFullGrid(n8: [8]?*chunk_mod.Chunk) [9]?*chunk_mod.Chunk {
-    var full: [9]?*chunk_mod.Chunk = .{ null, null, null, null, null, null, null, null, null };
+fn expandNeighboursToFullGrid(n8: [8]?*async_chunks_mod.Border) [9]?*async_chunks_mod.Border {
+    var full: [9]?*async_chunks_mod.Border = @splat(null);
     // Input order: (dcx,dcz) iteration = (-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)
     // Grid indices: slot = (dcz+1)*3 + (dcx+1)
     const map = [8]usize{ 0, 1, 2, 3, 5, 6, 7, 8 };
@@ -1694,11 +1697,30 @@ fn expandNeighboursToFullGrid(n8: [8]?*chunk_mod.Chunk) [9]?*chunk_mod.Chunk {
 /// Free a 9-slot snapshot grid (used when enqueue fails and we need to
 /// roll back). Center is included because failure can happen after the
 /// caller has populated it.
-fn freeFullGrid(full: *[9]?*chunk_mod.Chunk) void {
+fn freeFullGrid(full: *[9]?*async_chunks_mod.Border) void {
     for (full) |*slot| {
-        if (slot.*) |p| async_chunks_mod.freeChunk(p);
+        if (slot.*) |b| b.free();
         slot.* = null;
     }
+}
+
+const JobCopy = struct { copied: usize, whole_chunks: usize };
+
+/// What a job copied from the world, and what a copy of each whole chunk
+/// (the center and every present neighbour) would have been. Call it before
+/// tryEnqueue: after it, the worker can free the job at any time.
+fn jobCopy(job: *const async_chunks_mod.Job) JobCopy {
+    var chunks: usize = if (job.center != null) 1 else 0;
+    for (job.borders) |b| {
+        if (b != null) chunks += 1;
+    }
+    return .{ .copied = async_chunks_mod.jobBytes(job), .whole_chunks = chunks * @sizeOf(chunk_mod.Chunk) };
+}
+
+fn countJobCopy(c: JobCopy) void {
+    state.async_jobs += 1;
+    state.async_copy_bytes += c.copied;
+    state.async_whole_chunk_bytes += c.whole_chunks;
 }
 
 /// One async tick: drain completed results, install them, enqueue new jobs
@@ -1737,7 +1759,8 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             const lc = try world.allocator.create(world_mod.LoadedChunk);
             lc.* = world_mod.LoadedChunk.init(world.allocator, r.cx, r.cz);
             lc.chunk = new_chunk.*;
-            async_chunks_mod.freeChunk(new_chunk);
+            // lc.chunk now owns the block data: free only the struct.
+            async_chunks_mod.freeMovedChunk(new_chunk);
             try async_chunks_mod.installMeshFromResult(&lc.mesh, r);
             std.heap.c_allocator.free(r.vertices);
             std.heap.c_allocator.free(r.indices);
@@ -1814,8 +1837,9 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             .gen_config = world.gen_config,
             .ao = ao,
             .lighting = lighting,
-            .snapshots = full,
+            .borders = full,
         };
+        const copy = jobCopy(&job);
         const ok = p.tryEnqueue(job) catch |err| {
             std.log.err("[ASYNC] enqueue gen+mesh ({},{}) failed: {}", .{ cx, cz, err });
             freeFullGrid(&full);
@@ -1826,6 +1850,7 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             freeFullGrid(&full);
             break;
         }
+        countJobCopy(copy);
         enqueued_new += 1;
     }
 
@@ -1852,9 +1877,9 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             break;
         };
         var full = expandNeighboursToFullGrid(n8);
-        // Center = snapshot of the existing chunk (mesh-only signals worker
+        // Center = deep copy of the existing chunk (mesh-only signals worker
         // to skip regeneration and use this Chunk as the mesh target).
-        full[4] = async_chunks_mod.cloneChunk(&lc.chunk) catch |err| {
+        const center = async_chunks_mod.cloneChunk(&lc.chunk) catch |err| {
             std.log.err("[ASYNC] mesh-only center snapshot alloc failed for ({},{}): {}", .{ lc.cx, lc.cz, err });
             freeFullGrid(&full);
             break;
@@ -1866,17 +1891,22 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             .gen_config = world.gen_config,
             .ao = ao,
             .lighting = lighting,
-            .snapshots = full,
+            .center = center,
+            .borders = full,
         };
+        const copy = jobCopy(&job);
         const ok = p.tryEnqueue(job) catch |err| {
             std.log.err("[ASYNC] enqueue mesh-only ({},{}) failed: {}", .{ lc.cx, lc.cz, err });
             freeFullGrid(&full);
+            async_chunks_mod.freeChunk(center);
             break;
         };
         if (!ok) {
             freeFullGrid(&full);
+            async_chunks_mod.freeChunk(center);
             break;
         }
+        countJobCopy(copy);
         // Optimistically clear the dirty flag so we don't re-enqueue the
         // same chunk on the next tick while the current job is in flight.
         // If new neighbour changes arrive during the job, the drain step
@@ -4610,6 +4640,7 @@ fn logGpuMeshStats() void {
         quads += cg.quad_count;
         if (cg.quad_buffer != null) bytes += (cg.capacity + 1) * @sizeOf(mesher_mod.PackedQuad);
     }
+    std.log.info("[ASYNC COPY] jobs={} copied={} bytes (whole chunks would be {} bytes)", .{ state.async_jobs, state.async_copy_bytes, state.async_whole_chunk_bytes });
     std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s})", .{
         state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(),
     });
