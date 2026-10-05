@@ -26,7 +26,7 @@ pub const WasmBackend = struct {
                 .height = 720,
                 .dpi_scale = 1.0,
             },
-            .event_queue = .{},
+            .event_queue = .empty,
             .next_tick_id = 0,
         };
 

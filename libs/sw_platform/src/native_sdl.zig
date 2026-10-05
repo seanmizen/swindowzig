@@ -4,10 +4,8 @@ const core = @import("sw_core");
 const backend_mod = @import("backend.zig");
 const platform = @import("platform.zig");
 
-const sdl = @cImport({
-    @cInclude("SDL2/SDL.h");
-    @cInclude("SDL2/SDL_syswm.h");
-});
+// The SDL2 headers, translated by build.zig (addTranslateC on sdl.h).
+const sdl = @import("sdl");
 
 pub const SDL2Backend = struct {
     allocator: std.mem.Allocator,
@@ -40,7 +38,7 @@ pub const SDL2Backend = struct {
         }
 
         // Create window
-        const title_z = try allocator.dupeZ(u8, title);
+        const title_z = try allocator.dupeSentinel(u8, title, 0);
         defer allocator.free(title_z);
 
         const window = sdl.SDL_CreateWindow(
@@ -72,7 +70,7 @@ pub const SDL2Backend = struct {
         self.* = .{
             .allocator = allocator,
             .window = window,
-            .start_time = std.time.milliTimestamp(),
+            .start_time = @intCast(sdl.SDL_GetTicks64()),
             .window_info = .{
                 .width = @intCast(drawable_w),
                 .height = @intCast(drawable_h),
@@ -220,7 +218,7 @@ pub const SDL2Backend = struct {
                 sdl.SDL_TEXTINPUT => {
                     // Convert SDL text input to event
                     const text_event = event.text;
-                    var utf8_buf: [32]u8 = [_]u8{0} ** 32;
+                    var utf8_buf: [32]u8 = @splat(0);
                     var len: u8 = 0;
 
                     // Copy SDL text to buffer (text is null-terminated)
@@ -245,7 +243,7 @@ pub const SDL2Backend = struct {
 
     fn getTime(ptr: *anyopaque) u64 {
         const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
-        const now = std.time.milliTimestamp();
+        const now: i64 = @intCast(sdl.SDL_GetTicks64());
         const elapsed = now - self.start_time;
         return @as(u64, @intCast(elapsed)) * 1_000_000; // Convert ms to ns
     }

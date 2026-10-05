@@ -448,8 +448,8 @@ jobs:
       - name: Verify lavapipe is visible
         run: vulkaninfo --summary | grep -i llvmpipe
       - name: Install Zig
+        # No version: setup-zig reads minimum_zig_version from build.zig.zon.
         uses: mlugg/setup-zig@v2
-        with: { version: 0.15.2 }
       - name: Install wgpu-native
         run: |
           # Pin the same version build.zig links against (~/.local/lib/libwgpu_native.so)

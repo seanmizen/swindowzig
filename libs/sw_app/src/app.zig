@@ -32,6 +32,12 @@ pub const Config = struct {
     /// regression runner — see `examples/voxel/docs/headless-regressions.md`.
     /// On its own does nothing; must be combined with `headless = true`.
     headless_gpu: bool = false,
+    /// The Io instance from main(init: std.process.Init). Callbacks get it as
+    /// ctx.io for file and clock access. The web build has none.
+    io: ?std.Io = null,
+    /// Command-line arguments, from init.minimal.args. Callbacks get them as
+    /// ctx.args. The web build has none.
+    args: []const [:0]const u8 = &.{},
     /// Tick timing mode. Default .realtime follows wall clock.
     /// Use .unlimited to run as fast as possible (pairs naturally with headless).
     tick_timing: TickTiming = .realtime,
@@ -61,7 +67,7 @@ pub fn run(config: Config, comptime callbacks: type) !void {
     if (comptime is_wasm) {
         return runWasm(config, callbacks, std.heap.wasm_allocator);
     } else {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        var gpa: std.heap.DebugAllocator(.{}) = .init;
         defer _ = gpa.deinit();
         return runNative(config, callbacks, gpa.allocator());
     }
@@ -133,6 +139,8 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
         .input_snapshot = &input_snapshot,
         .backend = backend,
         .gpu_device = &gpu_device,
+        .io = config.io,
+        .args = config.args,
     };
 
     // 8. Call user init callback

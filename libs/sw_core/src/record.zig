@@ -10,7 +10,7 @@ pub const Recorder = struct {
     tick_hz: u32,
     event_count: usize,
 
-    pub fn init(writer: std.io.AnyWriter, tick_hz: u32) !Recorder {
+    pub fn init(writer: *std.Io.Writer, tick_hz: u32) !Recorder {
         var serializer = Serializer.init(writer);
         try serializer.writeHeader(tick_hz);
 
@@ -48,10 +48,10 @@ pub const Recorder = struct {
 };
 
 test "Recorder basic usage" {
-    var buffer: std.ArrayList(u8) = .{};
-    defer buffer.deinit(std.testing.allocator);
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
 
-    var recorder = try Recorder.init(buffer.writer(std.testing.allocator).any(), 120);
+    var recorder = try Recorder.init(&buffer.writer, 120);
 
     const e1 = Event.init(0, 1000, 0, .{ .lifecycle = .init });
     const e2 = Event.init(0, 2000, 1, .{ .lifecycle = .paused });
@@ -60,14 +60,14 @@ test "Recorder basic usage" {
     try recorder.record(e2);
 
     try std.testing.expectEqual(@as(usize, 2), recorder.event_count);
-    try std.testing.expect(buffer.items.len > 0);
+    try std.testing.expect(buffer.written().len > 0);
 }
 
 test "Recorder enable/disable" {
-    var buffer: std.ArrayList(u8) = .{};
-    defer buffer.deinit(std.testing.allocator);
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
 
-    var recorder = try Recorder.init(buffer.writer(std.testing.allocator).any(), 120);
+    var recorder = try Recorder.init(&buffer.writer, 120);
 
     const e1 = Event.init(0, 1000, 0, .{ .lifecycle = .init });
 
@@ -84,10 +84,10 @@ test "Recorder enable/disable" {
 }
 
 test "Recorder batch" {
-    var buffer: std.ArrayList(u8) = .{};
-    defer buffer.deinit(std.testing.allocator);
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
 
-    var recorder = try Recorder.init(buffer.writer(std.testing.allocator).any(), 120);
+    var recorder = try Recorder.init(&buffer.writer, 120);
 
     const events = [_]Event{
         Event.init(0, 1000, 0, .{ .lifecycle = .init }),

@@ -11,9 +11,9 @@ pub const MouseState = struct {
     y: f32 = 0,
     delta_x: f32 = 0,
     delta_y: f32 = 0,
-    buttons: std.bit_set.IntegerBitSet(5) = std.bit_set.IntegerBitSet(5).initEmpty(),
-    pressed: std.bit_set.IntegerBitSet(5) = std.bit_set.IntegerBitSet(5).initEmpty(),
-    released: std.bit_set.IntegerBitSet(5) = std.bit_set.IntegerBitSet(5).initEmpty(),
+    buttons: std.bit_set.IntegerBitSet(5) = .empty,
+    pressed: std.bit_set.IntegerBitSet(5) = .empty,
+    released: std.bit_set.IntegerBitSet(5) = .empty,
 
     pub fn isButtonDown(self: *const MouseState, button: MouseButton) bool {
         return self.buttons.isSet(@intFromEnum(button));
@@ -36,9 +36,9 @@ pub const WheelState = struct {
 
 /// Keyboard state snapshot
 pub const KeyboardState = struct {
-    down: std.bit_set.IntegerBitSet(256) = std.bit_set.IntegerBitSet(256).initEmpty(),
-    pressed: std.bit_set.IntegerBitSet(256) = std.bit_set.IntegerBitSet(256).initEmpty(),
-    released: std.bit_set.IntegerBitSet(256) = std.bit_set.IntegerBitSet(256).initEmpty(),
+    down: std.bit_set.IntegerBitSet(256) = .empty,
+    pressed: std.bit_set.IntegerBitSet(256) = .empty,
+    released: std.bit_set.IntegerBitSet(256) = .empty,
 
     pub fn isKeyDown(self: *const KeyboardState, key: KeyCode) bool {
         const code = @intFromEnum(key);
@@ -93,10 +93,10 @@ pub const InputSnapshot = struct {
     /// Update snapshot from events for a tick (called internally by swindowzig).
     pub fn updateFromEvents(self: *InputSnapshot, events: []const Event) void {
         // Clear per-frame state
-        self.keyboard.pressed = std.bit_set.IntegerBitSet(256).initEmpty();
-        self.keyboard.released = std.bit_set.IntegerBitSet(256).initEmpty();
-        self.mouse.pressed = std.bit_set.IntegerBitSet(5).initEmpty();
-        self.mouse.released = std.bit_set.IntegerBitSet(5).initEmpty();
+        self.keyboard.pressed = .empty;
+        self.keyboard.released = .empty;
+        self.mouse.pressed = .empty;
+        self.mouse.released = .empty;
         self.mouse.delta_x = 0;
         self.mouse.delta_y = 0;
         self.wheel.delta_x = 0;

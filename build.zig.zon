@@ -2,7 +2,7 @@
     .name = .swindowzig,
     .version = "0.1.0",
     .fingerprint = 0x3e7b88bfe51b4f0d,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",

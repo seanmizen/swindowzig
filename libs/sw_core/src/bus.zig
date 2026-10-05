@@ -16,7 +16,7 @@ pub const Bus = struct {
 
     pub fn init(allocator: std.mem.Allocator) Bus {
         return .{
-            .events = .{},
+            .events = .empty,
             .allocator = allocator,
             .current_tick = 0,
             .next_seq = 0,

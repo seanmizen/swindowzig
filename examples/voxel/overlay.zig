@@ -18,7 +18,7 @@ pub const OverlayRenderer = struct {
             .pipeline = null,
             .vertex_buffer = null,
             .buffer_byte_capacity = 0,
-            .vertices = std.ArrayList(UIVertex){},
+            .vertices = .empty,
             .allocator = allocator,
         };
     }

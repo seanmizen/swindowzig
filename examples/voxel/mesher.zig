@@ -59,10 +59,10 @@ pub const Mesh = struct {
     pub fn init(allocator: std.mem.Allocator) Mesh {
         return .{
             .allocator = allocator,
-            .vertices = .{},
-            .indices = .{},
-            .quad_block = .{},
-            .quad_highlight = .{},
+            .vertices = .empty,
+            .indices = .empty,
+            .quad_block = .empty,
+            .quad_highlight = .empty,
         };
     }
 

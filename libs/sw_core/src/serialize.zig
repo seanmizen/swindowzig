@@ -20,7 +20,7 @@ pub const Header = extern struct {
             .magic = MAGIC,
             .version = VERSION,
             .tick_hz = tick_hz,
-            .reserved = [_]u8{0} ** 4,
+            .reserved = @splat(0),
         };
     }
 
@@ -36,11 +36,11 @@ pub const Header = extern struct {
 
 /// Serializer with delta encoding for efficiency
 pub const Serializer = struct {
-    writer: std.io.AnyWriter,
+    writer: *std.Io.Writer,
     last_tick: u64,
     last_time: u64,
 
-    pub fn init(writer: std.io.AnyWriter) Serializer {
+    pub fn init(writer: *std.Io.Writer) Serializer {
         return .{
             .writer = writer,
             .last_tick = 0,
@@ -50,7 +50,7 @@ pub const Serializer = struct {
 
     pub fn writeHeader(self: *Serializer, tick_hz: u32) !void {
         const header = Header.init(tick_hz);
-        try self.writer.writeStructEndian(header, .little);
+        try self.writer.writeStruct(header, .little);
     }
 
     pub fn writeEvent(self: *Serializer, e: Event) !void {
@@ -69,25 +69,25 @@ pub const Serializer = struct {
         // Write payload data based on tag
         switch (e.payload) {
             .pointer_move => |p| {
-                try self.writer.writeStruct(p);
+                try self.writer.writeStruct(p, .little);
             },
             .pointer_button => |p| {
-                try self.writer.writeStruct(p);
+                try self.writer.writeStruct(p, .little);
             },
             .wheel => |w| {
-                try self.writer.writeStruct(w);
+                try self.writer.writeStruct(w, .little);
             },
             .key => |k| {
-                try self.writer.writeStruct(k);
+                try self.writer.writeStruct(k, .little);
             },
             .text => |t| {
-                try self.writer.writeStruct(t);
+                try self.writer.writeStruct(t, .little);
             },
             .resize => |r| {
-                try self.writer.writeStruct(r);
+                try self.writer.writeStruct(r, .little);
             },
             .focus => |f| {
-                try self.writer.writeStruct(f);
+                try self.writer.writeStruct(f, .little);
             },
             .lifecycle => |l| {
                 try self.writer.writeInt(u8, @intFromEnum(l), .little);
@@ -104,11 +104,11 @@ pub const Serializer = struct {
 
 /// Deserializer with delta decoding
 pub const Deserializer = struct {
-    reader: std.io.AnyReader,
+    reader: *std.Io.Reader,
     last_tick: u64,
     last_time: u64,
 
-    pub fn init(reader: std.io.AnyReader) Deserializer {
+    pub fn init(reader: *std.Io.Reader) Deserializer {
         return .{
             .reader = reader,
             .last_tick = 0,
@@ -117,20 +117,20 @@ pub const Deserializer = struct {
     }
 
     pub fn readHeader(self: *Deserializer) !Header {
-        const header = try self.reader.readStructEndian(Header, .little);
+        const header = try self.reader.takeStruct(Header, .little);
         try header.validate();
         return header;
     }
 
     pub fn readEvent(self: *Deserializer) !Event {
-        const tick_delta = try self.reader.readInt(u64, .little);
-        const time_delta = try self.reader.readInt(u64, .little);
-        const seq = try self.reader.readInt(u32, .little);
+        const tick_delta = try self.reader.takeInt(u64, .little);
+        const time_delta = try self.reader.takeInt(u64, .little);
+        const seq = try self.reader.takeInt(u32, .little);
 
         const tick_id = self.last_tick + tick_delta;
         const t_ns = self.last_time + time_delta;
 
-        const tag = try self.reader.readInt(u8, .little);
+        const tag = try self.reader.takeInt(u8, .little);
 
         const payload = try self.readPayload(tag);
 
@@ -143,19 +143,19 @@ pub const Deserializer = struct {
     fn readPayload(self: *Deserializer, tag: u8) !event.EventPayload {
         const dummy: event.EventPayload = undefined;
         return switch (tag) {
-            0 => .{ .pointer_move = try self.reader.readStruct(@TypeOf(dummy.pointer_move)) },
-            1 => .{ .pointer_button = try self.reader.readStruct(@TypeOf(dummy.pointer_button)) },
-            2 => .{ .wheel = try self.reader.readStruct(@TypeOf(dummy.wheel)) },
-            3 => .{ .key = try self.reader.readStruct(@TypeOf(dummy.key)) },
-            4 => .{ .text = try self.reader.readStruct(@TypeOf(dummy.text)) },
-            5 => .{ .resize = try self.reader.readStruct(@TypeOf(dummy.resize)) },
-            6 => .{ .focus = try self.reader.readStruct(@TypeOf(dummy.focus)) },
+            0 => .{ .pointer_move = try self.reader.takeStruct(@TypeOf(dummy.pointer_move, .little)) },
+            1 => .{ .pointer_button = try self.reader.takeStruct(@TypeOf(dummy.pointer_button, .little)) },
+            2 => .{ .wheel = try self.reader.takeStruct(@TypeOf(dummy.wheel, .little)) },
+            3 => .{ .key = try self.reader.takeStruct(@TypeOf(dummy.key, .little)) },
+            4 => .{ .text = try self.reader.takeStruct(@TypeOf(dummy.text, .little)) },
+            5 => .{ .resize = try self.reader.takeStruct(@TypeOf(dummy.resize, .little)) },
+            6 => .{ .focus = try self.reader.takeStruct(@TypeOf(dummy.focus, .little)) },
             7 => blk: {
-                const val = try self.reader.readInt(u8, .little);
+                const val = try self.reader.takeInt(u8, .little);
                 break :blk .{ .lifecycle = @enumFromInt(val) };
             },
             8 => blk: {
-                const dt_ns = try self.reader.readInt(u64, .little);
+                const dt_ns = try self.reader.takeInt(u64, .little);
                 break :blk .{ .tick = .{ .dt_ns = dt_ns } };
             },
             else => error.InvalidPayloadTag,
@@ -164,24 +164,24 @@ pub const Deserializer = struct {
 };
 
 test "Serialize and deserialize header" {
-    var buffer: std.ArrayList(u8) = .{};
-    defer buffer.deinit(std.testing.allocator);
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
 
-    var serializer = Serializer.init(buffer.writer(std.testing.allocator).any());
+    var serializer = Serializer.init(&buffer.writer);
     try serializer.writeHeader(120);
 
-    var fbs = std.io.fixedBufferStream(buffer.items);
-    var deserializer = Deserializer.init(fbs.reader().any());
+    var reader: std.Io.Reader = .fixed(buffer.written());
+    var deserializer = Deserializer.init(&reader);
     const header = try deserializer.readHeader();
 
     try std.testing.expectEqual(@as(u32, 120), header.tick_hz);
 }
 
 test "Serialize and deserialize events with delta encoding" {
-    var buffer: std.ArrayList(u8) = .{};
-    defer buffer.deinit(std.testing.allocator);
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
 
-    var serializer = Serializer.init(buffer.writer(std.testing.allocator).any());
+    var serializer = Serializer.init(&buffer.writer);
     try serializer.writeHeader(120);
 
     const e1 = Event.init(0, 1000, 0, .{ .lifecycle = .init });
@@ -192,8 +192,8 @@ test "Serialize and deserialize events with delta encoding" {
     try serializer.writeEvent(e2);
     try serializer.writeEvent(e3);
 
-    var fbs = std.io.fixedBufferStream(buffer.items);
-    var deserializer = Deserializer.init(fbs.reader().any());
+    var reader: std.Io.Reader = .fixed(buffer.written());
+    var deserializer = Deserializer.init(&reader);
     _ = try deserializer.readHeader();
 
     const de1 = try deserializer.readEvent();

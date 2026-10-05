@@ -747,7 +747,7 @@ pub const GPU = struct {
         } else {
             // Native requires null-terminated string for WGSL source
             const allocator = std.heap.page_allocator;
-            const code_z = try allocator.dupeZ(u8, desc.code);
+            const code_z = try allocator.dupeSentinel(u8, desc.code, 0);
             defer allocator.free(code_z);
 
             var wgsl_desc = native.WGPUShaderModuleWGSLDescriptor{
@@ -777,8 +777,8 @@ pub const GPU = struct {
             defer std.heap.page_allocator.free(js_vertex_buffers);
 
             // Track all attributes allocations for deferred cleanup.
-            // Zig 0.15.2 ArrayList API: init with `{}`, pass allocator per-op.
-            var vertex_attributes_allocations = std.ArrayList([]web.VertexAttributeJS){};
+            // ArrayList: init with `.empty`, pass the allocator per call.
+            var vertex_attributes_allocations: std.ArrayList([]web.VertexAttributeJS) = .empty;
             defer {
                 for (vertex_attributes_allocations.items) |attrs| {
                     std.heap.page_allocator.free(attrs);
@@ -873,7 +873,7 @@ pub const GPU = struct {
             defer allocator.free(wgpu_vertex_buffers);
 
             // Track attribute allocations for cleanup
-            var vertex_attributes_allocations: [8]?[]native.WGPUVertexAttribute = [_]?[]native.WGPUVertexAttribute{null} ** 8;
+            var vertex_attributes_allocations: [8]?[]native.WGPUVertexAttribute = @splat(null);
             defer {
                 for (vertex_attributes_allocations) |maybe_attrs| {
                     if (maybe_attrs) |attrs| allocator.free(attrs);
@@ -902,7 +902,7 @@ pub const GPU = struct {
             }
 
             // Convert vertex shader entry point to null-terminated string
-            const vertex_entry = try allocator.dupeZ(u8, desc.vertex.entry_point);
+            const vertex_entry = try allocator.dupeSentinel(u8, desc.vertex.entry_point, 0);
             defer allocator.free(vertex_entry);
 
             // Build vertex state (zero-initialize to avoid undefined padding)
@@ -939,7 +939,7 @@ pub const GPU = struct {
 
             if (desc.fragment) |fragment| {
                 // Convert fragment entry point
-                fragment_entry = try allocator.dupeZ(u8, fragment.entry_point);
+                fragment_entry = try allocator.dupeSentinel(u8, fragment.entry_point, 0);
 
                 // Convert color targets (zero-initialize to avoid undefined padding)
                 var targets = try allocator.alloc(native.WGPUColorTargetState, fragment.targets.len);

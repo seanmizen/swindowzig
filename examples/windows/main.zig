@@ -3,13 +3,25 @@ const std = @import("std");
 const sw = @import("sw_app");
 const builtin = @import("builtin");
 
-pub fn main() !void {
-    try sw.run(.{
-        .title = "swindowzig - Rotating Triangle (Click & Drag)",
-        .size = .{ .w = 800, .h = 600 },
-        .tick_hz = 60,
-    }, GameCallbacks);
+// Freestanding WASM has no std.process.Init, so the web build gets a main
+// with no parameters. The native build passes Io to the app (ctx.io).
+pub const main = if (builtin.cpu.arch.isWasm()) mainWasm else mainNative;
+
+fn mainWasm() !void {
+    try sw.run(config, GameCallbacks);
 }
+
+fn mainNative(init: std.process.Init) !void {
+    var c = config;
+    c.io = init.io;
+    try sw.run(c, GameCallbacks);
+}
+
+const config: sw.Config = .{
+    .title = "swindowzig - Rotating Triangle (Click & Drag)",
+    .size = .{ .w = 800, .h = 600 },
+    .tick_hz = 60,
+};
 
 const Vertex = struct {
     position: [2]f32,
@@ -42,13 +54,13 @@ var button_hovered: bool = false;
 
 // Debug info tracking
 var frame_count: u64 = 0;
-var last_fps_update: i64 = 0;
+var last_fps_update: u64 = 0;
 var fps: f32 = 0.0;
 
 // Frame limiting
 const target_fps: u64 = 60;
 const frame_time_ns: u64 = std.time.ns_per_s / target_fps;
-var last_frame_time: i128 = 0;
+var last_frame_time: u64 = 0;
 
 const GameCallbacks = struct {
     pub fn init(ctx: *sw.Context) !void {
@@ -169,7 +181,7 @@ const GameCallbacks = struct {
 
         // Calculate FPS
         frame_count += 1;
-        const now = std.time.milliTimestamp();
+        const now = ctx.timeNs() / std.time.ns_per_ms;
         if (now - last_fps_update >= 500) { // Update every 500ms
             const elapsed_secs = @as(f32, @floatFromInt(now - last_fps_update)) / 1000.0;
             fps = @as(f32, @floatFromInt(frame_count)) / elapsed_secs;
@@ -187,14 +199,14 @@ const GameCallbacks = struct {
         if (pipeline == null or vertex_buffer == null) return;
 
         // Frame limiting: sleep for remainder to hit target FPS
-        const now = std.time.nanoTimestamp();
+        const now = ctx.timeNs();
         if (last_frame_time > 0) {
             const elapsed = now - last_frame_time;
             if (elapsed < frame_time_ns) {
-                std.Thread.sleep(@intCast(frame_time_ns - @as(u64, @intCast(elapsed))));
+                if (ctx.io) |io| io.sleep(.fromNanoseconds(frame_time_ns - elapsed), .awake) catch {};
             }
         }
-        last_frame_time = std.time.nanoTimestamp();
+        last_frame_time = ctx.timeNs();
 
         // Prepare all vertices (triangle + button)
         const base_triangle = [_]Vertex{

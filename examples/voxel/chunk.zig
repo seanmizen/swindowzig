@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock.zig");
 const world_gen = @import("world_gen.zig");
 
 /// Horizontal (X/Z) edge length of a chunk, in blocks. Compile-time constant;
@@ -110,7 +111,7 @@ pub const PalettedBlocks = struct {
     /// the palette can never overflow. Unused slots hold `.air` as a
     /// harmless sentinel. Fixed-size so palette growth never allocates; the
     /// only heap path is growing `data` when `bits_per_entry` increases.
-    palette: [256]BlockType = [_]BlockType{.air} ** 256,
+    palette: [256]BlockType = @splat(.air),
     palette_len: u16 = 1,
     bits_per_entry: u8 = 0,
     data: []u64 = &[_]u64{},
@@ -732,7 +733,7 @@ pub const Chunk = struct {
     /// is the only realistic failure mode — on typical hardware this path
     /// never trips).
     pub fn generateTerrain(self: *Chunk, cx: i32, cz: i32, config: world_gen.WorldGenConfig) !void {
-        const t_fill_start = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else std.time.nanoTimestamp();
+        const t_fill_start = clock.nowNs();
         var x: i32 = 0;
         while (x < CHUNK_W) : (x += 1) {
             var z: i32 = 0;
@@ -805,7 +806,7 @@ pub const Chunk = struct {
                 }
             }
         }
-        const t_fill_us = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else @divTrunc(std.time.nanoTimestamp() - t_fill_start, 1000);
+        const t_fill_us = @divTrunc(clock.nowNs() - t_fill_start, 1000);
 
         // Cave carver: run after terrain fill so we only carve into solid blocks.
         // Only active for non-flat terrain (noise_octaves > 0).
@@ -887,9 +888,9 @@ pub const Chunk = struct {
 
         // Skylight: must run after the blocks array is fully populated, since
         // the BFS reads `blocks` to know which cells block propagation.
-        const t_sky_start = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else std.time.nanoTimestamp();
+        const t_sky_start = clock.nowNs();
         self.computeSkylight();
-        const t_sky_us = if (@import("builtin").cpu.arch == .wasm32) @as(i128, 0) else @divTrunc(std.time.nanoTimestamp() - t_sky_start, 1000);
+        const t_sky_us = @divTrunc(clock.nowNs() - t_sky_start, 1000);
         // Block light: now seeds from glowstone emitters scattered during
         // generation. The BFS propagates their light through nearby air cells.
         self.computeBlockLight();

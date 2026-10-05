@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// Modifier keys state
-pub const Modifiers = packed struct {
+pub const Modifiers = packed struct(u8) {
     shift: bool = false,
     ctrl: bool = false,
     alt: bool = false,

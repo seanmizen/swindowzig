@@ -15,7 +15,7 @@ pub const Mat4 = struct {
     }
 
     pub fn zero() Mat4 {
-        return .{ .data = [_]f32{0} ** 16 };
+        return .{ .data = @splat(0) };
     }
 
     /// Get element at row i, column j

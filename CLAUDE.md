@@ -69,12 +69,21 @@ More rules load only when you touch matching files:
 
 ---
 
-## Zig 0.15.2 ArrayList API
-```zig
-var list = std.ArrayList(T){};           // init (no allocator arg)
-try list.append(allocator, item);        // pass allocator per-op
-list.deinit(allocator);
-```
+## Zig version
+
+`minimum_zig_version` in `build.zig.zon` is the one place that names the Zig
+version (0.17.x). `build.zig` stops on any other major.minor, and the minecraft
+dockerfile downloads the same version. To upgrade: change `build.zig.zon`, then
+fix the std API errors.
+
+Zig 0.17 API in this code:
+- `var list: std.ArrayList(T) = .empty;` and pass the allocator per call.
+- Files, clocks, sleep, `Mutex` and `Condition` take a `std.Io`. Native
+  `main(init: std.process.Init)` passes `init.io` to `sw.run`, and callbacks
+  get it as `ctx.io` (null on the web). The voxel perf logs use `clock.zig`.
+- No `@cImport`: `build.zig` translates `libs/sw_platform/src/sdl.h` with
+  `addTranslateC`. Only the native build gets the `sdl` module.
+- No `**` on arrays: use `@splat(value)`.
 
 ---
 

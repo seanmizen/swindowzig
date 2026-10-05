@@ -40,20 +40,8 @@ fn fatalExitNative(code: u8) noreturn {
     std.process.exit(code);
 }
 
-/// Perf-logging timestamp. Native uses std.time.nanoTimestamp, wasm
-/// returns 0 — the few call sites are perf-measurement logs that can
-/// safely report 0µs in the browser. Split into two functions so Zig's
-/// comptime compile-time dispatch fully elides the std.time import on
-/// wasm32-freestanding (which has no clock_gettime / clockid_t).
-const perfNowNs = if (is_wasm) perfNowNsWasm else perfNowNsNative;
-
-fn perfNowNsWasm() i128 {
-    return 0;
-}
-
-fn perfNowNsNative() i128 {
-    return std.time.nanoTimestamp();
-}
+/// Perf-logging timestamp. See clock.zig: the web build reports 0.
+const perfNowNs = clock.nowNs;
 
 fn swindowzigLogFn(
     comptime level: std.log.Level,
@@ -83,14 +71,16 @@ fn swindowzigLogFn(
     }
 }
 
-pub fn main() !void {
-    if (comptime is_wasm) {
-        // WASM never takes the native main() path — sw.run() is driven from
-        // the exported swindowzig_init/frame entry points at the bottom of
-        // this file. Having `main` return early keeps the freestanding linker
-        // happy while still letting the native build keep its behaviour.
-        return;
-    }
+// WASM never takes the native main() path. The exported swindowzig_init and
+// swindowzig_frame entry points at the bottom of this file drive the web
+// build. The freestanding target has no std.process.Init, so it gets an empty
+// main with no parameters.
+pub const main = if (is_wasm) mainWasm else mainNative;
+
+fn mainWasm() void {}
+
+fn mainNative(init: std.process.Init) !void {
+    clock.io = init.io;
 
     // Read --headless / --dump-frame / --compare-golden flags before sw.run()
     // so we can set Config accordingly. When --headless is combined with
@@ -98,8 +88,7 @@ pub fn main() !void {
     // auto-promote to headless-offscreen GPU mode: no window, but the GPU
     // still initialises and renders to an offscreen texture so captureFrame
     // can read it. See examples/voxel/docs/headless-regressions.md.
-    const args = try std.process.argsAlloc(std.heap.page_allocator);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     var headless = false;
     var has_dump = false;
@@ -118,6 +107,8 @@ pub fn main() !void {
         .headless = headless,
         .headless_gpu = headless_gpu,
         .tick_timing = if (headless) .unlimited else .realtime,
+        .io = init.io,
+        .args = args,
     }, Callbacks);
 }
 
@@ -189,9 +180,10 @@ const VoxelVertex = mesher_mod.VoxelVertex;
 
 const world_mod = @import("world.zig");
 const world_gen = @import("world_gen.zig");
+const clock = @import("clock.zig");
 const async_chunks_mod = if (!is_wasm) @import("async_chunks.zig") else struct {
     pub const Pipeline = struct {
-        pub fn init(_: std.mem.Allocator) !*Pipeline { unreachable; }
+        pub fn init(_: std.mem.Allocator, _: std.Io) !*Pipeline { unreachable; }
         pub fn drainSorted(_: *Pipeline, _: *std.ArrayList(Result), _: std.mem.Allocator) !void { unreachable; }
         pub fn submit(_: *Pipeline, _: anytype) !void { unreachable; }
         pub fn deinit(_: *Pipeline) void { unreachable; }
@@ -742,7 +734,7 @@ const State = struct {
     /// voxelRender from real-time deltas (not the fixed-step sim tick rate),
     /// so the displayed FPS reflects actual present cadence even when the
     /// simulation tick rate is unrelated. 60 samples ≈ 1 s window at 60 Hz.
-    fps_window_ns: [60]u64 = .{0} ** 60,
+    fps_window_ns: [60]u64 = @splat(0),
     fps_window_idx: usize = 0,
     fps_window_filled: bool = false,
     last_frame_ns: i128 = 0,
@@ -773,7 +765,7 @@ const State = struct {
     // player is released, so the analysis script can partition the dataset
     // into "first-paint" and "flyover" halves without guessing.
     profile_csv_path: ?[]const u8 = null,
-    profile_csv_file: if (!is_wasm) ?std.fs.File else ?void = null,
+    profile_csv_file: if (!is_wasm) ?std.Io.File else ?void = null,
     tick_t0_ns: i128 = 0,
     tick_ns: u64 = 0,
     gen_ns: u64 = 0,
@@ -814,7 +806,7 @@ const State = struct {
     /// down.
     async_pipeline: ?*async_chunks_mod.Pipeline = null,
     /// Scratch list reused every tick to receive drained async results.
-    async_result_scratch: std.ArrayList(async_chunks_mod.Result) = .{},
+    async_result_scratch: std.ArrayList(async_chunks_mod.Result) = .empty,
     /// Active settings tab (Game / Video / Audio). Controls which entries appear
     /// in the Settings screen. Default: Video (most settings live there).
     settings_tab: SettingsTab = .video,
@@ -881,8 +873,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.camera.pitch = -0.3;
 
     // Cylinder scratch buffers (ArrayList new-API: no allocator at init time)
-    state.cylinder_verts = std.ArrayList(VoxelVertex){};
-    state.cylinder_indices = std.ArrayList(u32){};
+    state.cylinder_verts = .empty;
+    state.cylinder_indices = .empty;
     state.spawn_point = .{ 24.0, 64.0, 20.0 };
     state.spawn_resolved = false;
     state.camera_view = .first_person;
@@ -935,7 +927,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.frozen_frustum = null;
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
-    state.fps_window_ns = .{0} ** 60;
+    state.fps_window_ns = @splat(0);
     state.fps_window_idx = 0;
     state.fps_window_filled = false;
     state.last_frame_ns = 0;
@@ -951,7 +943,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // time-budgeted gen+mesh loop.
     state.async_chunks_enabled = true;
     state.async_pipeline = null;
-    state.async_result_scratch = .{};
+    state.async_result_scratch = .empty;
 
     // Hotbar defaults: slot 1 = stone, slot 2 = grass, slot 3 = dirt,
     // slot 4 = glowstone (block-light BFS is live). Slots 5-10 empty.
@@ -962,11 +954,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // CLI flag parsing — native only. WASM builds never have process args;
     // they use the hardcoded defaults set above (hilly world, skylight,
     // classic AO, 4× MSAA) which is exactly what the browser should show.
-    const args: [][:0]u8 = if (comptime is_wasm)
-        &[_][:0]u8{}
-    else
-        try std.process.argsAlloc(ctx.allocator());
-    defer if (comptime !is_wasm) std.process.argsFree(ctx.allocator(), args);
+    const args = ctx.args;
 
     // Pre-scan: collect all flags before processing --tas, so flag order doesn't matter.
     for (args) |arg| {
@@ -988,14 +976,14 @@ fn voxelInit(ctx: *sw.Context) !void {
             const val = std.mem.sliceTo(arg["--golden-max-diff-pct=".len..], 0);
             state.golden_max_diff_pct = std.fmt.parseFloat(f32, val) catch {
                 std.log.err("--golden-max-diff-pct: cannot parse '{s}' as f32", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             };
         }
         if (std.mem.startsWith(u8, arg, "--golden-max-channel-delta=")) {
             const val = std.mem.sliceTo(arg["--golden-max-channel-delta=".len..], 0);
             state.golden_max_channel_delta = std.fmt.parseInt(u8, val, 10) catch {
                 std.log.err("--golden-max-channel-delta: cannot parse '{s}' as u8", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             };
         }
         if (std.mem.startsWith(u8, arg, "--world=")) {
@@ -1060,19 +1048,19 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.msaa_config.fxaa_quality = .high;
             } else {
                 std.log.err("--fxaa-quality: invalid value '{s}'. Accepted: low, medium, high", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--render-distance=")) {
             const val = arg["--render-distance=".len..];
             const n = std.fmt.parseInt(i32, val, 10) catch {
                 std.log.err("--render-distance: invalid value '{s}'. Expected a positive integer.", .{val});
-                std.process.exit(1);
+                fatalExit(1);
                 unreachable;
             };
             if (n < 1 or n > 32) {
                 std.log.err("--render-distance: value {} out of range [1, 32].", .{n});
-                std.process.exit(1);
+                fatalExit(1);
             }
             state.render_distance = n;
             state.render_distance_stub = n;
@@ -1081,11 +1069,11 @@ fn voxelInit(ctx: *sw.Context) !void {
             const val = std.mem.sliceTo(arg["--fog=".len..], 0);
             const parsed = std.fmt.parseFloat(f32, val) catch {
                 std.log.err("--fog: not a number: '{s}'", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             };
             if (parsed < 0.1 or parsed > 4.0) {
                 std.log.err("--fog: must be in [0.1, 4.0], got {d}", .{parsed});
-                std.process.exit(1);
+                fatalExit(1);
             }
             state.fog_distance_mult = parsed;
         }
@@ -1110,7 +1098,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.hotbar_visible = false;
             } else {
                 std.log.err("--hotbar: invalid value '{s}'. Accepted: on, off", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--lighting=")) {
@@ -1130,18 +1118,18 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.frustum_strategy = s;
             } else {
                 std.log.err("--frustum: invalid value '{s}'. Accepted: none, sphere, cone", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--frustum-fov-deg=")) {
             const val = std.mem.sliceTo(arg["--frustum-fov-deg=".len..], 0);
             const parsed = std.fmt.parseFloat(f32, val) catch {
                 std.log.err("--frustum-fov-deg: not a number: '{s}'", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             };
             if (parsed < 0.0 or parsed > 360.0) {
                 std.log.err("--frustum-fov-deg: must be in [0, 360], got {d}", .{parsed});
-                std.process.exit(1);
+                fatalExit(1);
             }
             state.frustum_fov_deg = parsed;
         }
@@ -1172,7 +1160,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 }
             } else {
                 std.log.err("--debug-overlay: invalid value '{s}'. Accepted: on, off", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--place-block=")) {
@@ -1183,7 +1171,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.place_block = .glowstone;
             } else {
                 std.log.err("--place-block: invalid value '{s}'. Accepted: stone, glowstone", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--meshing=")) {
@@ -1194,7 +1182,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.meshing_mode = .greedy;
             } else {
                 std.log.err("--meshing: invalid value '{s}'. Accepted: naive, greedy", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--async-chunks=")) {
@@ -1205,7 +1193,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.async_chunks_enabled = false;
             } else {
                 std.log.err("--async-chunks: invalid value '{s}'. Accepted: on, off", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
         if (std.mem.startsWith(u8, arg, "--depth-stencil=")) {
@@ -1216,7 +1204,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.depth_stencil_enabled = false;
             } else {
                 std.log.err("--depth-stencil: invalid value '{s}'. Accepted: on, off", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
     }
@@ -1245,10 +1233,10 @@ fn voxelInit(ctx: *sw.Context) !void {
     // and disable the feature so a bad path doesn't crash the TAS run.
     if (comptime !is_wasm) {
         if (state.profile_csv_path) |p| {
-        if (std.fs.cwd().createFile(p, .{ .truncate = true })) |f| {
+        if (std.Io.Dir.cwd().createFile(ctx.io.?, p, .{ .truncate = true })) |f| {
             state.profile_csv_file = f;
             const header = "tick,loading,chunk_w,tick_ns,gen_ns,gen_count,mesh_ns,mesh_count,upload_ns,upload_count,render_ns\n";
-            f.writeAll(header) catch |err| {
+            f.writeStreamingAll(ctx.io.?, header) catch |err| {
                 std.log.err("--profile-csv: header write failed: {}", .{err});
             };
             std.log.info("--profile-csv: writing to '{s}' (chunk_w={d})", .{ p, chunk_mod.CHUNK_W });
@@ -1266,7 +1254,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     if (comptime !is_wasm) std.log.info("Async chunks (post-parse): {s}", .{if (state.async_chunks_enabled) "on" else "off"});
     if (comptime !is_wasm) {
         if (state.async_chunks_enabled) {
-            state.async_pipeline = async_chunks_mod.Pipeline.init(ctx.allocator()) catch |init_err| blk: {
+            state.async_pipeline = async_chunks_mod.Pipeline.init(ctx.allocator(), ctx.io.?) catch |init_err| blk: {
             std.log.err("Async pipeline init failed ({}) — falling back to sync mesh loop", .{init_err});
             state.async_chunks_enabled = false;
                 break :blk null;
@@ -1287,7 +1275,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.log.info("Loading TAS script: {s}", .{tas_path});
 
                 // Parse TAS script
-                var tas_script = core.TasScript.parseFile(ctx.allocator(), tas_path) catch |err| {
+                var tas_script = core.TasScript.parseFile(ctx.allocator(), ctx.io.?, tas_path) catch |err| {
                     std.log.err("Failed to parse TAS script: {}", .{err});
                     return err;
                 };
@@ -1338,7 +1326,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.debug_mode = false;
             } else {
                 std.log.err("--debug: invalid value '{s}'. Accepted: on, off", .{val});
-                std.process.exit(1);
+                fatalExit(1);
             }
         }
     }
@@ -1927,7 +1915,7 @@ fn flushProfileRow(ctx: *sw.Context) void {
             render_ns,
         },
     ) catch return;
-    _ = f.writeAll(line) catch {};
+    f.writeStreamingAll(ctx.io.?, line) catch {};
 }
 
 /// Cheap helper used by the --profile-csv pregen-timing code: returns the
@@ -3483,7 +3471,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     // filtering out chunks rejected by the configured cull strategy.
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
-    var sorted_chunks = std.ArrayList(*world_mod.LoadedChunk){};
+    var sorted_chunks: std.ArrayList(*world_mod.LoadedChunk) = .empty;
     defer sorted_chunks.deinit(ctx.allocator());
     {
         var it = state.world.chunks.valueIterator();
@@ -4144,13 +4132,14 @@ fn voxelRender(ctx: *sw.Context) !void {
         if (state.dump_frame_path) |path| {
             var hdr_buf: [64]u8 = undefined;
             const hdr = std.fmt.bufPrint(&hdr_buf, "P6\n{} {}\n255\n", .{ w, h }) catch unreachable;
-            const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+            const io = ctx.io.?;
+            const file = std.Io.Dir.cwd().createFile(io, path, .{}) catch |err| {
                 std.log.err("Cannot create {s}: {}", .{ path, err });
                 fatalExit(1);
             };
-            file.writeAll(hdr) catch unreachable;
-            file.writeAll(rgb) catch unreachable;
-            file.close();
+            file.writeStreamingAll(io, hdr) catch unreachable;
+            file.writeStreamingAll(io, rgb) catch unreachable;
+            file.close(io);
             std.log.info("Frame captured: {s} ({}×{} px)", .{ path, w, h });
         }
 
@@ -4158,6 +4147,7 @@ fn voxelRender(ctx: *sw.Context) !void {
         if (state.compare_golden_path) |golden_path| {
             const exit_code = compareAgainstGolden(
                 ctx.allocator(),
+                ctx.io.?,
                 golden_path,
                 rgb,
                 w,
@@ -4192,6 +4182,7 @@ fn voxelRender(ctx: *sw.Context) !void {
 /// Only supports P6 ASCII-header PPMs because that is what --dump-frame writes.
 fn compareAgainstGolden(
     allocator: std.mem.Allocator,
+    io: std.Io,
     golden_path: []const u8,
     captured_rgb: []const u8,
     w: u32,
@@ -4200,12 +4191,10 @@ fn compareAgainstGolden(
     max_channel_delta: u8,
 ) !u8 {
     // Read golden file
-    const file = std.fs.cwd().openFile(golden_path, .{}) catch |err| {
-        std.log.err("golden {s} cannot be opened: {}", .{ golden_path, err });
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, golden_path, allocator, .limited(64 * 1024 * 1024)) catch |err| {
+        std.log.err("golden {s} cannot be read: {}", .{ golden_path, err });
         return error.GoldenNotFound;
     };
-    defer file.close();
-    const contents = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
     defer allocator.free(contents);
 
     // Parse P6 header: "P6\n<w> <h>\n255\n" (plus optional comment lines starting with '#')
@@ -4328,7 +4317,7 @@ fn voxelShutdown(ctx: *sw.Context) !void {
     }
 
     if (state.profile_csv_file) |f| {
-        f.close();
+        f.close(ctx.io.?);
         state.profile_csv_file = null;
         if (state.profile_csv_path) |p| {
             std.log.info("[PROFILE] csv closed: {s}", .{p});

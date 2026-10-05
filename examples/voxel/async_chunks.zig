@@ -12,6 +12,7 @@
 //! cheap (see `examples/voxel/docs/async-chunks.md`).
 
 const std = @import("std");
+const clock = @import("clock.zig");
 const chunk_mod = @import("chunk.zig");
 const mesher_mod = @import("mesher.zig");
 const world_gen = @import("world_gen.zig");
@@ -153,24 +154,27 @@ pub const Pipeline = struct {
     jobs: std.ArrayList(Job),
     results: std.ArrayList(Result),
     in_flight: std.AutoHashMap(ChunkKey, void),
-    job_mtx: std.Thread.Mutex,
-    result_mtx: std.Thread.Mutex,
-    job_cv: std.Thread.Condition,
+    /// Io for the locks below, from main() (std.process.Init.io).
+    io: std.Io,
+    job_mtx: std.Io.Mutex,
+    result_mtx: std.Io.Mutex,
+    job_cv: std.Io.Condition,
     shutdown: std.atomic.Value(bool),
     thread: ?std.Thread,
 
     const ChunkKey = struct { cx: i32, cz: i32 };
 
-    pub fn init(allocator: std.mem.Allocator) !*Pipeline {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Pipeline {
         const self = try allocator.create(Pipeline);
         self.* = .{
             .allocator = allocator,
-            .jobs = .{},
-            .results = .{},
+            .io = io,
+            .jobs = .empty,
+            .results = .empty,
             .in_flight = std.AutoHashMap(ChunkKey, void).init(allocator),
-            .job_mtx = .{},
-            .result_mtx = .{},
-            .job_cv = .{},
+            .job_mtx = .init,
+            .result_mtx = .init,
+            .job_cv = .init,
             .shutdown = std.atomic.Value(bool).init(false),
             .thread = null,
         };
@@ -180,10 +184,10 @@ pub const Pipeline = struct {
 
     pub fn deinit(self: *Pipeline) void {
         // Signal shutdown and wake the worker.
-        self.job_mtx.lock();
+        self.job_mtx.lockUncancelable(self.io);
         self.shutdown.store(true, .release);
-        self.job_cv.signal();
-        self.job_mtx.unlock();
+        self.job_cv.signal(self.io);
+        self.job_mtx.unlock(self.io);
 
         if (self.thread) |t| {
             t.join();
@@ -208,8 +212,8 @@ pub const Pipeline = struct {
     /// Caller retains ownership of the job's snapshot pointers until this
     /// returns true — once enqueued, the pipeline owns them.
     pub fn tryEnqueue(self: *Pipeline, job: Job) !bool {
-        self.job_mtx.lock();
-        defer self.job_mtx.unlock();
+        self.job_mtx.lockUncancelable(self.io);
+        defer self.job_mtx.unlock(self.io);
 
         const key = ChunkKey{ .cx = job.cx, .cz = job.cz };
         if (self.in_flight.contains(key)) return false;
@@ -217,19 +221,19 @@ pub const Pipeline = struct {
 
         try self.jobs.append(self.allocator, job);
         try self.in_flight.put(key, {});
-        self.job_cv.signal();
+        self.job_cv.signal(self.io);
         return true;
     }
 
     pub fn isInFlight(self: *Pipeline, cx: i32, cz: i32) bool {
-        self.job_mtx.lock();
-        defer self.job_mtx.unlock();
+        self.job_mtx.lockUncancelable(self.io);
+        defer self.job_mtx.unlock(self.io);
         return self.in_flight.contains(.{ .cx = cx, .cz = cz });
     }
 
     pub fn inFlightCount(self: *Pipeline) usize {
-        self.job_mtx.lock();
-        defer self.job_mtx.unlock();
+        self.job_mtx.lockUncancelable(self.io);
+        defer self.job_mtx.unlock(self.io);
         return self.in_flight.count();
     }
 
@@ -242,10 +246,10 @@ pub const Pipeline = struct {
     pub fn drainSorted(self: *Pipeline, out: *std.ArrayList(Result), alloc: std.mem.Allocator) !void {
         // Swap the results queue out under the result lock so the worker
         // can keep pushing while main processes.
-        self.result_mtx.lock();
+        self.result_mtx.lockUncancelable(self.io);
         const taken = self.results;
-        self.results = .{};
-        self.result_mtx.unlock();
+        self.results = .empty;
+        self.result_mtx.unlock(self.io);
         defer {
             var mut = taken;
             mut.deinit(self.allocator);
@@ -253,8 +257,8 @@ pub const Pipeline = struct {
 
         // Drop from in_flight (requires job lock).
         {
-            self.job_mtx.lock();
-            defer self.job_mtx.unlock();
+            self.job_mtx.lockUncancelable(self.io);
+            defer self.job_mtx.unlock(self.io);
             for (taken.items) |r| {
                 _ = self.in_flight.remove(.{ .cx = r.cx, .cz = r.cz });
             }
@@ -309,16 +313,16 @@ fn freeResult(r: *Result) void {
 fn workerMain(pipeline: *Pipeline) void {
     while (true) {
         // Pop a job under the job lock.
-        pipeline.job_mtx.lock();
+        pipeline.job_mtx.lockUncancelable(pipeline.io);
         while (pipeline.jobs.items.len == 0 and !pipeline.shutdown.load(.acquire)) {
-            pipeline.job_cv.wait(&pipeline.job_mtx);
+            pipeline.job_cv.waitUncancelable(pipeline.io, &pipeline.job_mtx);
         }
         if (pipeline.shutdown.load(.acquire) and pipeline.jobs.items.len == 0) {
-            pipeline.job_mtx.unlock();
+            pipeline.job_mtx.unlock(pipeline.io);
             return;
         }
         var job = pipeline.jobs.orderedRemove(0);
-        pipeline.job_mtx.unlock();
+        pipeline.job_mtx.unlock(pipeline.io);
 
         processJob(pipeline, &job) catch |err| {
             std.log.err("[ASYNC-WORKER] job ({},{}) failed: {}", .{ job.cx, job.cz, err });
@@ -333,7 +337,7 @@ fn workerMain(pipeline: *Pipeline) void {
 }
 
 fn processJob(pipeline: *Pipeline, job: *Job) !void {
-    const t0 = std.time.nanoTimestamp();
+    const t0 = clock.nowNs();
 
     // Resolve the target chunk. For gen+mesh jobs (center slot == null),
     // allocate a fresh Chunk and run the worldgen + skylight pipeline.
@@ -404,7 +408,7 @@ fn processJob(pipeline: *Pipeline, job: *Job) !void {
     // publish the result so the worker's working set shrinks immediately.
     freeJobSnapshots(job);
 
-    const t_ns = std.time.nanoTimestamp() - t0;
+    const t_ns = clock.nowNs() - t0;
     const worker_us: u64 = @intCast(@divTrunc(t_ns, 1000));
 
     // For mesh-only jobs we're done with `target_ptr` — free the snapshot
@@ -433,8 +437,8 @@ fn processJob(pipeline: *Pipeline, job: *Job) !void {
         .quad_highlight = qh,
     };
 
-    pipeline.result_mtx.lock();
-    defer pipeline.result_mtx.unlock();
+    pipeline.result_mtx.lockUncancelable(pipeline.io);
+    defer pipeline.result_mtx.unlock(pipeline.io);
     try pipeline.results.append(pipeline.allocator, result);
 
     // Ownership of `target_ptr` (if any) has now transferred to the result
@@ -453,8 +457,8 @@ fn pushEmptyResult(pipeline: *Pipeline, cx: i32, cz: i32) !void {
         .quad_block = &.{},
         .quad_highlight = &.{},
     };
-    pipeline.result_mtx.lock();
-    defer pipeline.result_mtx.unlock();
+    pipeline.result_mtx.lockUncancelable(pipeline.io);
+    defer pipeline.result_mtx.unlock(pipeline.io);
     try pipeline.results.append(pipeline.allocator, empty);
 }
 

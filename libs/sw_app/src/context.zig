@@ -14,6 +14,10 @@ pub const Context = struct {
     input_snapshot: *core.InputSnapshot,
     backend: platform.backend.Backend,
     gpu_device: *gpu_mod.GPU,
+    /// Io for file and clock access, from Config.io. Null in the web build.
+    io: ?std.Io = null,
+    /// Command-line arguments, from Config.args. Empty in the web build.
+    args: []const [:0]const u8 = &.{},
 
     /// Current tick number (increments at fixed rate, e.g. 120 Hz).
     pub fn tickId(self: *const Context) u64 {

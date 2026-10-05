@@ -1,4 +1,29 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+// The Zig version this code targets. build.zig.zon is the one place that names
+// it (minimum_zig_version). Zig changes its std API between minor versions, so
+// a different major.minor stops the build here with one clear error, before
+// the API errors. The minecraft dockerfile reads the same field.
+const zig_target = blk: {
+    const zon = @embedFile("build.zig.zon");
+    const key = ".minimum_zig_version = \"";
+    const start = (std.mem.indexOf(u8, zon, key) orelse
+        @compileError("build.zig.zon has no minimum_zig_version")) + key.len;
+    const end = std.mem.indexOfScalarPos(u8, zon, start, '"').?;
+    break :blk std.SemanticVersion.parse(zon[start..end]) catch
+        @compileError("build.zig.zon: minimum_zig_version is not a version");
+};
+
+comptime {
+    const have = builtin.zig_version;
+    if (have.major != zig_target.major or have.minor != zig_target.minor) {
+        @compileError(std.fmt.comptimePrint(
+            "swindowzig needs Zig {d}.{d}.x (minimum_zig_version in build.zig.zon). This is Zig {s}.",
+            .{ zig_target.major, zig_target.minor, builtin.zig_version_string },
+        ));
+    }
+}
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -11,36 +36,9 @@ pub fn build(b: *std.Build) void {
         "Which example to build (default: windows)",
     ) orelse "justabox";
 
-    // Modules
-    const sw_core = b.addModule("sw_core", .{
-        .root_source_file = b.path("libs/sw_core/src/core.zig"),
-    });
-
-    const sw_platform = b.addModule("sw_platform", .{
-        .root_source_file = b.path("libs/sw_platform/src/platform_root.zig"),
-    });
-    sw_platform.addImport("sw_core", sw_core);
-
-    const sw_gpu = b.addModule("sw_gpu", .{
-        .root_source_file = b.path("libs/sw_gpu/src/gpu_root.zig"),
-    });
-
-    const sw_audio = b.addModule("sw_audio", .{
-        .root_source_file = b.path("libs/sw_audio/src/audio_root.zig"),
-    });
-
-    const sw_math = b.addModule("sw_math", .{
-        .root_source_file = b.path("libs/sw_math/src/math_root.zig"),
-    });
-
-    const sw_app = b.addModule("sw_app", .{
-        .root_source_file = b.path("libs/sw_app/src/app_root.zig"),
-    });
-    sw_app.addImport("sw_core", sw_core);
-    sw_app.addImport("sw_platform", sw_platform);
-    sw_app.addImport("sw_gpu", sw_gpu);
-    sw_app.addImport("sw_audio", sw_audio);
-    sw_app.addImport("sw_math", sw_math);
+    // The web build gets its own set of library modules, with no SDL. The
+    // minecraft dockerfile has no SDL headers.
+    const web_libs = addLibs(b, null);
 
     // Example app - WASM build
     const wasm_target = b.resolveTargetQuery(.{
@@ -54,11 +52,10 @@ pub fn build(b: *std.Build) void {
         const root_path = b.fmt("examples/{s}/main.zig", .{example_name});
 
         // Check if src/main.zig exists
-        var src_file = std.fs.cwd().openFile(src_path, .{}) catch {
+        b.root.access(b.graph.io, src_path, .{}) catch {
             // Fall back to root main.zig
             break :blk root_path;
         };
-        src_file.close();
         break :blk src_path;
     };
 
@@ -70,14 +67,14 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    example.root_module.addImport("sw_app", sw_app);
-    example.root_module.addImport("sw_math", sw_math);
-    example.root_module.addImport("sw_gpu", sw_gpu);
-    example.root_module.addImport("sw_core", sw_core);
+    example.root_module.addImport("sw_app", web_libs.app);
+    example.root_module.addImport("sw_math", web_libs.math);
+    example.root_module.addImport("sw_gpu", web_libs.gpu);
+    example.root_module.addImport("sw_core", web_libs.core);
     // sw_platform is needed by examples that drive their own wasm entry
     // (e.g. voxel, which constructs a WasmBackend directly in its
     // swindowzig_init export).
-    example.root_module.addImport("sw_platform", sw_platform);
+    example.root_module.addImport("sw_platform", web_libs.platform);
     example.rdynamic = true; // Export symbols for WASM
     // Voxel's Chunk.init() constructs a stack-allocated struct value.
     // At CHUNK_W=16: 16×256×16 blocks + skylight ≈ 128 KB. At CHUNK_W=48
@@ -93,7 +90,16 @@ pub fn build(b: *std.Build) void {
     const web_step = b.step("web", web_step_desc);
     web_step.dependOn(&install_example.step);
 
-    // Native executable (for SDL2/desktop)
+    // Native executable (for SDL2/desktop). This step translates the SDL2
+    // headers and gives them to sw_platform as the "sdl" module.
+    const sdl_c = b.addTranslateC(.{
+        .root_source_file = b.path("libs/sw_platform/src/sdl.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    const native_libs = addLibs(b, sdl_c.createModule());
+
     const native_exe = b.addExecutable(.{
         .name = b.fmt("{s}", .{example_name}),
         .root_module = b.createModule(.{
@@ -102,37 +108,31 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    native_exe.root_module.addImport("sw_app", sw_app);
-    native_exe.root_module.addImport("sw_math", sw_math);
-    native_exe.root_module.addImport("sw_gpu", sw_gpu);
-    native_exe.root_module.addImport("sw_core", sw_core);
+    native_exe.root_module.addImport("sw_app", native_libs.app);
+    native_exe.root_module.addImport("sw_math", native_libs.math);
+    native_exe.root_module.addImport("sw_gpu", native_libs.gpu);
+    native_exe.root_module.addImport("sw_core", native_libs.core);
 
     // Link SDL2 for native builds.
-    // sw_platform's @cImport needs the SDL2 headers to be visible.
-    // In Zig 0.15.x the include paths added to the exe are not automatically
-    // propagated to separately-compiled modules, so we add them explicitly here.
-    native_exe.linkSystemLibrary("SDL2");
-    native_exe.linkLibC();
-    // Ensure SDL2 headers are available to the sw_platform module's @cImport.
-    sw_platform.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    native_exe.root_module.linkSystemLibrary("SDL2", .{});
+    native_exe.root_module.link_libc = true;
 
     // Link wgpu-native from ~/.local
-    const home = std.process.getEnvVarOwned(b.allocator, "HOME") catch unreachable;
-    defer b.allocator.free(home);
+    const home = b.graph.environ_map.get("HOME") orelse @panic("HOME is not set");
     const wgpu_lib_path = std.fs.path.join(b.allocator, &[_][]const u8{ home, ".local", "lib" }) catch unreachable;
     const wgpu_include_path = std.fs.path.join(b.allocator, &[_][]const u8{ home, ".local", "include" }) catch unreachable;
 
-    native_exe.addLibraryPath(.{ .cwd_relative = wgpu_lib_path });
-    native_exe.addIncludePath(.{ .cwd_relative = wgpu_include_path });
-    native_exe.linkSystemLibrary("wgpu_native");
+    native_exe.root_module.addLibraryPath(.{ .cwd_relative = wgpu_lib_path });
+    native_exe.root_module.addIncludePath(.{ .cwd_relative = wgpu_include_path });
+    native_exe.root_module.linkSystemLibrary("wgpu_native", .{});
 
     // Platform-specific frameworks
     if (target.result.os.tag == .macos) {
-        native_exe.linkFramework("Metal");
-        native_exe.linkFramework("QuartzCore");
-        native_exe.linkFramework("Foundation");
-        native_exe.linkFramework("IOKit");
-        native_exe.linkFramework("IOSurface");
+        native_exe.root_module.linkFramework("Metal", .{});
+        native_exe.root_module.linkFramework("QuartzCore", .{});
+        native_exe.root_module.linkFramework("Foundation", .{});
+        native_exe.root_module.linkFramework("IOKit", .{});
+        native_exe.root_module.linkFramework("IOSurface", .{});
     }
 
     const install_native = b.addInstallArtifact(native_exe, .{});
@@ -145,9 +145,7 @@ pub fn build(b: *std.Build) void {
     // Run step
     const run_cmd = b.addRunArtifact(native_exe);
     run_cmd.step.dependOn(&install_native.step);
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const run_step_desc = b.fmt("Run '{s}' example natively", .{example_name});
     const run_step = b.step("run", run_step_desc);
@@ -177,4 +175,31 @@ pub fn build(b: *std.Build) void {
         const run_unit_tests = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run_unit_tests.step);
     }
+}
+
+const Libs = struct {
+    core: *std.Build.Module,
+    platform: *std.Build.Module,
+    gpu: *std.Build.Module,
+    math: *std.Build.Module,
+    app: *std.Build.Module,
+};
+
+/// Create the swindowzig library modules. `sdl` is the translated SDL2 headers
+/// for a native build, or null for the web build.
+fn addLibs(b: *std.Build, sdl: ?*std.Build.Module) Libs {
+    const core = b.createModule(.{ .root_source_file = b.path("libs/sw_core/src/core.zig") });
+    const platform = b.createModule(.{ .root_source_file = b.path("libs/sw_platform/src/platform_root.zig") });
+    platform.addImport("sw_core", core);
+    if (sdl) |m| platform.addImport("sdl", m);
+    const gpu = b.createModule(.{ .root_source_file = b.path("libs/sw_gpu/src/gpu_root.zig") });
+    const audio = b.createModule(.{ .root_source_file = b.path("libs/sw_audio/src/audio_root.zig") });
+    const math = b.createModule(.{ .root_source_file = b.path("libs/sw_math/src/math_root.zig") });
+    const app = b.createModule(.{ .root_source_file = b.path("libs/sw_app/src/app_root.zig") });
+    app.addImport("sw_core", core);
+    app.addImport("sw_platform", platform);
+    app.addImport("sw_gpu", gpu);
+    app.addImport("sw_audio", audio);
+    app.addImport("sw_math", math);
+    return .{ .core = core, .platform = platform, .gpu = gpu, .math = math, .app = app };
 }

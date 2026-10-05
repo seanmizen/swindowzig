@@ -2,16 +2,29 @@
 // Dead simple. MEGA KISS. No camera movement, no input, no complexity.
 const std = @import("std");
 const sw = @import("sw_app");
+const builtin = @import("builtin");
 const sw_math = @import("sw_math");
 const gpu_mod = @import("sw_gpu");
 
-pub fn main() !void {
-    try sw.run(.{
-        .title = "justabox",
-        .size = .{ .w = 800, .h = 600 },
-        .tick_hz = 60,
-    }, Callbacks);
+// Freestanding WASM has no std.process.Init, so the web build gets a main
+// with no parameters. The native build passes Io to the app (ctx.io).
+pub const main = if (builtin.cpu.arch.isWasm()) mainWasm else mainNative;
+
+fn mainWasm() !void {
+    try sw.run(config, Callbacks);
 }
+
+fn mainNative(init: std.process.Init) !void {
+    var c = config;
+    c.io = init.io;
+    try sw.run(c, Callbacks);
+}
+
+const config: sw.Config = .{
+    .title = "justabox",
+    .size = .{ .w = 800, .h = 600 },
+    .tick_hz = 60,
+};
 
 const Vertex = struct {
     position: [3]f32,
@@ -79,7 +92,7 @@ var angle: f32 = 0.0;
 // Frame timing
 const target_fps: u64 = 60;
 const frame_time_ns: u64 = std.time.ns_per_s / target_fps;
-var last_frame_time: i128 = 0;
+var last_frame_time: u64 = 0;
 
 const shader_code =
     \\struct Uniforms { mvp: mat4x4<f32> }
@@ -203,14 +216,14 @@ const Callbacks = struct {
         if (pipeline == null) return;
 
         // Frame limiting
-        const now = std.time.nanoTimestamp();
+        const now = ctx.timeNs();
         if (last_frame_time > 0) {
             const elapsed = now - last_frame_time;
             if (elapsed < frame_time_ns) {
-                std.Thread.sleep(@intCast(frame_time_ns - @as(u64, @intCast(elapsed))));
+                if (ctx.io) |io| io.sleep(.fromNanoseconds(frame_time_ns - elapsed), .awake) catch {};
             }
         }
-        last_frame_time = std.time.nanoTimestamp();
+        last_frame_time = ctx.timeNs();
 
         // Build MVP matrix
         const proj = sw_math.perspective(

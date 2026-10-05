@@ -181,7 +181,7 @@ pub const TasScript = struct {
 
     pub fn init(allocator: std.mem.Allocator) TasScript {
         return .{
-            .entries = std.ArrayList(TasEntry){},
+            .entries = .empty,
             .allocator = allocator,
         };
     }
@@ -234,11 +234,8 @@ pub const TasScript = struct {
     }
 
     /// Parse TAS script from file
-    pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !TasScript {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        const source = try file.readToEndAlloc(allocator, 10 * 1024 * 1024); // 10MB max
+    pub fn parseFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !TasScript {
+        const source = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(10 * 1024 * 1024)); // 10MB max
         defer allocator.free(source);
 
         return try parse(allocator, source);
@@ -246,7 +243,7 @@ pub const TasScript = struct {
 
     /// Convert TAS script to event list
     pub fn toEvents(self: *const TasScript, tick_hz: u32) !std.ArrayList(Event) {
-        var events = std.ArrayList(Event){};
+        var events: std.ArrayList(Event) = .empty;
         errdefer events.deinit(self.allocator);
 
         const ns_per_tick: u64 = 1_000_000_000 / tick_hz;

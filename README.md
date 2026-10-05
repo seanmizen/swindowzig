@@ -47,7 +47,7 @@ const GameCallbacks = struct {
 
 ### Prerequisites
 
-- **Zig 0.15.2+**
+- **Zig 0.17.x**: the version in `build.zig.zon` (`minimum_zig_version`). The build stops on any other major.minor.
 - **SDL2**
 - **wgpu-native** v22.1.0.5 (bindings are pinned to this version's header; re-diff when upgrading)
 

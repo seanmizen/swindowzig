@@ -22,14 +22,14 @@ pub const Replayer = struct {
     state: ReplayState,
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, reader: std.io.AnyReader) !Replayer {
+    pub fn init(allocator: std.mem.Allocator, reader: *std.Io.Reader) !Replayer {
         var deserializer = Deserializer.init(reader);
         const header = try deserializer.readHeader();
 
         return .{
             .deserializer = deserializer,
             .header = header,
-            .events = .{},
+            .events = .empty,
             .current_index = 0,
             .state = .stopped,
             .allocator = allocator,
@@ -125,8 +125,8 @@ pub const Replayer = struct {
 
 test "Replayer load and playback" {
     // Create a recording
-    var write_buffer: std.ArrayList(u8) = .{};
-    defer write_buffer.deinit(std.testing.allocator);
+    var write_buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer write_buffer.deinit();
 
     const events = [_]Event{
         Event.init(0, 1000, 0, .{ .lifecycle = .init }),
@@ -134,15 +134,15 @@ test "Replayer load and playback" {
         Event.init(1, 3000, 0, .{ .lifecycle = .resumed }),
     };
 
-    var recorder_serializer = serialize.Serializer.init(write_buffer.writer(std.testing.allocator).any());
+    var recorder_serializer = serialize.Serializer.init(&write_buffer.writer);
     try recorder_serializer.writeHeader(120);
     for (events) |e| {
         try recorder_serializer.writeEvent(e);
     }
 
     // Replay
-    var fbs = std.io.fixedBufferStream(write_buffer.items);
-    var replayer = try Replayer.init(std.testing.allocator, fbs.reader().any());
+    var reader: std.Io.Reader = .fixed(write_buffer.written());
+    var replayer = try Replayer.init(std.testing.allocator, &reader);
     defer replayer.deinit();
 
     try replayer.loadAll();
@@ -165,17 +165,17 @@ test "Replayer load and playback" {
 }
 
 test "Replayer pause and resume" {
-    var write_buffer: std.ArrayList(u8) = .{};
-    defer write_buffer.deinit(std.testing.allocator);
+    var write_buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer write_buffer.deinit();
 
-    var recorder_serializer = serialize.Serializer.init(write_buffer.writer(std.testing.allocator).any());
+    var recorder_serializer = serialize.Serializer.init(&write_buffer.writer);
     try recorder_serializer.writeHeader(120);
 
     const e = Event.init(0, 1000, 0, .{ .lifecycle = .init });
     try recorder_serializer.writeEvent(e);
 
-    var fbs = std.io.fixedBufferStream(write_buffer.items);
-    var replayer = try Replayer.init(std.testing.allocator, fbs.reader().any());
+    var reader: std.Io.Reader = .fixed(write_buffer.written());
+    var replayer = try Replayer.init(std.testing.allocator, &reader);
     defer replayer.deinit();
 
     try replayer.loadAll();

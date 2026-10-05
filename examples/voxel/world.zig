@@ -604,7 +604,7 @@ pub const World = struct {
 };
 
 fn buildSpiralOffsets(allocator: std.mem.Allocator, r: i32) ![]ChunkOffset {
-    var offsets = std.ArrayList(ChunkOffset){};
+    var offsets: std.ArrayList(ChunkOffset) = .empty;
     defer offsets.deinit(allocator);
 
     var dz: i32 = -r;

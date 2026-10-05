@@ -332,7 +332,7 @@ pub fn sampleBiomeWeights(wx: i32, wz: i32) [4]f32 {
     const N_RING: usize = 12;
     const N_TOTAL: usize = N_RING + 1;
 
-    var counts = [_]f32{0.0} ** 4;
+    var counts: [4]f32 = @splat(0.0);
 
     // Centre point
     const centre_biome = sampleBiome(wx, wz);
