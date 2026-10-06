@@ -51,9 +51,8 @@ const CENTER_SLOT: usize = 4;
 ///            meshes it and does not regenerate.
 ///
 /// `borders` (slot = snapIndex(dcx, dcz), CENTER_SLOT unused): the cells of
-/// up to 8 surrounding chunks that the mesher reads (see Border). null
-/// neighbours are treated as air (skylight = 0 in the -Y direction,
-/// MAX_SKYLIGHT above chunk top). The 4 diagonal neighbours (slots 0, 2,
+/// up to 8 surrounding chunks that the mesher reads (see Border). A null
+/// neighbour reads as chunk_mod.MISSING_* (air, full skylight), as in World. The 4 diagonal neighbours (slots 0, 2,
 /// 6, 8) are required for deterministic AO sampling at chunk corners —
 /// see `examples/voxel/docs/async-chunks.md`.
 ///
@@ -195,9 +194,9 @@ const SnapshotGetter = struct {
     fn getBlock(ctx: *const anyopaque, x: i32, y: i32, z: i32) BlockType {
         const self: *const SnapshotGetter = @ptrCast(@alignCast(ctx));
         if (y < 0 or y >= CHUNK_H) return .air;
-        const at = self.locate(x, z) orelse return .air;
+        const at = self.locate(x, z) orelse return chunk_mod.MISSING_BLOCK;
         if (at.slot == CENTER_SLOT) return self.center.getBlock(at.lx, y, at.lz);
-        const b = self.borders[at.slot] orelse return .air;
+        const b = self.borders[at.slot] orelse return chunk_mod.MISSING_BLOCK;
         const i = b.index(at.lx, y, at.lz) orelse {
             outsideBorder();
             return .air;
@@ -209,9 +208,9 @@ const SnapshotGetter = struct {
         const self: *const SnapshotGetter = @ptrCast(@alignCast(ctx));
         if (y >= CHUNK_H) return MAX_SKYLIGHT;
         if (y < 0) return 0;
-        const at = self.locate(x, z) orelse return 0;
+        const at = self.locate(x, z) orelse return chunk_mod.MISSING_SKYLIGHT;
         if (at.slot == CENTER_SLOT) return self.center.getSkylight(at.lx, y, at.lz);
-        const b = self.borders[at.slot] orelse return 0;
+        const b = self.borders[at.slot] orelse return chunk_mod.MISSING_SKYLIGHT;
         const i = b.index(at.lx, y, at.lz) orelse {
             outsideBorder();
             return 0;
@@ -222,9 +221,9 @@ const SnapshotGetter = struct {
     fn getBlockLightFn(ctx: *const anyopaque, x: i32, y: i32, z: i32) u8 {
         const self: *const SnapshotGetter = @ptrCast(@alignCast(ctx));
         if (y < 0 or y >= CHUNK_H) return 0;
-        const at = self.locate(x, z) orelse return 0;
+        const at = self.locate(x, z) orelse return chunk_mod.MISSING_BLOCK_LIGHT;
         if (at.slot == CENTER_SLOT) return self.center.getBlockLight(at.lx, y, at.lz);
-        const b = self.borders[at.slot] orelse return 0;
+        const b = self.borders[at.slot] orelse return chunk_mod.MISSING_BLOCK_LIGHT;
         const i = b.index(at.lx, y, at.lz) orelse {
             outsideBorder();
             return 0;
@@ -630,7 +629,7 @@ const FullGridGetter = struct {
         const self: *const FullGridGetter = @ptrCast(@alignCast(ctx));
         if (y >= CHUNK_H) return MAX_SKYLIGHT;
         if (y < 0) return 0;
-        const a = self.at(x, z) orelse return 0;
+        const a = self.at(x, z) orelse return chunk_mod.MISSING_SKYLIGHT;
         return a.ch.getSkylight(a.lx, y, a.lz);
     }
     fn blockLight(ctx: *const anyopaque, x: i32, y: i32, z: i32) u8 {
@@ -707,4 +706,38 @@ test "cloneChunk shares no block data with the source" {
     try std.testing.expect(copy.blocks.data.ptr != src.blocks.data.ptr);
     try src.setBlock(1, 2, 3, .dirt);
     try std.testing.expectEqual(BlockType.stone, copy.getBlock(1, 2, 3));
+}
+
+test "SnapshotGetter and World give the same values around a missing chunk" {
+    const world_mod = @import("world.zig");
+    const a = std.heap.c_allocator;
+    var world = try world_mod.World.init(a, .hilly, 2);
+    defer world.deinit();
+    // Only (0,0) and its +X neighbour are loaded. The others are missing.
+    _ = try world.generateChunk(0, 0);
+    _ = try world.generateChunk(1, 0);
+    const center = &world.chunks.get(.{ .cx = 0, .cz = 0 }).?.chunk;
+    const east = &world.chunks.get(.{ .cx = 1, .cz = 0 }).?.chunk;
+
+    var borders: [9]?*Border = @splat(null);
+    borders[snapIndex(1, 0)] = try Border.fromChunk(east, 1, 0);
+    defer borders[snapIndex(1, 0)].?.free();
+    const snap = SnapshotGetter{ .cx = 0, .cz = 0, .center = center, .borders = &borders };
+    const via_snap = snap.asBlockGetter();
+    const via_world = world.asBlockGetter();
+
+    // Cells the mesher can read: the center, BORDER blocks into each
+    // neighbour (loaded or missing), and y just outside the world.
+    const ys = [_]i32{ -1, 0, 40, 70, 90, 255, 256 };
+    var x: i32 = -BORDER;
+    while (x < CHUNK_W + BORDER) : (x += 1) {
+        var z: i32 = -BORDER;
+        while (z < CHUNK_W + BORDER) : (z += 1) {
+            for (ys) |y| {
+                try std.testing.expectEqual(via_world.getBlock(x, y, z), via_snap.getBlock(x, y, z));
+                try std.testing.expectEqual(via_world.getSkylight(x, y, z), via_snap.getSkylight(x, y, z));
+                try std.testing.expectEqual(via_world.getBlockLight(x, y, z), via_snap.getBlockLight(x, y, z));
+            }
+        }
+    }
 }

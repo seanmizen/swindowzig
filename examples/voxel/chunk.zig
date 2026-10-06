@@ -45,6 +45,15 @@ pub const BlockType = enum(u8) {
 /// full reasoning.
 pub const MAX_SKYLIGHT: u8 = 15;
 
+/// What a BlockGetter returns for a cell in a chunk that is not loaded (or
+/// not in a job's 3×3 grid). Every getter uses these, so a chunk meshes the
+/// same through World (sync) and through SnapshotGetter (async). An unknown
+/// neighbour is open air: full skylight, no block light, the same as the
+/// space above the world.
+pub const MISSING_BLOCK: BlockType = .air;
+pub const MISSING_SKYLIGHT: u8 = MAX_SKYLIGHT;
+pub const MISSING_BLOCK_LIGHT: u8 = 0;
+
 /// Maximum block-light level. Same [0, 15] range as skylight; phase-3 block
 /// light uses a parallel storage nibble and an independent BFS. See
 /// `examples/voxel/docs/lighting.md` § phase 3 for the design.

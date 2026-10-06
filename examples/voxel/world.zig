@@ -400,7 +400,7 @@ pub const World = struct {
     pub fn getBlock(self: *const World, wx: i32, wy: i32, wz: i32) chunk_mod.BlockType {
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
-        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return .air;
+        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return chunk_mod.MISSING_BLOCK;
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
         return lc.chunk.getBlock(lx, wy, lz);
@@ -558,9 +558,12 @@ pub const World = struct {
     /// Only skylight uses MAX_SKYLIGHT because it has a global source (the sun).
     pub fn getSkylight(self: *const World, wx: i32, wy: i32, wz: i32) u8 {
         if (wy >= chunk_mod.CHUNK_H) return chunk_mod.MAX_SKYLIGHT;
+        // Below the world is dark, also under a missing chunk, as in a loaded
+        // chunk (Chunk.getSkylight) and in SnapshotGetter.
+        if (wy < 0) return 0;
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
-        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return chunk_mod.MAX_SKYLIGHT;
+        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return chunk_mod.MISSING_SKYLIGHT;
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
         return lc.chunk.getSkylight(lx, wy, lz);
@@ -572,7 +575,7 @@ pub const World = struct {
     pub fn getBlockLight(self: *const World, wx: i32, wy: i32, wz: i32) u8 {
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
-        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return 0;
+        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return chunk_mod.MISSING_BLOCK_LIGHT;
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
         return lc.chunk.getBlockLight(lx, wy, lz);
