@@ -253,6 +253,102 @@ pub const PalettedBlocks = struct {
 };
 
 
+/// A dense light grid, [x][y][z]: what the light passes compute into.
+pub const DenseLight = [CHUNK_W][CHUNK_H][CHUNK_W]u8;
+
+/// Light values of a chunk, stored per 16-high section. A section where
+/// every cell has the same value (open sky above the terrain, or no block
+/// light) has no array, only that value. Most of a chunk is like that:
+/// on hilly terrain 11 of 16 skylight sections, and all block light when
+/// there is no glowstone. Values are the same as a dense grid: store a dense
+/// grid, then get gives back each value.
+pub const LightGrid = struct {
+    pub const SECTION_H = 16;
+    pub const SECTIONS = CHUNK_H / SECTION_H;
+    const Section = [CHUNK_W][SECTION_H][CHUNK_W]u8;
+
+    /// Per section: the array, or null when every cell is `fill`.
+    arrays: [SECTIONS]?*Section = @splat(null),
+    fill: [SECTIONS]u8 = @splat(0),
+
+    pub inline fn get(self: *const LightGrid, x: usize, y: usize, z: usize) u8 {
+        const s = y / SECTION_H;
+        const arr = self.arrays[s] orelse return self.fill[s];
+        return arr[x][y % SECTION_H][z];
+    }
+
+    /// Replace the values with `dense`. A section keeps its array when it
+    /// still needs one, so a recompute does not allocate again.
+    pub fn store(self: *LightGrid, allocator: std.mem.Allocator, dense: *const DenseLight) !void {
+        for (0..SECTIONS) |s| {
+            const y0 = s * SECTION_H;
+            const v = dense[0][y0][0];
+            var uniform = true;
+            check: for (0..CHUNK_W) |x| for (y0..y0 + SECTION_H) |y| for (0..CHUNK_W) |z| {
+                if (dense[x][y][z] != v) {
+                    uniform = false;
+                    break :check;
+                }
+            };
+            if (uniform) {
+                if (self.arrays[s]) |arr| allocator.destroy(arr);
+                self.arrays[s] = null;
+                self.fill[s] = v;
+                continue;
+            }
+            const arr = self.arrays[s] orelse try allocator.create(Section);
+            self.arrays[s] = arr;
+            for (0..CHUNK_W) |x| {
+                @memcpy(std.mem.asBytes(&arr[x]), std.mem.asBytes(dense[x][y0..][0..SECTION_H]));
+            }
+        }
+    }
+
+    /// Write every value into `dense`.
+    pub fn expand(self: *const LightGrid, dense: *DenseLight) void {
+        for (0..SECTIONS) |s| {
+            const y0 = s * SECTION_H;
+            for (0..CHUNK_W) |x| {
+                if (self.arrays[s]) |arr| {
+                    @memcpy(std.mem.asBytes(dense[x][y0..][0..SECTION_H]), std.mem.asBytes(&arr[x]));
+                } else {
+                    @memset(std.mem.asBytes(dense[x][y0..][0..SECTION_H]), self.fill[s]);
+                }
+            }
+        }
+    }
+
+    pub fn deinit(self: *LightGrid, allocator: std.mem.Allocator) void {
+        for (&self.arrays) |*a| {
+            if (a.*) |arr| allocator.destroy(arr);
+            a.* = null;
+        }
+    }
+
+    /// A copy that owns its own arrays.
+    pub fn clone(self: *const LightGrid, allocator: std.mem.Allocator) !LightGrid {
+        var out: LightGrid = .{ .fill = self.fill };
+        errdefer out.deinit(allocator);
+        for (self.arrays, 0..) |a, s| {
+            if (a) |arr| {
+                const copy = try allocator.create(Section);
+                copy.* = arr.*;
+                out.arrays[s] = copy;
+            }
+        }
+        return out;
+    }
+
+    /// Heap bytes held by the section arrays.
+    pub fn bytes(self: *const LightGrid) usize {
+        var n: usize = 0;
+        for (self.arrays) |a| {
+            if (a != null) n += @sizeOf(Section);
+        }
+        return n;
+    }
+};
+
 pub const Chunk = struct {
     /// Allocator used for the paletted block data. Stored here so `setBlock`
     /// and `deinit` don't need to plumb one through every call site. The
@@ -269,11 +365,9 @@ pub const Chunk = struct {
     /// does not cross chunk boundaries, so wide horizontal caves spanning
     /// two chunks will show a brightness seam at the join.
     ///
-    /// Kept flat (one u8 per cell) on purpose. Skylight values are almost
-    /// always unique per-cell in an air column, so palette compression on
-    /// this grid would bloat rather than shrink it. See `docs/memory.md`
-    /// §2 for the reasoning.
-    skylight: [CHUNK_W][CHUNK_H][CHUNK_W]u8,
+    /// Stored per 16-high section (LightGrid): a section with one value,
+    /// such as open sky, has no array.
+    skylight: LightGrid,
     /// Per-block block-light value, range [0, MAX_BLOCK_LIGHT]. Computed by
     /// `computeBlockLight()` after `generateTerrain()` and again whenever a
     /// block is placed or removed. Unlike skylight, emissive blocks (e.g.
@@ -286,19 +380,21 @@ pub const Chunk = struct {
     /// edge will NOT push light into the neighbour chunk. The seam is small
     /// in practice because block light decays to 0 within 15 cells and
     /// glowstones are explicitly placed, but it is a documented limitation.
-    block_light: [CHUNK_W][CHUNK_H][CHUNK_W]u8,
+    block_light: LightGrid,
 
     pub fn init(allocator: std.mem.Allocator) Chunk {
         return .{
             .allocator = allocator,
             .blocks = PalettedBlocks{},
-            .skylight = std.mem.zeroes([CHUNK_W][CHUNK_H][CHUNK_W]u8),
-            .block_light = std.mem.zeroes([CHUNK_W][CHUNK_H][CHUNK_W]u8),
+            .skylight = .{},
+            .block_light = .{},
         };
     }
 
     pub fn deinit(self: *Chunk) void {
         self.blocks.deinit(self.allocator);
+        self.skylight.deinit(self.allocator);
+        self.block_light.deinit(self.allocator);
     }
 
     /// RAM used by this chunk's block storage (palette + packed data).
@@ -308,8 +404,9 @@ pub const Chunk = struct {
         return self.blocks.sizeBytes();
     }
 
-    pub fn skylightBytes(_: *const Chunk) usize {
-        return @sizeOf([CHUNK_W][CHUNK_H][CHUNK_W]u8);
+    /// RAM of the skylight and block-light section arrays (see LightGrid).
+    pub fn skylightBytes(self: *const Chunk) usize {
+        return self.skylight.bytes() + self.block_light.bytes();
     }
 
     /// Sum of block-data + skylight bytes. Roughly comparable to the
@@ -404,7 +501,7 @@ pub const Chunk = struct {
     pub fn getSkylight(self: *const Chunk, x: i32, y: i32, z: i32) u8 {
         if (y >= CHUNK_H) return MAX_SKYLIGHT; // above world top = open sky
         if (x < 0 or x >= CHUNK_W or y < 0 or z < 0 or z >= CHUNK_W) return 0;
-        return self.skylight[@intCast(x)][@intCast(y)][@intCast(z)];
+        return self.skylight.get(@intCast(x), @intCast(y), @intCast(z));
     }
 
     /// Read the block-light at (x, y, z) using local chunk coordinates.
@@ -414,7 +511,7 @@ pub const Chunk = struct {
     /// only its own chunk.
     pub fn getBlockLight(self: *const Chunk, x: i32, y: i32, z: i32) u8 {
         if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) return 0;
-        return self.block_light[@intCast(x)][@intCast(y)][@intCast(z)];
+        return self.block_light.get(@intCast(x), @intCast(y), @intCast(z));
     }
 
     /// Recompute skylight for the entire chunk from the current `blocks` array.
@@ -439,7 +536,8 @@ pub const Chunk = struct {
     /// milliseconds on a modern desktop, run once per chunk at generate time.
     /// Allocator-free by design so it can be called from `generateTerrain`
     /// without changing the existing call sites.
-    pub fn computeSkylight(self: *Chunk) void {
+    pub fn computeSkylight(self: *Chunk) !void {
+        var sky: DenseLight = undefined;
         // The same result as the bucket passes in computeSkylightReference
         // (a test checks it), from one breadth-first pass:
         // 1. A cell is MAX_SKYLIGHT when no solid block is above it in its
@@ -472,7 +570,7 @@ pub const Chunk = struct {
                 }
             }
             top[x][z] = t;
-            for (0..CHUNK_H) |y| self.skylight[x][y][z] = if (y >= t) MAX_SKYLIGHT else 0;
+            for (0..CHUNK_H) |y| sky[x][y][z] = if (y >= t) MAX_SKYLIGHT else 0;
         };
 
         // Queue of cells, packed x << 12 | y << 4 | z. A cell enters at most
@@ -507,7 +605,7 @@ pub const Chunk = struct {
             const x: usize = v >> 12;
             const y: usize = (v >> 4) & 0xFF;
             const z: usize = v & 0xF;
-            const level = self.skylight[x][y][z];
+            const level = sky[x][y][z];
             if (level < 2) continue;
             const target = level - 1;
             const nbs = [6][3]i32{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, -1, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } };
@@ -520,17 +618,19 @@ pub const Chunk = struct {
                 const nyu: usize = @intCast(ny);
                 const nzu: usize = @intCast(nz);
                 if (isSolid(&solid, nxu, nyu, nzu)) continue;
-                if (self.skylight[nxu][nyu][nzu] >= target) continue;
-                self.skylight[nxu][nyu][nzu] = target;
+                if (sky[nxu][nyu][nzu] >= target) continue;
+                sky[nxu][nyu][nzu] = target;
                 queue[tail] = @intCast((nxu << 12) | (nyu << 4) | nzu);
                 tail += 1;
             }
         }
+        try self.skylight.store(self.allocator, &sky);
     }
 
     /// The bucket-pass skylight that computeSkylight replaced. Tests only:
     /// the reference for the fast version.
-    fn computeSkylightReference(self: *Chunk) void {
+    fn computeSkylightReference(self: *Chunk) !void {
+        var sky: DenseLight = undefined;
         // Pass 1 — top-down column seed.
         var x: i32 = 0;
         while (x < CHUNK_W) : (x += 1) {
@@ -544,11 +644,11 @@ pub const Chunk = struct {
                     const zu: usize = @intCast(z);
                     if (self.resolveBlockRaw(x, y, z) != .air) {
                         seen_solid = true;
-                        self.skylight[xu][yu][zu] = 0;
+                        sky[xu][yu][zu] = 0;
                     } else if (!seen_solid) {
-                        self.skylight[xu][yu][zu] = MAX_SKYLIGHT;
+                        sky[xu][yu][zu] = MAX_SKYLIGHT;
                     } else {
-                        self.skylight[xu][yu][zu] = 0;
+                        sky[xu][yu][zu] = 0;
                     }
                 }
             }
@@ -570,7 +670,7 @@ pub const Chunk = struct {
                         const xu: usize = @intCast(ix);
                         const yu: usize = @intCast(iy);
                         const zu: usize = @intCast(iz);
-                        if (self.skylight[xu][yu][zu] != level) continue;
+                        if (sky[xu][yu][zu] != level) continue;
                         // Six axis-aligned neighbours.
                         const neighbours = [_][3]i32{
                             .{ ix + 1, iy, iz },
@@ -589,13 +689,14 @@ pub const Chunk = struct {
                             const nyu: usize = @intCast(ny);
                             const nzu: usize = @intCast(nz);
                             if (self.resolveBlockRaw(nx, ny, nz) != .air) continue;
-                            if (self.skylight[nxu][nyu][nzu] >= target) continue;
-                            self.skylight[nxu][nyu][nzu] = target;
+                            if (sky[nxu][nyu][nzu] >= target) continue;
+                            sky[nxu][nyu][nzu] = target;
                         }
                     }
                 }
             }
         }
+        try self.skylight.store(self.allocator, &sky);
     }
 
     /// Recompute block-light for the entire chunk from the current `blocks`
@@ -627,7 +728,8 @@ pub const Chunk = struct {
     /// pushes light into a neighbouring chunk's array; a glowstone placed
     /// right at a chunk edge will light only its own chunk. Phase 4 should
     /// mirror the planned cross-chunk skylight fix.
-    pub fn computeBlockLight(self: *Chunk) void {
+    pub fn computeBlockLight(self: *Chunk) !void {
+        var bl: DenseLight = undefined;
         // Pass 1 — seed emissive cells, zero everything else.
         var any_emitter = false;
         var x: i32 = 0;
@@ -640,14 +742,14 @@ pub const Chunk = struct {
                     const yu: usize = @intCast(y);
                     const zu: usize = @intCast(z);
                     const emit = emissionLevel(self.resolveBlockRaw(x, y, z));
-                    self.block_light[xu][yu][zu] = emit;
+                    bl[xu][yu][zu] = emit;
                     if (emit > 0) any_emitter = true;
                 }
             }
         }
 
         // Fast path: no emitters, nothing to propagate.
-        if (!any_emitter) return;
+        if (!any_emitter) return self.block_light.store(self.allocator, &bl);
 
         // Pass 2 — bucket-sort BFS, level MAX_BLOCK_LIGHT down to 2.
         var level: u8 = MAX_BLOCK_LIGHT;
@@ -662,7 +764,7 @@ pub const Chunk = struct {
                         const xu: usize = @intCast(ix);
                         const yu: usize = @intCast(iy);
                         const zu: usize = @intCast(iz);
-                        if (self.block_light[xu][yu][zu] != level) continue;
+                        if (bl[xu][yu][zu] != level) continue;
                         // Six axis-aligned neighbours.
                         const neighbours = [_][3]i32{
                             .{ ix + 1, iy, iz },
@@ -685,13 +787,14 @@ pub const Chunk = struct {
                             // already set in pass 1 and they will propagate
                             // from THEIR own cell on their own sweep tick.
                             if (self.resolveBlockRaw(nx, ny, nz) != .air) continue;
-                            if (self.block_light[nxu][nyu][nzu] >= target) continue;
-                            self.block_light[nxu][nyu][nzu] = target;
+                            if (bl[nxu][nyu][nzu] >= target) continue;
+                            bl[nxu][nyu][nzu] = target;
                         }
                     }
                 }
             }
         }
+        try self.block_light.store(self.allocator, &bl);
     }
 
     /// Recompute block-light for this chunk, seeding additional light from
@@ -726,7 +829,8 @@ pub const Chunk = struct {
         nx_pos: ?*const Chunk, // chunk at cx+1: their x=0 is our x=CHUNK_W-1 border
         nz_neg: ?*const Chunk, // chunk at cz-1: their z=CHUNK_W-1 is our z=0 border
         nz_pos: ?*const Chunk, // chunk at cz+1: their z=0 is our z=CHUNK_W-1 border
-    ) void {
+    ) !void {
+        var bl: DenseLight = undefined;
         // Pass 1 — seed own emitters, zero everything else (same as computeBlockLight).
         var any_emitter = false;
         var x: i32 = 0;
@@ -739,7 +843,7 @@ pub const Chunk = struct {
                     const yu: usize = @intCast(y);
                     const zu: usize = @intCast(z);
                     const emit = emissionLevel(self.resolveBlockRaw(x, y, z));
-                    self.block_light[xu][yu][zu] = emit;
+                    bl[xu][yu][zu] = emit;
                     if (emit > 0) any_emitter = true;
                 }
             }
@@ -753,11 +857,11 @@ pub const Chunk = struct {
             while (yy < CHUNK_H) : (yy += 1) {
                 var zz: usize = 0;
                 while (zz < CHUNK_W) : (zz += 1) {
-                    const nv = nb.block_light[CHUNK_W - 1][yy][zz];
+                    const nv = nb.block_light.get(CHUNK_W - 1, yy, zz);
                     if (nv >= 2 and self.resolveBlockRaw(0, @intCast(yy), @intCast(zz)) == .air) {
                         const seed: u8 = nv - 1;
-                        if (seed > self.block_light[0][yy][zz]) {
-                            self.block_light[0][yy][zz] = seed;
+                        if (seed > bl[0][yy][zz]) {
+                            bl[0][yy][zz] = seed;
                             any_emitter = true;
                         }
                     }
@@ -769,11 +873,11 @@ pub const Chunk = struct {
             while (yy < CHUNK_H) : (yy += 1) {
                 var zz: usize = 0;
                 while (zz < CHUNK_W) : (zz += 1) {
-                    const nv = nb.block_light[0][yy][zz];
+                    const nv = nb.block_light.get(0, yy, zz);
                     if (nv >= 2 and self.resolveBlockRaw(CHUNK_W - 1, @intCast(yy), @intCast(zz)) == .air) {
                         const seed: u8 = nv - 1;
-                        if (seed > self.block_light[CHUNK_W - 1][yy][zz]) {
-                            self.block_light[CHUNK_W - 1][yy][zz] = seed;
+                        if (seed > bl[CHUNK_W - 1][yy][zz]) {
+                            bl[CHUNK_W - 1][yy][zz] = seed;
                             any_emitter = true;
                         }
                     }
@@ -785,11 +889,11 @@ pub const Chunk = struct {
             while (xx < CHUNK_W) : (xx += 1) {
                 var yy: usize = 0;
                 while (yy < CHUNK_H) : (yy += 1) {
-                    const nv = nb.block_light[xx][yy][CHUNK_W - 1];
+                    const nv = nb.block_light.get(xx, yy, CHUNK_W - 1);
                     if (nv >= 2 and self.resolveBlockRaw(@intCast(xx), @intCast(yy), 0) == .air) {
                         const seed: u8 = nv - 1;
-                        if (seed > self.block_light[xx][yy][0]) {
-                            self.block_light[xx][yy][0] = seed;
+                        if (seed > bl[xx][yy][0]) {
+                            bl[xx][yy][0] = seed;
                             any_emitter = true;
                         }
                     }
@@ -801,11 +905,11 @@ pub const Chunk = struct {
             while (xx < CHUNK_W) : (xx += 1) {
                 var yy: usize = 0;
                 while (yy < CHUNK_H) : (yy += 1) {
-                    const nv = nb.block_light[xx][yy][0];
+                    const nv = nb.block_light.get(xx, yy, 0);
                     if (nv >= 2 and self.resolveBlockRaw(@intCast(xx), @intCast(yy), CHUNK_W - 1) == .air) {
                         const seed: u8 = nv - 1;
-                        if (seed > self.block_light[xx][yy][CHUNK_W - 1]) {
-                            self.block_light[xx][yy][CHUNK_W - 1] = seed;
+                        if (seed > bl[xx][yy][CHUNK_W - 1]) {
+                            bl[xx][yy][CHUNK_W - 1] = seed;
                             any_emitter = true;
                         }
                     }
@@ -814,7 +918,7 @@ pub const Chunk = struct {
         }
 
         // Fast path: no emitters or neighbour seeds, nothing to propagate.
-        if (!any_emitter) return;
+        if (!any_emitter) return self.block_light.store(self.allocator, &bl);
 
         // Pass 2 — bucket-sort BFS, identical to computeBlockLight.
         var level: u8 = MAX_BLOCK_LIGHT;
@@ -829,7 +933,7 @@ pub const Chunk = struct {
                         const xu: usize = @intCast(ix);
                         const yu: usize = @intCast(iy);
                         const zu: usize = @intCast(iz);
-                        if (self.block_light[xu][yu][zu] != level) continue;
+                        if (bl[xu][yu][zu] != level) continue;
                         const neighbours = [_][3]i32{
                             .{ ix + 1, iy, iz },
                             .{ ix - 1, iy, iz },
@@ -847,13 +951,14 @@ pub const Chunk = struct {
                             const nyu: usize = @intCast(ny);
                             const nzu: usize = @intCast(nz);
                             if (self.resolveBlockRaw(nx2, ny, nz) != .air) continue;
-                            if (self.block_light[nxu][nyu][nzu] >= target) continue;
-                            self.block_light[nxu][nyu][nzu] = target;
+                            if (bl[nxu][nyu][nzu] >= target) continue;
+                            bl[nxu][nyu][nzu] = target;
                         }
                     }
                 }
             }
         }
+        try self.block_light.store(self.allocator, &bl);
     }
 
     /// Generate terrain for this chunk at chunk grid position (cx, cz).
@@ -1028,11 +1133,11 @@ pub const Chunk = struct {
         // Skylight: must run after the blocks array is fully populated, since
         // the BFS reads `blocks` to know which cells block propagation.
         const t_sky_start = clock.nowNs();
-        self.computeSkylight();
+        try self.computeSkylight();
         const t_sky_us = @divTrunc(clock.nowNs() - t_sky_start, 1000);
         // Block light: now seeds from glowstone emitters scattered during
         // generation. The BFS propagates their light through nearby air cells.
-        self.computeBlockLight();
+        try self.computeBlockLight();
 
         std.log.info("[GEN] chunk ({},{}) fill={}us sky={}us total={}us", .{
             cx, cz, t_fill_us, t_sky_us, t_fill_us + t_sky_us,
@@ -1095,9 +1200,12 @@ test "computeSkylight gives the same values as the bucket-pass reference" {
                 }
             }
         }
-        ch.computeSkylight();
-        const fast = ch.skylight;
-        ch.computeSkylightReference();
-        try std.testing.expectEqualSlices(u8, std.mem.asBytes(&ch.skylight), std.mem.asBytes(&fast));
+        try ch.computeSkylight();
+        var fast: DenseLight = undefined;
+        ch.skylight.expand(&fast);
+        try ch.computeSkylightReference();
+        var reference: DenseLight = undefined;
+        ch.skylight.expand(&reference);
+        try std.testing.expectEqualSlices(u8, std.mem.asBytes(&reference), std.mem.asBytes(&fast));
     }
 }

@@ -445,7 +445,7 @@ pub const World = struct {
         // past a power-of-two boundary. Propagate the error instead of
         // swallowing it; OOM here is the caller's problem, not ours.
         try lc_ptr.*.chunk.setBlock(lx, wy, lz, block);
-        lc_ptr.*.chunk.computeSkylight();
+        try lc_ptr.*.chunk.computeSkylight();
 
         // Gather live horizontal neighbours (null if unloaded) for cross-chunk
         // block-light seeding. We fetch them once here to avoid repeated HashMap
@@ -458,7 +458,7 @@ pub const World = struct {
         // Recompute block-light for the owning chunk, seeding from neighbour
         // edges so a glowstone placed near a chunk border illuminates air cells
         // in the adjacent chunk properly.
-        lc_ptr.*.chunk.computeBlockLightWithNeighbors(
+        try lc_ptr.*.chunk.computeBlockLightWithNeighbors(
             if (nb_xn) |lc| &lc.chunk else null,
             if (nb_xp) |lc| &lc.chunk else null,
             if (nb_zn) |lc| &lc.chunk else null,
@@ -477,28 +477,28 @@ pub const World = struct {
             const far_xn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 2, .cz = cz })) |lc2| &lc2.chunk else null;
             const diag_zn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
             const diag_zp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
-            nlc.chunk.computeBlockLightWithNeighbors(far_xn, own_chunk_ptr, diag_zn, diag_zp);
+            try nlc.chunk.computeBlockLightWithNeighbors(far_xn, own_chunk_ptr, diag_zn, diag_zp);
             nlc.mesh_dirty = true;
         }
         if (nb_xp) |nlc| {
             const far_xp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 2, .cz = cz })) |lc2| &lc2.chunk else null;
             const diag_zn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
             const diag_zp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
-            nlc.chunk.computeBlockLightWithNeighbors(own_chunk_ptr, far_xp, diag_zn, diag_zp);
+            try nlc.chunk.computeBlockLightWithNeighbors(own_chunk_ptr, far_xp, diag_zn, diag_zp);
             nlc.mesh_dirty = true;
         }
         if (nb_zn) |nlc| {
             const diag_xn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
             const diag_xp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
             const far_zn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx, .cz = cz - 2 })) |lc2| &lc2.chunk else null;
-            nlc.chunk.computeBlockLightWithNeighbors(diag_xn, diag_xp, far_zn, own_chunk_ptr);
+            try nlc.chunk.computeBlockLightWithNeighbors(diag_xn, diag_xp, far_zn, own_chunk_ptr);
             nlc.mesh_dirty = true;
         }
         if (nb_zp) |nlc| {
             const diag_xn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
             const diag_xp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
             const far_zp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx, .cz = cz + 2 })) |lc2| &lc2.chunk else null;
-            nlc.chunk.computeBlockLightWithNeighbors(diag_xn, diag_xp, own_chunk_ptr, far_zp);
+            try nlc.chunk.computeBlockLightWithNeighbors(diag_xn, diag_xp, own_chunk_ptr, far_zp);
             nlc.mesh_dirty = true;
         }
 

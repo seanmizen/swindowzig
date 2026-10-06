@@ -114,8 +114,8 @@ pub const Border = struct {
                 var z: i32 = z0;
                 while (z < z0 + d) : (z += 1) {
                     b.blocks[i] = src.resolveBlockRaw(x, y, z);
-                    b.sky[i] = src.skylight[@intCast(x)][@intCast(y)][@intCast(z)];
-                    b.block_light[i] = src.block_light[@intCast(x)][@intCast(y)][@intCast(z)];
+                    b.sky[i] = src.skylight.get(@intCast(x), @intCast(y), @intCast(z));
+                    b.block_light[i] = src.block_light.get(@intCast(x), @intCast(y), @intCast(z));
                     i += 1;
                 }
             }
@@ -386,6 +386,11 @@ pub fn cloneChunk(src: *const Chunk) !*Chunk {
     ch.* = src.*;
     ch.allocator = a;
     ch.blocks.data = if (src.blocks.data.len > 0) try a.dupe(u64, src.blocks.data) else &.{};
+    errdefer if (ch.blocks.data.len > 0) a.free(ch.blocks.data);
+    // The light section arrays are heap memory too: copy them.
+    ch.skylight = try src.skylight.clone(a);
+    errdefer ch.skylight.deinit(a);
+    ch.block_light = try src.block_light.clone(a);
     return ch;
 }
 
@@ -667,8 +672,8 @@ test "meshing through borders gives the same mesh as through full chunks" {
     }
     try east.setBlock(1, 85, 6, .glowstone);
     for (grid) |ch| {
-        ch.computeSkylight();
-        ch.computeBlockLight();
+        try ch.computeSkylight();
+        try ch.computeBlockLight();
     }
 
     var borders: [9]?*Border = @splat(null);

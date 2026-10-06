@@ -1095,7 +1095,7 @@ fn skylightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world
     const lx = wx - world_ox;
     const lz = wz - world_oz;
     if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
-        return chunk.skylight[@intCast(lx)][@intCast(wy)][@intCast(lz)];
+        return chunk.skylight.get(@intCast(lx), @intCast(wy), @intCast(lz));
     }
     return getter.getSkylight(wx, wy, wz);
 }
@@ -1241,7 +1241,7 @@ fn blockLightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, wor
     const lx = wx - world_ox;
     const lz = wz - world_oz;
     if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
-        return chunk.block_light[@intCast(lx)][@intCast(wy)][@intCast(lz)];
+        return chunk.block_light.get(@intCast(lx), @intCast(wy), @intCast(lz));
     }
     return getter.getBlockLight(wx, wy, wz);
 }
@@ -2391,8 +2391,8 @@ test "packQuad then unpackCorner gives back every vertex of a real mesh" {
             };
             for (4..9) |x| for (4..9) |z| try chunk.setBlock(@intCast(x), 75, @intCast(z), .stone);
             try chunk.setBlock(6, 70, 6, .glowstone);
-            chunk.computeSkylight();
-            chunk.computeBlockLight();
+            try chunk.computeSkylight();
+            try chunk.computeBlockLight();
             const tg = TestGetter{ .chunk = &chunk, .ox = ox, .oz = oz };
             var mesh = Mesh.init(allocator);
             defer mesh.deinit();

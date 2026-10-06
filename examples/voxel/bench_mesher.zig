@@ -16,6 +16,7 @@
 //! after a change means the same quads, in any order).
 const std = @import("std");
 const world_mod = @import("world.zig");
+const chunk_mod = @import("chunk.zig");
 const mesher_mod = @import("mesher.zig");
 const clock = @import("clock.zig");
 
@@ -69,9 +70,13 @@ pub fn main(init: std.process.Init) !void {
         const t0 = clock.nowNs();
         var it = world.chunks.valueIterator();
         while (it.next()) |lcp| {
-            lcp.*.chunk.computeSkylight();
+            try lcp.*.chunk.computeSkylight();
             sky_chunks += 1;
-            if (r == 0) sky_hash +%= std.hash.Wyhash.hash(0, std.mem.asBytes(&lcp.*.chunk.skylight));
+            if (r == 0) {
+                var dense: chunk_mod.DenseLight = undefined;
+                lcp.*.chunk.skylight.expand(&dense);
+                sky_hash +%= std.hash.Wyhash.hash(0, std.mem.asBytes(&dense));
+            }
         }
         out.* = @intCast(clock.nowNs() - t0);
     }
