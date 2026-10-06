@@ -202,8 +202,27 @@ fn texelHash(p: vec2<u32>) -> f32 {
     return f32(h & 0xFFu) / 255.0;
 }
 
+// How much to fade a hashed texel pattern toward its mean (0.5), from the
+// texel coordinate `t` of that pattern. fwidth(t) is the number of texels
+// that one pixel covers. At one texel or less the pattern stays as it is.
+// Above that, one pixel samples a single texel out of many, so the hash
+// aliases into moiré. The fade gets to 1 (the plain mean) at 3 texels.
+// fwidth must run in uniform control flow, so call this before any branch.
+fn texelNoiseFade(t: vec2<f32>) -> f32 {
+    let fw = fwidth(t);
+    return smoothstep(1.0, 3.0, max(fw.x, fw.y));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // Texel noise fade for far faces (texelNoiseFade): 16x16 grid and the
+    // glowstone 4x4 grid. Near faces do not change. fwidth needs uniform
+    // control flow, so these come before the hover branch, which can return.
+    // Take the derivative of uv and not of fract(uv): fract jumps at block
+    // edges on merged faces, and the jump would give a false fade.
+    let fine_fade = texelNoiseFade(in.uv * 16.0);
+    let coarse_fade = texelNoiseFade(in.uv * 4.0);
+
     // Hover outline: detect if this fragment is on the hovered block's face edge
     if (uniforms.hover_active > 0.5) {
         // Recover block coordinate from world position and face normal.
@@ -245,8 +264,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // pattern tiles correctly across a merged face. Naive 1×1 quads have uv
     // in [0, 1]² so `fract(uv) == uv` and the rendered output is byte-identical
     // to the pre-greedy shader.
+    //
+    // Far faces: the noise fades toward its mean (fine_fade, at the top of
+    // this function).
     let texel = vec2<u32>(floor(fract(in.uv) * 16.0));
-    let noise = texelHash(texel);
+    let noise = mix(texelHash(texel), 0.5, fine_fade);
     // Map [0,1] → [0.875, 1.125]: ±12.5% brightness variation per texel.
     var texel_brightness = 0.875 + noise * 0.25;
 
@@ -258,7 +280,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let is_glowstone = in.color.r > 0.95 && in.color.g > 0.80 && in.color.b > 0.35 && in.color.b < 0.55;
     if (is_glowstone) {
         let coarse = vec2<u32>(floor(in.uv * 4.0));
-        let n2 = texelHash(coarse + vec2<u32>(7u, 13u));
+        // The 4x4 pattern fades at its own scale (coarse_fade).
+        let n2 = mix(texelHash(coarse + vec2<u32>(7u, 13u)), 0.5, coarse_fade);
         // Wider ±25% variance across big 4×4 chunks. Layer on the fine 16×16
         // noise at reduced amplitude so single texels still shimmer subtly.
         texel_brightness = 0.75 + n2 * 0.5 + (noise - 0.5) * 0.08;
