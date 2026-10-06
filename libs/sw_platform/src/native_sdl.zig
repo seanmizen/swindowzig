@@ -3,6 +3,7 @@ const std = @import("std");
 const core = @import("sw_core");
 const backend_mod = @import("backend.zig");
 const platform = @import("platform.zig");
+const storage = @import("storage.zig");
 
 // The SDL2 headers, translated by build.zig (addTranslateC on sdl.h).
 const sdl = @import("sdl");
@@ -365,3 +366,17 @@ pub const SDL2Backend = struct {
         _ = sdl.SDL_SetRelativeMouseMode(if (capture) 1 else 0);
     }
 };
+
+/// Point the local key-value storage (storage.zig) at the per-user data
+/// directory of the game. SDL makes the directory when it does not exist.
+/// `org` and `app` name the directory, for example "seanmizen" and "same-again".
+/// An error here leaves storage unavailable. The game continues.
+pub fn initStorage(io: std.Io, org: [*:0]const u8, app: [*:0]const u8) !void {
+    const pref = sdl.SDL_GetPrefPath(org, app) orelse {
+        std.log.warn("SDL_GetPrefPath failed: {s}", .{sdl.SDL_GetError()});
+        return error.StorageUnavailable;
+    };
+    defer sdl.SDL_free(@ptrCast(pref));
+    const dir = try std.Io.Dir.cwd().openDir(io, std.mem.span(pref), .{});
+    storage.useDirectory(dir, io);
+}

@@ -2,6 +2,7 @@
 
 import { audioImports } from './audio';
 import { attachEventListeners } from './events';
+import { createStorageImports } from './storage';
 import { initWebGPU } from './webgpu';
 
 // Type definitions
@@ -76,6 +77,10 @@ async function main() {
   const imports = {
     env: {
       jsGetTime: () => performance.now(),
+      ...createStorageImports(
+        () =>
+          (window as never as { wasmMemory: WebAssembly.Memory }).wasmMemory,
+      ),
       jsSetPointerLock: (lock: number) => {
         if (lock) {
           canvas.requestPointerLock();

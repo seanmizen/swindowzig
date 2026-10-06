@@ -187,6 +187,7 @@ pub fn build(b: *std.Build) void {
         "libs/sw_core/src/serialize.zig",
         "libs/sw_core/src/record.zig",
         "libs/sw_core/src/replay.zig",
+        "libs/sw_platform/src/storage.zig",
     };
 
     inline for (test_files) |file| {
