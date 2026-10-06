@@ -33,6 +33,8 @@ struct VertexOutput {
     @location(6) ao: f32,
     @location(7) skylight: f32,
     @location(8) block_light: f32,
+    // Block type, lower 16 bits only. fs_main picks the texture rules from it.
+    @location(9) @interpolate(flat) block_type: u32,
 };
 
 // Block type colors
@@ -186,20 +188,60 @@ fn shadeVertex(in: VertexInput) -> VertexOutput {
     out.ao = in.ao;
     out.skylight = in.skylight;
     out.block_light = in.block_light;
+    out.block_type = block_type;
     return out;
 }
 
 // Deterministic hash for a 2D integer texel coordinate → [0, 1].
 // Two rounds of xorshift-multiply gives good avalanche with no visible
-// patterns at 16x16 block resolution.
-fn texelHash(p: vec2<u32>) -> f32 {
-    var h: u32 = p.x * 1664525u + p.y * 1013904223u + 0xDEADBEEFu;
+// patterns at 16x16 block resolution. `seed` selects one pattern per block
+// (blockSeed). Seed 0 gives the pattern of the CPU port in main.zig.
+fn texelHash(p: vec2<u32>, seed: u32) -> f32 {
+    var h: u32 = p.x * 1664525u + p.y * 1013904223u + (seed ^ 0xDEADBEEFu);
     h ^= h >> 16u;
     h *= 2246822519u;
     h ^= h >> 13u;
     h *= 3266489917u;
     h ^= h >> 16u;
     return f32(h & 0xFFu) / 255.0;
+}
+
+// A 32-bit hash of a block position. Two blocks of the same type get
+// different texel patterns from it.
+fn blockSeed(b: vec3<i32>) -> u32 {
+    var h: u32 = (u32(b.x) * 73856093u) ^ (u32(b.y) * 19349663u) ^ (u32(b.z) * 83492791u);
+    h ^= h >> 16u;
+    h *= 0x7feb352du;
+    h ^= h >> 15u;
+    h *= 0x846ca68bu;
+    h ^= h >> 16u;
+    return h;
+}
+
+// Turn texel `t` of a 16x16 grid by r * 90 degrees (r in 0..3).
+fn rotateTexel(t: vec2<u32>, r: u32) -> vec2<u32> {
+    switch r {
+        case 1u: { return vec2<u32>(15u - t.y, t.x); }
+        case 2u: { return vec2<u32>(15u - t.x, 15u - t.y); }
+        case 3u: { return vec2<u32>(t.y, 15u - t.x); }
+        default: { return t; }
+    }
+}
+
+// Smooth 2D value noise in [0, 1], one lattice point per `cell` blocks.
+// The colour tint of grass and leaves uses it, so the tint changes slowly
+// over tens of blocks.
+fn valueNoise(p: vec2<f32>, cell: f32) -> f32 {
+    let q = p / cell;
+    let i = floor(q);
+    let f = q - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    let c = vec2<u32>(vec2<i32>(i));
+    let a = texelHash(c, 0x5EEDu);
+    let b = texelHash(c + vec2<u32>(1u, 0u), 0x5EEDu);
+    let d = texelHash(c + vec2<u32>(0u, 1u), 0x5EEDu);
+    let e = texelHash(c + vec2<u32>(1u, 1u), 0x5EEDu);
+    return mix(mix(a, b, u.x), mix(d, e, u.x), u.y);
 }
 
 // How much to fade a hashed texel pattern toward its mean (0.5), from the
@@ -246,13 +288,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Block type needed again here (vs_main stripped it out of the VertexOutput).
-    // Recover it by checking the color picked upstream; a simpler path is to
-    // just bake a per-block texture selector here using a flag we can rebuild
-    // from the color channel. For now, check the normal/color heuristic isn't
-    // needed — we use UV-hashing with a slightly different pattern when the
-    // base colour matches glowstone (yellow-gold dominance).
-    //
     // Minecraft-style procedural texel noise.
     // Subdivide each block face into a 16x16 grid; hash each cell to a
     // deterministic brightness offset so the face looks like a low-res
@@ -267,21 +302,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     //
     // Far faces: the noise fades toward its mean (fine_fade, at the top of
     // this function).
-    let texel = vec2<u32>(floor(fract(in.uv) * 16.0));
-    let noise = mix(texelHash(texel), 0.5, fine_fade);
+    //
+    // Per-block variation: the block position seeds the hash, so two blocks
+    // of the same type do not look the same. A merged face also gets one
+    // pattern per block. The block is one half step in from the face along
+    // the normal. A floor of exactly the face plane can give the wrong block
+    // when interpolation puts world_pos a little below an integer.
+    let block_pos = vec3<i32>(floor(in.world_pos - in.normal * 0.5));
+    let seed = blockSeed(block_pos);
+    let is_grass_top = in.block_type == 1u && in.normal.y > 0.5;
+    // Grass tops, dirt, stone and sand turn their pattern by 0, 90, 180 or
+    // 270 degrees, from the top 2 bits of the seed.
+    let turns = in.block_type == 2u || in.block_type == 3u || in.block_type == 8u || is_grass_top;
+    let texel = rotateTexel(vec2<u32>(floor(fract(in.uv) * 16.0)), select(0u, seed >> 30u, turns));
+    let noise = mix(texelHash(texel, seed), 0.5, fine_fade);
     // Map [0,1] → [0.875, 1.125]: ±12.5% brightness variation per texel.
     var texel_brightness = 0.875 + noise * 0.25;
 
-    // Glowstone distinctive look: detect via base color (bright warm yellow,
-    // R≈1.0 G≈0.88 B≈0.42). Use a coarser 4×4 grid and wider brightness
-    // variance to give the face a chunky, molten-cluster pixel-art pattern.
-    // Kept in the shader so we don't have to thread another "is emissive"
-    // vertex attribute — the color channel already encodes the identity.
-    let is_glowstone = in.color.r > 0.95 && in.color.g > 0.80 && in.color.b > 0.35 && in.color.b < 0.55;
-    if (is_glowstone) {
-        let coarse = vec2<u32>(floor(in.uv * 4.0));
+    // Glowstone distinctive look: a coarser 4×4 grid and wider brightness
+    // variance give the face a chunky, molten-cluster pixel-art pattern.
+    if (in.block_type == 5u) {
+        let coarse = vec2<u32>(floor(fract(in.uv) * 4.0));
         // The 4x4 pattern fades at its own scale (coarse_fade).
-        let n2 = mix(texelHash(coarse + vec2<u32>(7u, 13u)), 0.5, coarse_fade);
+        let n2 = mix(texelHash(coarse + vec2<u32>(7u, 13u), seed), 0.5, coarse_fade);
         // Wider ±25% variance across big 4×4 chunks. Layer on the fine 16×16
         // noise at reduced amplitude so single texels still shimmer subtly.
         texel_brightness = 0.75 + n2 * 0.5 + (noise - 0.5) * 0.08;
@@ -316,8 +359,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // though the sky channel is near zero there.
     let world_light = max(sky_brightness, block_brightness);
 
+    // Grass tops and leaves: a slow colour tint over tens of blocks, from
+    // dry yellow-green to deep green. It is constant on each block.
+    var color = in.color;
+    if (is_grass_top || in.block_type == 7u) {
+        let lush = valueNoise(vec2<f32>(block_pos.xz) + 0.5, 24.0);
+        color *= mix(vec3<f32>(1.22, 0.98, 0.80), vec3<f32>(0.82, 1.02, 1.12), lush);
+    }
+
     // GPU debug: mix in orange tint for freshly rebuilt quads
-    let base = in.color * brightness * texel_brightness * ao_brightness * world_light;
+    let base = color * brightness * texel_brightness * ao_brightness * world_light;
     let highlighted = mix(base, vec3<f32>(1.0, 0.5, 0.1), in.highlight * 0.6);
 
     // Distance fog: fade to sky colour before the render distance cutoff.
