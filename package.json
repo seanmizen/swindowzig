@@ -2,6 +2,7 @@
   "name": "swindowzig",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "build:wasm": "zig build web",
     "build:wasm:voxel": "zig build web -Dexample=voxel -Doptimize=ReleaseFast",

@@ -10,5 +10,6 @@
         "libs",
         "backends",
         "examples",
+        "LICENSE",
     },
 }

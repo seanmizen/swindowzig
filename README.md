@@ -147,6 +147,52 @@ zig build native -Dexample=voxel && ./zig-out/bin/voxel --tas examples/voxel/fra
 
 ---
 
+## Use it as a Zig package
+
+swindowzig publishes tagged releases. A dependent repo pins one release by URL
+and hash:
+
+```bash
+zig fetch --save https://github.com/seanmizen/seanorepo/releases/download/swindowzig-v<version>/swindowzig.tar.gz
+```
+
+```zig
+// build.zig
+const swindowzig = b.dependency("swindowzig", .{});
+exe.root_module.addImport("sw_app", swindowzig.module("sw_app"));
+```
+
+The package exports `sw_core`, `sw_platform`, `sw_gpu`, `sw_audio`, `sw_math`
+and `sw_app`. The `platform` option picks the platform of these modules: `web`
+(the default, no SDL) or `native` (SDL2 from `addTranslateC`):
+
+```zig
+const swindowzig = b.dependency("swindowzig", .{ .platform = .native });
+```
+
+### Local engine work
+
+To build a dependent repo against a local checkout of swindowzig, use `--fork`.
+It replaces the pinned release with the local path:
+
+```bash
+zig build --fork=<path to local swindowzig>
+```
+
+### Cut a release
+
+1. Set `.version` in `build.zig.zon` (for example `0.2.0`).
+2. Merge that change to `main`.
+3. Push a tag that matches the version: `git tag swindowzig-v0.2.0 && git push origin swindowzig-v0.2.0`.
+
+`.github/workflows/swindowzig-release.yml` runs on the tag. It makes
+`swindowzig.tar.gz` from the `.paths` in `build.zig.zon`, and builds a small
+consumer project against the archive. If that build fails, nothing publishes.
+If it passes, the workflow attaches the archive to a GitHub Release with the
+same tag name. The release notes give the `zig fetch --save` command.
+
+---
+
 ## Status (Apr 2026)
 
 ### Working

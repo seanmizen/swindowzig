@@ -36,9 +36,34 @@ pub fn build(b: *std.Build) void {
         "Which example to build (default: windows)",
     ) orelse "justabox";
 
+    // Which platform the exported modules (sw_app, sw_platform, ...) use. A
+    // dependent package gets web by default: no SDL, no system libraries.
+    const platform = b.option(
+        Platform,
+        "platform",
+        "Platform of the exported modules: web (default, no SDL) or native (SDL2)",
+    ) orelse .web;
+
+    // The exported modules. `b.addModule` makes them importable from a
+    // dependent package.
+    const exported_sdl: ?*std.Build.Module = if (platform == .native) blk: {
+        const sdl_c = b.addTranslateC(.{
+            .root_source_file = b.path("libs/sw_platform/src/sdl.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        break :blk sdl_c.createModule();
+    } else null;
+    const exported = addLibs(b, exported_sdl, true);
+
+    // A dependent package stops here. The examples, steps and tests below
+    // belong to this package alone, and they need HOME and SDL.
+    if (b.dep_prefix.len != 0) return;
+
     // The web build gets its own set of library modules, with no SDL. The
     // minecraft dockerfile has no SDL headers.
-    const web_libs = addLibs(b, null);
+    const web_libs = if (platform == .web) exported else addLibs(b, null, false);
 
     // Example app - WASM build
     const wasm_target = b.resolveTargetQuery(.{
@@ -98,7 +123,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-    const native_libs = addLibs(b, sdl_c.createModule());
+    const native_libs = if (platform == .native) exported else addLibs(b, sdl_c.createModule(), false);
 
     const native_exe = b.addExecutable(.{
         .name = b.fmt("{s}", .{example_name}),
@@ -230,29 +255,44 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(async_tests).step);
 }
 
+const Platform = enum { web, native };
+
 const Libs = struct {
     core: *std.Build.Module,
     platform: *std.Build.Module,
     gpu: *std.Build.Module,
+    audio: *std.Build.Module,
     math: *std.Build.Module,
     app: *std.Build.Module,
 };
 
+/// Make a library module. `exported` makes it public under `name`, so a
+/// dependent package can import it. Otherwise it is private to this build.
+fn libModule(
+    b: *std.Build,
+    exported: bool,
+    name: []const u8,
+    path: []const u8,
+) *std.Build.Module {
+    const options: std.Build.Module.CreateOptions = .{ .root_source_file = b.path(path) };
+    return if (exported) b.addModule(name, options) else b.createModule(options);
+}
+
 /// Create the swindowzig library modules. `sdl` is the translated SDL2 headers
 /// for a native build, or null for the web build.
-fn addLibs(b: *std.Build, sdl: ?*std.Build.Module) Libs {
-    const core = b.createModule(.{ .root_source_file = b.path("libs/sw_core/src/core.zig") });
-    const platform = b.createModule(.{ .root_source_file = b.path("libs/sw_platform/src/platform_root.zig") });
+fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
+    const core = libModule(b, exported, "sw_core", "libs/sw_core/src/core.zig");
+    const platform = libModule(b, exported, "sw_platform", "libs/sw_platform/src/platform_root.zig");
     platform.addImport("sw_core", core);
     if (sdl) |m| platform.addImport("sdl", m);
-    const gpu = b.createModule(.{ .root_source_file = b.path("libs/sw_gpu/src/gpu_root.zig") });
-    const audio = b.createModule(.{ .root_source_file = b.path("libs/sw_audio/src/audio_root.zig") });
-    const math = b.createModule(.{ .root_source_file = b.path("libs/sw_math/src/math_root.zig") });
-    const app = b.createModule(.{ .root_source_file = b.path("libs/sw_app/src/app_root.zig") });
+    const gpu = libModule(b, exported, "sw_gpu", "libs/sw_gpu/src/gpu_root.zig");
+    const audio = libModule(b, exported, "sw_audio", "libs/sw_audio/src/audio_root.zig");
+    const math = libModule(b, exported, "sw_math", "libs/sw_math/src/math_root.zig");
+    const app = libModule(b, exported, "sw_app", "libs/sw_app/src/app_root.zig");
     app.addImport("sw_core", core);
     app.addImport("sw_platform", platform);
     app.addImport("sw_gpu", gpu);
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
-    return .{ .core = core, .platform = platform, .gpu = gpu, .math = math, .app = app };
+    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .app = app };
 }
