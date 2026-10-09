@@ -98,6 +98,7 @@ pub fn build(b: *std.Build) void {
     example.root_module.addImport("sw_core", web_libs.core);
     example.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
     example.root_module.addImport("sw_text", web_libs.text);
+    example.root_module.addImport("sw_ui", web_libs.ui);
     example.root_module.addImport("sw_assets", web_libs.assets);
     // sw_platform is needed by examples that drive their own wasm entry
     // (e.g. voxel, which constructs a WasmBackend directly in its
@@ -142,6 +143,7 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_core", native_libs.core);
     native_exe.root_module.addImport("sw_gfx2d", native_libs.gfx2d);
     native_exe.root_module.addImport("sw_text", native_libs.text);
+    native_exe.root_module.addImport("sw_ui", native_libs.ui);
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
 
     // Link SDL2 for native builds.
@@ -201,6 +203,9 @@ pub fn build(b: *std.Build) void {
         "libs/sw_text/src/utf8.zig",
         "libs/sw_text/src/layout.zig",
         "libs/sw_text/src/atlas.zig",
+        // sw_ui: the tree, layout, focus and semantic tree have no GPU or font
+        // code. draw.zig is built with the examples.
+        "libs/sw_ui/src/ui.zig",
     };
 
     // sw_assets: byte loading and PNG decoding. The PNG decoder is C
@@ -324,6 +329,7 @@ const Libs = struct {
     math: *std.Build.Module,
     gfx2d: *std.Build.Module,
     text: *std.Build.Module,
+    ui: *std.Build.Module,
     assets: *std.Build.Module,
     app: *std.Build.Module,
 };
@@ -358,13 +364,16 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     const text = libModule(b, exported, "sw_text", "libs/sw_text/src/text_root.zig");
     text.addImport("sw_gfx2d", gfx2d);
     addStbTruetype(b, text);
+    const ui = libModule(b, exported, "sw_ui", "libs/sw_ui/src/ui_root.zig");
+    ui.addImport("sw_gfx2d", gfx2d);
+    ui.addImport("sw_text", text);
     const app = libModule(b, exported, "sw_app", "libs/sw_app/src/app_root.zig");
     app.addImport("sw_core", core);
     app.addImport("sw_platform", platform);
     app.addImport("sw_gpu", gpu);
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
-    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .text = text, .app = app };
+    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .text = text, .ui = ui, .app = app };
 }
 
 /// Compile stb_truetype (with the C API that font.zig declares) into a module.

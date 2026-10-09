@@ -4,16 +4,17 @@
 // also loads sprite.png (next to this file) with sw_assets and draws it.
 // Drawing is in logical pixels, origin at the top left.
 //
-// The text box at the bottom uses the platform input method. Click it, then
-// type. A dead key works: the accent key, then "e", gives the committed
-// "é". An IME shows its composition text in a second colour until you
-// accept it. Each code point is a colour block and the string goes to the
-// log.
+// The UI (sw_ui) is a menu and a text field. It works with the keyboard only:
+// Tab and Shift+Tab move focus, the arrow keys move inside the list, Enter and
+// Space activate, and Escape opens or closes the menu. The text field uses the
+// platform input method: focus it, then type. A dead key works: the accent key,
+// then "e", gives the committed "é". The focused node has a yellow ring.
 const std = @import("std");
 const builtin = @import("builtin");
 const sw = @import("sw_app");
 const gfx = @import("sw_gfx2d");
 const sw_text = @import("sw_text");
+const sw_ui = @import("sw_ui");
 const assets = @import("sw_assets");
 
 // Freestanding WASM has no std.process.Init, so the web build gets a main
@@ -59,51 +60,129 @@ const paragraph =
     "Müller, größer, naïve café, Čeština, Ğ, Ő, Ž. " ++
     "No glyph for 中, so a box.";
 
-// The text box: the committed text (UTF-8), the text in composition, and focus.
-const box = struct {
-    const x: f32 = 40;
-    const y: f32 = 540;
-    const w: f32 = 720;
-    const h: f32 = 44;
+// The UI. `ui_state` is made in init, after the font, because it measures text
+// with it. Ids are fixed numbers, so the focus stays on a node between frames.
+var ui_state: ?sw_ui.Ui = null;
+var name_storage: [64]u8 = undefined;
+var name_value: sw_ui.TextValue = .{ .buffer = &name_storage };
+var menu_open = true;
+var accent: usize = 0;
+
+const ids = struct {
+    const main_area: u32 = 1;
+    const menu: u32 = 2;
+    const title: u32 = 3;
+    const accent_list: u32 = 4;
+    const status: u32 = 5;
+    const close: u32 = 6;
+    const open: u32 = 7;
+    const bottom: u32 = 8;
+    const name_field: u32 = 9;
+    /// The list items are accent_item + index.
+    const accent_item: u32 = 100;
 };
-const glyph_w = 12;
-const glyph_step = 16;
-var typed: [256]u8 = undefined;
-var typed_len: usize = 0;
-var composing: [64]u8 = undefined;
-var composing_len: usize = 0;
-var box_focused = false;
 
-fn insideBox(x: f32, y: f32) bool {
-    return x >= box.x and x < box.x + box.w and y >= box.y and y < box.y + box.h;
+const Accent = struct { name: []const u8, color: gfx.Color };
+const accents = [_]Accent{
+    .{ .name = "Green", .color = gfx.Color.rgba8(120, 230, 160, 255) },
+    .{ .name = "Orange", .color = gfx.Color.rgba8(250, 160, 70, 255) },
+    .{ .name = "Pink", .color = gfx.Color.rgba8(240, 120, 200, 255) },
+};
+
+/// The engine input in the form that the UI reads.
+fn uiInput(ctx: *sw.Context) sw_ui.Input {
+    const input = ctx.input();
+    return .{
+        .keys = .{
+            .tab = input.keyPressed(.Tab),
+            .up = input.keyPressed(.Up),
+            .down = input.keyPressed(.Down),
+            .left = input.keyPressed(.Left),
+            .right = input.keyPressed(.Right),
+            .enter = input.keyPressed(.Enter),
+            .space = input.keyPressed(.Space),
+            .escape = input.keyPressed(.Escape),
+            .backspace = input.keyPressed(.Backspace),
+        },
+        .shift = input.mods.shift,
+        .pointer_x = input.mouse.x,
+        .pointer_y = input.mouse.y,
+        .pointer_pressed = input.buttonPressed(.left),
+        .text = input.text.text(),
+        .composition = input.composition.text(),
+    };
 }
 
-/// Remove the last code point from the committed text.
-fn eraseLast() void {
-    if (typed_len == 0) return;
-    typed_len -= 1;
-    while (typed_len > 0 and (typed[typed_len] & 0xC0) == 0x80) typed_len -= 1;
-}
+/// Build the UI of this frame: the menu (or a button that opens it) in the
+/// middle, and the text field at the bottom.
+fn buildUi(u: *sw_ui.Ui, input: sw_ui.Input, width: f32, height: f32) !void {
+    try u.begin(input, width, height);
 
-/// A colour that depends on the code point, so each character looks different.
-fn glyphColor(cp: u21, alpha: u8) gfx.Color {
-    const h: u32 = @as(u32, cp) *% 2654435761;
-    const r: u8 = 96 + @as(u8, @intCast(h & 0x7f));
-    const g: u8 = 96 + @as(u8, @intCast((h >> 7) & 0x7f));
-    const b: u8 = 96 + @as(u8, @intCast((h >> 14) & 0x7f));
-    return gfx.Color.rgba8(r, g, b, alpha);
-}
-
-/// Draw one block per code point of `text`, from `index`. Returns the next index.
-fn drawGlyphs(r: *gfx.Renderer, text: []const u8, first_index: usize, alpha: u8) !usize {
-    var index = first_index;
-    var it = (std.unicode.Utf8View.init(text) catch return index).iterator();
-    while (it.nextCodepoint()) |cp| : (index += 1) {
-        const gx = box.x + 12 + @as(f32, @floatFromInt(index)) * glyph_step;
-        if (gx + glyph_w > box.x + box.w - 12) break;
-        try r.fillRect(.{ .x = gx, .y = box.y + 10, .w = glyph_w, .h = box.h - 20 }, glyphColor(cp, alpha));
+    try u.beginColumn(ids.main_area, .{ .w = .fill, .h = .fill, .main_align = .center, .cross_align = .center });
+    if (menu_open) {
+        try u.beginColumn(ids.menu, .{ .padding = 16, .gap = 8, .panel = true, .label = "Menu" });
+        try u.addText(ids.title, "Menu: Tab, arrows, Enter, Esc", .{});
+        try u.beginList(ids.accent_list, "Accent colour", .{ .w = .fill });
+        for (accents, 0..) |a, i| {
+            try u.addListItem(ids.accent_item + @as(u32, @intCast(i)), a.name, .{ .w = .fill, .selected = i == accent });
+        }
+        u.endContainer();
+        // A live region: assistive technology announces the change.
+        try u.addText(ids.status, try u.print("Accent: {s}", .{accents[accent].name}), .{ .live = true });
+        try u.addButton(ids.close, "Close menu", .{});
+        u.endContainer();
+    } else {
+        try u.addButton(ids.open, "Open menu (Esc)", .{});
     }
-    return index;
+    u.endContainer();
+
+    try u.beginRow(ids.bottom, .{ .w = .fill, .padding = 16 });
+    try u.addTextField(ids.name_field, "Name", &name_value, .{ .w = .fill });
+    u.endContainer();
+
+    try u.finish();
+}
+
+/// React to the events of the UI.
+fn handleUiEvents(ctx: *sw.Context, u: *sw_ui.Ui) void {
+    for (u.frameEvents()) |e| {
+        switch (e.kind) {
+            .activate => {
+                if (e.id >= ids.accent_item and e.id < ids.accent_item + @as(u32, accents.len)) {
+                    accent = e.id - ids.accent_item;
+                } else if (e.id == ids.close) {
+                    menu_open = false;
+                    u.setFocus(ids.open);
+                } else if (e.id == ids.open) {
+                    menu_open = true;
+                    u.setFocus(ids.accent_item + @as(u32, @intCast(accent)));
+                }
+            },
+            .cancel => {
+                // Escape leaves the text field first. Otherwise it toggles the menu.
+                const in_field = if (u.focused()) |f| f == ids.name_field else false;
+                if (in_field) {
+                    u.clearFocus();
+                } else if (menu_open) {
+                    menu_open = false;
+                    u.setFocus(ids.open);
+                } else {
+                    menu_open = true;
+                    u.setFocus(ids.accent_item + @as(u32, @intCast(accent)));
+                }
+            },
+            .changed => std.log.info("flat2d: name = \"{s}\"", .{name_value.slice()}),
+            .submit => {
+                std.log.info("flat2d: name submitted \"{s}\"", .{name_value.slice()});
+                name_value.clear();
+            },
+        }
+    }
+
+    // The platform input method is on while a text field has focus.
+    const wanted = u.wantsTextInput();
+    if (wanted and !ctx.isTextInputActive()) ctx.startTextInput();
+    if (!wanted and ctx.isTextInputActive()) ctx.stopTextInput();
 }
 
 // sprite.png: `sprite_request` is set while the load runs, `sprite` when the
@@ -168,6 +247,10 @@ const Callbacks = struct {
         checker = try r.createTexture(checker_size, checker_size, &pixels, .nearest);
         renderer = r;
         text_renderer = try sw_text.TextRenderer.init(ctx.allocator(), font_bytes);
+        if (text_renderer) |*tr| {
+            ui_state = sw_ui.Ui.init(ctx.allocator(), sw_ui.draw.measurer(tr), .{});
+        }
+        if (ui_state) |*u| u.setFocus(ids.accent_item);
         sprite_request = try assets.loadBytes(ctx.allocator(), "sprite.png");
         std.log.info("flat2d: GPU ready", .{});
     }
@@ -175,43 +258,11 @@ const Callbacks = struct {
     pub fn tick(ctx: *sw.Context) !void {
         ticks +%= 1;
 
-        const input = ctx.input();
-
-        // A click in the box starts text input. A click outside, or Escape, stops it.
-        if (input.buttonPressed(.left)) {
-            const inside = insideBox(input.mouse.x, input.mouse.y);
-            if (inside and !box_focused) ctx.startTextInput();
-            if (!inside and box_focused) ctx.stopTextInput();
-            box_focused = inside;
-        }
-        if (box_focused and input.keyPressed(.Escape)) {
-            ctx.stopTextInput();
-            box_focused = false;
-        }
-        if (!box_focused) {
-            composing_len = 0;
-            return;
-        }
-
-        const before = typed_len;
-        const committed = input.text.text();
-        if (std.unicode.utf8ValidateSlice(committed) and typed_len + committed.len <= typed.len) {
-            @memcpy(typed[typed_len..][0..committed.len], committed);
-            typed_len += committed.len;
-        }
-        if (input.keyPressed(.Backspace)) eraseLast();
-        if (input.keyPressed(.Enter)) {
-            std.log.info("flat2d: text box submitted \"{s}\"", .{typed[0..typed_len]});
-            typed_len = 0;
-        }
-
-        const comp = input.composition.text();
-        @memcpy(composing[0..comp.len], comp);
-        composing_len = comp.len;
-
-        if (typed_len != before or committed.len > 0) {
-            std.log.info("flat2d: text box = \"{s}\"", .{typed[0..typed_len]});
-        }
+        const u = if (ui_state) |*p| p else return;
+        const win = ctx.window();
+        const logical = gfx.projection.logicalSize(win.width, win.height, win.dpi_scale);
+        try buildUi(u, uiInput(ctx), logical.w, logical.h);
+        handleUiEvents(ctx, u);
     }
 
     pub fn render(ctx: *sw.Context) !void {
@@ -257,7 +308,7 @@ const Callbacks = struct {
         // A rectangle that moves, to show the frame is redrawn.
         const t: f32 = @floatFromInt(ticks);
         const x = 40 + 300 * (0.5 + 0.5 * @sin(t / 40.0));
-        try r.fillRect(.{ .x = x, .y = 480, .w = 60, .h = 40 }, gfx.Color.rgba8(120, 230, 160, 255));
+        try r.fillRect(.{ .x = x, .y = 480, .w = 60, .h = 40 }, accents[accent].color);
 
         // Text: a heading, then a paragraph wrapped to a width. The outline
         // shows the width.
@@ -272,18 +323,9 @@ const Callbacks = struct {
             try r.strokeRect(.{ .x = paragraph_x - 4, .y = 72, .w = paragraph_width + 8, .h = size.h + 8 }, 1, gfx.Color.rgba8(90, 90, 110, 255));
         }
 
-        // The text box. Committed text is opaque. Text in composition is faint.
-        const edge = if (box_focused)
-            gfx.Color.rgba8(120, 200, 255, 255)
-        else
-            gfx.Color.rgba8(120, 120, 140, 255);
-        try r.fillRect(.{ .x = box.x, .y = box.y, .w = box.w, .h = box.h }, gfx.Color.rgba8(20, 20, 30, 255));
-        try r.strokeRect(.{ .x = box.x, .y = box.y, .w = box.w, .h = box.h }, 2, edge);
-        const after_typed = try drawGlyphs(r, typed[0..typed_len], 0, 255);
-        const after_comp = try drawGlyphs(r, composing[0..composing_len], after_typed, 140);
-        if (box_focused and (ticks / 30) % 2 == 0) {
-            const cx = box.x + 12 + @as(f32, @floatFromInt(after_comp)) * glyph_step;
-            try r.fillRect(.{ .x = cx, .y = box.y + 8, .w = 2, .h = box.h - 16 }, gfx.Color.white);
+        // The UI is drawn last, over everything else.
+        if (ui_state) |*u| {
+            if (text_renderer) |*tr| try sw_ui.draw.draw(u, r, tr, .{});
         }
 
         var view_tex = try gpu.getCurrentTextureView();
@@ -307,6 +349,8 @@ const Callbacks = struct {
 
     pub fn shutdown(ctx: *sw.Context) !void {
         _ = ctx;
+        if (ui_state) |*u| u.deinit();
+        ui_state = null;
         if (text_renderer) |*tr| tr.deinit();
         text_renderer = null;
         if (renderer) |*r| r.deinit();

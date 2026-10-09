@@ -47,11 +47,12 @@ swindowzig/
 │   ├── sw_math/        # Vec3, Mat4, perspective(), lookAt()
 │   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
 │   ├── sw_assets/      # loadBytes (async, native + fetch) and PNG decode (stb_image)
-│   └── sw_text/        # TTF text (stb_truetype): atlas, measure, wrap, draw
+│   ├── sw_text/        # TTF text (stb_truetype): atlas, measure, wrap, draw
+│   └── sw_ui/          # UI tree: layout, keyboard focus, semantic tree, drawing
 ├── examples/
 │   ├── justabox/       # Default: single spinning colored box
 │   ├── windows/        # Triangle with mouse drag
-│   ├── flat2d/         # sw_gfx2d + sw_text demo: shapes, textured quad, wrapped text
+│   ├── flat2d/         # sw_gfx2d + sw_text + sw_ui demo: shapes, text, a keyboard menu
 │   └── voxel/          # Voxel chunk demo (16×256×16)
 └── backends/
     └── wasm/           # Web platform boot + dev server
