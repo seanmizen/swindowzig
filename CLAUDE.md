@@ -44,10 +44,12 @@ swindowzig/
 │   │   ├── native_webgpu.zig    # C bindings for wgpu-native
 │   │   ├── types.zig            # Shared descriptor types
 │   │   └── web_bridge.zig       # WASM JS bindings
-│   └── sw_math/        # Vec3, Mat4, perspective(), lookAt()
+│   ├── sw_math/        # Vec3, Mat4, perspective(), lookAt()
+│   └── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
 ├── examples/
 │   ├── justabox/       # Default: single spinning colored box
 │   ├── windows/        # Triangle with mouse drag
+│   ├── flat2d/         # sw_gfx2d demo: rectangles, outline, textured quad
 │   └── voxel/          # Voxel chunk demo (16×256×16)
 └── backends/
     └── wasm/           # Web platform boot + dev server

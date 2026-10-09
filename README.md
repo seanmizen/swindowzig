@@ -92,6 +92,7 @@ cp include/webgpu/webgpu.h ~/.local/include/webgpu/
 zig build run                      # justabox (default) — spinning colored box
 zig build run -Dexample=voxel     # voxel chunk demo
 zig build run -Dexample=windows   # triangle with mouse drag
+zig build run -Dexample=flat2d    # 2D renderer: rectangles, outline, textured quad
 ```
 
 ### Voxel Demo — CLI Flags
@@ -162,9 +163,9 @@ const swindowzig = b.dependency("swindowzig", .{});
 exe.root_module.addImport("sw_app", swindowzig.module("sw_app"));
 ```
 
-The package exports `sw_core`, `sw_platform`, `sw_gpu`, `sw_audio`, `sw_math`
-and `sw_app`. The `platform` option picks the platform of these modules: `web`
-(the default, no SDL) or `native` (SDL2 from `addTranslateC`):
+The package exports `sw_core`, `sw_platform`, `sw_gpu`, `sw_audio`, `sw_math`,
+`sw_gfx2d` and `sw_app`. The `platform` option picks the platform of these modules:
+`web` (the default, no SDL) or `native` (SDL2 from `addTranslateC`):
 
 ```zig
 const swindowzig = b.dependency("swindowzig", .{ .platform = .native });
@@ -233,6 +234,7 @@ swindowzig
   sw_platform  — SDL2 (native) | canvas (web)
   sw_gpu       — WebGPU wrapper
   sw_math      — Vec3, Mat4, transforms
+  sw_gfx2d     — 2D rectangles, outlines, textured quads (batched)
       ↓
 WebGPU
   Native → wgpu-native (Metal / Vulkan / DX12)

@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
     example.root_module.addImport("sw_math", web_libs.math);
     example.root_module.addImport("sw_gpu", web_libs.gpu);
     example.root_module.addImport("sw_core", web_libs.core);
+    example.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
     // sw_platform is needed by examples that drive their own wasm entry
     // (e.g. voxel, which constructs a WasmBackend directly in its
     // swindowzig_init export).
@@ -137,6 +138,7 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_math", native_libs.math);
     native_exe.root_module.addImport("sw_gpu", native_libs.gpu);
     native_exe.root_module.addImport("sw_core", native_libs.core);
+    native_exe.root_module.addImport("sw_gfx2d", native_libs.gfx2d);
 
     // Link SDL2 for native builds.
     native_exe.root_module.linkSystemLibrary("SDL2", .{});
@@ -188,6 +190,9 @@ pub fn build(b: *std.Build) void {
         "libs/sw_core/src/record.zig",
         "libs/sw_core/src/replay.zig",
         "libs/sw_platform/src/storage.zig",
+        // sw_gfx2d: the batching and the projection maths have no GPU code.
+        "libs/sw_gfx2d/src/batch.zig",
+        "libs/sw_gfx2d/src/projection.zig",
     };
 
     inline for (test_files) |file| {
@@ -264,6 +269,7 @@ const Libs = struct {
     gpu: *std.Build.Module,
     audio: *std.Build.Module,
     math: *std.Build.Module,
+    gfx2d: *std.Build.Module,
     app: *std.Build.Module,
 };
 
@@ -289,11 +295,13 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     const gpu = libModule(b, exported, "sw_gpu", "libs/sw_gpu/src/gpu_root.zig");
     const audio = libModule(b, exported, "sw_audio", "libs/sw_audio/src/audio_root.zig");
     const math = libModule(b, exported, "sw_math", "libs/sw_math/src/math_root.zig");
+    const gfx2d = libModule(b, exported, "sw_gfx2d", "libs/sw_gfx2d/src/gfx2d_root.zig");
+    gfx2d.addImport("sw_gpu", gpu);
     const app = libModule(b, exported, "sw_app", "libs/sw_app/src/app_root.zig");
     app.addImport("sw_core", core);
     app.addImport("sw_platform", platform);
     app.addImport("sw_gpu", gpu);
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
-    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .app = app };
+    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .app = app };
 }
