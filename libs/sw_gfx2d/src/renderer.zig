@@ -213,6 +213,20 @@ pub const Renderer = struct {
         return .{ .id = @intCast(self.textures.items.len - 1), .width = width, .height = height };
     }
 
+    /// Replace all texels of a texture from `createTexture`. `rgba` has the
+    /// same size as in `createTexture`. A glyph atlas uses this to add glyphs.
+    pub fn updateTexture(self: *Renderer, texture: Texture, rgba: []const u8) !void {
+        if (texture.id >= self.textures.items.len) return error.UnknownTexture;
+        if (rgba.len != @as(usize, texture.width) * texture.height * 4) return error.BadTextureSize;
+        self.gpu.writeTexture(
+            self.textures.items[texture.id].texture,
+            rgba,
+            texture.width * 4,
+            texture.height,
+            .{ .width = texture.width, .height = texture.height },
+        );
+    }
+
     /// Decode PNG `bytes` (from `sw_assets.loadBytes`, for example) and upload
     /// the image as a texture. The decoded pixels are freed before this
     /// returns. A file that is not a PNG returns `error.InvalidPng`.

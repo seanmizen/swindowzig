@@ -1,17 +1,19 @@
 // flat2d - the 2D renderer (sw_gfx2d): filled rectangles, an outline, a
-// textured quad with a tint and a source rectangle, and alpha blending. It
+// textured quad with a tint and a source rectangle, alpha blending, and text
+// from a TTF font (sw_text): a paragraph with accents, wrapped to a width. It
 // also loads sprite.png (next to this file) with sw_assets and draws it.
 // Drawing is in logical pixels, origin at the top left.
 //
 // The text box at the bottom uses the platform input method. Click it, then
 // type. A dead key works: the accent key, then "e", gives the committed
 // "é". An IME shows its composition text in a second colour until you
-// accept it. There is no text renderer yet, so each code point is a colour
-// block and the string goes to the log.
+// accept it. Each code point is a colour block and the string goes to the
+// log.
 const std = @import("std");
 const builtin = @import("builtin");
 const sw = @import("sw_app");
 const gfx = @import("sw_gfx2d");
+const sw_text = @import("sw_text");
 const assets = @import("sw_assets");
 
 // Freestanding WASM has no std.process.Init, so the web build gets a main
@@ -45,6 +47,17 @@ const checker_cell = 4;
 var renderer: ?gfx.Renderer = null;
 var checker: gfx.Texture = .{ .id = 0, .width = 1, .height = 1 };
 var ticks: u32 = 0;
+var text_renderer: ?sw_text.TextRenderer = null;
+
+// Lato, under the SIL Open Font License (assets/Lato-OFL.txt).
+const font_bytes = @embedFile("assets/Lato-Regular.ttf");
+
+const paragraph_x = 620;
+const paragraph_width = 160;
+const paragraph =
+    "Zażółć gęślą jaźń. Crème brûlée, façade, Ångström, piñata, " ++
+    "Müller, größer, naïve café, Čeština, Ğ, Ő, Ž. " ++
+    "No glyph for 中, so a box.";
 
 // The text box: the committed text (UTF-8), the text in composition, and focus.
 const box = struct {
@@ -154,6 +167,7 @@ const Callbacks = struct {
         const pixels = makeChecker();
         checker = try r.createTexture(checker_size, checker_size, &pixels, .nearest);
         renderer = r;
+        text_renderer = try sw_text.TextRenderer.init(ctx.allocator(), font_bytes);
         sprite_request = try assets.loadBytes(ctx.allocator(), "sprite.png");
         std.log.info("flat2d: GPU ready", .{});
     }
@@ -245,6 +259,19 @@ const Callbacks = struct {
         const x = 40 + 300 * (0.5 + 0.5 * @sin(t / 40.0));
         try r.fillRect(.{ .x = x, .y = 480, .w = 60, .h = 40 }, gfx.Color.rgba8(120, 230, 160, 255));
 
+        // Text: a heading, then a paragraph wrapped to a width. The outline
+        // shows the width.
+        if (text_renderer) |*tr| {
+            tr.setDpiScale(win.dpi_scale);
+            const white = gfx.Color.rgba8(240, 240, 240, 255);
+            _ = try tr.draw(r, "Text (TTF)", paragraph_x, 40, .{ .size = 20, .color = white });
+            const size = try tr.drawWrapped(r, paragraph, paragraph_x, 76, paragraph_width, .{
+                .size = 14,
+                .color = gfx.Color.rgba8(250, 210, 80, 255),
+            });
+            try r.strokeRect(.{ .x = paragraph_x - 4, .y = 72, .w = paragraph_width + 8, .h = size.h + 8 }, 1, gfx.Color.rgba8(90, 90, 110, 255));
+        }
+
         // The text box. Committed text is opaque. Text in composition is faint.
         const edge = if (box_focused)
             gfx.Color.rgba8(120, 200, 255, 255)
@@ -280,6 +307,8 @@ const Callbacks = struct {
 
     pub fn shutdown(ctx: *sw.Context) !void {
         _ = ctx;
+        if (text_renderer) |*tr| tr.deinit();
+        text_renderer = null;
         if (renderer) |*r| r.deinit();
         renderer = null;
     }

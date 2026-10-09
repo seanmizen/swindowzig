@@ -11,5 +11,6 @@
         "backends",
         "examples",
         "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
     },
 }
