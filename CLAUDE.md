@@ -45,7 +45,8 @@ swindowzig/
 │   │   ├── types.zig            # Shared descriptor types
 │   │   └── web_bridge.zig       # WASM JS bindings
 │   ├── sw_math/        # Vec3, Mat4, perspective(), lookAt()
-│   └── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
+│   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
+│   └── sw_assets/      # loadBytes (async, native + fetch) and PNG decode (stb_image)
 ├── examples/
 │   ├── justabox/       # Default: single spinning colored box
 │   ├── windows/        # Triangle with mouse drag

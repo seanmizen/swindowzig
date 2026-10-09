@@ -93,11 +93,27 @@ const server = serve({
       '/events': './backends/wasm/events.ts',
       '/audio.js': './backends/wasm/audio.ts',
       '/audio': './backends/wasm/audio.ts',
+      '/storage.js': './backends/wasm/storage.ts',
+      '/storage': './backends/wasm/storage.ts',
+      '/assets.js': './backends/wasm/assets.ts',
+      '/assets': './backends/wasm/assets.ts',
       '/app.wasm': './zig-out/bin/app.wasm',
       '/zig-out/bin/app.wasm': './zig-out/bin/app.wasm',
     };
 
-    const filePath = fileMap[path];
+    // Files next to the example (examples/<name>/sprite.png) are served from
+    // the page root, so `loadBytes("sprite.png")` works on the web as on
+    // native. Only a plain file name or a sub path with no '..' is allowed.
+    let filePath = fileMap[path];
+    if (
+      !filePath &&
+      exampleArg &&
+      !path.includes('..') &&
+      !path.includes('\\')
+    ) {
+      const candidate = `./examples/${exampleArg}${path}`;
+      if (await Bun.file(candidate).exists()) filePath = candidate;
+    }
     if (!filePath) {
       return new Response('Not found', { status: 404 });
     }
@@ -115,6 +131,8 @@ const server = serve({
         '.js': 'application/javascript',
         '.ts': 'application/javascript',
         '.wasm': 'application/wasm',
+        '.png': 'image/png',
+        '.json': 'application/json',
       };
 
       const ext = filePath.substring(filePath.lastIndexOf('.'));

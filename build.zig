@@ -97,6 +97,7 @@ pub fn build(b: *std.Build) void {
     example.root_module.addImport("sw_gpu", web_libs.gpu);
     example.root_module.addImport("sw_core", web_libs.core);
     example.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
+    example.root_module.addImport("sw_assets", web_libs.assets);
     // sw_platform is needed by examples that drive their own wasm entry
     // (e.g. voxel, which constructs a WasmBackend directly in its
     // swindowzig_init export).
@@ -139,6 +140,7 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_gpu", native_libs.gpu);
     native_exe.root_module.addImport("sw_core", native_libs.core);
     native_exe.root_module.addImport("sw_gfx2d", native_libs.gfx2d);
+    native_exe.root_module.addImport("sw_assets", native_libs.assets);
 
     // Link SDL2 for native builds.
     native_exe.root_module.linkSystemLibrary("SDL2", .{});
@@ -194,6 +196,25 @@ pub fn build(b: *std.Build) void {
         "libs/sw_gfx2d/src/batch.zig",
         "libs/sw_gfx2d/src/projection.zig",
     };
+
+    // sw_assets: byte loading and PNG decoding. The PNG decoder is C
+    // (stb_image), so these tests link libc.
+    const assets_test_files = [_][]const u8{
+        "libs/sw_assets/src/assets.zig",
+        "libs/sw_assets/src/png.zig",
+    };
+    inline for (assets_test_files) |file| {
+        const unit_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        addAssetsC(b, unit_tests.root_module);
+        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    }
 
     inline for (test_files) |file| {
         const unit_tests = b.addTest(.{
@@ -261,6 +282,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(async_tests).step);
 }
 
+/// Compile stb_image (libs/sw_assets/c) into `module`. The shim headers stand
+/// in for the C library on freestanding wasm.
+fn addAssetsC(b: *std.Build, module: *std.Build.Module) void {
+    module.addIncludePath(b.path("libs/sw_assets/c/shim"));
+    module.addIncludePath(b.path("libs/sw_assets/c"));
+    module.addCSourceFile(.{
+        .file = b.path("libs/sw_assets/c/sw_stb.c"),
+        .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
+    });
+}
+
 const Platform = enum { web, native };
 
 const Libs = struct {
@@ -270,6 +302,7 @@ const Libs = struct {
     audio: *std.Build.Module,
     math: *std.Build.Module,
     gfx2d: *std.Build.Module,
+    assets: *std.Build.Module,
     app: *std.Build.Module,
 };
 
@@ -295,13 +328,16 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     const gpu = libModule(b, exported, "sw_gpu", "libs/sw_gpu/src/gpu_root.zig");
     const audio = libModule(b, exported, "sw_audio", "libs/sw_audio/src/audio_root.zig");
     const math = libModule(b, exported, "sw_math", "libs/sw_math/src/math_root.zig");
+    const assets = libModule(b, exported, "sw_assets", "libs/sw_assets/src/assets_root.zig");
+    addAssetsC(b, assets);
     const gfx2d = libModule(b, exported, "sw_gfx2d", "libs/sw_gfx2d/src/gfx2d_root.zig");
     gfx2d.addImport("sw_gpu", gpu);
+    gfx2d.addImport("sw_assets", assets);
     const app = libModule(b, exported, "sw_app", "libs/sw_app/src/app_root.zig");
     app.addImport("sw_core", core);
     app.addImport("sw_platform", platform);
     app.addImport("sw_gpu", gpu);
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
-    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .app = app };
+    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .app = app };
 }

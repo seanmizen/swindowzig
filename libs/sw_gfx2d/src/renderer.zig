@@ -6,6 +6,7 @@ const std = @import("std");
 const gpu_mod = @import("sw_gpu");
 const batch_mod = @import("batch.zig");
 const projection = @import("projection.zig");
+const assets = @import("sw_assets");
 
 pub const Batch = batch_mod.Batch;
 pub const Color = batch_mod.Color;
@@ -210,6 +211,15 @@ pub const Renderer = struct {
 
         try self.textures.append(self.alloc, .{ .texture = texture, .view = view, .bind_group = bind_group });
         return .{ .id = @intCast(self.textures.items.len - 1), .width = width, .height = height };
+    }
+
+    /// Decode PNG `bytes` (from `sw_assets.loadBytes`, for example) and upload
+    /// the image as a texture. The decoded pixels are freed before this
+    /// returns. A file that is not a PNG returns `error.InvalidPng`.
+    pub fn createTextureFromPng(self: *Renderer, bytes: []const u8, filter: Filter) !Texture {
+        const image = try assets.decodePng(self.alloc, bytes);
+        defer image.deinit(self.alloc);
+        return self.createTexture(image.width, image.height, image.pixels, filter);
     }
 
     /// Start a frame. `width` and `height` are the surface size in device

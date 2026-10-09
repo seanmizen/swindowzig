@@ -1,10 +1,12 @@
 // flat2d - the 2D renderer (sw_gfx2d): filled rectangles, an outline, a
-// textured quad with a tint and a source rectangle, and alpha blending.
+// textured quad with a tint and a source rectangle, and alpha blending. It
+// also loads sprite.png (next to this file) with sw_assets and draws it.
 // Drawing is in logical pixels, origin at the top left.
 const std = @import("std");
 const builtin = @import("builtin");
 const sw = @import("sw_app");
 const gfx = @import("sw_gfx2d");
+const assets = @import("sw_assets");
 
 // Freestanding WASM has no std.process.Init, so the web build gets a main
 // with no parameters. The native build passes Io to the app (ctx.io).
@@ -17,6 +19,11 @@ fn mainWasm() !void {
 fn mainNative(init: std.process.Init) !void {
     var c = config;
     c.io = init.io;
+    // A relative path reads a file in this directory. `zig build run` runs
+    // from the package root.
+    assets.useDirectoryPath(init.io, "examples/flat2d") catch |err| {
+        std.log.warn("flat2d: no asset directory: {s}", .{@errorName(err)});
+    };
     try sw.run(c, Callbacks);
 }
 
@@ -32,6 +39,31 @@ const checker_cell = 4;
 var renderer: ?gfx.Renderer = null;
 var checker: gfx.Texture = .{ .id = 0, .width = 1, .height = 1 };
 var ticks: u32 = 0;
+
+// sprite.png: `sprite_request` is set while the load runs, `sprite` when the
+// texture is ready.
+var sprite_request: ?assets.Request = null;
+var sprite: ?gfx.Texture = null;
+
+/// Check the load of sprite.png. The frame does not wait for it.
+fn pollSprite(ctx: *sw.Context, r: *gfx.Renderer) void {
+    const request = if (sprite_request) |*p| p else return;
+    switch (request.poll()) {
+        .pending => {},
+        .bytes => |data| {
+            defer ctx.allocator().free(data);
+            sprite_request = null;
+            sprite = r.createTextureFromPng(data, .nearest) catch |err| {
+                std.log.warn("flat2d: sprite.png: {s}", .{@errorName(err)});
+                return;
+            };
+        },
+        .failed => |err| {
+            sprite_request = null;
+            std.log.warn("flat2d: sprite.png: {s}", .{assets.errorMessage(err)});
+        },
+    }
+}
 
 /// A 16x16 checkerboard in four colours, so a source rectangle shows.
 fn makeChecker() [checker_size * checker_size * 4]u8 {
@@ -69,6 +101,7 @@ const Callbacks = struct {
         const pixels = makeChecker();
         checker = try r.createTexture(checker_size, checker_size, &pixels, .nearest);
         renderer = r;
+        sprite_request = try assets.loadBytes(ctx.allocator(), "sprite.png");
         std.log.info("flat2d: GPU ready", .{});
     }
 
@@ -81,6 +114,8 @@ const Callbacks = struct {
         const gpu = ctx.gpu();
         if (!gpu.isReady()) return;
         const r = if (renderer) |*p| p else return;
+
+        pollSprite(ctx, r);
 
         const win = ctx.window();
         r.beginFrame(win.width, win.height, win.dpi_scale);
@@ -108,6 +143,12 @@ const Callbacks = struct {
             null,
             gfx.Color.rgba8(120, 200, 255, 200),
         );
+
+        // The PNG from a file, 8x8 texels drawn at 16 times the size. It
+        // appears after the load finishes.
+        if (sprite) |tex| {
+            try r.drawTexture(tex, .{ .x = 620, .y = 280, .w = 128, .h = 128 }, null, gfx.Color.white);
+        }
 
         // A rectangle that moves, to show the frame is redrawn.
         const t: f32 = @floatFromInt(ticks);

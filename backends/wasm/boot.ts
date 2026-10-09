@@ -1,5 +1,6 @@
 // WASM boot loader for swindowzig
 
+import { createAssetImports } from './assets';
 import { audioImports } from './audio';
 import { attachEventListeners } from './events';
 import { createStorageImports } from './storage';
@@ -78,6 +79,10 @@ async function main() {
     env: {
       jsGetTime: () => performance.now(),
       ...createStorageImports(
+        () =>
+          (window as never as { wasmMemory: WebAssembly.Memory }).wasmMemory,
+      ),
+      ...createAssetImports(
         () =>
           (window as never as { wasmMemory: WebAssembly.Memory }).wasmMemory,
       ),
