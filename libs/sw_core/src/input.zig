@@ -56,7 +56,7 @@ pub const KeyboardState = struct {
     }
 };
 
-/// Text input buffer
+/// Committed text of this tick (UTF-8)
 pub const TextBuffer = struct {
     buffer: [256]u8 = undefined,
     len: usize = 0,
@@ -77,6 +77,19 @@ pub const TextBuffer = struct {
     }
 };
 
+/// Text that an IME or a dead key has not committed yet.
+pub const Composition = struct {
+    buffer: [event.text_composition_max]u8 = undefined,
+    len: usize = 0,
+    /// Caret position and length of the selection after it, in UTF-8 bytes.
+    cursor: usize = 0,
+    selection_len: usize = 0,
+
+    pub fn text(self: *const Composition) []const u8 {
+        return self.buffer[0..self.len];
+    }
+};
+
 /// Ergonomic input state snapshot computed each tick from raw events.
 /// Provides .keyDown(), .keyPressed(), .buttonDown(), mouse position, etc.
 pub const InputSnapshot = struct {
@@ -85,6 +98,9 @@ pub const InputSnapshot = struct {
     keyboard: KeyboardState = .{},
     mods: Modifiers = .{},
     text: TextBuffer = .{},
+    /// Text in composition now, or empty. Replaced by each `text_composition`
+    /// event, and not cleared per tick: it stays until the composition ends.
+    composition: Composition = .{},
 
     pub fn init() InputSnapshot {
         return .{};
@@ -149,8 +165,15 @@ pub const InputSnapshot = struct {
                     self.mods = k.mods;
                 },
 
-                .text => |t| {
+                .text_input => |t| {
                     self.text.append(t.utf8[0..t.len]);
+                },
+
+                .text_composition => |c| {
+                    @memcpy(self.composition.buffer[0..c.len], c.utf8[0..c.len]);
+                    self.composition.len = c.len;
+                    self.composition.cursor = c.cursor;
+                    self.composition.selection_len = c.selection_len;
                 },
 
                 else => {},
@@ -239,4 +262,27 @@ test "InputSnapshot mouse events" {
     try std.testing.expectEqual(@as(f32, 100), snapshot.mouse.x);
     try std.testing.expectEqual(@as(f32, 200), snapshot.mouse.y);
     try std.testing.expect(snapshot.buttonDown(.left));
+}
+
+test "InputSnapshot text events" {
+    var snapshot = InputSnapshot.init();
+
+    snapshot.updateFromEvents(&[_]Event{
+        Event.init(0, 0, 0, event.textCompositionPayload("e\u{301}", 1, 0)),
+    });
+    try std.testing.expectEqualStrings("e\u{301}", snapshot.composition.text());
+    try std.testing.expectEqual(@as(usize, 1), snapshot.composition.cursor);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.text.text().len);
+
+    // Commit: the composition ends and the text arrives.
+    snapshot.updateFromEvents(&[_]Event{
+        Event.init(1, 0, 0, event.textCompositionPayload("", 0, 0)),
+        Event.init(1, 0, 1, event.textInputPayload("\u{e9}")),
+    });
+    try std.testing.expectEqual(@as(usize, 0), snapshot.composition.text().len);
+    try std.testing.expectEqualStrings("\u{e9}", snapshot.text.text());
+
+    // The committed text is per tick. It does not carry over.
+    snapshot.updateFromEvents(&[_]Event{});
+    try std.testing.expectEqual(@as(usize, 0), snapshot.text.text().len);
 }

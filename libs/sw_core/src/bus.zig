@@ -13,6 +13,9 @@ pub const Bus = struct {
     /// layer are silently dropped. Platform events have tick_id=0; TAS/replayer events
     /// have explicit tick IDs and are unaffected. Useful for deterministic TAS runs.
     block_physical_input: bool,
+    /// Text events (`text_input`, `text_composition`) pass only while this is
+    /// true. Context.startTextInput and stopTextInput set it.
+    text_input_active: bool,
 
     pub fn init(allocator: std.mem.Allocator) Bus {
         return .{
@@ -21,6 +24,7 @@ pub const Bus = struct {
             .current_tick = 0,
             .next_seq = 0,
             .block_physical_input = false,
+            .text_input_active = false,
         };
     }
 
@@ -30,12 +34,19 @@ pub const Bus = struct {
 
     /// Push an event to the bus.
     /// When block_physical_input is true, platform input events (tick_id=0,
-    /// payload=pointer_move/pointer_button/key/wheel/text) are silently dropped.
-    /// TAS/replayer events (tick_id != 0) are never blocked.
+    /// payload=pointer_move/pointer_button/key/wheel/text_input/text_composition)
+    /// are silently dropped. TAS/replayer events (tick_id != 0) are never blocked.
+    /// While text_input_active is false, text events are dropped at any tick_id.
     pub fn push(self: *Bus, tick_id: u64, t_ns: u64, payload: event.EventPayload) !void {
+        if (!self.text_input_active) {
+            switch (payload) {
+                .text_input, .text_composition => return,
+                else => {},
+            }
+        }
         if (self.block_physical_input and tick_id == 0) {
             switch (payload) {
-                .pointer_move, .pointer_button, .key, .wheel, .text => return,
+                .pointer_move, .pointer_button, .key, .wheel, .text_input, .text_composition => return,
                 else => {},
             }
         }
@@ -140,4 +151,23 @@ test "Bus clearBefore" {
     bus.clearBefore(2);
     try std.testing.expectEqual(@as(usize, 1), bus.events.items.len);
     try std.testing.expectEqual(@as(u64, 2), bus.events.items[0].tick_id);
+}
+
+test "text events pass only while text input is on" {
+    var bus = Bus.init(std.testing.allocator);
+    defer bus.deinit();
+
+    try bus.push(0, 0, event.textInputPayload("a"));
+    try bus.push(0, 0, event.textCompositionPayload("b", 1, 0));
+    try std.testing.expectEqual(@as(usize, 0), bus.events.items.len);
+
+    bus.text_input_active = true;
+    try bus.push(0, 0, event.textInputPayload("a"));
+    try bus.push(0, 0, event.textCompositionPayload("b", 1, 0));
+    try std.testing.expectEqual(@as(usize, 2), bus.events.items.len);
+
+    // Other events pass in both states.
+    bus.text_input_active = false;
+    try bus.push(0, 0, .{ .lifecycle = .init });
+    try std.testing.expectEqual(@as(usize, 3), bus.events.items.len);
 }

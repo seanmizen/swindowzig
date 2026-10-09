@@ -112,6 +112,59 @@ pub const CommandKind = enum(u8) {
     set_spawn = 1,
 };
 
+/// Largest text in one `text_input` event, in bytes.
+pub const text_input_max = 32;
+/// Largest text in one `text_composition` event, in bytes.
+pub const text_composition_max = 64;
+
+/// Length of the longest prefix of `utf8` that is at most `max` bytes and ends
+/// on a code point boundary. A cut never splits a multi-byte character.
+pub fn utf8PrefixLen(utf8: []const u8, max: usize) usize {
+    if (utf8.len <= max) return utf8.len;
+    var n = max;
+    // 0b10xxxxxx is a continuation byte. Step back to the lead byte.
+    while (n > 0 and (utf8[n] & 0xC0) == 0x80) n -= 1;
+    return n;
+}
+
+/// Make a `text_input` payload from `utf8`. Text longer than
+/// `text_input_max` is cut on a code point boundary; use `utf8PrefixLen` to
+/// send the rest in more events.
+pub fn textInputPayload(utf8: []const u8) EventPayload {
+    const len = utf8PrefixLen(utf8, text_input_max);
+    var buf: [text_input_max]u8 = @splat(0);
+    @memcpy(buf[0..len], utf8[0..len]);
+    return .{ .text_input = .{ .utf8 = buf, .len = @intCast(len) } };
+}
+
+/// Make a `text_composition` payload from `utf8`. The text is cut on a code
+/// point boundary at `text_composition_max`. `cursor` and `selection_len` are
+/// byte counts and are clamped to the text that stays.
+pub fn textCompositionPayload(utf8: []const u8, cursor: usize, selection_len: usize) EventPayload {
+    const len = utf8PrefixLen(utf8, text_composition_max);
+    var buf: [text_composition_max]u8 = @splat(0);
+    @memcpy(buf[0..len], utf8[0..len]);
+    const c = @min(cursor, len);
+    return .{ .text_composition = .{
+        .utf8 = buf,
+        .len = @intCast(len),
+        .cursor = @intCast(c),
+        .selection_len = @intCast(@min(selection_len, len - c)),
+    } };
+}
+
+/// Byte offset in `utf8` of the code point at index `index`. An index past
+/// the end gives `utf8.len`. SDL reports the composition cursor in code points.
+pub fn utf8OffsetOfCodePoint(utf8: []const u8, index: usize) usize {
+    var offset: usize = 0;
+    var seen: usize = 0;
+    while (offset < utf8.len and seen < index) {
+        offset += std.unicode.utf8ByteSequenceLength(utf8[offset]) catch 1;
+        seen += 1;
+    }
+    return @min(offset, utf8.len);
+}
+
 /// Event payloads
 pub const EventPayload = union(enum) {
     pointer_move: extern struct {
@@ -144,8 +197,11 @@ pub const EventPayload = union(enum) {
         mods: Modifiers,
     },
 
-    text: extern struct {
-        utf8: [32]u8,
+    /// Text the user committed (typed, or accepted from an IME). UTF-8.
+    /// Longer text arrives as several events, each split on a code point
+    /// boundary. Sent only while text input is on (Context.startTextInput).
+    text_input: extern struct {
+        utf8: [text_input_max]u8,
         len: u8,
     },
 
@@ -173,6 +229,21 @@ pub const EventPayload = union(enum) {
     command: struct {
         kind: CommandKind,
         args: [4]f32,
+    },
+
+    // Keep this last: serialize.zig stores the union tag, and tags 0-9 are
+    // fixed in files that exist.
+    /// Text that is in composition (an IME or a dead key has not committed
+    /// it yet). Each event replaces the one before. `len == 0` means the
+    /// composition ended or was cancelled: the committed part arrives as
+    /// `text_input`. `cursor` is the caret position, and `selection_len` the
+    /// length of the selected part after it. Both count UTF-8 bytes in `utf8`.
+    /// Sent only while text input is on.
+    text_composition: extern struct {
+        utf8: [text_composition_max]u8,
+        len: u8,
+        cursor: u8,
+        selection_len: u8,
     },
 };
 
@@ -209,4 +280,53 @@ test "Modifiers packing" {
     try std.testing.expect(mods.shift);
     try std.testing.expect(mods.ctrl);
     try std.testing.expect(!mods.alt);
+}
+
+test "textInputPayload encodes UTF-8" {
+    const p = textInputPayload("\u{e9}"); // é, 2 bytes
+    try std.testing.expectEqual(@as(u8, 2), p.text_input.len);
+    try std.testing.expectEqualSlices(u8, "\u{e9}", p.text_input.utf8[0..p.text_input.len]);
+}
+
+test "textInputPayload never splits a code point" {
+    // 11 x U+20AC (3 bytes) = 33 bytes. The limit is 32, so 10 characters stay.
+    var euro: [33]u8 = undefined;
+    for (0..11) |i| @memcpy(euro[i * 3 ..][0..3], "\u{20ac}");
+    const p = textInputPayload(&euro);
+    try std.testing.expectEqual(@as(u8, 30), p.text_input.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(p.text_input.utf8[0..p.text_input.len]));
+}
+
+test "utf8PrefixLen returns the whole text when it fits" {
+    try std.testing.expectEqual(@as(usize, 5), utf8PrefixLen("hello", 32));
+    try std.testing.expectEqual(@as(usize, 3), utf8PrefixLen("hello", 3));
+    try std.testing.expectEqual(@as(usize, 0), utf8PrefixLen("\u{1f600}", 3));
+    try std.testing.expectEqual(@as(usize, 4), utf8PrefixLen("\u{1f600}x", 4));
+}
+
+test "textCompositionPayload keeps cursor and selection" {
+    const p = textCompositionPayload("\u{3053}\u{3093}", 3, 3); // こん
+    try std.testing.expectEqual(@as(u8, 6), p.text_composition.len);
+    try std.testing.expectEqual(@as(u8, 3), p.text_composition.cursor);
+    try std.testing.expectEqual(@as(u8, 3), p.text_composition.selection_len);
+}
+
+test "textCompositionPayload clamps cursor and selection to the text" {
+    const p = textCompositionPayload("ab", 9, 9);
+    try std.testing.expectEqual(@as(u8, 2), p.text_composition.cursor);
+    try std.testing.expectEqual(@as(u8, 0), p.text_composition.selection_len);
+}
+
+test "empty composition marks the end of composition" {
+    const p = textCompositionPayload("", 0, 0);
+    try std.testing.expectEqual(@as(u8, 0), p.text_composition.len);
+}
+
+test "utf8OffsetOfCodePoint converts a code point index to bytes" {
+    const text = "a\u{e9}\u{3053}b"; // 1 + 2 + 3 + 1 bytes
+    try std.testing.expectEqual(@as(usize, 0), utf8OffsetOfCodePoint(text, 0));
+    try std.testing.expectEqual(@as(usize, 1), utf8OffsetOfCodePoint(text, 1));
+    try std.testing.expectEqual(@as(usize, 3), utf8OffsetOfCodePoint(text, 2));
+    try std.testing.expectEqual(@as(usize, 6), utf8OffsetOfCodePoint(text, 3));
+    try std.testing.expectEqual(@as(usize, 7), utf8OffsetOfCodePoint(text, 99));
 }

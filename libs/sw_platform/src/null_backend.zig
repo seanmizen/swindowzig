@@ -16,6 +16,7 @@ pub const NullBackend = struct {
         .getWindowInfo = getWindowInfo,
         .getWindow = getWindow,
         .setMouseCapture = setMouseCapture,
+        .setTextInput = setTextInput,
     };
 
     pub fn backend(self: *NullBackend) backend_mod.Backend {
@@ -45,4 +46,5 @@ pub const NullBackend = struct {
     }
 
     fn setMouseCapture(_: *anyopaque, _: bool) void {}
+    fn setTextInput(_: *anyopaque, _: bool) void {}
 };

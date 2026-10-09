@@ -80,7 +80,7 @@ pub const Serializer = struct {
             .key => |k| {
                 try self.writer.writeStruct(k, .little);
             },
-            .text => |t| {
+            .text_input => |t| {
                 try self.writer.writeStruct(t, .little);
             },
             .resize => |r| {
@@ -99,6 +99,9 @@ pub const Serializer = struct {
             .command => |c| {
                 try self.writer.writeInt(u8, @intFromEnum(c.kind), .little);
                 for (c.args) |arg| try self.writer.writeInt(u32, @bitCast(arg), .little);
+            },
+            .text_composition => |c| {
+                try self.writer.writeStruct(c, .little);
             },
         }
 
@@ -152,7 +155,7 @@ pub const Deserializer = struct {
             1 => .{ .pointer_button = try self.reader.takeStruct(@TypeOf(dummy.pointer_button), .little) },
             2 => .{ .wheel = try self.reader.takeStruct(@TypeOf(dummy.wheel), .little) },
             3 => .{ .key = try self.reader.takeStruct(@TypeOf(dummy.key), .little) },
-            4 => .{ .text = try self.reader.takeStruct(@TypeOf(dummy.text), .little) },
+            4 => .{ .text_input = try self.reader.takeStruct(@TypeOf(dummy.text_input), .little) },
             5 => .{ .resize = try self.reader.takeStruct(@TypeOf(dummy.resize), .little) },
             6 => .{ .focus = try self.reader.takeStruct(@TypeOf(dummy.focus), .little) },
             7 => blk: {
@@ -169,6 +172,7 @@ pub const Deserializer = struct {
                 for (&args) |*arg| arg.* = @bitCast(try self.reader.takeInt(u32, .little));
                 break :blk .{ .command = .{ .kind = kind, .args = args } };
             },
+            10 => .{ .text_composition = try self.reader.takeStruct(@TypeOf(dummy.text_composition), .little) },
             else => error.InvalidPayloadTag,
         };
     }
@@ -236,4 +240,28 @@ test "Serialize and deserialize a command event" {
     try std.testing.expectEqual(sent.seq, got.seq);
     try std.testing.expectEqual(event.CommandKind.tp, got.payload.command.kind);
     try std.testing.expectEqual(sent.payload.command.args, got.payload.command.args);
+}
+
+test "Serialize and deserialize text events" {
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
+
+    var serializer = Serializer.init(&buffer.writer);
+    try serializer.writeHeader(120);
+    const committed = Event.init(1, 1000, 0, event.textInputPayload("\u{e9}"));
+    const composing = Event.init(2, 2000, 0, event.textCompositionPayload("\u{3053}\u{3093}", 6, 0));
+    try serializer.writeEvent(committed);
+    try serializer.writeEvent(composing);
+
+    var reader: std.Io.Reader = .fixed(buffer.written());
+    var deserializer = Deserializer.init(&reader);
+    _ = try deserializer.readHeader();
+    const got_committed = try deserializer.readEvent();
+    const got_composing = try deserializer.readEvent();
+
+    const ti = got_committed.payload.text_input;
+    try std.testing.expectEqualStrings("\u{e9}", ti.utf8[0..ti.len]);
+    const tc = got_composing.payload.text_composition;
+    try std.testing.expectEqualStrings("\u{3053}\u{3093}", tc.utf8[0..tc.len]);
+    try std.testing.expectEqual(@as(u8, 6), tc.cursor);
 }

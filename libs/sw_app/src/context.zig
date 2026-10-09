@@ -65,6 +65,32 @@ pub const Context = struct {
         self.backend.setMouseCapture(capture);
     }
 
+    /// Start text input. The platform input method turns on: the OS IME on
+    /// native, a focused hidden `<input>` on the web. The engine then sends
+    /// `text_input` (committed text) and `text_composition` (text in
+    /// composition) events, and `input().text` and `input().composition` fill.
+    /// Call it when a text box gains focus.
+    ///
+    /// On the web, printable keys do not reach the game as `key` events while
+    /// text input is on. Keys such as Backspace, Enter and the arrows still do.
+    pub fn startTextInput(self: *Context) void {
+        self.event_bus.text_input_active = true;
+        self.backend.setTextInput(true);
+    }
+
+    /// Stop text input. The engine sends no text events until the next
+    /// `startTextInput`. A composition in progress is dropped.
+    pub fn stopTextInput(self: *Context) void {
+        self.event_bus.text_input_active = false;
+        self.backend.setTextInput(false);
+        self.input_snapshot.composition.len = 0;
+    }
+
+    /// Is text input on?
+    pub fn isTextInputActive(self: *const Context) bool {
+        return self.event_bus.text_input_active;
+    }
+
     /// Block (or unblock) physical keyboard/mouse input from reaching the event bus.
     /// When blocked, only TAS/replayer events and window lifecycle events are processed.
     /// Useful for deterministic TAS runs where real input must not interfere.

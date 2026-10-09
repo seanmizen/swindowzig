@@ -32,6 +32,10 @@ pub const SDL2Backend = struct {
         // in utils/swindowzig/CLAUDE.md.
         _ = sdl.SDL_SetHint(sdl.SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
 
+        // Let the OS draw the IME candidate list. The game draws the
+        // composition text itself.
+        _ = sdl.SDL_SetHint(sdl.SDL_HINT_IME_SHOW_UI, "1");
+
         // Initialize SDL
         if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) < 0) {
             std.log.err("SDL_Init failed: {s}", .{sdl.SDL_GetError()});
@@ -68,6 +72,10 @@ pub const SDL2Backend = struct {
         else
             1.0;
 
+        // SDL turns text input on at window creation on desktop. Text input
+        // is off until the game calls Context.startTextInput.
+        sdl.SDL_StopTextInput();
+
         self.* = .{
             .allocator = allocator,
             .window = window,
@@ -89,6 +97,7 @@ pub const SDL2Backend = struct {
                 .getWindowInfo = getWindowInfo,
                 .getWindow = getWindow,
                 .setMouseCapture = setMouseCapture,
+                .setTextInput = setTextInput,
             },
         };
     }
@@ -217,24 +226,22 @@ pub const SDL2Backend = struct {
                 },
 
                 sdl.SDL_TEXTINPUT => {
-                    // Convert SDL text input to event
+                    // The bus drops this while text input is off.
                     const text_event = event.text;
-                    var utf8_buf: [32]u8 = @splat(0);
-                    var len: u8 = 0;
-
-                    // Copy SDL text to buffer (text is null-terminated)
-                    while (len < 32 and text_event.text[len] != 0) : (len += 1) {
-                        utf8_buf[len] = @intCast(text_event.text[len]);
+                    const text = cText(&text_event.text);
+                    if (text.len > 0) {
+                        try bus.push(0, now_ns, core.event.textInputPayload(text));
                     }
+                },
 
-                    if (len > 0) {
-                        try bus.push(0, now_ns, .{
-                            .text = .{
-                                .utf8 = utf8_buf,
-                                .len = len,
-                            },
-                        });
-                    }
+                sdl.SDL_TEXTEDITING => {
+                    // SDL sends empty text when the composition ends.
+                    // start and length count code points; the event counts bytes.
+                    const edit = event.edit;
+                    const text = cText(&edit.text);
+                    const cursor = core.event.utf8OffsetOfCodePoint(text, @intCast(@max(edit.start, 0)));
+                    const end = core.event.utf8OffsetOfCodePoint(text, @intCast(@max(edit.start, 0) + @max(edit.length, 0)));
+                    try bus.push(0, now_ns, core.event.textCompositionPayload(text, cursor, end - cursor));
                 },
 
                 else => {},
@@ -364,6 +371,17 @@ pub const SDL2Backend = struct {
 
     fn setMouseCapture(_: *anyopaque, capture: bool) void {
         _ = sdl.SDL_SetRelativeMouseMode(if (capture) 1 else 0);
+    }
+
+    fn setTextInput(_: *anyopaque, active: bool) void {
+        if (active) sdl.SDL_StartTextInput() else sdl.SDL_StopTextInput();
+    }
+
+    /// The bytes of a NUL-terminated SDL text field, without the NUL.
+    fn cText(text: anytype) []const u8 {
+        const bytes: [*]const u8 = @ptrCast(text);
+        const n = std.mem.indexOfScalar(u8, bytes[0..text.len], 0) orelse text.len;
+        return bytes[0..n];
     }
 };
 

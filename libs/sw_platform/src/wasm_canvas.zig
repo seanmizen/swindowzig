@@ -45,6 +45,7 @@ pub const WasmBackend = struct {
                 .getWindowInfo = getWindowInfo,
                 .getWindow = getWindow,
                 .setMouseCapture = setMouseCapture,
+                .setTextInput = setTextInput,
             },
         };
     }
@@ -89,6 +90,10 @@ pub const WasmBackend = struct {
 
     fn setMouseCapture(_: *anyopaque, captured: bool) void {
         jsSetPointerLock(if (captured) 1 else 0);
+    }
+
+    fn setTextInput(_: *anyopaque, active: bool) void {
+        jsSetTextInput(if (active) 1 else 0);
     }
 };
 
@@ -232,6 +237,38 @@ export fn swindowzig_event_key(keycode: u16, down: bool) void {
     } }, global_allocator);
 }
 
+// Text input from JS. JS writes UTF-8 into text_buffer (its address comes
+// from swindowzig_text_buffer_ptr), then calls an export with the byte count.
+var text_buffer: [256]u8 = undefined;
+
+export fn swindowzig_text_buffer_ptr() [*]u8 {
+    return &text_buffer;
+}
+
+export fn swindowzig_text_buffer_len() u32 {
+    return text_buffer.len;
+}
+
+/// Committed text: text_buffer[0..len]. Long text goes out as several events.
+export fn swindowzig_event_text_input(len: u32) void {
+    var rest: []const u8 = text_buffer[0..@min(len, text_buffer.len)];
+    while (rest.len > 0) {
+        const n = core.event.utf8PrefixLen(rest, core.event.text_input_max);
+        // A lone byte too large to fit (a bad sequence) would loop forever.
+        if (n == 0) break;
+        pushEvent(core.event.textInputPayload(rest[0..n]), global_allocator);
+        rest = rest[n..];
+    }
+}
+
+/// Text in composition: text_buffer[0..len]. `len == 0` ends the composition.
+/// `cursor` and `selection_len` count bytes.
+export fn swindowzig_event_text_composition(len: u32, cursor: u32, selection_len: u32) void {
+    const text = text_buffer[0..@min(len, text_buffer.len)];
+    pushEvent(core.event.textCompositionPayload(text, cursor, selection_len), global_allocator);
+}
+
 // JS imports
 extern fn jsGetTime() f64;
 extern fn jsSetPointerLock(lock: u8) void;
+extern fn jsSetTextInput(active: u8) void;

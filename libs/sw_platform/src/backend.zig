@@ -18,6 +18,7 @@ pub const Backend = struct {
         getWindowInfo: *const fn (ptr: *anyopaque) WindowInfo,
         getWindow: *const fn (ptr: *anyopaque) ?*anyopaque,
         setMouseCapture: *const fn (ptr: *anyopaque, capture: bool) void,
+        setTextInput: *const fn (ptr: *anyopaque, active: bool) void,
     };
 
     pub fn init(self: Backend) !void {
@@ -46,5 +47,11 @@ pub const Backend = struct {
 
     pub fn setMouseCapture(self: Backend, capture: bool) void {
         return self.vtable.setMouseCapture(self.ptr, capture);
+    }
+
+    /// Turn the platform input method on or off. While it is on, the backend
+    /// sends `text_input` and `text_composition` events.
+    pub fn setTextInput(self: Backend, active: bool) void {
+        return self.vtable.setTextInput(self.ptr, active);
     }
 };
