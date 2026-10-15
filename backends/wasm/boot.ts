@@ -4,6 +4,7 @@ import { createAssetImports } from './assets';
 import { audioImports } from './audio';
 import {
   attachEventListeners,
+  noteGameReleasedLock,
   setTextInputActive,
   type WasmExports,
 } from './events';
@@ -97,6 +98,8 @@ async function main() {
           setCursorVisible(false);
         } else {
           if (document.pointerLockElement === canvas) {
+            // The game asked for this exit, so it needs no synthetic Escape.
+            noteGameReleasedLock();
             document.exitPointerLock();
           }
           // Show immediately — don't wait for pointerlockchange which can lag

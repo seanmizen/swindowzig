@@ -10,6 +10,24 @@ const keysDown = new Set<number>();
 const buttonsDown = new Set<number>();
 let pointerLocked = false;
 
+// Pointer lock exit strategy:
+// - During a pointer lock, the browser uses Esc to exit the lock, and the
+//   page does not get that keydown. The game then thinks it has the mouse.
+// - When the lock ends (or a lock request fails) and the game did not ask
+//   for it, send the game an Escape press and release. The game pauses as
+//   it does for a real Esc. Alt-tab and the Windows key also end the lock.
+// - Some browsers can also send the real Esc keydown. Two Escapes in a short
+//   time count as one, so the pause menu does not open and then close.
+const ESCAPE_KEYCODE = 27;
+const ESCAPE_DEDUP_MS = 250;
+let gameReleasedLock = false;
+let lastEscapeMs = Number.NEGATIVE_INFINITY;
+
+/** Call before the game exits the pointer lock itself (jsSetPointerLock(0)). */
+export function noteGameReleasedLock() {
+  gameReleasedLock = true;
+}
+
 // Text input (IME) strategy:
 // - A hidden <input> takes focus while the game has text input on. The
 //   browser then runs the platform input method (dead keys, IME) on it.
@@ -136,9 +154,21 @@ export function attachEventListeners(
 
   // Track pointer lock state — when locked, the game has focus and we
   // block browser shortcuts. When unlocked (pause menu), browser defaults work.
+  const sendEscape = () => {
+    if (performance.now() - lastEscapeMs < ESCAPE_DEDUP_MS) return;
+    lastEscapeMs = performance.now();
+    wasmExports.swindowzig_event_key?.(ESCAPE_KEYCODE, true);
+    wasmExports.swindowzig_event_key?.(ESCAPE_KEYCODE, false);
+  };
   document.addEventListener('pointerlockchange', () => {
+    const wasLocked = pointerLocked;
     pointerLocked = document.pointerLockElement === canvas;
+    if (wasLocked && !pointerLocked && !gameReleasedLock) sendEscape();
+    if (!pointerLocked) gameReleasedLock = false;
   });
+  // A failed request (for example, a new lock within about 1 s of an Esc
+  // exit in Chrome) leaves the game with no mouse. Pause the game as well.
+  document.addEventListener('pointerlockerror', sendEscape);
 
   attachTextInput(wasmExports);
 
@@ -152,6 +182,11 @@ export function attachEventListeners(
       e.preventDefault();
     }
     const keycode = e.keyCode || e.which;
+    if (keycode === ESCAPE_KEYCODE && !e.repeat) {
+      // A synthetic Escape from a lock exit already went to the game.
+      if (performance.now() - lastEscapeMs < ESCAPE_DEDUP_MS) return;
+      lastEscapeMs = performance.now();
+    }
     // Use keycode as the stable identifier for tracking
     keysDown.add(keycode);
     updateKeysDisplay();
