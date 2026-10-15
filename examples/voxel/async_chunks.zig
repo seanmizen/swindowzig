@@ -163,6 +163,11 @@ pub const Result = struct {
     indices: []u32,
     quad_block: []u32,
     quad_highlight: []u8,
+    /// True when one of the 8 neighbours was missing from the job snapshot.
+    /// The mesh then read that neighbour as MISSING_*. A neighbour that
+    /// installs while a gen+mesh job runs cannot mark the new chunk dirty,
+    /// so the main thread marks it dirty on install from this flag.
+    missing_neighbour: bool = false,
 };
 
 /// BlockGetter implementation that routes queries through a 3×3 grid of
@@ -532,6 +537,11 @@ fn processJob(pipeline: *Pipeline, job: *Job) !void {
     const qh = try scratch_mesh.quad_highlight.toOwnedSlice(std.heap.c_allocator);
     errdefer std.heap.c_allocator.free(qh);
 
+    var missing_neighbour = false;
+    for (job.borders, 0..) |b, slot| {
+        if (slot != CENTER_SLOT and b == null) missing_neighbour = true;
+    }
+
     // Neighbour snapshots have served their purpose. Free them before we
     // publish the result so the worker's working set shrinks immediately.
     freeJobBorders(job);
@@ -563,6 +573,7 @@ fn processJob(pipeline: *Pipeline, job: *Job) !void {
         .indices = inds,
         .quad_block = qb,
         .quad_highlight = qh,
+        .missing_neighbour = missing_neighbour,
     };
 
     pipeline.result_mtx.lockUncancelable(pipeline.io);

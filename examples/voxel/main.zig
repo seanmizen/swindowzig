@@ -1816,9 +1816,15 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             std.heap.c_allocator.free(r.quad_block);
             std.heap.c_allocator.free(r.quad_highlight);
             lc.state = .meshed;
-            lc.mesh_dirty = false;
             lc.mesh_incremental_dirty = true;
             try world.chunks.put(key, lc);
+
+            // The worker meshed the chunk with its own block light and with
+            // the neighbours of the job snapshot. Mesh it again when a
+            // neighbour was missing (it may have installed since), or when
+            // block light from a neighbour crosses the border.
+            const relit = try world.relightSeams(r.cx, r.cz);
+            lc.mesh_dirty = r.missing_neighbour or relit;
 
             // Mark all 8 surrounding neighbours dirty so they'll be
             // re-enqueued as mesh-only jobs next tick. Diagonals matter
@@ -1844,13 +1850,13 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             }
         } else {
             // Mesh-only result → replace the existing chunk's mesh buffers.
+            // The dirty flags were cleared at enqueue. A flag set while the
+            // job ran stays set, so the chunk gets a mesh with that change.
             if (world.chunks.get(key)) |lc| {
                 async_chunks_mod.installMeshFromResult(&lc.mesh, r) catch |err| {
                     std.log.err("[ASYNC] mesh install failed for ({},{}): {}", .{ r.cx, r.cz, err });
                 };
                 lc.state = .meshed;
-                lc.mesh_dirty = false;
-                lc.neighbor_ao_dirty = false;
                 lc.mesh_incremental_dirty = true;
             }
             std.heap.c_allocator.free(r.vertices);
@@ -1957,6 +1963,10 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             async_chunks_mod.freeChunk(center);
             break;
         }
+        // The job meshes the chunk as it is now. Clear the flags here, not
+        // on install, so a change while the job runs marks the chunk again.
+        lc.mesh_dirty = false;
+        lc.neighbor_ao_dirty = false;
         countJobCopy(copy);
         // Optimistically clear the dirty flag so we don't re-enqueue the
         // same chunk on the next tick while the current job is in flight.

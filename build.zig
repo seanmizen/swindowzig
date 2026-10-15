@@ -302,6 +302,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(chunk_tests).step);
+    // World tests: generated chunks get block light across chunk borders.
+    const world_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/world.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    world_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    test_step.dependOn(&b.addRunArtifact(world_tests).step);
     // Async chunk tests: meshing through border copies matches full chunks.
     const async_tests = b.addTest(.{
         .root_module = b.createModule(.{

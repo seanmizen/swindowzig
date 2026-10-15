@@ -256,6 +256,91 @@ pub const PalettedBlocks = struct {
 /// A dense light grid, [x][y][z]: what the light passes compute into.
 pub const DenseLight = [CHUNK_W][CHUNK_H][CHUNK_W]u8;
 
+/// Pass 3 of `Chunk.computeSkylightWithNeighbors`: seed our edge cells from
+/// the neighbours (order -X, +X, -Z, +Z), then spread. The seeds have mixed
+/// levels, so the queue is not in level order. A cell can go in the queue
+/// again when its light increases, and a bit set keeps each cell in the
+/// queue at most once, so a ring of one entry per cell is enough.
+fn seedSkylightFromNeighbours(
+    sky: *DenseLight,
+    solid: *const [CHUNK_W][CHUNK_W][4]u64,
+    queue: *[CHUNK_W * CHUNK_H * CHUNK_W]u16,
+    nbs: [4]?*const Chunk,
+) void {
+    const N = CHUNK_W * CHUNK_H * CHUNK_W;
+    const Ring = struct {
+        queue: *[N]u16,
+        in_queue: [N / 64]u64 = @splat(0),
+        head: usize = 0,
+        count: usize = 0,
+
+        fn push(r: *@This(), x: usize, y: usize, z: usize) void {
+            const v: u16 = @intCast((x << 12) | (y << 4) | z);
+            const bit = @as(u64, 1) << @intCast(v & 63);
+            if (r.in_queue[v >> 6] & bit != 0) return;
+            r.in_queue[v >> 6] |= bit;
+            r.queue[(r.head + r.count) % N] = v;
+            r.count += 1;
+        }
+        fn pop(r: *@This()) u16 {
+            const v = r.queue[r.head];
+            r.head = (r.head + 1) % N;
+            r.count -= 1;
+            r.in_queue[v >> 6] &= ~(@as(u64, 1) << @intCast(v & 63));
+            return v;
+        }
+    };
+    const isSolid = struct {
+        fn f(cols: *const [CHUNK_W][CHUNK_W][4]u64, x: usize, y: usize, z: usize) bool {
+            return (cols[x][z][y >> 6] >> @intCast(y & 63)) & 1 != 0;
+        }
+    }.f;
+
+    var ring = Ring{ .queue = queue };
+    const W = CHUNK_W;
+    for (nbs, 0..) |maybe_nb, side| {
+        const nb = maybe_nb orelse continue;
+        for (0..CHUNK_H) |y| for (0..W) |i| {
+            // Our edge cell and the neighbour's cell across the border.
+            const ours: [2]usize, const theirs: [2]usize = switch (side) {
+                0 => .{ .{ 0, i }, .{ W - 1, i } },
+                1 => .{ .{ W - 1, i }, .{ 0, i } },
+                2 => .{ .{ i, 0 }, .{ i, W - 1 } },
+                else => .{ .{ i, W - 1 }, .{ i, 0 } },
+            };
+            if (isSolid(solid, ours[0], y, ours[1])) continue;
+            const nv = nb.skylight.get(theirs[0], y, theirs[1]);
+            if (nv < 2 or sky[ours[0]][y][ours[1]] >= nv - 1) continue;
+            sky[ours[0]][y][ours[1]] = nv - 1;
+            ring.push(ours[0], y, ours[1]);
+        };
+    }
+
+    while (ring.count > 0) {
+        const v = ring.pop();
+        const x: usize = v >> 12;
+        const y: usize = (v >> 4) & 0xFF;
+        const z: usize = v & 0xF;
+        const level = sky[x][y][z];
+        if (level < 2) continue;
+        const target = level - 1;
+        const dirs = [6][3]i32{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, -1, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } };
+        for (dirs) |d| {
+            const nx = @as(i32, @intCast(x)) + d[0];
+            const ny = @as(i32, @intCast(y)) + d[1];
+            const nz = @as(i32, @intCast(z)) + d[2];
+            if (nx < 0 or nx >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
+            const nxu: usize = @intCast(nx);
+            const nyu: usize = @intCast(ny);
+            const nzu: usize = @intCast(nz);
+            if (isSolid(solid, nxu, nyu, nzu)) continue;
+            if (sky[nxu][nyu][nzu] >= target) continue;
+            sky[nxu][nyu][nzu] = target;
+            ring.push(nxu, nyu, nzu);
+        }
+    }
+}
+
 /// Light values of a chunk, stored per 16-high section. A section where
 /// every cell has the same value (open sky above the terrain, or no block
 /// light) has no array, only that value. Most of a chunk is like that:
@@ -361,9 +446,9 @@ pub const Chunk = struct {
     /// Per-block skylight value, range [0, MAX_SKYLIGHT]. Computed by
     /// `computeSkylight()` after `generateTerrain()`. Solid blocks always
     /// store 0. Air blocks store the brightness of sunlight that reaches them
-    /// after BFS propagation through air. Phase 1: per-chunk only — light
-    /// does not cross chunk boundaries, so wide horizontal caves spanning
-    /// two chunks will show a brightness seam at the join.
+    /// after BFS propagation through air. `computeSkylight` lights the chunk
+    /// on its own. `computeSkylightWithNeighbors` (called from `World`) adds
+    /// the light that comes across the chunk borders.
     ///
     /// Stored per 16-high section (LightGrid): a section with one value,
     /// such as open sky, has no array.
@@ -506,9 +591,8 @@ pub const Chunk = struct {
 
     /// Read the block-light at (x, y, z) using local chunk coordinates.
     /// Out-of-bounds returns 0 (no "above world" bright-side asymmetry — block
-    /// light has no global seed like the sun). Phase-3 cross-chunk propagation
-    /// is out of scope; that means a glowstone placed near a chunk edge lights
-    /// only its own chunk.
+    /// light has no global seed like the sun). Light from a neighbour chunk
+    /// is in this grid after `computeBlockLightWithNeighbors`.
     pub fn getBlockLight(self: *const Chunk, x: i32, y: i32, z: i32) u8 {
         if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) return 0;
         return self.block_light.get(@intCast(x), @intCast(y), @intCast(z));
@@ -537,6 +621,22 @@ pub const Chunk = struct {
     /// Allocator-free by design so it can be called from `generateTerrain`
     /// without changing the existing call sites.
     pub fn computeSkylight(self: *Chunk) !void {
+        return self.computeSkylightWithNeighbors(null, null, null, null);
+    }
+
+    /// `computeSkylight`, then light from the four horizontal neighbour
+    /// chunks. An air cell on our edge gets (neighbour - 1) when the
+    /// neighbour's cell across the border has skylight 2 or more and the
+    /// seed is brighter. That light then spreads through our air. Without
+    /// this pass, skylight that enters a cave in one chunk stops at the
+    /// chunk border. Only the edge cells of each neighbour are read.
+    pub fn computeSkylightWithNeighbors(
+        self: *Chunk,
+        nx_neg: ?*const Chunk, // chunk at cx-1: their x=CHUNK_W-1 is our x=0 border
+        nx_pos: ?*const Chunk, // chunk at cx+1: their x=0 is our x=CHUNK_W-1 border
+        nz_neg: ?*const Chunk, // chunk at cz-1: their z=CHUNK_W-1 is our z=0 border
+        nz_pos: ?*const Chunk, // chunk at cz+1: their z=0 is our z=CHUNK_W-1 border
+    ) !void {
         var sky: DenseLight = undefined;
         // The same result as the bucket passes in computeSkylightReference
         // (a test checks it), from one breadth-first pass:
@@ -624,6 +724,7 @@ pub const Chunk = struct {
                 tail += 1;
             }
         }
+        seedSkylightFromNeighbours(&sky, &solid, &queue, .{ nx_neg, nx_pos, nz_neg, nz_pos });
         try self.skylight.store(self.allocator, &sky);
     }
 
@@ -724,10 +825,9 @@ pub const Chunk = struct {
     /// Allocator-free by design so it can be called from `generateTerrain`
     /// and `World.setBlock` without touching call sites.
     ///
-    /// Cross-chunk propagation is out of scope in phase 3. The BFS never
-    /// pushes light into a neighbouring chunk's array; a glowstone placed
-    /// right at a chunk edge will light only its own chunk. Phase 4 should
-    /// mirror the planned cross-chunk skylight fix.
+    /// This pass lights the chunk on its own. `World.relightSeams` and
+    /// `World.setBlock` then call `computeBlockLightWithNeighbors` so light
+    /// crosses the chunk borders.
     pub fn computeBlockLight(self: *Chunk) !void {
         var bl: DenseLight = undefined;
         // Pass 1 — seed emissive cells, zero everything else.

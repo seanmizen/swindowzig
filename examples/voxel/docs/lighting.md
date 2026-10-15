@@ -183,7 +183,8 @@ already places `skylight = 15` all the way to the bottom of the hole before
 the BFS even runs. Light only needs the BFS to bend horizontally through
 overhangs and tunnels.
 
-**Cross-chunk seams — explicitly out of scope for phase 1.** The BFS as
+**Cross-chunk seams — fixed later.** See "Cross-chunk seams (landed)"
+below. The original phase-1 note follows. The BFS as
 described looks at neighbours via `chunk.getBlock` which returns `.air` for
 out-of-bounds (good for bright outside), but we never *push light into* the
 neighbour chunk's array. Result: a horizontal cave that crosses a chunk
@@ -328,9 +329,8 @@ on flat walls). Multiplicative composition is the only correct option here.
   expected skylight fall-off as the camera looks into the shaft.
 
 **Phase 2 (next session, do not attempt now):**
-- Cross-chunk skylight seam fixing — re-BFS into adjacent chunks when a new
-  chunk loads, mirror of the existing `mesh_dirty` wiring. Digs right at a
-  chunk edge still won't push light into the neighbouring chunk.
+- Cross-chunk skylight seam fixing — landed. See "Cross-chunk seams
+  (landed)".
 - Heightmap-cached incremental relight — cache topmost solid Y per column
   and only re-BFS the affected neighbourhood on dig, instead of full
   chunk recompute. Needed once dig latency becomes user-visible.
@@ -373,14 +373,8 @@ on flat walls). Multiplicative composition is the only correct option here.
   molten-cluster look instead of the fine 16×16 noise used for stone
   and dirt. No per-block texture atlas is needed — the identity is
   encoded in the vertex color channel.
-- **Cross-chunk propagation is deliberately out of scope.** Block light
-  never crosses a chunk boundary. A glowstone placed right at a chunk
-  edge lights only its own chunk; the neighbour reads 0 via
-  `World.getBlockLight`. The seam is small in practice because block
-  light decays to 0 within 15 cells and the player rarely straddles a
-  chunk edge with an emitter, but the same cross-chunk fix planned for
-  phase 2 skylight will also solve this. **TODO(phase 4):** re-BFS into
-  adjacent chunks after `World.setBlock` mutates a cell near a seam.
+- **Cross-chunk propagation** — landed. See "Cross-chunk seams
+  (landed)".
 - Regression test: `examples/voxel/tests/glowstone_cave.tas` +
   `glowstone_cave.sh`. The TAS digs a small flatland pit, places either
   `--place-block=stone` (baseline) or `--place-block=glowstone`, and the
@@ -393,7 +387,6 @@ on flat walls). Multiplicative composition is the only correct option here.
   "far unchanged" check is the regression hook for cross-chunk leakage.
 
 **Phase 4 (future):**
-- Cross-chunk block-light seam fix (mirrors phase 2 skylight plan).
 - Torch / lava block types (extend `emissionLevel` switch).
 - Day/night cycle modulating the global skylight scalar.
 - Real sun shadow mapping for outdoor scenes.
@@ -430,3 +423,35 @@ Pixel diff should be small on the rim of the hole (those faces still have
 column scan never reached (`sky = 0.05`). A working implementation produces
 a roughly bowl-shaped brightness gradient from the hole rim down to the
 floor.
+
+## Cross-chunk seams (landed)
+
+Generation lights each chunk on its own. Without more work, skylight in a
+cave and light from a glowstone stop at the chunk border. The cells past
+the border stay dark, and only the first row of faces at the border,
+which sample cells of the lit chunk, looks lit.
+
+The fix, in `world.zig`:
+
+1. `Chunk.computeSkylightWithNeighbors` and
+   `Chunk.computeBlockLightWithNeighbors` seed the air cells on each edge
+   with (neighbour - 1) from the neighbour's cells across the border, then
+   spread that light.
+2. `World.generateChunk` calls `World.relightSeams`. It relights the new
+   chunk from its neighbours, then each neighbour from the new chunk. It
+   relights only the channels where an edge can make a cell across the
+   border brighter (`canSeed`), so most new chunks cost nothing extra.
+3. `World.spreadLight` follows changes: when the edge light of a relit
+   chunk changes, the chunk on that side is relit too. `World.setBlock`
+   uses the same path, so a dig or a placement updates the light on both
+   sides of a border.
+4. The async path installs a worker result, then calls `relightSeams`. A
+   chunk that got new light, or that was meshed with a neighbour missing,
+   stays `mesh_dirty` and gets a new mesh.
+
+Cost: about 0.5 ms more per generated chunk on hilly terrain (ReleaseFast,
+WSL), against about 2.4 ms for generation. Tests: `world.zig` checks that
+every generated chunk has the light of a neighbour-seeded recompute, and
+that a shaft dug into a cave at (14, 60, 15) lights the cave across both
+borders.
+

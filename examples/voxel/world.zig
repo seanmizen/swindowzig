@@ -333,7 +333,90 @@ pub const World = struct {
                 nlc.neighbor_ao_dirty = true;
             }
         }
+        _ = try self.relightSeams(cx, cz);
         return true;
+    }
+
+    /// Recompute the light channels `ch` of `lc`, seeded from the edges of
+    /// its live face neighbours.
+    fn relightChunk(self: *const World, lc: *LoadedChunk, ch: Channels) !void {
+        const xn = self.chunkAt(lc.cx - 1, lc.cz);
+        const xp = self.chunkAt(lc.cx + 1, lc.cz);
+        const zn = self.chunkAt(lc.cx, lc.cz - 1);
+        const zp = self.chunkAt(lc.cx, lc.cz + 1);
+        if (ch.sky) try lc.chunk.computeSkylightWithNeighbors(xn, xp, zn, zp);
+        if (ch.block) try lc.chunk.computeBlockLightWithNeighbors(xn, xp, zn, zp);
+    }
+
+    /// Exchange light across the borders of the new chunk at (cx, cz).
+    /// Generation lights a chunk on its own, so without this step skylight
+    /// in a cave and light from a glowstone stop at the chunk border. The
+    /// new chunk is seeded from its neighbours, then `spreadLight` carries
+    /// its edge light outward. The relight runs only where an edge can make
+    /// a cell across the border brighter (see `canSeed`).
+    ///
+    /// Returns true when the new chunk got new light, which means a mesh
+    /// built from the old light is out of date. Marks each relit neighbour
+    /// `mesh_dirty`.
+    pub fn relightSeams(self: *World, cx: i32, cz: i32) !bool {
+        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return false;
+        var own: Channels = .{};
+        for (std.enums.values(Edge)) |side| {
+            const n = self.neighbour(lc, side) orelse continue;
+            own = own.merge(canSeed(&n.chunk, &lc.chunk, side));
+        }
+        if (own.any()) try self.relightChunk(lc, own);
+
+        var queue: RelightQueue = .empty;
+        defer queue.deinit(self.allocator);
+        for (std.enums.values(Edge)) |side| {
+            const n = self.neighbour(lc, side) orelse continue;
+            try queueRelight(&queue, self.allocator, n, canSeed(&lc.chunk, &n.chunk, side.opposite()));
+        }
+        const again = try self.spreadLight(&queue, lc);
+        return own.any() or again;
+    }
+
+    /// Relight each chunk in `queue` (only the listed channels) from its
+    /// live face neighbours, and mark it `mesh_dirty`. When the light of a
+    /// channel changes on an edge of a relit chunk, the chunk on that side
+    /// goes in the queue for that channel. The light values move towards a
+    /// fixed point, so the queue empties. Returns true when `watch` was
+    /// relit again.
+    fn spreadLight(self: *World, queue: *RelightQueue, watch: ?*LoadedChunk) !bool {
+        var watch_relit = false;
+        var before: EdgeLight = undefined;
+        var after: EdgeLight = undefined;
+        var i: usize = 0;
+        while (i < queue.items.len) : (i += 1) {
+            const item = queue.items[i];
+            const lc = item.lc;
+            readEdges(&lc.chunk, &before);
+            try self.relightChunk(lc, item.ch);
+            lc.mesh_dirty = true;
+            if (lc == watch) watch_relit = true;
+            readEdges(&lc.chunk, &after);
+            for (std.enums.values(Edge)) |side| {
+                const k = @backingInt(side);
+                const changed: Channels = .{
+                    .sky = !std.mem.eql(u8, &before.sky[k], &after.sky[k]),
+                    .block = !std.mem.eql(u8, &before.block[k], &after.block[k]),
+                };
+                const n = self.neighbour(lc, side) orelse continue;
+                try queueRelightAfter(queue, self.allocator, i, n, changed);
+            }
+        }
+        return watch_relit;
+    }
+
+    /// The live chunk next to `lc` on `side`, or null.
+    fn neighbour(self: *const World, lc: *const LoadedChunk, side: Edge) ?*LoadedChunk {
+        return switch (side) {
+            .x_neg => self.chunks.get(.{ .cx = lc.cx - 1, .cz = lc.cz }),
+            .x_pos => self.chunks.get(.{ .cx = lc.cx + 1, .cz = lc.cz }),
+            .z_neg => self.chunks.get(.{ .cx = lc.cx, .cz = lc.cz - 1 }),
+            .z_pos => self.chunks.get(.{ .cx = lc.cx, .cz = lc.cz + 1 }),
+        };
     }
 
     /// True iff `lc` has all eight horizontal neighbours generated (or better).
@@ -396,6 +479,12 @@ pub const World = struct {
         }
     }
 
+    /// The chunk data at chunk coords (cx, cz), or null when it is not loaded.
+    pub fn chunkAt(self: *const World, cx: i32, cz: i32) ?*const Chunk {
+        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return null;
+        return &lc.chunk;
+    }
+
     /// Get a block at world-space coordinates. Returns .air for unloaded chunks.
     pub fn getBlock(self: *const World, wx: i32, wy: i32, wz: i32) chunk_mod.BlockType {
         const cx = chunkCoordOf(wx);
@@ -423,13 +512,11 @@ pub const World = struct {
     /// wrong, and click-to-dig is already bottlenecked by the macOS trackpad
     /// latency (80–120 ms) so the extra cost is invisible in practice.
     ///
-    /// Cross-chunk skylight propagation is still out of scope (phase-1
-    /// limitation): the owning chunk's skylight grid is fully recomputed but
-    /// the BFS stops at chunk boundaries, so a dig that opens a sky channel
-    /// across a seam will leave the neighbouring chunk with stale light
-    /// values. The mesher falls back to the neighbour's own grid via
-    /// `BlockGetter.getSkylight`, which gives a near-correct result in most
-    /// cases. A future cross-chunk BFS phase would fix the rare divergence.
+    /// Cross-chunk light: the owning chunk and its four neighbours are
+    /// relit from each other's edges (skylight and block light). When the
+    /// edge light of a relit chunk changes, `spreadLight` relights the
+    /// chunk on that side too. A dig that opens a sky channel into a cave
+    /// that crosses a border lights the cave on both sides.
     ///
     /// Neighbouring mesh dirty-marking: any chunk whose mesh may sample the
     /// modified block (face culling, AO, skylight) is marked `mesh_dirty`.
@@ -445,62 +532,32 @@ pub const World = struct {
         // past a power-of-two boundary. Propagate the error instead of
         // swallowing it; OOM here is the caller's problem, not ours.
         try lc_ptr.*.chunk.setBlock(lx, wy, lz, block);
-        try lc_ptr.*.chunk.computeSkylight();
 
-        // Gather live horizontal neighbours (null if unloaded) for cross-chunk
-        // block-light seeding. We fetch them once here to avoid repeated HashMap
-        // lookups below.
+        // Gather live horizontal neighbours (null if unloaded). They are
+        // used for the relight and the mesh dirtying below.
         const nb_xn = self.chunks.get(.{ .cx = cx - 1, .cz = cz });
         const nb_xp = self.chunks.get(.{ .cx = cx + 1, .cz = cz });
         const nb_zn = self.chunks.get(.{ .cx = cx, .cz = cz - 1 });
         const nb_zp = self.chunks.get(.{ .cx = cx, .cz = cz + 1 });
 
-        // Recompute block-light for the owning chunk, seeding from neighbour
-        // edges so a glowstone placed near a chunk border illuminates air cells
-        // in the adjacent chunk properly.
-        try lc_ptr.*.chunk.computeBlockLightWithNeighbors(
-            if (nb_xn) |lc| &lc.chunk else null,
-            if (nb_xp) |lc| &lc.chunk else null,
-            if (nb_zn) |lc| &lc.chunk else null,
-            if (nb_zp) |lc| &lc.chunk else null,
-        );
+        // Recompute skylight and block-light for the owning chunk, seeding
+        // from neighbour edges so light from a neighbour (a glowstone near
+        // the border, or sky through a cave) crosses into this chunk.
+        try self.relightChunk(lc_ptr.*, .{ .sky = true, .block = true });
         lc_ptr.*.mesh_dirty = true;
 
-        // Re-run block-light for each live horizontal neighbour, seeding from
+        // Re-run the light for each live horizontal neighbour, seeding from
         // this chunk's newly-updated edges. This propagates light across the
         // boundary in both directions: a glowstone placed at our x=0 will push
         // level-14 light into the cx-1 chunk; a glowstone in cx-1 near x=CHUNK_W-1
-        // will push into our chunk (handled above). Each neighbour is only one
-        // hop away so no further cascading is needed.
-        const own_chunk_ptr: *const chunk_mod.Chunk = &lc_ptr.*.chunk;
-        if (nb_xn) |nlc| {
-            const far_xn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 2, .cz = cz })) |lc2| &lc2.chunk else null;
-            const diag_zn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
-            const diag_zp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
-            try nlc.chunk.computeBlockLightWithNeighbors(far_xn, own_chunk_ptr, diag_zn, diag_zp);
-            nlc.mesh_dirty = true;
+        // will push into our chunk (handled above). `spreadLight`
+        // continues to chunks further away while edge light changes.
+        var queue: RelightQueue = .empty;
+        defer queue.deinit(self.allocator);
+        for ([_]?*LoadedChunk{ nb_xn, nb_xp, nb_zn, nb_zp }) |nb| {
+            if (nb) |nlc| try queueRelight(&queue, self.allocator, nlc, .{ .sky = true, .block = true });
         }
-        if (nb_xp) |nlc| {
-            const far_xp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 2, .cz = cz })) |lc2| &lc2.chunk else null;
-            const diag_zn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
-            const diag_zp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
-            try nlc.chunk.computeBlockLightWithNeighbors(own_chunk_ptr, far_xp, diag_zn, diag_zp);
-            nlc.mesh_dirty = true;
-        }
-        if (nb_zn) |nlc| {
-            const diag_xn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
-            const diag_xp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz - 1 })) |lc2| &lc2.chunk else null;
-            const far_zn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx, .cz = cz - 2 })) |lc2| &lc2.chunk else null;
-            try nlc.chunk.computeBlockLightWithNeighbors(diag_xn, diag_xp, far_zn, own_chunk_ptr);
-            nlc.mesh_dirty = true;
-        }
-        if (nb_zp) |nlc| {
-            const diag_xn: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx - 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
-            const diag_xp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx + 1, .cz = cz + 1 })) |lc2| &lc2.chunk else null;
-            const far_zp: ?*const chunk_mod.Chunk = if (self.chunks.get(.{ .cx = cx, .cz = cz + 2 })) |lc2| &lc2.chunk else null;
-            try nlc.chunk.computeBlockLightWithNeighbors(diag_xn, diag_xp, own_chunk_ptr, far_zp);
-            nlc.mesh_dirty = true;
-        }
+        _ = try self.spreadLight(&queue, null);
 
         // Dirty neighbouring chunks whose meshes may reference the modified
         // block. AO (Moore/propagated mode) samples up to 3 cells from a face;
@@ -606,6 +663,109 @@ pub const World = struct {
     }
 };
 
+/// One of the four vertical edge planes of a chunk.
+const Edge = enum {
+    x_neg,
+    x_pos,
+    z_neg,
+    z_pos,
+
+    fn opposite(self: Edge) Edge {
+        return switch (self) {
+            .x_neg => .x_pos,
+            .x_pos => .x_neg,
+            .z_neg => .z_pos,
+            .z_pos => .z_neg,
+        };
+    }
+};
+
+/// The light channels that a relight recomputes.
+const Channels = struct {
+    sky: bool = false,
+    block: bool = false,
+
+    fn any(self: Channels) bool {
+        return self.sky or self.block;
+    }
+    fn merge(a: Channels, b: Channels) Channels {
+        return .{ .sky = a.sky or b.sky, .block = a.block or b.block };
+    }
+};
+
+/// Chunks that need a relight, and of which channels.
+const RelightQueue = std.ArrayList(struct { lc: *LoadedChunk, ch: Channels });
+
+/// Add `lc` to `queue` for the channels `ch`. A chunk that is in the queue
+/// already gets the channels added to its entry.
+fn queueRelight(queue: *RelightQueue, a: std.mem.Allocator, lc: *LoadedChunk, ch: Channels) !void {
+    return queueRelightAfter(queue, a, null, lc, ch);
+}
+
+/// `queueRelight`, but entries at or before index `done` are done already,
+/// so a chunk found only there goes in again.
+fn queueRelightAfter(queue: *RelightQueue, a: std.mem.Allocator, done: ?usize, lc: *LoadedChunk, ch: Channels) !void {
+    if (!ch.any()) return;
+    const start = if (done) |d| d + 1 else 0;
+    for (queue.items[start..]) |*item| {
+        if (item.lc == lc) {
+            item.ch = item.ch.merge(ch);
+            return;
+        }
+    }
+    try queue.append(a, .{ .lc = lc, .ch = ch });
+}
+
+/// The light of the four edge planes of a chunk, indexed by `Edge`.
+const EdgeLight = struct {
+    sky: [4][chunk_mod.CHUNK_H * chunk_mod.CHUNK_W]u8,
+    block: [4][chunk_mod.CHUNK_H * chunk_mod.CHUNK_W]u8,
+};
+
+fn readEdges(ch: *const Chunk, out: *EdgeLight) void {
+    const W = chunk_mod.CHUNK_W;
+    for (0..chunk_mod.CHUNK_H) |y| for (0..W) |i| {
+        const k = y * W + i;
+        for (std.enums.values(Edge)) |side| {
+            const x: usize, const z: usize = edgeCell(side, i);
+            out.sky[@backingInt(side)][k] = ch.skylight.get(x, y, z);
+            out.block[@backingInt(side)][k] = ch.block_light.get(x, y, z);
+        }
+    };
+}
+
+/// Local (x, z) of cell `i` along the `side` edge plane of a chunk.
+fn edgeCell(side: Edge, i: usize) struct { usize, usize } {
+    const W = chunk_mod.CHUNK_W;
+    return switch (side) {
+        .x_neg => .{ 0, i },
+        .x_pos => .{ W - 1, i },
+        .z_neg => .{ i, 0 },
+        .z_pos => .{ i, W - 1 },
+    };
+}
+
+/// The light channels in which the edge of `src` can make a cell of `dst`
+/// brighter. `side` is the edge of `dst` that touches `src`. The rule is
+/// the seed rule of `computeSkylightWithNeighbors` and
+/// `computeBlockLightWithNeighbors`: an air cell gets (source - 1) when the
+/// source is 2 or more and the result is brighter.
+fn canSeed(src: *const Chunk, dst: *const Chunk, side: Edge) Channels {
+    var out: Channels = .{};
+    for (0..chunk_mod.CHUNK_H) |y| for (0..chunk_mod.CHUNK_W) |i| {
+        const dx: usize, const dz: usize = edgeCell(side, i);
+        const sx: usize, const sz: usize = edgeCell(side.opposite(), i);
+        const s_sky = src.skylight.get(sx, y, sz);
+        const s_block = src.block_light.get(sx, y, sz);
+        if (s_sky < 2 and s_block < 2) continue;
+        if (dst.resolveBlockRaw(@intCast(dx), @intCast(y), @intCast(dz)) != .air) continue;
+        if (s_sky >= 2 and dst.skylight.get(dx, y, dz) < s_sky - 1) out.sky = true;
+        if (s_block >= 2 and dst.block_light.get(dx, y, dz) < s_block - 1) out.block = true;
+        if (out.sky and out.block) return out;
+    };
+    return out;
+}
+
 fn buildSpiralOffsets(allocator: std.mem.Allocator, r: i32) ![]ChunkOffset {
     var offsets: std.ArrayList(ChunkOffset) = .empty;
     defer offsets.deinit(allocator);
@@ -627,4 +787,85 @@ fn buildSpiralOffsets(allocator: std.mem.Allocator, r: i32) ![]ChunkOffset {
     }.lt);
 
     return offsets.toOwnedSlice(allocator);
+}
+
+/// Cells of `lc` whose skylight or block light differs from a recompute
+/// seeded by its live face neighbours (what `World.setBlock` gives the
+/// chunk). `own` gets a fresh copy of the chunk, lit on its own.
+fn countSeamLightErrors(world: *World, lc: *const LoadedChunk, own: *Chunk) !usize {
+    try own.generateTerrain(lc.cx, lc.cz, world.gen_config);
+    var want = Chunk.init(world.allocator);
+    defer want.deinit();
+    try want.generateTerrain(lc.cx, lc.cz, world.gen_config);
+    const xn = world.chunkAt(lc.cx - 1, lc.cz);
+    const xp = world.chunkAt(lc.cx + 1, lc.cz);
+    const zn = world.chunkAt(lc.cx, lc.cz - 1);
+    const zp = world.chunkAt(lc.cx, lc.cz + 1);
+    try want.computeSkylightWithNeighbors(xn, xp, zn, zp);
+    try want.computeBlockLightWithNeighbors(xn, xp, zn, zp);
+    var errors: usize = 0;
+    for (0..chunk_mod.CHUNK_W) |x| for (0..chunk_mod.CHUNK_H) |y| for (0..chunk_mod.CHUNK_W) |z| {
+        if (lc.chunk.skylight.get(x, y, z) != want.skylight.get(x, y, z)) errors += 1;
+        if (lc.chunk.block_light.get(x, y, z) != want.block_light.get(x, y, z)) errors += 1;
+    };
+    return errors;
+}
+
+test "generated chunks get light from their neighbours" {
+    var world = try World.init(std.testing.allocator, .hilly, 4);
+    defer world.deinit();
+    // Generate in spiral order, as World.update does.
+    const R: i32 = 6;
+    const offsets = try buildSpiralOffsets(std.testing.allocator, R);
+    defer std.testing.allocator.free(offsets);
+    for (offsets) |off| _ = try world.generateChunk(off.dx, off.dz);
+
+    // Check every chunk that has all four face neighbours. At least one
+    // chunk must get light from a neighbour, or the test checks nothing.
+    var seeded: usize = 0;
+    var errors: usize = 0;
+    var it = world.chunks.valueIterator();
+    while (it.next()) |lc_ptr| {
+        const lc = lc_ptr.*;
+        if (world.chunkAt(lc.cx - 1, lc.cz) == null or world.chunkAt(lc.cx + 1, lc.cz) == null or
+            world.chunkAt(lc.cx, lc.cz - 1) == null or world.chunkAt(lc.cx, lc.cz + 1) == null) continue;
+        var own = Chunk.init(world.allocator);
+        defer own.deinit();
+        errors += try countSeamLightErrors(&world, lc, &own);
+        diff: for (0..chunk_mod.CHUNK_W) |x| for (0..chunk_mod.CHUNK_H) |y| for (0..chunk_mod.CHUNK_W) |z| {
+            if (own.skylight.get(x, y, z) != lc.chunk.skylight.get(x, y, z) or
+                own.block_light.get(x, y, z) != lc.chunk.block_light.get(x, y, z))
+            {
+                seeded += 1;
+                break :diff;
+            }
+        };
+    }
+    try std.testing.expectEqual(@as(usize, 0), errors);
+    try std.testing.expect(seeded > 0);
+}
+
+test "a shaft dug into a cave lights the cave across the chunk border" {
+    // Sean's repro: at (14, 15) on the hilly world, a shaft from the
+    // surface down to y=60 opens into a cave at y <= 66. x=15 and z=15 are
+    // the last cells before the borders with chunks (1,0) and (0,1).
+    var world = try World.init(std.testing.allocator, .hilly, 4);
+    defer world.deinit();
+    const offsets = try buildSpiralOffsets(std.testing.allocator, 3);
+    defer std.testing.allocator.free(offsets);
+    for (offsets) |off| _ = try world.generateChunk(off.dx, off.dz);
+    var y: i32 = chunk_mod.CHUNK_H - 1;
+    while (y > 60 and world.getBlock(14, y, 15) == .air) y -= 1;
+    while (y >= 60) : (y -= 1) _ = try world.setBlock(14, y, 15, .air);
+
+    // The shaft is open to the sky, and the cave next to it gets 14.
+    try std.testing.expectEqual(@as(u8, 15), world.getSkylight(14, 60, 15));
+    try std.testing.expectEqual(.air, world.getBlock(15, 62, 15));
+    try std.testing.expectEqual(@as(u8, 14), world.getSkylight(15, 62, 15));
+    // Across the borders the cave gets light, not 0. (16, 62, 15) is two
+    // steps from the shaft. (14, 62, 16) is next to the shaft.
+    try std.testing.expectEqual(.air, world.getBlock(16, 62, 15));
+    try std.testing.expectEqual(@as(u8, 13), world.getSkylight(16, 62, 15));
+    try std.testing.expectEqual(.air, world.getBlock(14, 62, 16));
+    try std.testing.expectEqual(@as(u8, 14), world.getSkylight(14, 62, 16));
 }
