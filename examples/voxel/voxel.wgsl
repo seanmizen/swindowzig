@@ -267,14 +267,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Hover outline: detect if this fragment is on the hovered block's face edge
     if (uniforms.hover_active > 0.5) {
-        // Recover block coordinate from world position and face normal.
-        // For a face with outward normal n, the block is at floor(world_pos - max(0, n)).
-        let block_coord = floor(in.world_pos - max(vec3f(0.0), in.normal));
-        let is_hovered = all(block_coord == uniforms.hover_block);
+        // Position relative to the hovered block, which fills [0, 1]^3.
+        // Do not floor world_pos to find the block. On a face, world_pos is
+        // an integer on the normal axis at each vertex, but interpolation
+        // gives a value a small amount above or below it. A floor then
+        // gives the wrong block for some pixels, and the outline gets gaps.
+        // The error depends on the GPU backend. Windows browsers and
+        // lavapipe show the gaps, and macOS did not. A range test with a
+        // tolerance does not change with the error.
+        let local = in.world_pos - uniforms.hover_block;
+        let eps = 1e-3;
+        let is_hovered = all(local > vec3f(-eps)) && all(local < vec3f(1.0 + eps));
 
         if (is_hovered) {
-            // Edge detection: check fractional position on the two axes perpendicular to normal.
-            let f = fract(in.world_pos);
+            // Edge detection: check the position on the two axes perpendicular to normal.
+            let f = clamp(local, vec3f(0.0), vec3f(1.0));
             let n_abs = abs(in.normal);
             let t = 0.07; // Edge thickness (fraction of block face)
 
