@@ -23,9 +23,17 @@ const ESCAPE_DEDUP_MS = 250;
 let gameReleasedLock = false;
 let lastEscapeMs = Number.NEGATIVE_INFINITY;
 
-/** Call before the game exits the pointer lock itself (jsSetPointerLock(0)). */
-export function noteGameReleasedLock() {
-  gameReleasedLock = true;
+/**
+ * The env.jsSetPointerLock import. Every loader must use this function, so
+ * that an exit that the game requests sends no synthetic Escape.
+ */
+export function setPointerLock(canvas: HTMLCanvasElement, lock: boolean) {
+  if (lock) {
+    canvas.requestPointerLock();
+  } else if (document.pointerLockElement === canvas) {
+    gameReleasedLock = true;
+    document.exitPointerLock();
+  }
 }
 
 // Text input (IME) strategy:

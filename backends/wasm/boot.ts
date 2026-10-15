@@ -4,7 +4,7 @@ import { createAssetImports } from './assets';
 import { audioImports } from './audio';
 import {
   attachEventListeners,
-  noteGameReleasedLock,
+  setPointerLock,
   setTextInputActive,
   type WasmExports,
 } from './events';
@@ -92,20 +92,11 @@ async function main() {
           (window as never as { wasmMemory: WebAssembly.Memory }).wasmMemory,
       ),
       jsSetPointerLock: (lock: number) => {
-        if (lock) {
-          canvas.requestPointerLock();
-          // Optimistically hide until pointerlockchange confirms.
-          setCursorVisible(false);
-        } else {
-          if (document.pointerLockElement === canvas) {
-            // The game asked for this exit, so it needs no synthetic Escape.
-            noteGameReleasedLock();
-            document.exitPointerLock();
-          }
-          // Show immediately — don't wait for pointerlockchange which can lag
-          // by one or two frames in some browsers.
-          setCursorVisible(true);
-        }
+        setPointerLock(canvas, lock !== 0);
+        // Hide at once on lock, before pointerlockchange confirms it. Show at
+        // once on unlock: pointerlockchange can lag by one or two frames in
+        // some browsers.
+        setCursorVisible(lock === 0);
       },
       jsSetTextInput: (active: number) => {
         setTextInputActive(active !== 0);
