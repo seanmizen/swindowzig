@@ -274,6 +274,49 @@ pub fn build(b: *std.Build) void {
     const bench_mesher_step = b.step("bench-mesher", "Time the voxel mesher on a fixed world (no GPU)");
     bench_mesher_step.dependOn(&b.addRunArtifact(bench_mesher).step);
 
+    // Terrain hash (no GPU): the block hash of a 9×9 hilly area for a seed,
+    // from a native build and from a wasm build. CI runs both and compares
+    // the output. zig build terrain-hash -Doptimize=ReleaseFast
+    const terrain_hash_native = b.addExecutable(.{
+        .name = "terrain_hash",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/terrain_hash.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    terrain_hash_native.root_module.addImport("sw_gpu", web_libs.gpu);
+    const terrain_hash_wasm = b.addExecutable(.{
+        .name = "terrain_hash",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/terrain_hash_wasm.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    terrain_hash_wasm.root_module.addImport("sw_gpu", web_libs.gpu);
+    terrain_hash_wasm.entry = .disabled;
+    terrain_hash_wasm.rdynamic = true;
+    // A Chunk value is about 128 KB on the stack. See the app stack above.
+    terrain_hash_wasm.stack_size = 16 * 1024 * 1024;
+    const terrain_hash_step = b.step("terrain-hash", "Build the terrain hash tool: zig-out/bin/terrain_hash and terrain_hash.wasm");
+    terrain_hash_step.dependOn(&b.addInstallArtifact(terrain_hash_native, .{}).step);
+    terrain_hash_step.dependOn(&b.addInstallArtifact(terrain_hash_wasm, .{}).step);
+
+    // Terrain hash tests: seed 0 keeps its block hash, seed 1 changes it.
+    const terrain_hash_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/terrain_hash.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        // Only the tests of terrain_hash.zig. The steps above already run
+        // the tests of the files that it imports.
+        .filters = &.{"block hash"},
+    });
+    terrain_hash_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    test_step.dependOn(&b.addRunArtifact(terrain_hash_tests).step);
+
     // Chunk stage benchmark (no GPU), native and wasm. See stage_bench.zig.
     //   zig build bench-stages -Doptimize=ReleaseFast
     //   zig build bench-stages-wasm -Doptimize=ReleaseFast

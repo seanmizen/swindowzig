@@ -823,6 +823,9 @@ const State = struct {
     world_loading: bool = true,
     /// Selected world generation preset. Parsed from --world=<flatland|hilly>.
     world_preset: world_gen.Preset = .hilly,
+    /// World seed. Parsed from --seed=<u64> on native. The web build stays at
+    /// seed 0. Seed 0 gives the terrain from before the seed existed.
+    world_seed: u64 = 0,
     /// Frustum-cull strategy parsed from --frustum=<none|sphere|cone>.
     /// Default is `.none` so the feature is opt-in — see frustum.zig header
     /// for the rationale and the cone-vs-sphere math notes.
@@ -1092,6 +1095,13 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             };
         }
+        if (std.mem.startsWith(u8, arg, "--seed=")) {
+            const val = std.mem.sliceTo(arg["--seed=".len..], 0);
+            state.world_seed = std.fmt.parseInt(u64, val, 10) catch {
+                std.log.err("--seed: cannot parse '{s}' as u64", .{val});
+                fatalExit(1);
+            };
+        }
         if (std.mem.startsWith(u8, arg, "--world=")) {
             const val = std.mem.sliceTo(arg["--world=".len..], 0);
             if (std.mem.eql(u8, val, "flatland")) {
@@ -1312,6 +1322,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
     std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
+    std.log.info("World seed: {d}", .{state.world_seed});
     if (state.frustum_fov_auto) {
         std.log.info("Frustum cull: strategy={s} fov=auto (screen diagonal)", .{state.frustum_strategy.label()});
     } else {
@@ -1324,6 +1335,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // distance (deferred until here so --world= / --render-distance= work
     // regardless of flag order).
     state.world = try world_mod.World.init(ctx.allocator(), state.world_preset, state.render_distance);
+    state.world.gen_config.seed = state.world_seed;
 
     // Open the profile CSV if requested. Writing the header here means every
     // subsequent row can be appended without a seek. Failures log a warning

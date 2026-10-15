@@ -35,6 +35,15 @@ pub const WorldGenConfig = struct {
     noise_persistence: f32,
     /// Frequency multiplier per octave (>1 — finer detail).
     noise_lacunarity: f32,
+    /// World seed. Each random source of generation mixes it in: the height
+    /// and biome noise, the cave noise, the trees and the glowstone. Seed 0
+    /// gives the terrain from before the seed existed (decision D3).
+    seed: u64 = 0,
+
+    /// The mixed form of `seed` that the hash functions use.
+    pub fn seedKey(self: WorldGenConfig) SeedKey {
+        return SeedKey.init(self.seed);
+    }
 };
 
 /// Return the default WorldGenConfig for a preset.
@@ -76,16 +85,44 @@ fn hashU32(x: u32) u32 {
     return h;
 }
 
+/// The world seed in the form that the hash functions use. `init` mixes the
+/// 64 seed bits (the murmur3 fmix64 finalizer). fmix64 is a bijection and
+/// maps 0 to 0, so two different seeds give two different keys, and seed 0
+/// gives the zero key.
+pub const SeedKey = struct {
+    lo: u32,
+    hi: u32,
+
+    pub fn init(seed: u64) SeedKey {
+        var k = seed;
+        k ^= k >> 33;
+        k *%= 0xff51afd7ed558ccd;
+        k ^= k >> 33;
+        k *%= 0xc4ceb9fe1a85ec53;
+        k ^= k >> 33;
+        return .{ .lo = @truncate(k), .hi = @truncate(k >> 32) };
+    }
+};
+
+/// Mix the seed key into a finished 32-bit hash. The zero key (seed 0)
+/// returns `h` unchanged, so seed 0 keeps the terrain from before the seed
+/// existed. Another key sends `h` through two more hash rounds, one for each
+/// half of the key.
+pub fn mixSeed(h: u32, key: SeedKey) u32 {
+    if (key.lo == 0 and key.hi == 0) return h;
+    return hashU32(hashU32(h ^ key.lo) ^ key.hi);
+}
+
 /// Hash a 2D integer grid point to a pseudo-random float in [0, 1].
-fn hash2D(ix: i32, iz: i32) f32 {
+fn hash2D(ix: i32, iz: i32, key: SeedKey) f32 {
     const ux: u32 = @bitCast(ix);
     const uz: u32 = @bitCast(iz);
-    const h = hashU32(ux ^ hashU32(uz ^ 0xdeadbeef));
+    const h = mixSeed(hashU32(ux ^ hashU32(uz ^ 0xdeadbeef)), key);
     return @as(f32, @floatFromInt(h)) / @as(f32, @floatFromInt(std.math.maxInt(u32)));
 }
 
 /// Bilinear value noise in [0, 1]. Smoothstep interpolation between grid corners.
-fn valueNoise2D(x: f32, z: f32) f32 {
+fn valueNoise2D(x: f32, z: f32, key: SeedKey) f32 {
     const ix: i32 = @intFromFloat(@floor(x));
     const iz: i32 = @intFromFloat(@floor(z));
     const fx = x - @as(f32, @floatFromInt(ix));
@@ -95,10 +132,10 @@ fn valueNoise2D(x: f32, z: f32) f32 {
     const ux = fx * fx * (3.0 - 2.0 * fx);
     const uz = fz * fz * (3.0 - 2.0 * fz);
 
-    const v00 = hash2D(ix, iz);
-    const v10 = hash2D(ix + 1, iz);
-    const v01 = hash2D(ix, iz + 1);
-    const v11 = hash2D(ix + 1, iz + 1);
+    const v00 = hash2D(ix, iz, key);
+    const v10 = hash2D(ix + 1, iz, key);
+    const v01 = hash2D(ix, iz + 1, key);
+    const v11 = hash2D(ix + 1, iz + 1, key);
 
     return std.math.lerp(
         std.math.lerp(v00, v10, ux),
@@ -108,16 +145,16 @@ fn valueNoise2D(x: f32, z: f32) f32 {
 }
 
 /// Hash a 3D integer grid point to a pseudo-random float in [0, 1].
-fn hash3D(ix: i32, iy: i32, iz: i32) f32 {
+fn hash3D(ix: i32, iy: i32, iz: i32, key: SeedKey) f32 {
     const ux: u32 = @bitCast(ix);
     const uy: u32 = @bitCast(iy);
     const uz: u32 = @bitCast(iz);
-    const h = hashU32(ux ^ hashU32(uy ^ hashU32(uz ^ 0xdeadbeef)));
+    const h = mixSeed(hashU32(ux ^ hashU32(uy ^ hashU32(uz ^ 0xdeadbeef))), key);
     return @as(f32, @floatFromInt(h)) / @as(f32, @floatFromInt(std.math.maxInt(u32)));
 }
 
 /// Trilinear value noise in [0, 1]. Smoothstep interpolation between 8 grid corners.
-fn valueNoise3D(x: f32, y: f32, z: f32) f32 {
+fn valueNoise3D(x: f32, y: f32, z: f32, key: SeedKey) f32 {
     const ix: i32 = @intFromFloat(@floor(x));
     const iy: i32 = @intFromFloat(@floor(y));
     const iz: i32 = @intFromFloat(@floor(z));
@@ -130,14 +167,14 @@ fn valueNoise3D(x: f32, y: f32, z: f32) f32 {
     const uy = fy * fy * (3.0 - 2.0 * fy);
     const uz = fz * fz * (3.0 - 2.0 * fz);
 
-    const v000 = hash3D(ix, iy, iz);
-    const v100 = hash3D(ix + 1, iy, iz);
-    const v010 = hash3D(ix, iy + 1, iz);
-    const v110 = hash3D(ix + 1, iy + 1, iz);
-    const v001 = hash3D(ix, iy, iz + 1);
-    const v101 = hash3D(ix + 1, iy, iz + 1);
-    const v011 = hash3D(ix, iy + 1, iz + 1);
-    const v111 = hash3D(ix + 1, iy + 1, iz + 1);
+    const v000 = hash3D(ix, iy, iz, key);
+    const v100 = hash3D(ix + 1, iy, iz, key);
+    const v010 = hash3D(ix, iy + 1, iz, key);
+    const v110 = hash3D(ix + 1, iy + 1, iz, key);
+    const v001 = hash3D(ix, iy, iz + 1, key);
+    const v101 = hash3D(ix + 1, iy, iz + 1, key);
+    const v011 = hash3D(ix, iy + 1, iz + 1, key);
+    const v111 = hash3D(ix + 1, iy + 1, iz + 1, key);
 
     const x00 = std.math.lerp(v000, v100, ux);
     const x10 = std.math.lerp(v010, v110, ux);
@@ -161,15 +198,15 @@ fn valueNoise3D(x: f32, y: f32, z: f32) f32 {
 /// Coverage: approximately 2–3% of underground volume, producing a network of
 /// connected passages with occasional wider caverns where the two fields overlap.
 /// The Y axis is stretched by 0.6 to make passages taller than wide.
-pub fn shouldCarve(wx: i32, wy: i32, wz: i32) bool {
+pub fn shouldCarve(wx: i32, wy: i32, wz: i32, key: SeedKey) bool {
     const fwx = @as(f32, @floatFromInt(wx));
     const fwy = @as(f32, @floatFromInt(wy));
     const fwz = @as(f32, @floatFromInt(wz));
 
     // Two noise fields at the same scale but offset so they're independent.
     // Y is scaled at 0.6× to create taller-than-wide passage cross-sections.
-    const n1 = valueNoise3D(fwx * 0.016, fwy * 0.010, fwz * 0.016);
-    const n2 = valueNoise3D(fwx * 0.016 + 47.3, fwy * 0.010 + 91.7, fwz * 0.016 + 23.1);
+    const n1 = valueNoise3D(fwx * 0.016, fwy * 0.010, fwz * 0.016, key);
+    const n2 = valueNoise3D(fwx * 0.016 + 47.3, fwy * 0.010 + 91.7, fwz * 0.016 + 23.1, key);
 
     // Carve where both noise values are near 0.5.
     // c1*c1 + c2*c2 < threshold defines a circle in (c1,c2) space;
@@ -192,18 +229,18 @@ const TREE_DENSITY_THRESHOLD: f32 = 0.75;
 
 /// Hash a world (wx, wz) column to a priority in [0, 1] for tree placement.
 /// Uses different constants than hash2D to avoid correlation with the terrain.
-fn treeHashFloat(wx: i32, wz: i32) f32 {
+fn treeHashFloat(wx: i32, wz: i32, key: SeedKey) f32 {
     const ux: u32 = @bitCast(wx);
     const uz: u32 = @bitCast(wz);
-    const h = hashU32(ux *% 374761393 ^ hashU32(uz *% 668265263 ^ 0xcafebabe));
+    const h = mixSeed(hashU32(ux *% 374761393 ^ hashU32(uz *% 668265263 ^ 0xcafebabe)), key);
     return @as(f32, @floatFromInt(h)) / @as(f32, @floatFromInt(std.math.maxInt(u32)));
 }
 
 /// Returns true if a tree trunk should be centred at world column (wx, wz).
 /// The local-maximum filter guarantees trees are at least TREE_SPACING blocks
 /// apart — callers do not need to check neighbours themselves.
-pub fn isTreeCenter(wx: i32, wz: i32) bool {
-    const priority = treeHashFloat(wx, wz);
+pub fn isTreeCenter(wx: i32, wz: i32, key: SeedKey) bool {
+    const priority = treeHashFloat(wx, wz, key);
     if (priority < TREE_DENSITY_THRESHOLD) return false;
 
     // Must be the strict local maximum within TREE_SPACING radius.
@@ -213,7 +250,7 @@ pub fn isTreeCenter(wx: i32, wz: i32) bool {
         while (dz <= TREE_SPACING) : (dz += 1) {
             if (dx == 0 and dz == 0) continue;
             if (dx * dx + dz * dz > TREE_SPACING * TREE_SPACING) continue;
-            if (treeHashFloat(wx + dx, wz + dz) >= priority) return false;
+            if (treeHashFloat(wx + dx, wz + dz, key) >= priority) return false;
         }
     }
     return true;
@@ -221,9 +258,9 @@ pub fn isTreeCenter(wx: i32, wz: i32) bool {
 
 /// Returns the trunk height (number of wood blocks above the surface) for the
 /// tree centred at (wx, wz). Range: 4–7 blocks.
-pub fn treeHeight(wx: i32, wz: i32) i32 {
+pub fn treeHeight(wx: i32, wz: i32, key: SeedKey) i32 {
     // XOR with constants to get a different distribution than treeHashFloat.
-    const h = treeHashFloat(wx ^ 0x12345, wz ^ 0x54321);
+    const h = treeHashFloat(wx ^ 0x12345, wz ^ 0x54321, key);
     return 4 + @as(i32, @intFromFloat(h * 4.0));
 }
 
@@ -237,11 +274,12 @@ pub fn sampleHeight(wx: i32, wz: i32, config: WorldGenConfig) i32 {
     var frequency: f32 = config.noise_scale;
     var total: f32 = 0.0;
     var max_value: f32 = 0.0;
+    const key = config.seedKey();
 
     for (0..config.noise_octaves) |_| {
         const nx = @as(f32, @floatFromInt(wx)) * frequency;
         const nz = @as(f32, @floatFromInt(wz)) * frequency;
-        total += valueNoise2D(nx, nz) * amplitude;
+        total += valueNoise2D(nx, nz, key) * amplitude;
         max_value += amplitude;
         amplitude *= config.noise_persistence;
         frequency *= config.noise_lacunarity;
@@ -299,12 +337,12 @@ const BIOME_HUM_OFFSET_Z: f32 = 3333.3;
 ///
 /// Note: this produces hard biome boundaries at the threshold. The blending
 /// in `sampleBiomeBlended` softens those boundaries into smooth transitions.
-pub fn sampleBiome(wx: i32, wz: i32) Biome {
+pub fn sampleBiome(wx: i32, wz: i32, key: SeedKey) Biome {
     const fx = @as(f32, @floatFromInt(wx));
     const fz = @as(f32, @floatFromInt(wz));
 
-    const t = valueNoise2D(fx * BIOME_NOISE_SCALE + BIOME_OFFSET_X, fz * BIOME_NOISE_SCALE + BIOME_OFFSET_Z);
-    const h = valueNoise2D(fx * BIOME_NOISE_SCALE + BIOME_HUM_OFFSET_X, fz * BIOME_NOISE_SCALE + BIOME_HUM_OFFSET_Z);
+    const t = valueNoise2D(fx * BIOME_NOISE_SCALE + BIOME_OFFSET_X, fz * BIOME_NOISE_SCALE + BIOME_OFFSET_Z, key);
+    const h = valueNoise2D(fx * BIOME_NOISE_SCALE + BIOME_HUM_OFFSET_X, fz * BIOME_NOISE_SCALE + BIOME_HUM_OFFSET_Z, key);
 
     if (t >= 0.6) return .desert;
     if (h >= 0.55) return .forest;
@@ -325,7 +363,7 @@ pub fn sampleBiome(wx: i32, wz: i32) Biome {
 ///
 /// Returned as a [4]f32 indexed by Biome enum ordinal (plains=0, forest=1,
 /// badlands=2, desert=3). Values sum to 1.0.
-pub fn sampleBiomeWeights(wx: i32, wz: i32) [4]f32 {
+pub fn sampleBiomeWeights(wx: i32, wz: i32, key: SeedKey) [4]f32 {
     // Sample on a ring + centre. Evenly-spaced angles on the ring plus the
     // centre itself so the centre biome always has some weight.
     const N_TOTAL: usize = N_RING + 1;
@@ -333,12 +371,12 @@ pub fn sampleBiomeWeights(wx: i32, wz: i32) [4]f32 {
     var counts: [4]f32 = @splat(0.0);
 
     // Centre point
-    const centre_biome = sampleBiome(wx, wz);
+    const centre_biome = sampleBiome(wx, wz, key);
     counts[@backingInt(centre_biome)] += 1.0;
 
     // Ring of samples at evenly spaced angles (see RING_OFFSETS).
     for (RING_OFFSETS) |off| {
-        const b = sampleBiome(wx + off[0], wz + off[1]);
+        const b = sampleBiome(wx + off[0], wz + off[1], key);
         counts[@backingInt(b)] += 1.0;
     }
 
@@ -419,7 +457,7 @@ pub const ColumnSample = struct {
 /// times. For the flatland preset (noise_octaves = 0) the biome is plains.
 pub fn sampleColumn(wx: i32, wz: i32, config: WorldGenConfig) ColumnSample {
     if (config.noise_octaves == 0) return .{ .height = config.terrain_height_min, .biome = .plains };
-    const weights = sampleBiomeWeights(wx, wz);
+    const weights = sampleBiomeWeights(wx, wz, config.seedKey());
     return .{
         .height = heightFromWeights(wx, wz, config, weights),
         .biome = dominantFromWeights(weights),
@@ -438,7 +476,7 @@ pub fn sampleColumn(wx: i32, wz: i32, config: WorldGenConfig) ColumnSample {
 /// biome transitions — desert dunes flow into forest hills without a cliff.
 pub fn sampleHeightBiomeBlended(wx: i32, wz: i32, config: WorldGenConfig) i32 {
     if (config.noise_octaves == 0) return config.terrain_height_min;
-    return heightFromWeights(wx, wz, config, sampleBiomeWeights(wx, wz));
+    return heightFromWeights(wx, wz, config, sampleBiomeWeights(wx, wz, config.seedKey()));
 }
 
 /// The blended surface height at (wx, wz) for the biome `weights` of that
@@ -449,11 +487,12 @@ fn heightFromWeights(wx: i32, wz: i32, config: WorldGenConfig, weights: [4]f32) 
     var frequency: f32 = config.noise_scale;
     var total: f32 = 0.0;
     var max_value: f32 = 0.0;
+    const key = config.seedKey();
 
     for (0..config.noise_octaves) |_| {
         const nx = @as(f32, @floatFromInt(wx)) * frequency;
         const nz = @as(f32, @floatFromInt(wz)) * frequency;
-        total += valueNoise2D(nx, nz) * amplitude;
+        total += valueNoise2D(nx, nz, key) * amplitude;
         max_value += amplitude;
         amplitude *= config.noise_persistence;
         frequency *= config.noise_lacunarity;
@@ -479,8 +518,8 @@ fn heightFromWeights(wx: i32, wz: i32, config: WorldGenConfig, weights: [4]f32) 
 /// Determine the dominant biome at a world column using blended weights.
 /// Returns the biome with the highest weight — used by terrain generation
 /// to pick surface block type and to gate tree spawning.
-pub fn dominantBiome(wx: i32, wz: i32) Biome {
-    return dominantFromWeights(sampleBiomeWeights(wx, wz));
+pub fn dominantBiome(wx: i32, wz: i32, key: SeedKey) Biome {
+    return dominantFromWeights(sampleBiomeWeights(wx, wz, key));
 }
 
 /// The biome with the highest weight. On a tie, the first biome wins.
