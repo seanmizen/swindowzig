@@ -50,6 +50,7 @@ const GameCallbacks = struct {
 - **Zig 0.17.x**: the version in `build.zig.zon` (`minimum_zig_version`). The build stops on any other major.minor.
 - **SDL2**
 - **wgpu-native** v22.1.0.5 (bindings are pinned to this version's header; re-diff when upgrading)
+- **Bun** for the web build and the dev server
 
 ### Install Dependencies
 
@@ -62,6 +63,17 @@ wget https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linu
 unzip wgpu-linux-x86_64-release.zip
 cp lib/libwgpu_native.a ~/.local/lib/
 cp include/webgpu/webgpu.h ~/.local/include/webgpu/
+
+curl -fsSL https://bun.sh/install | bash
+```
+
+On WSL, `which bun` must show `~/.bun/bin/bun`. A Windows bun on the PATH
+(for example `/mnt/c/.../bun`) runs through `cmd.exe`, which cannot use a
+`\\wsl.localhost` working directory. The scripts then fail with
+`Script not found`. Put `~/.bun/bin` before the Windows entries in PATH:
+
+```bash
+export PATH="$HOME/.bun/bin:$PATH"
 ```
 
 **macOS (arm64):**

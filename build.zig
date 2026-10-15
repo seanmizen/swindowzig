@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        if (target.result.os.tag == .macos) sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
         break :blk sdl_c.createModule();
     } else null;
     const exported = addLibs(b, exported_sdl, true);
@@ -126,7 +126,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    if (target.result.os.tag == .macos) sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
     const native_libs = if (platform == .native) exported else addLibs(b, sdl_c.createModule(), false);
 
     const native_exe = b.addExecutable(.{
@@ -166,6 +166,13 @@ pub fn build(b: *std.Build) void {
         native_exe.root_module.linkFramework("Foundation", .{});
         native_exe.root_module.linkFramework("IOKit", .{});
         native_exe.root_module.linkFramework("IOSurface", .{});
+    }
+
+    // libwgpu_native.a is a Rust static library and needs the _Unwind_*
+    // symbols. libSystem supplies them on macOS. On Linux, libc++ brings
+    // the libunwind that Zig bundles.
+    if (target.result.os.tag == .linux) {
+        native_exe.root_module.link_libcpp = true;
     }
 
     const install_native = b.addInstallArtifact(native_exe, .{});
