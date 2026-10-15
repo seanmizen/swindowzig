@@ -98,7 +98,7 @@ covers all of the above with diagrams and the exact decrement rules.
 also the foundation we'd need anyway before adding block light or anything
 else, so building it first is the highest-leverage move. The Minecraft wiki
 algorithm port is well-trodden and our chunk format is small enough that the
-naive BFS is fast.
+simple BFS is fast.
 
 **Option B** is tempting because it's so simple — for each (x, z) column, the
 "distance to sky" is just "how many air blocks are above me before I hit the

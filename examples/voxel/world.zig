@@ -121,14 +121,14 @@ const ChunkOffset = struct { dx: i32, dz: i32 };
 pub const ChunkMap = std.HashMap(ChunkKey, *LoadedChunk, ChunkKey.HashContext, std.hash_map.default_max_load_percentage);
 
 /// Pipeline state for a loaded chunk. Generation (writing the block-ID array)
-/// and meshing (building a GPU vertex/index buffer) are two distinct phases.
+/// and meshing (building the packed quads of the GPU mesh) are two distinct phases.
 ///
 /// `.generated`  — `chunk.blocks` is valid in RAM. Deterministic from seed+coords.
 ///                 No GPU mesh yet. Cannot be meshed until all four horizontal
 ///                 neighbours are also at least `.generated` (otherwise face
 ///                 culling against .air for missing neighbours would punch holes
 ///                 along chunk seams — the classic "sky gap" artifact).
-/// `.meshed`     — `mesh.vertices` / `mesh.indices` are valid. Ready to draw.
+/// `.meshed`     — `mesh.quads` is valid. Ready to draw.
 ///
 /// Chunks in this codebase are `CHUNK_W × 256 × CHUNK_W` *columns*, not 3D cubes, so there is
 /// no vertical neighbour to wait on — a column is meshable as soon as its four

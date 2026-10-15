@@ -88,17 +88,13 @@
 #     --setup "aa-fxaa"  "--aa=fxaa"
 #     --setup "aa-msaa4" "--aa=msaa --msaa=4"
 #
-#   Meshing strategy:
-#     --setup "greedy"  "--meshing=greedy"
-#     --setup "naive"   "--meshing=naive"
-#
 #   Full orthogonal matrix (creates N×M combos):
 #     --tas examples/voxel/tests/flatland_forward.tas \
 #     --tas examples/voxel/framespike.tas              \
-#     --setup "greedy-depth-on"   "--meshing=greedy --depth-stencil=on"  \
-#     --setup "greedy-depth-off"  "--meshing=greedy --depth-stencil=off" \
-#     --setup "naive-depth-on"    "--meshing=naive  --depth-stencil=on"  \
-#     --setup "naive-depth-off"   "--meshing=naive  --depth-stencil=off"
+#     --setup "fxaa-depth-on"   "--aa=fxaa --depth-stencil=on"  \
+#     --setup "fxaa-depth-off"  "--aa=fxaa --depth-stencil=off" \
+#     --setup "none-depth-on"   "--aa=none --depth-stencil=on"  \
+#     --setup "none-depth-off"  "--aa=none --depth-stencil=off"
 #
 # REQUIREMENTS
 # ------------

@@ -3,7 +3,8 @@
 struct Uniforms {
     view_proj: mat4x4<f32>,
     camera_pos: vec3<f32>,
-    _padding: f32,
+    // GPU debug clock (State.debug_tick in main.zig). 0 when GPU debug is off.
+    debug_tick: u32,
     hover_block: vec3<f32>,
     hover_active: f32, // 1.0 if a block is hovered, 0.0 otherwise
     fog_start: f32,    // distance at which fog begins
@@ -33,7 +34,7 @@ struct VertexOutput {
     @location(6) ao: f32,
     @location(7) skylight: f32,
     @location(8) block_light: f32,
-    // Block type, lower 16 bits only. fs_main picks the texture rules from it.
+    // Block type. fs_main picks the texture rules from it.
     @location(9) @interpolate(flat) block_type: u32,
 };
 
@@ -92,7 +93,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 // same decode in Zig: change both together. A draw of quad_count * 6 vertices
 // with no vertex or index buffer makes the 2 triangles of each quad.
 struct ChunkQuads {
-    origin: vec4<i32>, // chunk origin in world blocks: x, unused, z, unused
+    // x and z: the chunk origin in world blocks. y: the debug tick of the
+    // last rebuild of the mesh (ChunkGPU.rebuilt_tick in main.zig).
+    origin: vec4<i32>,
     quads: array<vec4<u32>>,
 };
 
@@ -120,6 +123,19 @@ fn axisVec(axis: u32) -> vec3<f32> {
 fn cornerStep(a: u32, b: u32, face: u32, corner: u32) -> vec2<f32> {
     let bits = select(b >> ((face - 4u) * 8u), a >> (face * 8u), face < 4u) >> (corner * 2u);
     return vec2<f32>(f32(bits & 1u), f32((bits >> 1u) & 1u));
+}
+
+// GPU debug tint of a chunk after a rebuild: 1 at the rebuild tick, then
+// 4/255 less per tick, so 0 after 64 ticks (about 0.5 s at 120 Hz).
+fn rebuildTint(rebuilt_tick: u32) -> f32 {
+    if (uniforms.debug_tick == 0u) {
+        return 0.0;
+    }
+    let age = uniforms.debug_tick - rebuilt_tick;
+    if (age >= 64u) {
+        return 0.0;
+    }
+    return f32(255u - 4u * age) / 255.0;
 }
 
 fn lightField(q: vec4<u32>, i: u32) -> u32 {
@@ -151,12 +167,14 @@ fn vs_chunk(@builtin(vertex_index) vi: u32) -> VertexOutput {
     var in: VertexInput;
     in.position = cell + select(vec3<f32>(0.0), n, positive) + axisVec(i_axis) * (p.x * w) + axisVec(j_axis) * (p.y * h);
     in.normal = select(-n, n, positive);
-    in.block_type = ((q.w >> 12u) & 0xFFu) | (((q.w >> 20u) & 0xFFu) << 16u);
+    in.block_type = (q.w >> 12u) & 0xFFu;
     in.uv = vec2<f32>(t.x * w, t.y * h);
     in.ao = f32(lightField(q, corner)) / 42.0;
     in.skylight = f32(lightField(q, 4u + corner)) / 60.0;
     in.block_light = f32(lightField(q, 8u + corner)) / 60.0;
-    return shadeVertex(in);
+    var out = shadeVertex(in);
+    out.highlight = rebuildTint(u32(chunk.origin.y));
+    return out;
 }
 
 fn shadeVertex(in: VertexInput) -> VertexOutput {
@@ -166,10 +184,9 @@ fn shadeVertex(in: VertexInput) -> VertexOutput {
     out.clip_position = uniforms.view_proj * vec4<f32>(in.position, 1.0);
     out.normal = in.normal;
 
-    // Upper 16 bits = highlight intensity (0–255), lower 16 bits = actual block type.
-    // GPU debug mode encodes highlight at upload time; when off, upper bits are 0.
-    let block_type = in.block_type & 0xFFFFu;
-    out.highlight = f32((in.block_type >> 16u) & 0xFFu) / 255.0;
+    let block_type = in.block_type;
+    // vs_chunk sets the GPU debug tint after this. Other geometry has none.
+    out.highlight = 0.0;
 
     var base_color = getBlockColor(block_type);
 
@@ -303,9 +320,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Greedy-mesh tiling: merged faces span multiple blocks, so `uv` is in
     // [0, w] × [0, h] rather than [0, 1] × [0, 1]. `fract` wraps the texel
     // coordinate back into a 16-texel grid per unit block, so the same noise
-    // pattern tiles correctly across a merged face. Naive 1×1 quads have uv
-    // in [0, 1]² so `fract(uv) == uv` and the rendered output is byte-identical
-    // to the pre-greedy shader.
+    // pattern tiles correctly across a merged face. A 1×1 quad has uv in
+    // [0, 1]², so `fract(uv) == uv` and it renders as one block did before
+    // greedy meshing.
     //
     // Far faces: the noise fades toward its mean (fine_fade, at the top of
     // this function).
@@ -374,7 +391,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color *= mix(vec3<f32>(1.22, 0.98, 0.80), vec3<f32>(0.82, 1.02, 1.12), lush);
     }
 
-    // GPU debug: mix in orange tint for freshly rebuilt quads
+    // GPU debug: mix in orange tint for freshly rebuilt chunks
     let base = color * brightness * texel_brightness * ao_brightness * world_light;
     let highlighted = mix(base, vec3<f32>(1.0, 0.5, 0.1), in.highlight * 0.6);
 

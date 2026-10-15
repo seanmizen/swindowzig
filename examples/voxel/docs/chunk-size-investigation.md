@@ -312,9 +312,8 @@ was optimising for the wrong metric.
   "fly-around smoothness" metric. Sub-chunks are a separate refactor that
   benefits a different workload (dig-relight) and wasn't asked for.
 - **Did not touch the mesher's greedy-merge path.** Greedy meshing at
-  smaller chunk sizes would compound the win but would also break
-  `updateForBlockChange` (the parallel `quad_block` contract). Out of
-  scope.
+  smaller chunk sizes would compound the win but would also break the
+  incremental per-block mesh update of that time. Out of scope.
 - **Did not re-tune `MESH_GENS_PER_TICK`.** At 16-wide you could probably
   raise it from 1 to 4 (since each mesh is 10× cheaper) and shrink the
   "async background fill" window further. Deliberately left at 1 so this

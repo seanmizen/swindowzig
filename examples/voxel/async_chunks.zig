@@ -3,9 +3,9 @@
 //! One worker thread, two mutex-guarded FIFOs. Job = (cx, cz, a copy of the
 //! center if it exists, and the borders of its neighbours). Worker generates
 //! the center chunk (if not provided), meshes it through the borders as a
-//! BlockGetter, ships owned CPU buffers back. Main
-//! thread drains results per tick, sorts by (cx, cz) for determinism, copies
-//! buffers into the real LoadedChunk's mesh, uploads to GPU.
+//! BlockGetter, and ships the packed quads (the GPU format) back. Main
+//! thread drains results per tick, sorts by (cx, cz) for determinism, moves
+//! the quads into the real LoadedChunk's mesh, uploads to GPU.
 //!
 //! The worker entry point touches only this module, `chunk.zig`, `mesher.zig`,
 //! `world_gen.zig`, and `std.heap.c_allocator`. No `sw_gpu` import. No
@@ -25,7 +25,7 @@ const BlockGetter = chunk_mod.BlockGetter;
 const MAX_SKYLIGHT = chunk_mod.MAX_SKYLIGHT;
 const CHUNK_W = chunk_mod.CHUNK_W;
 const CHUNK_H = chunk_mod.CHUNK_H;
-const VoxelVertex = mesher_mod.VoxelVertex;
+const PackedQuad = mesher_mod.PackedQuad;
 
 /// Cap on simultaneously in-flight jobs. Bounds the memory that jobs hold:
 /// a deep copy of the center (about 150 KB) and up to 8 borders (about
@@ -65,8 +65,6 @@ pub const Job = struct {
     gen_config: world_gen.WorldGenConfig,
     ao: gpu_mod.AOStrategy,
     lighting: gpu_mod.LightingMode,
-    /// The mesher to use: the same `--meshing` mode as the sync path.
-    meshing: mesher_mod.MeshingMode,
     center: ?*Chunk = null,
     borders: [9]?*Border = @splat(null),
 };
@@ -159,10 +157,11 @@ pub const Result = struct {
     /// Wall-clock time spent gen+mesh-ing this chunk, in microseconds.
     /// Purely informational; dumped to `std.log.info` on drain.
     worker_us: u64,
-    vertices: []VoxelVertex,
-    indices: []u32,
-    quad_block: []u32,
-    quad_highlight: []u8,
+    /// The mesh in the GPU format, one PackedQuad per quad (c_allocator).
+    quads: []PackedQuad,
+    /// The y range of the quads (see mesher.Mesh).
+    y_min: f32 = CHUNK_H,
+    y_max: f32 = 0,
     /// True when one of the 8 neighbours was missing from the job snapshot.
     /// The mesh then read that neighbour as MISSING_*. A neighbour that
     /// installs while a gen+mesh job runs cannot mark the new chunk dirty,
@@ -440,10 +439,7 @@ pub fn jobBytes(job: *const Job) usize {
 
 fn freeResult(r: *Result) void {
     if (r.chunk) |ch| freeChunk(ch);
-    std.heap.c_allocator.free(r.vertices);
-    std.heap.c_allocator.free(r.indices);
-    std.heap.c_allocator.free(r.quad_block);
-    std.heap.c_allocator.free(r.quad_highlight);
+    std.heap.c_allocator.free(r.quads);
 }
 
 // ─── Worker thread ──────────────────────────────────────────────────────────
@@ -515,7 +511,7 @@ fn processJob(pipeline: *Pipeline, job: *Job) !void {
     var scratch_mesh = mesher_mod.Mesh.init(std.heap.c_allocator);
     defer scratch_mesh.deinit();
 
-    try mesher_mod.generateMeshForMode(
+    try mesher_mod.generateMesh(
         target_ptr,
         &scratch_mesh,
         job.cx * CHUNK_W,
@@ -523,19 +519,14 @@ fn processJob(pipeline: *Pipeline, job: *Job) !void {
         getter,
         job.ao,
         job.lighting,
-        job.meshing,
     );
 
-    // Extract owned slices. After `toOwnedSlice` the ArrayLists are empty,
-    // so the subsequent `deinit` only frees any zero-length sort scratches.
-    const verts = try scratch_mesh.vertices.toOwnedSlice(std.heap.c_allocator);
-    errdefer std.heap.c_allocator.free(verts);
-    const inds = try scratch_mesh.indices.toOwnedSlice(std.heap.c_allocator);
-    errdefer std.heap.c_allocator.free(inds);
-    const qb = try scratch_mesh.quad_block.toOwnedSlice(std.heap.c_allocator);
-    errdefer std.heap.c_allocator.free(qb);
-    const qh = try scratch_mesh.quad_highlight.toOwnedSlice(std.heap.c_allocator);
-    errdefer std.heap.c_allocator.free(qh);
+    // Take the owned quad slice. After `toOwnedSlice` the list is empty, so
+    // the deinit above frees nothing more.
+    const y_min = scratch_mesh.y_min;
+    const y_max = scratch_mesh.y_max;
+    const quads = try scratch_mesh.quads.toOwnedSlice(std.heap.c_allocator);
+    errdefer std.heap.c_allocator.free(quads);
 
     var missing_neighbour = false;
     for (job.borders, 0..) |b, slot| {
@@ -569,10 +560,9 @@ fn processJob(pipeline: *Pipeline, job: *Job) !void {
         .cz = job.cz,
         .chunk = result_chunk,
         .worker_us = worker_us,
-        .vertices = verts,
-        .indices = inds,
-        .quad_block = qb,
-        .quad_highlight = qh,
+        .quads = quads,
+        .y_min = y_min,
+        .y_max = y_max,
         .missing_neighbour = missing_neighbour,
     };
 
@@ -591,10 +581,7 @@ fn pushEmptyResult(pipeline: *Pipeline, cx: i32, cz: i32) !void {
         .cz = cz,
         .chunk = null,
         .worker_us = 0,
-        .vertices = &.{},
-        .indices = &.{},
-        .quad_block = &.{},
-        .quad_highlight = &.{},
+        .quads = &.{},
     };
     pipeline.result_mtx.lockUncancelable(pipeline.io);
     defer pipeline.result_mtx.unlock(pipeline.io);
@@ -603,16 +590,15 @@ fn pushEmptyResult(pipeline: *Pipeline, cx: i32, cz: i32) !void {
 
 // ─── Public install helper used by main.zig on the drain side ──────────────
 
-/// Install a drained result's mesh buffers into an existing `Mesh`, freeing
-/// the worker's owned slices. Does NOT touch the chunk data — that's the
-/// caller's responsibility (differs between gen+mesh and mesh-only paths).
+/// Copy a drained result's packed quads and y range into an existing
+/// `Mesh`. Does NOT touch the chunk data — that's the caller's
+/// responsibility (differs between gen+mesh and mesh-only paths). Free the
+/// result with `releaseResult` after this.
 pub fn installMeshFromResult(mesh: *mesher_mod.Mesh, result: *const Result) !void {
-    mesh.clear();
-    try mesh.vertices.appendSlice(mesh.allocator, result.vertices);
-    try mesh.indices.appendSlice(mesh.allocator, result.indices);
-    try mesh.quad_block.appendSlice(mesh.allocator, result.quad_block);
-    try mesh.quad_highlight.appendSlice(mesh.allocator, result.quad_highlight);
-    mesh.sort_valid = false; // force painter's-algorithm re-sort next render
+    mesh.clear(); // also forces a full painter's-algorithm sort next render
+    try mesh.quads.appendSlice(mesh.allocator, result.quads);
+    mesh.y_min = result.y_min;
+    mesh.y_max = result.y_max;
 }
 
 /// Free a result's owned heap buffers. Call after `installMeshFromResult`.
@@ -697,18 +683,17 @@ test "meshing through borders gives the same mesh as through full chunks" {
     const via_borders = SnapshotGetter{ .cx = cx, .cz = cz, .center = center, .borders = &borders };
     const via_chunks = FullGridGetter{ .cx = cx, .cz = cz, .chunks = &grid };
 
-    for ([_]mesher_mod.MeshingMode{ .naive, .greedy }) |mode| {
-        for ([_]gpu_mod.AOStrategy{ .classic, .moore, .propagated }) |ao| {
-            var want = mesher_mod.Mesh.init(a);
-            defer want.deinit();
-            var got = mesher_mod.Mesh.init(a);
-            defer got.deinit();
-            try mesher_mod.generateMeshForMode(center, &want, cx * CHUNK_W, cz * CHUNK_W, via_chunks.getter(), ao, .skylight, mode);
-            try mesher_mod.generateMeshForMode(center, &got, cx * CHUNK_W, cz * CHUNK_W, via_borders.asBlockGetter(), ao, .skylight, mode);
-            try std.testing.expect(want.vertices.items.len > 0);
-            try std.testing.expectEqualSlices(VoxelVertex, want.vertices.items, got.vertices.items);
-            try std.testing.expectEqualSlices(u32, want.indices.items, got.indices.items);
-        }
+    for ([_]gpu_mod.AOStrategy{ .classic, .moore, .propagated }) |ao| {
+        var want = mesher_mod.Mesh.init(a);
+        defer want.deinit();
+        var got = mesher_mod.Mesh.init(a);
+        defer got.deinit();
+        try mesher_mod.generateMesh(center, &want, cx * CHUNK_W, cz * CHUNK_W, via_chunks.getter(), ao, .skylight);
+        try mesher_mod.generateMesh(center, &got, cx * CHUNK_W, cz * CHUNK_W, via_borders.asBlockGetter(), ao, .skylight);
+        try std.testing.expect(want.quadCount() > 0);
+        try std.testing.expectEqualSlices(PackedQuad, want.quads.items, got.quads.items);
+        try std.testing.expectEqual(want.y_min, got.y_min);
+        try std.testing.expectEqual(want.y_max, got.y_max);
     }
 }
 

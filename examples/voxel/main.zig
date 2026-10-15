@@ -662,8 +662,9 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
     }
 }
 
-/// GPU copy of one chunk mesh: a 16-byte header (the chunk origin) and one
-/// 16-byte PackedQuad per quad, bound at group 1 for vs_chunk.
+/// GPU copy of one chunk mesh: a 16-byte header (the chunk origin and the
+/// rebuild tick) and one 16-byte PackedQuad per quad, bound at group 1 for
+/// vs_chunk.
 const ChunkGPU = struct {
     quad_buffer: ?gpu_mod.Buffer = null,
     bind_group: ?gpu_mod.BindGroup = null,
@@ -673,6 +674,10 @@ const ChunkGPU = struct {
     /// The y range of the mesh, for the frustum cull.
     y_min: f32 = 0,
     y_max: f32 = chunk_mod.CHUNK_H,
+    /// The value of State.debug_tick when the mesh was last rebuilt. The
+    /// header of the quad buffer holds it, and vs_chunk tints the chunk
+    /// orange for 64 ticks after it when GPU debug is on.
+    rebuilt_tick: u32 = 0,
 
     fn release(self: *ChunkGPU) void {
         if (self.bind_group) |bg| bg.release();
@@ -702,8 +707,6 @@ const State = struct {
     /// wasmFrameImpl sets both.
     web_frame_deadline_ns: u64 = 0,
     web_frame_chunk_jobs: usize = 0,
-    /// Scratch for packing a chunk's quads before an upload.
-    pack_scratch: std.ArrayList(mesher_mod.PackedQuad) = .empty,
     uniform_buffer: ?gpu_mod.Buffer = null,
     bind_group: ?gpu_mod.BindGroup = null,
     depth_texture: ?gpu_mod.Texture = null,
@@ -757,10 +760,15 @@ const State = struct {
     tas_step_executing: bool = false,
     /// The TAS tick_id of the last injected step group (shown in HUD instead of sim tick).
     tas_current_tas_tick: u64 = 0,
-    /// GPU debug mode — scaffold for future mesh-rebuild highlighting.
-    /// When true (future): quads rebuilt this tick will be tinted a warning colour.
-    /// Currently unused; set by Cmd+G or a future CLI flag.
+    /// GPU debug mode: tint each chunk orange after its mesh is rebuilt. The
+    /// tint fades in about 0.5 s. Set by --gpu-debug, --tas-step, or Cmd+G
+    /// (Ctrl+G).
     gpu_debug: bool = false,
+    /// The GPU debug clock. It advances once per tick, and only on executing
+    /// ticks in TAS step mode. The uniforms carry it to the shader when
+    /// gpu_debug is on (0 when off), and each chunk stores the value at its
+    /// last rebuild (ChunkGPU.rebuilt_tick). It starts at 1, so 0 means off.
+    debug_tick: u32 = 1,
     /// AA config parsed from `--aa=<none|msaa|fxaa>` (plus `--msaa=N` /
     /// `--fxaa-quality=<tier>`). Default: FXAA 3.11 at medium quality — this
     /// is the engine-wide ships-by-default AA mode. Override with
@@ -843,13 +851,6 @@ const State = struct {
     fps_window_idx: usize = 0,
     fps_window_filled: bool = false,
     last_frame_ns: i128 = 0,
-    /// Mesher strategy parsed from --meshing=<naive|greedy>. Default: greedy.
-    /// Greedy merges coplanar same-material + same-lighting faces into larger
-    /// rectangles (5–10× vertex reduction on flatland/hilly). Naive is kept
-    /// as a fallback + regression baseline. Changing this at runtime requires
-    /// marking every loaded chunk dirty so it re-meshes with the new strategy —
-    /// same constraint as `ao_strategy` and `lighting_mode`.
-    meshing_mode: mesher_mod.MeshingMode = .greedy,
 
     // --------------------------------------------------------------------
     // --profile-csv=<path> instrumentation (chunk-size-perf investigation).
@@ -1039,9 +1040,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.fps_window_idx = 0;
     state.fps_window_filled = false;
     state.last_frame_ns = 0;
-    // Default meshing: greedy. `--meshing=naive` falls back to the old
-    // one-quad-per-face path used by the existing regression baselines.
-    state.meshing_mode = .greedy;
     state.dump_frame_path = null;
     state.dump_frame_done = false;
     state.compare_golden_path = null;
@@ -1283,17 +1281,6 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
         }
-        if (std.mem.startsWith(u8, arg, "--meshing=")) {
-            const val = std.mem.sliceTo(arg["--meshing=".len..], 0);
-            if (std.mem.eql(u8, val, "naive")) {
-                state.meshing_mode = .naive;
-            } else if (std.mem.eql(u8, val, "greedy")) {
-                state.meshing_mode = .greedy;
-            } else {
-                std.log.err("--meshing: invalid value '{s}'. Accepted: naive, greedy", .{val});
-                fatalExit(1);
-            }
-        }
         if (std.mem.startsWith(u8, arg, "--async-chunks=")) {
             const val = arg["--async-chunks=".len..];
             if (std.mem.eql(u8, val, "on")) {
@@ -1324,7 +1311,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     });
     std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
     std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
-    std.log.info("Meshing mode (post-parse): {s}", .{@tagName(state.meshing_mode)});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
     if (state.frustum_fov_auto) {
         std.log.info("Frustum cull: strategy={s} fov=auto (screen diagonal)", .{state.frustum_strategy.label()});
@@ -1445,11 +1431,11 @@ fn voxelInit(ctx: *sw.Context) !void {
     std.log.info("Voxel demo ready", .{});
 }
 
-/// After a block is placed/destroyed at world (wx, wy, wz), check if it sits on a
-/// chunk boundary. If so, call updateForBlockChange on the block just across that
-/// boundary in the neighbouring chunk — otherwise that block's face toward the
-/// changed block will remain stale (visible gap or missing face).
-fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, camera_pos: [3]f32) void {
+/// After a block is placed/destroyed at world column (wx, wz), check if it sits on a
+/// chunk boundary. If so, mesh the neighbouring chunk again — otherwise that
+/// chunk's face toward the changed block will remain stale (visible gap or
+/// missing face).
+fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wz: i32) void {
     const cx = world_mod.chunkCoordOf(wx);
     const cz = world_mod.chunkCoordOf(wz);
     const lx = wx - cx * chunk_mod.CHUNK_W;
@@ -1469,41 +1455,14 @@ fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, c
         const nb_wx = wx + c.dx;
         const nb_wz = wz + c.dz;
         const nb_lc = world.getChunkAtBlock(nb_wx, nb_wz) orelse continue;
-        const nb_cx = world_mod.chunkCoordOf(nb_wx);
-        const nb_cz = world_mod.chunkCoordOf(nb_wz);
-        const nb_lx = nb_wx - nb_cx * chunk_mod.CHUNK_W;
-        const nb_lz = nb_wz - nb_cz * chunk_mod.CHUNK_W;
 
-        if (state.meshing_mode == .greedy) {
-            // Greedy merged quads can't be patched by
-            // `updateForBlockChange` (see comment on the dig handler). Mesh
-            // the neighbour again now, as the dig handler does for its own
-            // chunk. mesh_dirty would wait for the mesh loop, which meshes
-            // one chunk per tick: while new chunks load, the neighbour
-            // shows a hole where its face to the edited block belongs.
-            mesher_mod.generateMeshForMode(
-                &nb_lc.chunk,
-                &nb_lc.mesh,
-                nb_lc.worldX(),
-                nb_lc.worldZ(),
-                world.asBlockGetter(),
-                state.ao_strategy,
-                state.lighting_mode,
-                state.meshing_mode,
-            ) catch {
-                nb_lc.mesh_dirty = true;
-                continue;
-            };
-            nb_lc.mesh_dirty = false;
-            nb_lc.mesh_incremental_dirty = true;
-            continue;
-        }
-        nb_lc.mesh.updateForBlockChange(
+        // Mesh the neighbour again now, as the dig handler does for its own
+        // chunk. mesh_dirty would wait for the mesh loop, which meshes one
+        // chunk per tick: while new chunks load, the neighbour shows a hole
+        // where its face to the edited block belongs.
+        mesher_mod.generateMesh(
             &nb_lc.chunk,
-            nb_lx,
-            wy,
-            nb_lz,
-            camera_pos,
+            &nb_lc.mesh,
             nb_lc.worldX(),
             nb_lc.worldZ(),
             world.asBlockGetter(),
@@ -1511,7 +1470,9 @@ fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wy: i32, wz: i32, c
             state.lighting_mode,
         ) catch {
             nb_lc.mesh_dirty = true;
+            continue;
         };
+        nb_lc.mesh_dirty = false;
         nb_lc.mesh_incremental_dirty = true;
     }
 }
@@ -1641,7 +1602,7 @@ const ChunkDeadline = struct {
     }
 };
 
-fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy, lighting_mode: gpu_mod.LightingMode, meshing_mode: mesher_mod.MeshingMode, deadline: ?ChunkDeadline) !bool {
+fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy, lighting_mode: gpu_mod.LightingMode, deadline: ?ChunkDeadline) !bool {
     const R = world_mod.PREGEN_RADIUS;
 
     // Pass 1 — generate every chunk inside the (2R+1)^2 outer square that is
@@ -1682,7 +1643,7 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
             const lc = world.chunks.get(key) orelse continue;
             if (!lc.mesh_dirty) continue;
             if (!world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
-            mesher_mod.generateMeshForMode(
+            mesher_mod.generateMesh(
                 &lc.chunk,
                 &lc.mesh,
                 lc.worldX(),
@@ -1690,7 +1651,6 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
                 world.asBlockGetter(),
                 ao_strategy,
                 lighting_mode,
-                meshing_mode,
             ) catch |err| {
                 std.log.err("[PREGEN] mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
@@ -1796,7 +1756,7 @@ fn countJobCopy(c: JobCopy) void {
 /// One async tick: drain completed results, install them, enqueue new jobs
 /// (fresh chunks innermost-first + any dirty chunks whose 4 axial neighbours
 /// are all present). Replaces the synchronous `world.update` + mesh loop.
-fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos: [3]f32, ao: gpu_mod.AOStrategy, lighting: gpu_mod.LightingMode, meshing: mesher_mod.MeshingMode, alloc: std.mem.Allocator) !void {
+fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos: [3]f32, ao: gpu_mod.AOStrategy, lighting: gpu_mod.LightingMode, alloc: std.mem.Allocator) !void {
     const t_tick_start = perfNowNs();
 
     // ─── 1. Drain completed results ─────────────────────────────────────
@@ -1811,9 +1771,9 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
         // fresh gen+mesh from dirty-neighbour remesh.
         const kind_tag: []const u8 = if (r.chunk != null) "gen+mesh" else "mesh-only";
         std.log.info("[ASYNC] chunk ({},{}) {s} worker_us={} quads={}", .{
-            r.cx,              r.cz,
-            kind_tag,          r.worker_us,
-            r.indices.len / 6,
+            r.cx,        r.cz,
+            kind_tag,    r.worker_us,
+            r.quads.len,
         });
         if (r.chunk) |new_chunk| {
             // Gen+mesh result → install as a new LoadedChunk.
@@ -1832,10 +1792,7 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             // lc.chunk now owns the block data: free only the struct.
             async_chunks_mod.freeMovedChunk(new_chunk);
             try async_chunks_mod.installMeshFromResult(&lc.mesh, r);
-            std.heap.c_allocator.free(r.vertices);
-            std.heap.c_allocator.free(r.indices);
-            std.heap.c_allocator.free(r.quad_block);
-            std.heap.c_allocator.free(r.quad_highlight);
+            std.heap.c_allocator.free(r.quads);
             lc.state = .meshed;
             lc.mesh_incremental_dirty = true;
             try world.chunks.put(key, lc);
@@ -1880,10 +1837,7 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
                 lc.state = .meshed;
                 lc.mesh_incremental_dirty = true;
             }
-            std.heap.c_allocator.free(r.vertices);
-            std.heap.c_allocator.free(r.indices);
-            std.heap.c_allocator.free(r.quad_block);
-            std.heap.c_allocator.free(r.quad_highlight);
+            std.heap.c_allocator.free(r.quads);
         }
     }
     state.async_result_scratch.clearRetainingCapacity();
@@ -1913,7 +1867,6 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             .gen_config = world.gen_config,
             .ao = ao,
             .lighting = lighting,
-            .meshing = meshing,
             .borders = full,
         };
         const copy = jobCopy(&job);
@@ -1968,7 +1921,6 @@ fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos:
             .gen_config = world.gen_config,
             .ao = ao,
             .lighting = lighting,
-            .meshing = meshing,
             .center = center,
             .borders = full,
         };
@@ -2214,7 +2166,7 @@ fn voxelTick(ctx: *sw.Context) !void {
         const pregen_mesh_before: usize = if (state.profile_csv_file != null) countMeshedChunks(&state.world) else 0;
         const pregen_t0: i128 = if (state.profile_csv_file != null) perfNowNs() else 0;
         const deadline: ?ChunkDeadline = if (comptime is_wasm) .{ .ctx = ctx, .ns = state.web_frame_deadline_ns } else null;
-        const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy, state.lighting_mode, state.meshing_mode, deadline) catch |err| blk: {
+        const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy, state.lighting_mode, deadline) catch |err| blk: {
             std.log.err("Pregen step failed: {}", .{err});
             break :blk false;
         };
@@ -2364,10 +2316,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                         lc.mesh_incremental_dirty = true;
                     }
                 }
-                std.heap.c_allocator.free(r.vertices);
-                std.heap.c_allocator.free(r.indices);
-                std.heap.c_allocator.free(r.quad_block);
-                std.heap.c_allocator.free(r.quad_highlight);
+                std.heap.c_allocator.free(r.quads);
             }
             state.async_result_scratch.clearRetainingCapacity();
         }
@@ -2380,7 +2329,6 @@ fn voxelTick(ctx: *sw.Context) !void {
             state.player.feet_pos,
             state.ao_strategy,
             state.lighting_mode,
-            state.meshing_mode,
             ctx.allocator(),
         );
     } else {
@@ -2428,7 +2376,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
                 if (ChunkDeadline.spent(chunk_deadline, mesh_gens)) break;
                 const t0 = perfNowNs();
-                mesher_mod.generateMeshForMode(
+                mesher_mod.generateMesh(
                     &lc.chunk,
                     &lc.mesh,
                     lc.worldX(),
@@ -2436,14 +2384,13 @@ fn voxelTick(ctx: *sw.Context) !void {
                     state.world.asBlockGetter(),
                     state.ao_strategy,
                     state.lighting_mode,
-                    state.meshing_mode,
                 ) catch |err| {
                     std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                     continue;
                 };
                 const mesh_dt_ns: i128 = perfNowNs() - t0;
                 const t_us = @divTrunc(mesh_dt_ns, 1000);
-                std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
+                std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.quadCount() });
                 if (state.profile_csv_file != null) {
                     state.mesh_ns +%= @intCast(mesh_dt_ns);
                     state.mesh_count +%= 1;
@@ -2478,7 +2425,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                 if (dcx * dcx + dcz * dcz <= state.world.meshRadiusSq()) continue;
                 if (ChunkDeadline.spent(chunk_deadline, ao_remeshes)) break;
                 const t0 = perfNowNs();
-                mesher_mod.generateMeshForMode(
+                mesher_mod.generateMesh(
                     &lc.chunk,
                     &lc.mesh,
                     lc.worldX(),
@@ -2486,14 +2433,13 @@ fn voxelTick(ctx: *sw.Context) !void {
                     state.world.asBlockGetter(),
                     state.ao_strategy,
                     state.lighting_mode,
-                    state.meshing_mode,
                 ) catch |err| {
                     std.log.err("AO re-mesh failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                     continue;
                 };
                 const mesh_dt_ns: i128 = perfNowNs() - t0;
                 const t_us = @divTrunc(mesh_dt_ns, 1000);
-                std.log.info("[AO-REMESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.indices.items.len / 6 });
+                std.log.info("[AO-REMESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.quadCount() });
                 lc.mesh_dirty = false;
                 lc.neighbor_ao_dirty = false;
                 lc.mesh_incremental_dirty = true;
@@ -2975,60 +2921,29 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const by: i32 = @intFromFloat(hit.block_pos.y);
                     const bz: i32 = @intFromFloat(hit.block_pos.z);
                     _ = try state.world.setBlock(bx, by, bz, .air);
-                    const cam_pos_arr = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
                     if (state.world.getChunkAtBlock(bx, bz)) |lc| {
-                        const lcx = world_mod.chunkCoordOf(bx);
-                        const lcz = world_mod.chunkCoordOf(bz);
-                        const lbx = bx - lcx * chunk_mod.CHUNK_W;
-                        const lbz = bz - lcz * chunk_mod.CHUNK_W;
-                        if (state.meshing_mode == .greedy) {
-                            // Greedy quads span multiple blocks, so the
-                            // `quad_block` parallel array lookup used by
-                            // `updateForBlockChange` can't isolate what to
-                            // rebuild. Do a synchronous full-chunk regen
-                            // rather than deferring to the async pipeline,
-                            // which can be starved by gen+mesh jobs for the
-                            // outer ring of chunks.
-                            const t_regen0 = perfNowNs();
-                            mesher_mod.generateMeshForMode(
-                                &lc.chunk,
-                                &lc.mesh,
-                                lc.worldX(),
-                                lc.worldZ(),
-                                state.world.asBlockGetter(),
-                                state.ao_strategy,
-                                state.lighting_mode,
-                                state.meshing_mode,
-                            ) catch |err| {
-                                std.log.err("Greedy mesh regen failed for remove at ({},{},{}): {}", .{ bx, by, bz, err });
-                            };
-                            lc.mesh_dirty = false;
-                            lc.mesh_incremental_dirty = true;
-                            const t_regen_us = @divTrunc(perfNowNs() - t_regen0, 1000);
-                            std.log.info("[TICK  tick={d:4}] greedy remove ({},{},{}) sync regen={}us", .{ ctx.tickId(), bx, by, bz, t_regen_us });
-                        } else {
-                            const t_incr0 = perfNowNs();
-                            lc.mesh.updateForBlockChange(
-                                &lc.chunk,
-                                lbx,
-                                by,
-                                lbz,
-                                cam_pos_arr,
-                                lc.worldX(),
-                                lc.worldZ(),
-                                state.world.asBlockGetter(),
-                                state.ao_strategy,
-                                state.lighting_mode,
-                            ) catch |err| {
-                                std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
-                                lc.mesh_dirty = true;
-                            };
-                            lc.mesh_incremental_dirty = true;
-                            const t_incr_us = @divTrunc(perfNowNs() - t_incr0, 1000);
-                            std.log.info("[TICK  tick={d:4}] incremental remove ({},{},{}) update={}us", .{ ctx.tickId(), bx, by, bz, t_incr_us });
-                        }
+                        // Greedy quads span many blocks, so an edit meshes
+                        // the whole chunk again. Do it now, not in the async
+                        // pipeline: gen+mesh jobs for the outer ring of
+                        // chunks can starve it.
+                        const t_regen0 = perfNowNs();
+                        mesher_mod.generateMesh(
+                            &lc.chunk,
+                            &lc.mesh,
+                            lc.worldX(),
+                            lc.worldZ(),
+                            state.world.asBlockGetter(),
+                            state.ao_strategy,
+                            state.lighting_mode,
+                        ) catch |err| {
+                            std.log.err("Greedy mesh regen failed for remove at ({},{},{}): {}", .{ bx, by, bz, err });
+                        };
+                        lc.mesh_dirty = false;
+                        lc.mesh_incremental_dirty = true;
+                        const t_regen_us = @divTrunc(perfNowNs() - t_regen0, 1000);
+                        std.log.info("[TICK  tick={d:4}] greedy remove ({},{},{}) sync regen={}us", .{ ctx.tickId(), bx, by, bz, t_regen_us });
                     }
-                    updateBoundaryNeighbors(&state.world, bx, by, bz, cam_pos_arr);
+                    updateBoundaryNeighbors(&state.world, bx, bz);
                 }
 
                 // Right click: place the currently-selected hotbar block on
@@ -3058,57 +2973,26 @@ fn voxelTick(ctx: *sw.Context) !void {
                     }
 
                     _ = try state.world.setBlock(px, py, pz, sel_block);
-                    const cam_pos_arr2 = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
                     if (state.world.getChunkAtBlock(px, pz)) |lc| {
-                        const lcx = world_mod.chunkCoordOf(px);
-                        const lcz = world_mod.chunkCoordOf(pz);
-                        const lpx = px - lcx * chunk_mod.CHUNK_W;
-                        const lpz = pz - lcz * chunk_mod.CHUNK_W;
-                        if (state.meshing_mode == .greedy) {
-                            // See note in the break-block path above: greedy
-                            // merged quads can't be incrementally updated.
-                            // Synchronous full regen avoids async pipeline
-                            // starvation from gen+mesh jobs.
-                            const t_regen0 = perfNowNs();
-                            mesher_mod.generateMeshForMode(
-                                &lc.chunk,
-                                &lc.mesh,
-                                lc.worldX(),
-                                lc.worldZ(),
-                                state.world.asBlockGetter(),
-                                state.ao_strategy,
-                                state.lighting_mode,
-                                state.meshing_mode,
-                            ) catch |err| {
-                                std.log.err("Greedy mesh regen failed for place at ({},{},{}): {}", .{ px, py, pz, err });
-                            };
-                            lc.mesh_dirty = false;
-                            lc.mesh_incremental_dirty = true;
-                            const t_regen_us = @divTrunc(perfNowNs() - t_regen0, 1000);
-                            std.log.info("[TICK  tick={d:4}] greedy place ({},{},{}) sync regen={}us", .{ ctx.tickId(), px, py, pz, t_regen_us });
-                        } else {
-                            const t_incr0 = perfNowNs();
-                            lc.mesh.updateForBlockChange(
-                                &lc.chunk,
-                                lpx,
-                                py,
-                                lpz,
-                                cam_pos_arr2,
-                                lc.worldX(),
-                                lc.worldZ(),
-                                state.world.asBlockGetter(),
-                                state.ao_strategy,
-                                state.lighting_mode,
-                            ) catch |err| {
-                                std.log.err("Incremental mesh update failed: {} — falling back to full regen", .{err});
-                                lc.mesh_dirty = true;
-                            };
-                            lc.mesh_incremental_dirty = true;
-                            const t_incr_us = @divTrunc(perfNowNs() - t_incr0, 1000);
-                            std.log.info("[TICK  tick={d:4}] incremental place ({},{},{}) update={}us", .{ ctx.tickId(), px, py, pz, t_incr_us });
-                        }
+                        // See the note in the break-block path above.
+                        const t_regen0 = perfNowNs();
+                        mesher_mod.generateMesh(
+                            &lc.chunk,
+                            &lc.mesh,
+                            lc.worldX(),
+                            lc.worldZ(),
+                            state.world.asBlockGetter(),
+                            state.ao_strategy,
+                            state.lighting_mode,
+                        ) catch |err| {
+                            std.log.err("Greedy mesh regen failed for place at ({},{},{}): {}", .{ px, py, pz, err });
+                        };
+                        lc.mesh_dirty = false;
+                        lc.mesh_incremental_dirty = true;
+                        const t_regen_us = @divTrunc(perfNowNs() - t_regen0, 1000);
+                        std.log.info("[TICK  tick={d:4}] greedy place ({},{},{}) sync regen={}us", .{ ctx.tickId(), px, py, pz, t_regen_us });
                     }
-                    updateBoundaryNeighbors(&state.world, px, py, pz, cam_pos_arr2);
+                    updateBoundaryNeighbors(&state.world, px, pz);
                 }
             } else {
                 if (!state.tas_step_mode or state.tas_step_executing) state.hover_block = null;
@@ -3122,14 +3006,10 @@ fn voxelTick(ctx: *sw.Context) !void {
         if (!state.tas_step_mode or state.tas_step_executing) state.hover_block = null;
     }
 
-    // GPU debug: decay highlight intensity each tick so rebuilt faces fade out over ~0.5s.
-    // In TAS step mode, only decay on executing ticks (preserves highlights between steps).
-    if (state.gpu_debug and (!state.tas_step_mode or state.tas_step_executing)) {
-        var it = state.world.chunks.valueIterator();
-        while (it.next()) |lc_ptr| {
-            lc_ptr.*.mesh.decayHighlights(4);
-        }
-    }
+    // GPU debug clock. A chunk's rebuild tint fades over 64 ticks of this
+    // clock (about 0.5 s at 120 Hz, see voxel.wgsl). In TAS step mode it
+    // advances only on executing ticks, so the tint stays between steps.
+    if (!state.tas_step_mode or state.tas_step_executing) state.debug_tick +%= 1;
 }
 
 /// Build chunk border wireframe: 12 edges of the bounding box, each as two
@@ -3519,7 +3399,7 @@ fn voxelRender(ctx: *sw.Context) !void {
         while (it.next()) |entry| {
             const key = entry.key_ptr.*;
             const lc = entry.value_ptr.*;
-            if (lc.mesh.vertices.items.len == 0) continue;
+            if (lc.mesh.quadCount() == 0) continue;
 
             if (sort_quads) {
                 const t_sort = perfNowNs();
@@ -3527,7 +3407,7 @@ fn voxelRender(ctx: *sw.Context) !void {
                     state.camera.position.x,
                     state.camera.position.y,
                     state.camera.position.z,
-                }, cam_fwd) catch |err| {
+                }, cam_fwd, lc.worldX(), lc.worldZ()) catch |err| {
                     std.log.err("Sort failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                     continue;
                 };
@@ -3537,10 +3417,10 @@ fn voxelRender(ctx: *sw.Context) !void {
             const gop = state.chunk_gpu.getOrPut(key) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = .{};
             const first_upload = gop.value_ptr.quad_buffer == null;
-            if (!(lc.mesh_incremental_dirty or first_upload or sort_quads or state.gpu_debug)) continue;
+            if (!(lc.mesh_incremental_dirty or first_upload or sort_quads)) continue;
             const needed_upload = lc.mesh_incremental_dirty;
             const up_t0: i128 = if (state.profile_csv_file != null and needed_upload) perfNowNs() else 0;
-            uploadChunkMeshToGPU(g, ctx.allocator(), lc, gop.value_ptr, lc.mesh_incremental_dirty, sort_quads) catch |err| {
+            uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.mesh_incremental_dirty, sort_quads) catch |err| {
                 std.log.err("Upload failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
@@ -3575,14 +3455,15 @@ fn voxelRender(ctx: *sw.Context) !void {
     const fog_start: f32 = render_dist_blocks * 0.50 * state.fog_distance_mult;
     const fog_end: f32 = render_dist_blocks * 0.85 * state.fog_distance_mult;
 
+    const debug_tick: u32 = if (state.gpu_debug) state.debug_tick else 0;
     const uniforms = [_]f32{
         // view_proj (16 floats)
         view_proj.data[0],       view_proj.data[1],       view_proj.data[2],       view_proj.data[3],
         view_proj.data[4],       view_proj.data[5],       view_proj.data[6],       view_proj.data[7],
         view_proj.data[8],       view_proj.data[9],       view_proj.data[10],      view_proj.data[11],
         view_proj.data[12],      view_proj.data[13],      view_proj.data[14],      view_proj.data[15],
-        // camera_pos + padding (4 floats)
-        state.camera.position.x, state.camera.position.y, state.camera.position.z, 0,
+        // camera_pos + debug_tick (a u32: 0 when GPU debug is off)
+        state.camera.position.x, state.camera.position.y, state.camera.position.z, @bitCast(debug_tick),
         // hover_block + hover_active (4 floats)
         hover_pos.x,             hover_pos.y,             hover_pos.z,             hover_active,
         // fog (2 floats)
@@ -3670,7 +3551,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     {
         var it = state.world.chunks.valueIterator();
         while (it.next()) |lc_ptr| {
-            if (lc_ptr.*.mesh.vertices.items.len == 0) continue;
+            if (lc_ptr.*.mesh.quadCount() == 0) continue;
             // The y range of the chunk's uploaded mesh. A chunk with no upload
             // yet is not drawn anyway, so the full height is only a default.
             const cg = state.chunk_gpu.get(.{ .cx = lc_ptr.*.cx, .cz = lc_ptr.*.cz });
@@ -4504,7 +4385,6 @@ fn voxelShutdown(ctx: *sw.Context) !void {
     logGpuMeshStats();
     while (it.next()) |entry| entry.value_ptr.release();
     state.chunk_gpu.deinit();
-    state.pack_scratch.deinit(ctx.allocator());
     state.world.deinit();
 
     state.overlay.deinit();
@@ -4752,18 +4632,21 @@ fn logGpuMeshStats() void {
     });
 }
 
-/// Pack a chunk's quads and write them to its quad buffer. `sorted`: write
-/// the quads in the back-to-front order from sortByDepth (depth off).
+/// Write a chunk's packed quads to its quad buffer. The mesher makes the GPU
+/// format, so the upload copies the bytes as they are. `sorted`: write the
+/// quads in the back-to-front order from sortByDepth (depth off).
 /// The buffer and its bind group are made again when the quad count grows
-/// past the buffer, or when `structure_changed`.
-fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, allocator: std.mem.Allocator, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, structure_changed: bool, sorted: bool) !void {
-    const quad_count = lc.mesh.indices.items.len / 6;
+/// past the buffer, or when `structure_changed` (a new mesh). A new mesh
+/// also sets the "rebuilt at" tick of the chunk for the GPU debug tint.
+fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, structure_changed: bool, sorted: bool) !void {
+    const quad_count = lc.mesh.quadCount();
     if (quad_count == 0) return;
     const recreate = structure_changed or cg.quad_buffer == null or quad_count > cg.capacity;
 
     if (recreate) {
         cg.release();
-        // The header element holds the chunk origin (x, unused, z, unused).
+        // The header element holds the chunk origin and the rebuild tick
+        // (x, rebuilt tick, z, unused).
         const buffer = try g.createBuffer(.{
             .size = (quad_count + 1) * @sizeOf(mesher_mod.PackedQuad),
             .usage = .{ .storage = true, .copy_dst = true },
@@ -4781,23 +4664,18 @@ fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, allocator: std.mem.Allocator, lc: *worl
         cg.capacity = quad_count;
     }
 
-    if (!(recreate or sorted or state.gpu_debug)) return;
-    try state.pack_scratch.resize(allocator, quad_count + 1);
+    if (structure_changed) cg.rebuilt_tick = state.debug_tick;
+    if (!(recreate or sorted)) return;
     const world_ox = lc.cx * chunk_mod.CHUNK_W;
     const world_oz = lc.cz * chunk_mod.CHUNK_W;
-    state.pack_scratch.items[0] = .{ @bitCast(world_ox), 0, @bitCast(world_oz), 0 };
-    const order: ?[]const u32 = if (sorted) lc.mesh.sort_indices[0 .. quad_count * 6] else null;
-    _ = mesher_mod.packQuads(&lc.mesh, state.pack_scratch.items[1..], world_ox, world_oz, order, state.gpu_debug);
-    g.writeBuffer(cg.quad_buffer.?, 0, std.mem.sliceAsBytes(state.pack_scratch.items));
+    const header = mesher_mod.PackedQuad{ @bitCast(world_ox), cg.rebuilt_tick, @bitCast(world_oz), 0 };
+    const quads = if (sorted) lc.mesh.sorted_quads[0..quad_count] else lc.mesh.quads.items;
+    const quad_size = @sizeOf(mesher_mod.PackedQuad);
+    g.writeBuffer(cg.quad_buffer.?, 0, std.mem.asBytes(&header));
+    g.writeBuffer(cg.quad_buffer.?, quad_size, std.mem.sliceAsBytes(quads));
     cg.quad_count = @intCast(quad_count);
-    var y_min: f32 = chunk_mod.CHUNK_H;
-    var y_max: f32 = 0;
-    for (lc.mesh.vertices.items) |v| {
-        y_min = @min(y_min, v.pos[1]);
-        y_max = @max(y_max, v.pos[1]);
-    }
-    cg.y_min = y_min;
-    cg.y_max = y_max;
+    cg.y_min = lc.mesh.y_min;
+    cg.y_max = lc.mesh.y_max;
 }
 
 // ----------------------------------------------------------------------------

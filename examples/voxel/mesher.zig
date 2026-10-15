@@ -9,24 +9,9 @@ const CHUNK_H = chunk_mod.CHUNK_H;
 pub const AOStrategy = gpu_mod.AOStrategy;
 pub const LightingMode = gpu_mod.LightingMode;
 
-/// How the mesher emits faces for a chunk.
-///
-///   .naive  — one quad per visible block face. Preserves the per-block
-///             invariant used by `updateForBlockChange` (the `quad_block`
-///             parallel array assumes exactly one block owns each quad).
-///   .greedy — coplanar same-material + same-lighting faces are merged into
-///             larger rectangles. Reduces vertex count by 5–10× on
-///             flatland/hilly terrain. Greedy quads span multiple blocks, so
-///             the `updateForBlockChange` incremental path is NOT used in
-///             greedy mode; block add/remove flags `mesh_dirty = true` and
-///             the affected chunk is re-meshed in full next tick. See
-///             `examples/voxel/docs/memory.md` §5 for rationale + measured
-///             reductions.
-pub const MeshingMode = enum { naive, greedy };
-
-const DEBUG = false; // Enable for mesh generation debug logging
-
-/// Vertex format matching voxel.wgsl
+/// Vertex format of vs_main in voxel.wgsl. The player cylinder and the chunk
+/// border use it. Chunk meshes do not: they use PackedQuad (see below).
+/// unpackCorner gives the vertex of one corner of a PackedQuad in this format.
 pub const VoxelVertex = extern struct {
     pos: [3]f32, // offset 0
     normal: [3]f32, // offset 12
@@ -39,47 +24,45 @@ pub const VoxelVertex = extern struct {
 
 const SortEntry = struct { idx: usize, dist: f32 };
 
+/// The mesh of one chunk, in the GPU format: one 16-byte PackedQuad per quad,
+/// and the y range of the quads. The upload writes `quads` to the GPU as it
+/// is. The mesher makes the GPU format directly, so a mesh can cross a
+/// thread or worker boundary with no conversion.
 pub const Mesh = struct {
     allocator: std.mem.Allocator,
-    vertices: std.ArrayList(VoxelVertex),
-    indices: std.ArrayList(u32),
-    /// Parallel to quads: quad_block[i] = packed block idx owning quad i.
-    /// Used for O(1) incremental mesh updates — find affected quads by block.
-    quad_block: std.ArrayList(u32),
-    /// Parallel to quads: highlight intensity 0–255. Freshly rebuilt quads start at 255
-    /// and decay each tick. Used by GPU debug mode to tint recently-changed faces.
-    quad_highlight: std.ArrayList(u8),
-    /// Persistent scratch buffers for sortByDepth — reallocated only when quad count grows.
+    /// One PackedQuad per quad, in the order the mesher makes them.
+    quads: std.ArrayList(PackedQuad),
+    /// The lowest and the highest y of the quads, for the frustum cull.
+    /// With no quads, y_min is CHUNK_H and y_max is 0.
+    y_min: f32 = CHUNK_H,
+    y_max: f32 = 0,
+    /// Scratch for sortByDepth. It grows and never shrinks.
     sort_scratch: []SortEntry = &.{},
-    sort_indices: []u32 = &.{},
-    /// True once sort_scratch holds a valid sorted order from the previous frame.
-    /// False after mesh rebuild — triggers full pdqsort to establish initial order.
+    /// The quads in back-to-front order. sortByDepth writes it. The upload
+    /// reads it when the depth test is off.
+    sorted_quads: []PackedQuad = &.{},
+    /// True when sort_scratch holds the sorted order of the previous frame.
+    /// False after a rebuild: the next sort is a full sort.
     sort_valid: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Mesh {
-        return .{
-            .allocator = allocator,
-            .vertices = .empty,
-            .indices = .empty,
-            .quad_block = .empty,
-            .quad_highlight = .empty,
-        };
+        return .{ .allocator = allocator, .quads = .empty };
     }
 
     pub fn deinit(self: *Mesh) void {
-        self.vertices.deinit(self.allocator);
-        self.indices.deinit(self.allocator);
-        self.quad_block.deinit(self.allocator);
-        self.quad_highlight.deinit(self.allocator);
+        self.quads.deinit(self.allocator);
         if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
-        if (self.sort_indices.len > 0) self.allocator.free(self.sort_indices);
+        if (self.sorted_quads.len > 0) self.allocator.free(self.sorted_quads);
+    }
+
+    pub fn quadCount(self: *const Mesh) usize {
+        return self.quads.items.len;
     }
 
     pub fn clear(self: *Mesh) void {
-        self.vertices.clearRetainingCapacity();
-        self.indices.clearRetainingCapacity();
-        self.quad_block.clearRetainingCapacity();
-        self.quad_highlight.clearRetainingCapacity();
+        self.quads.clearRetainingCapacity();
+        self.y_min = CHUNK_H;
+        self.y_max = 0;
         self.sort_valid = false; // mesh rebuilt — scratch order is stale
     }
 
@@ -89,72 +72,72 @@ pub const Mesh = struct {
     /// chunk wanders outside the render distance and we want the host RAM
     /// back, not just the GPU buffer back.
     ///
-    /// The Mesh struct itself stays valid: `init`-equivalent state is restored
-    /// on every list, so a subsequent `generateMesh` against this Mesh works
-    /// fine and just re-grows the storage as it appends.
+    /// The Mesh struct itself stays valid: a subsequent `generateMesh` against
+    /// this Mesh works and grows the storage again as it appends.
     pub fn freeHostBuffers(self: *Mesh) void {
-        self.vertices.shrinkAndFree(self.allocator, 0);
-        self.indices.shrinkAndFree(self.allocator, 0);
-        self.quad_block.shrinkAndFree(self.allocator, 0);
-        self.quad_highlight.shrinkAndFree(self.allocator, 0);
+        self.quads.clearAndFree(self.allocator);
+        self.y_min = CHUNK_H;
+        self.y_max = 0;
         if (self.sort_scratch.len > 0) {
             self.allocator.free(self.sort_scratch);
             self.sort_scratch = &.{};
         }
-        if (self.sort_indices.len > 0) {
-            self.allocator.free(self.sort_indices);
-            self.sort_indices = &.{};
+        if (self.sorted_quads.len > 0) {
+            self.allocator.free(self.sorted_quads);
+            self.sorted_quads = &.{};
         }
         self.sort_valid = false;
     }
 
-    /// Sort faces by depth for correct rendering with hardware depth testing disabled.
-    /// Uses view-space depth (dot product of centroid delta with camera forward) rather
-    /// than 3D Euclidean distance. View-space depth is the correct painter's-algorithm
-    /// sort key: it matches the Z component used by the GPU projection, so faces that
-    /// are geometrically in front of each other in the view direction sort correctly
-    /// even when they are laterally offset from the camera axis.
-    ///
-    /// Reuses pre-allocated scratch buffers each frame.
-    pub fn sortByDepth(self: *Mesh, camera_pos: [3]f32, camera_fwd: [3]f32) !void {
-        if (self.indices.items.len == 0) return;
+    /// Append one quad that spans y_lo..y_hi.
+    fn addQuad(self: *Mesh, q: PackedQuad, y_lo: f32, y_hi: f32) !void {
+        try self.quads.append(self.allocator, q);
+        self.y_min = @min(self.y_min, y_lo);
+        self.y_max = @max(self.y_max, y_hi);
+    }
 
-        const quad_count = self.indices.items.len / 6;
+    /// Sort the quads back to front into `sorted_quads`, for rendering with
+    /// the hardware depth test off. The sort key is view-space depth: the dot
+    /// product of (quad centroid - camera) with the camera forward vector.
+    /// That is the Z the GPU projection uses, so faces in front of each other
+    /// along the view direction sort correctly, also when they are to the
+    /// side of the camera axis. (world_ox, world_oz) is the chunk origin.
+    ///
+    /// The scratch buffers stay from frame to frame. After the first sort,
+    /// an insertion sort on the order of the previous frame costs O(n) when
+    /// the camera moves a little.
+    pub fn sortByDepth(self: *Mesh, camera_pos: [3]f32, camera_fwd: [3]f32, world_ox: i32, world_oz: i32) !void {
+        const quad_count = self.quads.items.len;
         if (quad_count == 0) return;
 
-        // Grow scratch buffers only when needed (never shrink)
+        // Grow the scratch buffers only when needed (never shrink).
         if (quad_count > self.sort_scratch.len) {
             if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
-            if (self.sort_indices.len > 0) self.allocator.free(self.sort_indices);
+            if (self.sorted_quads.len > 0) self.allocator.free(self.sorted_quads);
+            self.sort_scratch = &.{};
+            self.sorted_quads = &.{};
             self.sort_scratch = try self.allocator.alloc(SortEntry, quad_count);
-            self.sort_indices = try self.allocator.alloc(u32, quad_count * 6);
+            self.sorted_quads = try self.allocator.alloc(PackedQuad, quad_count);
             self.sort_valid = false; // fresh allocation — scratch must be repopulated
         }
 
         const scratch = self.sort_scratch[0..quad_count];
+        const depth = struct {
+            fn of(q: PackedQuad, ox: i32, oz: i32, pos: [3]f32, fwd: [3]f32) f32 {
+                const c = quadCentroid(q, ox, oz);
+                const dx = c[0] - pos[0];
+                const dy = c[1] - pos[1];
+                const dz = c[2] - pos[2];
+                // View-space depth: dot(centroid_delta, camera_forward). Positive = in front.
+                return dx * fwd[0] + dy * fwd[1] + dz * fwd[2];
+            }
+        }.of;
 
         if (self.sort_valid) {
-            // Scratch holds the sorted order from last frame — just update depths in place.
-            // The .idx fields still point to the correct quads; only depths changed.
+            // Scratch holds the sorted order from last frame — update the depths in place.
             for (scratch) |*entry| {
-                const base_idx = entry.idx * 6;
-                const idx0 = self.indices.items[base_idx];
-                const idx1 = self.indices.items[base_idx + 1];
-                const idx2 = self.indices.items[base_idx + 2];
-                const idx3 = self.indices.items[base_idx + 3];
-
-                const v0 = self.vertices.items[idx0].pos;
-                const v1 = self.vertices.items[idx1].pos;
-                const v2 = self.vertices.items[idx2].pos;
-                const v3 = self.vertices.items[idx3].pos;
-
-                const dx = (v0[0] + v1[0] + v2[0] + v3[0]) / 4.0 - camera_pos[0];
-                const dy = (v0[1] + v1[1] + v2[1] + v3[1]) / 4.0 - camera_pos[1];
-                const dz = (v0[2] + v1[2] + v2[2] + v3[2]) / 4.0 - camera_pos[2];
-                // View-space depth: dot(centroid_delta, camera_forward). Positive = in front.
-                entry.dist = dx * camera_fwd[0] + dy * camera_fwd[1] + dz * camera_fwd[2];
+                entry.dist = depth(self.quads.items[entry.idx], world_ox, world_oz, camera_pos, camera_fwd);
             }
-
             // Insertion sort: O(n) for nearly-sorted data (camera moved a little)
             var i: usize = 1;
             while (i < quad_count) : (i += 1) {
@@ -166,268 +149,25 @@ pub const Mesh = struct {
                 scratch[j] = key;
             }
         } else {
-            // First frame after mesh rebuild — populate scratch from scratch and use pdqsort.
+            // First frame after a rebuild — populate scratch and use pdqsort.
             for (0..quad_count) |i| {
-                const base_idx = i * 6;
-                const idx0 = self.indices.items[base_idx];
-                const idx1 = self.indices.items[base_idx + 1];
-                const idx2 = self.indices.items[base_idx + 2];
-                const idx3 = self.indices.items[base_idx + 3];
-
-                const v0 = self.vertices.items[idx0].pos;
-                const v1 = self.vertices.items[idx1].pos;
-                const v2 = self.vertices.items[idx2].pos;
-                const v3 = self.vertices.items[idx3].pos;
-
-                const dx = (v0[0] + v1[0] + v2[0] + v3[0]) / 4.0 - camera_pos[0];
-                const dy = (v0[1] + v1[1] + v2[1] + v3[1]) / 4.0 - camera_pos[1];
-                const dz = (v0[2] + v1[2] + v2[2] + v3[2]) / 4.0 - camera_pos[2];
-                scratch[i] = .{ .idx = i, .dist = dx * camera_fwd[0] + dy * camera_fwd[1] + dz * camera_fwd[2] };
+                scratch[i] = .{ .idx = i, .dist = depth(self.quads.items[i], world_ox, world_oz, camera_pos, camera_fwd) };
             }
-
             std.mem.sort(SortEntry, scratch, {}, struct {
                 fn lessThan(_: void, a: SortEntry, b: SortEntry) bool {
                     return a.dist > b.dist;
                 }
             }.lessThan);
-
             self.sort_valid = true;
         }
 
-        // Write sorted indices into sort_indices (the GPU upload source).
-        // Never modify self.indices — it stays as the canonical unsorted buffer so
-        // scratch[i].idx remains a stable quad identifier across frames.
-        const out = self.sort_indices[0 .. quad_count * 6];
-        for (scratch, 0..) |qd, i| {
-            const src_base = qd.idx * 6;
-            const dst_base = i * 6;
-            @memcpy(out[dst_base .. dst_base + 6], self.indices.items[src_base .. src_base + 6]);
-        }
-    }
-
-    /// Swap-remove quad at index qi. Moves the last quad into slot qi.
-    /// Updates vertices, indices (base address rewrite), and quad_block.
-    /// Caller must set sort_valid = false afterwards.
-    fn swapRemoveQuad(self: *Mesh, qi: usize) void {
-        const quad_count = self.indices.items.len / 6;
-        const last = quad_count - 1;
-
-        if (qi != last) {
-            // Copy last quad's 4 vertices into slot qi
-            const src_v = last * 4;
-            const dst_v = qi * 4;
-            @memcpy(self.vertices.items[dst_v .. dst_v + 4], self.vertices.items[src_v .. src_v + 4]);
-
-            // Rewrite the 6 index values so the moved quad references its new vertex slot
-            const base: u32 = @intCast(dst_v);
-            self.indices.items[qi * 6 + 0] = base;
-            self.indices.items[qi * 6 + 1] = base + 1;
-            self.indices.items[qi * 6 + 2] = base + 2;
-            self.indices.items[qi * 6 + 3] = base;
-            self.indices.items[qi * 6 + 4] = base + 2;
-            self.indices.items[qi * 6 + 5] = base + 3;
-
-            // Update quad_block + quad_highlight for the moved quad
-            self.quad_block.items[qi] = self.quad_block.items[last];
-            self.quad_highlight.items[qi] = self.quad_highlight.items[last];
-        }
-
-        // Shrink all four arrays (no allocation, just adjust len)
-        self.vertices.items.len = last * 4;
-        self.indices.items.len = last * 6;
-        self.quad_block.items.len = last;
-        self.quad_highlight.items.len = last;
-    }
-
-    /// Incremental mesh update for a single block change at (bx, by, bz).
-    /// Only re-meshes the changed block and its ≤6 in-bounds neighbors — O(1)
-    /// instead of the O(chunk_volume) full rebuild.
-    /// Maintains sort_scratch so the next sortByDepth uses cheap insertion sort
-    /// instead of a full pdqsort.
-    /// Call this AFTER the chunk data has been modified.
-    pub fn updateForBlockChange(
-        self: *Mesh,
-        chunk: *const Chunk,
-        bx: i32,
-        by: i32,
-        bz: i32,
-        camera_pos: [3]f32,
-        world_ox: i32,
-        world_oz: i32,
-        getter: BlockGetter,
-        ao_strategy: AOStrategy,
-        lighting_mode: LightingMode,
-    ) !void {
-        const offsets = [7][3]i32{
-            .{ 0, 0, 0 },
-            .{ 1, 0, 0 },
-            .{ -1, 0, 0 },
-            .{ 0, 1, 0 },
-            .{ 0, -1, 0 },
-            .{ 0, 0, 1 },
-            .{ 0, 0, -1 },
-        };
-
-        // Build the set of affected block indices (in-bounds only)
-        var affected: [7]u32 = undefined;
-        var n_affected: usize = 0;
-        for (offsets) |off| {
-            const ax = bx + off[0];
-            const ay = by + off[1];
-            const az = bz + off[2];
-            if (ax >= 0 and ax < CHUNK_W and ay >= 0 and ay < CHUNK_H and az >= 0 and az < CHUNK_W) {
-                affected[n_affected] = packBlockIdx(ax, ay, az);
-                n_affected += 1;
-            }
-        }
-
-        // Collect quad indices belonging to affected blocks (linear scan, n≈920 quads)
-        var to_remove: [7 * 6]usize = undefined;
-        var remove_count: usize = 0;
-        for (self.quad_block.items, 0..) |blk, qi| {
-            for (affected[0..n_affected]) |ab| {
-                if (blk == ab) {
-                    to_remove[remove_count] = qi;
-                    remove_count += 1;
-                    break;
-                }
-            }
-        }
-
-        const quad_count_before = self.indices.items.len / 6;
-
-        // Remove in descending order so earlier indices stay valid through each swap-remove
-        std.mem.sort(usize, to_remove[0..remove_count], {}, struct {
-            fn desc(_: void, a: usize, b: usize) bool {
-                return a > b;
-            }
-        }.desc);
-        for (to_remove[0..remove_count]) |qi| {
-            self.swapRemoveQuad(qi);
-        }
-
-        const quad_count_after_removes = self.indices.items.len / 6;
-        // = quad_count_before - remove_count
-
-        // Maintain sort_scratch so the next frame uses insertion sort (O(n)) instead
-        // of pdqsort (O(n log n)).
-        //
-        // After swap-removes in descending order, all quad positions
-        // >= quad_count_after_removes no longer exist. The scratch entries with
-        // .idx >= quad_count_after_removes are stale and must be removed.
-        // Entries with .idx < quad_count_after_removes remain valid (they reference
-        // existing positions — possibly holding different quads due to swaps, but
-        // sortByDepth recomputes distances anyway before sorting).
-        //
-        // Maintaining scratch requires the allocation to be large enough to hold the
-        // final quad count. If it's not, fall back to full pdqsort.
-        const can_maintain = self.sort_valid and
-            self.sort_scratch.len >= quad_count_before;
-
-        var scratch_count: usize = 0;
-        if (can_maintain) {
-            // One O(n) pass: compact scratch, keeping only valid entries
-            for (self.sort_scratch[0..quad_count_before]) |entry| {
-                if (entry.idx < quad_count_after_removes) {
-                    self.sort_scratch[scratch_count] = entry;
-                    scratch_count += 1;
-                }
-            }
-            // scratch_count == quad_count_after_removes at this point
-        }
-
-        // Re-mesh each affected block from the current chunk state
-        for (affected[0..n_affected]) |ab| {
-            const pos = unpackBlockIdx(ab);
-            const block = chunk.getBlock(pos.x, pos.y, pos.z);
-            if (block == .air) continue;
-            const wpx = world_ox + pos.x;
-            const wpz = world_oz + pos.z;
-            for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
-                if (shouldRenderFace(chunk, getter, pos.x, pos.y, pos.z, world_ox, world_oz, face)) {
-                    try addQuad(
-                        self,
-                        @floatFromInt(wpx),
-                        @floatFromInt(pos.y),
-                        @floatFromInt(wpz),
-                        face,
-                        block,
-                        ab,
-                        255, // freshly rebuilt — max highlight
-                        chunk,
-                        getter,
-                        world_ox,
-                        world_oz,
-                        ao_strategy,
-                        lighting_mode,
-                    );
-                }
-            }
-        }
-
-        const quad_count_final = self.indices.items.len / 6;
-
-        if (can_maintain) {
-            // Grow scratch if new quads push us past current capacity.
-            // Allocate with headroom (+64) to absorb future incremental adds without realloc.
-            if (quad_count_final > self.sort_scratch.len) {
-                const new_cap = quad_count_final + 64;
-                const new_scratch = try self.allocator.alloc(SortEntry, new_cap);
-                @memcpy(new_scratch[0..scratch_count], self.sort_scratch[0..scratch_count]);
-                if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
-                self.sort_scratch = new_scratch;
-                const new_indices = try self.allocator.alloc(u32, new_cap * 6);
-                if (self.sort_indices.len > 0) self.allocator.free(self.sort_indices);
-                self.sort_indices = new_indices;
-            }
-
-            // Append scratch entries for newly-added quads with fresh distances
-            for (quad_count_after_removes..quad_count_final) |qi| {
-                const base_v = qi * 4;
-                const v0 = self.vertices.items[base_v].pos;
-                const v1 = self.vertices.items[base_v + 1].pos;
-                const v2 = self.vertices.items[base_v + 2].pos;
-                const v3 = self.vertices.items[base_v + 3].pos;
-                const dx = (v0[0] + v1[0] + v2[0] + v3[0]) / 4.0 - camera_pos[0];
-                const dy = (v0[1] + v1[1] + v2[1] + v3[1]) / 4.0 - camera_pos[1];
-                const dz = (v0[2] + v1[2] + v2[2] + v3[2]) / 4.0 - camera_pos[2];
-                self.sort_scratch[scratch_count] = .{ .idx = qi, .dist = dx * dx + dy * dy + dz * dz };
-                scratch_count += 1;
-            }
-            // sort_valid stays true — next sortByDepth uses cheap insertion sort
-        } else {
-            self.sort_valid = false;
-        }
-    }
-
-    /// Reduce all quad highlight intensities by `amount` (saturating at 0).
-    /// Call once per tick when gpu_debug is active.
-    pub fn decayHighlights(self: *Mesh, amount: u8) void {
-        for (self.quad_highlight.items) |*hl| {
-            hl.* = hl.* -| amount; // saturating subtract
-        }
+        // `quads` stays in mesher order, so scratch[i].idx stays a stable
+        // quad identifier from frame to frame.
+        for (scratch, 0..) |entry, i| self.sorted_quads[i] = self.quads.items[entry.idx];
     }
 };
 
-// ---------------------------------------------------------------------------
-// Block index packing helpers
-// ---------------------------------------------------------------------------
-
-fn packBlockIdx(x: i32, y: i32, z: i32) u32 {
-    return @as(u32, @intCast(x)) * (CHUNK_H * CHUNK_W) +
-        @as(u32, @intCast(y)) * CHUNK_W +
-        @as(u32, @intCast(z));
-}
-
 const BlockPos = struct { x: i32, y: i32, z: i32 };
-
-fn unpackBlockIdx(idx: u32) BlockPos {
-    return .{
-        .z = @intCast(idx % CHUNK_W),
-        .y = @intCast((idx / CHUNK_W) % CHUNK_H),
-        .x = @intCast(idx / (CHUNK_H * CHUNK_W)),
-    };
-}
 
 // ---------------------------------------------------------------------------
 // Face data
@@ -517,7 +257,7 @@ fn aoMooreValue(s1: bool, s2: bool, c: bool, ds1: bool, ds2: bool, dc: bool) f32
 }
 
 /// Compute per-vertex AO brightness (0..1) for a face quad.
-/// Returns [4]f32 — one brightness per vertex in the same order addQuad emits them.
+/// Returns [4]f32 — one brightness per corner, in the corner order of face_layouts.
 ///
 /// Strategy dispatch:
 ///   - .none           — returns [1.0]*4 (no occlusion at all)
@@ -886,7 +626,7 @@ fn aoPropValue(
 
 /// Propagated per-vertex AO for a face quad. Three concentric face-plane
 /// slabs at outward+1, +2, +3, weighted 1.0 / 0.5 / 0.25. Returns [4]f32
-/// in the same vertex order as addQuad.
+/// in the corner order of face_layouts.
 fn computeFaceAOPropagated(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
     return switch (face) {
         .px => blk: {
@@ -1138,7 +878,7 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
             const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
             const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
             const a022 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
-            // Vertex order matches addQuad's .px branch: (y, z) → (0,0)(1,0)(1,1)(0,1).
+            // Corner order matches the .px entry of face_layouts: (y, z) → (0,0)(1,0)(1,1)(0,1).
             const v0: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
             const v1: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
             const v2: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
@@ -1155,7 +895,7 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
             const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
             const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
             const a022 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            // Vertex order matches addQuad's .nx branch: (y, z) → (0,1)(1,1)(1,0)(0,0).
+            // Corner order matches the .nx entry of face_layouts: (y, z) → (0,1)(1,1)(1,0)(0,0).
             const v0: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
             const v1: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
             const v2: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
@@ -1173,7 +913,7 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
             const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
             const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
             const a202 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
-            // Vertex order matches addQuad's .py branch: (x, z) → (0,0)(0,1)(1,1)(1,0).
+            // Corner order matches the .py entry of face_layouts: (x, z) → (0,0)(0,1)(1,1)(1,0).
             const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
             const v1: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
             const v2: f32 = @floatFromInt(@as(u32, a101) + a201 + a102 + a202);
@@ -1190,7 +930,7 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
             const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
             const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
             const a202 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            // Vertex order matches addQuad's .ny branch: (x, z) → (0,1)(0,0)(1,0)(1,1).
+            // Corner order matches the .ny entry of face_layouts: (x, z) → (0,1)(0,0)(1,0)(1,1).
             const v0: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
             const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
             const v2: f32 = @floatFromInt(@as(u32, a100) + a200 + a101 + a201);
@@ -1208,7 +948,7 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
             const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
             const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
             const a220 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
-            // Vertex order matches addQuad's .pz branch: (x, y) → (0,0)(1,0)(1,1)(0,1).
+            // Corner order matches the .pz entry of face_layouts: (x, y) → (0,0)(1,0)(1,1)(0,1).
             const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
             const v1: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
             const v2: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
@@ -1225,7 +965,7 @@ fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, 
             const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
             const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
             const a220 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            // Vertex order matches addQuad's .nz branch: (x, y) → (1,0)(0,0)(0,1)(1,1).
+            // Corner order matches the .nz entry of face_layouts: (x, y) → (1,0)(0,0)(0,1)(1,1).
             const v0: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
             const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
             const v2: f32 = @floatFromInt(@as(u32, a010) + a110 + a020 + a120);
@@ -1382,173 +1122,6 @@ fn computeFaceBlockLight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32
     };
 }
 
-/// Add a quad face to the mesh, recording its owning block via block_idx.
-/// highlight: initial highlight intensity (255 = freshly rebuilt, 0 = normal).
-fn addQuad(
-    mesh: *Mesh,
-    x: f32,
-    y: f32,
-    z: f32,
-    face: Face,
-    block_type: BlockType,
-    block_idx: u32,
-    highlight: u8,
-    chunk: *const Chunk,
-    getter: BlockGetter,
-    world_ox: i32,
-    world_oz: i32,
-    ao_strategy: AOStrategy,
-    lighting_mode: LightingMode,
-) !void {
-    const base_idx: u32 = @intCast(mesh.vertices.items.len);
-    const normal = face_normals[@backingInt(face)];
-    const block_u32: u32 = @backingInt(block_type);
-
-    // Compute per-vertex ambient occlusion for this face according to the
-    // selected strategy. The dispatch is centralized in computeFaceAOForStrategy
-    // so future strategies (propagated, ssao) plug in there without touching
-    // every quad-emit site.
-    const wx: i32 = @intFromFloat(x);
-    const wy: i32 = @intFromFloat(y);
-    const wz: i32 = @intFromFloat(z);
-    const ao = computeFaceAOForStrategy(chunk, getter, world_ox, world_oz, wx, wy, wz, face, ao_strategy);
-
-    // Per-vertex skylight 0..1. When lighting_mode == .none we hand every
-    // vertex 1.0 so the shader's sky channel collapses to a no-op multiply.
-    const sky: [4]f32 = switch (lighting_mode) {
-        .none => .{ 1.0, 1.0, 1.0, 1.0 },
-        .skylight => computeFaceSkylight(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
-    };
-
-    // Per-vertex block-light 0..1. Baked from the chunk's `block_light` grid
-    // (seeded by emissive blocks, BFS-propagated through air). Always
-    // computed — block light is a separate channel that is combined with
-    // sky in the shader via `max`, so `.none` lighting-mode baselines still
-    // work because sky = 1.0 saturates the max against whatever block
-    // contributes. When lighting_mode == .none we short-circuit to zero so
-    // we don't pay the sample cost for values that will never be read.
-    const bl: [4]f32 = switch (lighting_mode) {
-        .none => .{ 0.0, 0.0, 0.0, 0.0 },
-        .skylight => computeFaceBlockLight(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
-    };
-
-    // Define quad vertices based on face direction
-    const verts = switch (face) {
-        .px => [_]VoxelVertex{ // +X face
-            .{ .pos = .{ x + 1, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
-            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
-            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
-        },
-        .nx => [_]VoxelVertex{ // -X face
-            .{ .pos = .{ x, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
-            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
-            .{ .pos = .{ x, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
-            .{ .pos = .{ x, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
-        },
-        .py => [_]VoxelVertex{ // +Y face (CCW from above: +Y normal)
-            .{ .pos = .{ x, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
-            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
-            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
-        },
-        .ny => [_]VoxelVertex{ // -Y face (CCW from below: -Y normal)
-            .{ .pos = .{ x, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
-            .{ .pos = .{ x, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
-            .{ .pos = .{ x + 1, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
-            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
-        },
-        .pz => [_]VoxelVertex{ // +Z face (CCW from front: +Z normal)
-            .{ .pos = .{ x, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
-            .{ .pos = .{ x + 1, y, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
-            .{ .pos = .{ x + 1, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
-            .{ .pos = .{ x, y + 1, z + 1 }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
-        },
-        .nz => [_]VoxelVertex{ // -Z face (CCW from back: -Z normal)
-            .{ .pos = .{ x + 1, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = ao[0], .skylight = sky[0], .block_light = bl[0] },
-            .{ .pos = .{ x, y, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 0 }, .ao = ao[1], .skylight = sky[1], .block_light = bl[1] },
-            .{ .pos = .{ x, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 1, 1 }, .ao = ao[2], .skylight = sky[2], .block_light = bl[2] },
-            .{ .pos = .{ x + 1, y + 1, z }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 1 }, .ao = ao[3], .skylight = sky[3], .block_light = bl[3] },
-        },
-    };
-
-    try mesh.vertices.appendSlice(mesh.allocator, &verts);
-
-    // Two triangles per quad (CCW winding)
-    const inds = [_]u32{
-        base_idx, base_idx + 1, base_idx + 2,
-        base_idx, base_idx + 2, base_idx + 3,
-    };
-    try mesh.indices.appendSlice(mesh.allocator, &inds);
-
-    // Track which block owns this quad + its highlight intensity
-    try mesh.quad_block.append(mesh.allocator, block_idx);
-    try mesh.quad_highlight.append(mesh.allocator, highlight);
-
-    // Debug logging (gated by DEBUG constant)
-    if (DEBUG and x == 8.0 and y == 8.0 and z == 10.0) {
-        std.log.info("Block ({d:.0},{d:.0},{d:.0}) face={s} base_idx={}:", .{ x, y, z, @tagName(face), base_idx });
-        for (verts, 0..) |v, i| {
-            std.log.info("  v{}: pos=({d:.3},{d:.3},{d:.3}) normal=({d:.1},{d:.1},{d:.1})", .{
-                i, v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2],
-            });
-        }
-        std.log.info("  indices: [{}, {}, {}] [{}, {}, {}]", .{
-            inds[0], inds[1], inds[2], inds[3], inds[4], inds[5],
-        });
-    }
-}
-
-/// Full mesh generation from scratch. Use updateForBlockChange for incremental updates.
-/// world_ox/world_oz are the world-space block origin of this chunk.
-/// getter is used for cross-chunk face culling at chunk boundaries.
-/// ao_strategy selects which ambient-occlusion sampler each emitted face uses.
-///
-/// TODO (in-game settings menu): if ao_strategy changes at runtime, every loaded
-/// chunk needs to re-run generateMesh — the AO is baked into the vertex stream
-/// and no shader switch will recover it. The render loop already remeshes on
-/// `mesh_dirty`; setting that flag on every chunk after a strategy change is
-/// the entry point.
-pub fn generateMesh(chunk: *const Chunk, mesh: *Mesh, world_ox: i32, world_oz: i32, getter: BlockGetter, ao_strategy: AOStrategy, lighting_mode: LightingMode) !void {
-    mesh.clear();
-
-    var x: i32 = 0;
-    while (x < CHUNK_W) : (x += 1) {
-        var y: i32 = 0;
-        while (y < CHUNK_H) : (y += 1) {
-            var z: i32 = 0;
-            while (z < CHUNK_W) : (z += 1) {
-                const block = chunk.getBlock(x, y, z);
-                if (block == .air) continue;
-
-                const block_wx = world_ox + x;
-                const block_wz = world_oz + z;
-                const block_idx = packBlockIdx(x, y, z);
-                for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
-                    if (shouldRenderFace(chunk, getter, x, y, z, world_ox, world_oz, face)) {
-                        try addQuad(
-                            mesh,
-                            @floatFromInt(block_wx),
-                            @floatFromInt(y),
-                            @floatFromInt(block_wz),
-                            face,
-                            block,
-                            block_idx,
-                            255, // full rebuild — all quads highlighted
-                            chunk,
-                            getter,
-                            world_ox,
-                            world_oz,
-                            ao_strategy,
-                            lighting_mode,
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Greedy meshing
 // ---------------------------------------------------------------------------
@@ -1583,17 +1156,17 @@ fn greedyUniform4(v: [4]f32) bool {
 /// greedy rule: we only merge cells whose AO and skylight are *uniform*
 /// (all four corners equal) AND whose uniform constants match the candidate
 /// cell. This is the only rule that guarantees bilinear interpolation over
-/// a merged w × h quad reproduces the piecewise-bilinear naive result at
-/// every interior fragment.
+/// a merged w × h quad reproduces the piecewise-bilinear result of 1×1
+/// quads (one quad per block face) at every interior fragment.
 ///
 /// Why the weaker rule fails: consider two adjacent cells that each have AO
-/// quadruple [a, a, b, b] at corners (0,0)(0,1)(1,1)(1,0). Naive emits two
+/// quadruple [a, a, b, b] at corners (0,0)(0,1)(1,1)(1,0). 1×1 quads are two
 /// separate quads, each with its own (a,a,b,b) gradient from a to b across
 /// the cell. Merging them into a 2×1 rect with corners (a, a, b, b) means
 /// the gradient now stretches over 2 units — the value at the center of
 /// the left cell becomes a 75/25 mix of (a, b) instead of 50/50. RMS drift
 /// is large enough to be visible. Requiring uniform-corner cells ducks this
-/// entirely: a constant AO gives bilinear-interp == constant, same as naive.
+/// entirely: a constant AO gives bilinear-interp == constant, same as 1×1 quads.
 fn greedyCellEq(a: GreedyCell, b: GreedyCell) bool {
     if (!a.present or !b.present) return false;
     if (a.block_type != b.block_type) return false;
@@ -1607,8 +1180,7 @@ fn greedyCellEq(a: GreedyCell, b: GreedyCell) bool {
 }
 
 /// Compute the face cell signature for a block face at local (lx, ly, lz).
-/// Mirrors the addQuad head — same AO/sky calls — so a greedy merged quad
-/// reproduces the lighting a naive quad would have had, exactly.
+/// The light values are per corner, in the corner order of face_layouts.
 /// The caller passes a visible face (VisibleFaces): `block` is not air and the
 /// neighbour in the face direction is air.
 fn computeGreedyCell(
@@ -1645,17 +1217,9 @@ fn computeGreedyCell(
 }
 
 /// Emit a merged greedy quad covering (w × h) blocks in the face's in-plane
-/// (i, j) axes. The vertex layout mirrors the naive `addQuad` for each face
-/// with `+1` substituted by `+w` or `+h` on the in-plane axes, so the shader
-/// winding/normal path is identical — only the UV range grows.
-///
-/// `block_idx` is the packed index of the first (ia, ja) block in the rect
-/// (`ia`/`ja` are the in-plane axes of the face; `ia`/`ja` can't be used as
-/// names here because `ia` is a Zig primitive integer type).
-/// In greedy mode the `quad_block` parallel array loses its one-quad-per-block
-/// meaning, but we still populate it (any block in the merged rect would do)
-/// so the array stays the same length as `indices/6` and `swapRemoveQuad`
-/// continues to work when `decayHighlights` etc. run.
+/// (i, j) axes, as one PackedQuad. The cell of the quad is the (ia, ja)
+/// corner block, and the light values of all 4 corners are the values of
+/// that cell (greedyCellEq merges only cells with the same values).
 fn emitGreedyQuad(
     mesh: *Mesh,
     face: Face,
@@ -1665,119 +1229,34 @@ fn emitGreedyQuad(
     w: i32,
     h: i32,
     cell: GreedyCell,
-    block_idx: u32,
-    world_ox: i32,
-    world_oz: i32,
 ) !void {
     std.debug.assert(cell.present);
     std.debug.assert(cell.block_type != .air);
     std.debug.assert(w > 0 and h > 0);
 
-    const base_idx: u32 = @intCast(mesh.vertices.items.len);
-    const normal = face_normals[@backingInt(face)];
-    const block_u32: u32 = @backingInt(cell.block_type);
-
-    const wf: f32 = @floatFromInt(w);
-    const hf: f32 = @floatFromInt(h);
-
-    // World-space coordinates of the (ia, ja) corner + constants per face.
-    // `d` is the in-plane slice index along the face normal.
-    const verts = switch (face) {
-        .px => blk: {
-            // +X face: d = local block x, plane at world x = world_ox + d + 1.
-            // In-plane axes: i = local Z, j = local Y. Merge grows w along Z, h along Y.
-            const x_f: f32 = @floatFromInt(world_ox + d + 1);
-            const y_f: f32 = @floatFromInt(ja);
-            const z_f: f32 = @floatFromInt(world_oz + ia);
-            break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
-                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f, y_f, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
-            };
-        },
-        .nx => blk: {
-            // -X face: d = local x, plane at world x = world_ox + d.
-            // In-plane axes: i = Z, j = Y. Vertex 0 sits at (+z+w) to match naive winding.
-            const x_f: f32 = @floatFromInt(world_ox + d);
-            const y_f: f32 = @floatFromInt(ja);
-            const z_f: f32 = @floatFromInt(world_oz + ia);
-            break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f, y_f, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
-                .{ .pos = .{ x_f, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
-            };
-        },
-        .py => blk: {
-            // +Y face: d = local y, plane at world y = d + 1.
-            // In-plane axes: i = X, j = Z. Merge grows w along X, h along Z.
-            const x_f: f32 = @floatFromInt(world_ox + ia);
-            const y_f: f32 = @floatFromInt(d + 1);
-            const z_f: f32 = @floatFromInt(world_oz + ja);
-            break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
-                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f + wf, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
-            };
-        },
-        .ny => blk: {
-            // -Y face: d = local y, plane at world y = d.
-            // In-plane axes: i = X, j = Z. Vertex 0 sits at (+z+h) to match naive winding.
-            const x_f: f32 = @floatFromInt(world_ox + ia);
-            const y_f: f32 = @floatFromInt(d);
-            const z_f: f32 = @floatFromInt(world_oz + ja);
-            break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
-                .{ .pos = .{ x_f + wf, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
-            };
-        },
-        .pz => blk: {
-            // +Z face: d = local z, plane at world z = world_oz + d + 1.
-            // In-plane axes: i = X, j = Y. Merge grows w along X, h along Y.
-            const x_f: f32 = @floatFromInt(world_ox + ia);
-            const y_f: f32 = @floatFromInt(ja);
-            const z_f: f32 = @floatFromInt(world_oz + d + 1);
-            break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f + wf, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
-                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
-            };
-        },
-        .nz => blk: {
-            // -Z face: d = local z, plane at world z = world_oz + d.
-            // In-plane axes: i = X, j = Y. Vertex 0 sits at (+x+w) to match naive winding.
-            const x_f: f32 = @floatFromInt(world_ox + ia);
-            const y_f: f32 = @floatFromInt(ja);
-            const z_f: f32 = @floatFromInt(world_oz + d);
-            break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f + wf, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
-                .{ .pos = .{ x_f, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
-            };
-        },
+    const corner = greedyIJToLocalBlock(face, d, ia, ja);
+    const q = packQuad(
+        face,
+        .{ @intCast(corner.x), @intCast(corner.y), @intCast(corner.z) },
+        @intCast(w),
+        @intCast(h),
+        @backingInt(cell.block_type),
+        cell.ao,
+        cell.sky,
+        cell.bl,
+    );
+    // The y range: a y face is one plane, the other faces span h blocks of y.
+    const y_lo: f32, const y_hi: f32 = switch (face) {
+        .py => .{ @floatFromInt(d + 1), @floatFromInt(d + 1) },
+        .ny => .{ @floatFromInt(d), @floatFromInt(d) },
+        else => .{ @floatFromInt(ja), @floatFromInt(ja + h) },
     };
-
-    try mesh.vertices.appendSlice(mesh.allocator, &verts);
-
-    const inds = [_]u32{
-        base_idx, base_idx + 1, base_idx + 2,
-        base_idx, base_idx + 2, base_idx + 3,
-    };
-    try mesh.indices.appendSlice(mesh.allocator, &inds);
-
-    try mesh.quad_block.append(mesh.allocator, block_idx);
-    try mesh.quad_highlight.append(mesh.allocator, 255);
+    try mesh.addQuad(q, y_lo, y_hi);
 }
 
 /// Translate (d, i, j) in a face's in-plane coordinate system to a local
 /// (lx, ly, lz) block coord. Paired with the (u, v) → (i, j) mapping inside
-/// each per-face branch of generateMeshGreedy.
+/// each per-face branch of generateMesh.
 fn greedyIJToLocalBlock(face: Face, d: i32, i: i32, j: i32) BlockPos {
     return switch (face) {
         .px, .nx => .{ .x = d, .y = j, .z = i }, // i = Z, j = Y
@@ -1977,12 +1456,14 @@ const VisibleFaces = struct {
 /// the next free bit of each row. So the cost scales with the visible faces,
 /// not with the chunk volume (6 × 65 536 cells). bench_mesher measures it.
 ///
-/// The mesher allocates two scratch buffers per call (one GreedyCell grid +
-/// one `bool` visited mask). Each is sized for the largest possible slice
-/// (CHUNK_W × CHUNK_H = 12288 cells). Per-call re-allocation is accepted
-/// because `generateMeshGreedy` runs at most a handful of times per tick and
-/// the cost is dwarfed by the AO/sky sample work.
-pub fn generateMeshGreedy(
+/// The mesher allocates two scratch buffers per call (one GreedyCell grid
+/// for the largest slice, CHUNK_W × CHUNK_H cells, and the VisibleFaces
+/// masks). The per-call allocation is acceptable because the AO and sky samples
+/// cost much more.
+///
+/// This is the only mesher. The quads go into `mesh.quads` as PackedQuad,
+/// and `mesh.y_min` / `mesh.y_max` get the y range of the quads.
+pub fn generateMesh(
     chunk: *const Chunk,
     mesh: *Mesh,
     world_ox: i32,
@@ -2012,13 +1493,13 @@ pub fn generateMeshGreedy(
     // hover outlines, etc.). Capping the merge at `MAX_GREEDY_DIM` on each
     // axis keeps every merged quad's centroid within half that many blocks
     // of its farthest corner — close enough that painter's sort order
-    // matches the naive 1×1 baseline to within the RMS tolerance used by
-    // the greedy_vs_naive regression.
+    // matches a mesh of 1×1 quads (one quad per block face) to within
+    // 2/255 RMS per channel.
     //
     // Cap of 6 lands comfortably inside the RMS tolerance while still
     // hitting the 5–10× reduction target on flatland and capturing most
-    // of the hilly-terrain wins. Measured `greedy_vs_naive.tas` per-channel
-    // RMS on a flatland pit scene:
+    // of the hilly-terrain wins. Per-channel RMS against 1×1 quads on a
+    // flatland pit scene (measured in April 2026):
     //   cap=4 → 0.62 /255   (safe)
     //   cap=6 → 0.65 /255   (safe, picked)
     //   cap=7 → 0.64 /255   (borderline, passes)
@@ -2032,7 +1513,8 @@ pub fn generateMeshGreedy(
     // rule that `greedyCellEq` enforces rejects most bumpy terrain — the
     // bottleneck is the merge rule, not the cap. Once hardware depth
     // testing comes back (see `sw_gpu/src/gpu.zig` macOS/Metal wgpu TODO)
-    // the cap can be lifted; the RMS test will flag any regression.
+    // the cap can be lifted. depth_stencil_regression.sh compares the
+    // depth-off frame with the depth-on frame.
     const MAX_GREEDY_DIM: i32 = 6;
 
     inline for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
@@ -2125,61 +1607,29 @@ pub fn generateMeshGreedy(
                         }
                     }
 
-                    // Emit the merged quad. `block_idx` is the packed index
-                    // of the (ia, ja) corner block — see the comment on
-                    // `emitGreedyQuad` for why the parallel array is still
-                    // populated even though one merged quad can span many blocks.
-                    const corner = greedyIJToLocalBlock(face, d, ia, ja);
-                    const block_idx = packBlockIdx(corner.x, corner.y, corner.z);
-                    try emitGreedyQuad(mesh, face, d, ia, ja, w, h, seed, block_idx, world_ox, world_oz);
+                    try emitGreedyQuad(mesh, face, d, ia, ja, w, h, seed);
                 }
             }
         }
     }
-}
-
-/// Dispatch helper: run the requested meshing strategy and log the quad
-/// count.
-pub fn generateMeshForMode(
-    chunk: *const Chunk,
-    mesh: *Mesh,
-    world_ox: i32,
-    world_oz: i32,
-    getter: BlockGetter,
-    ao_strategy: AOStrategy,
-    lighting_mode: LightingMode,
-    mode: MeshingMode,
-) !void {
-    switch (mode) {
-        .naive => {
-            try generateMesh(chunk, mesh, world_ox, world_oz, getter, ao_strategy, lighting_mode);
-            const m_count = mesh.indices.items.len / 6;
-            std.log.info("[MESH naive: {} quads]", .{m_count});
-        },
-        .greedy => {
-            try generateMeshGreedy(chunk, mesh, world_ox, world_oz, getter, ao_strategy, lighting_mode);
-            std.log.info("[MESH greedy: {} quads]", .{mesh.indices.items.len / 6});
-        },
-    }
+    std.log.info("[MESH greedy: {} quads]", .{mesh.quadCount()});
 }
 
 // ============================================================================
-// Packed quads for the GPU (REQ: one 16-byte record per quad)
+// Packed quads: the mesh format on the CPU and on the GPU
 // ============================================================================
 //
-// The CPU mesh keeps 4 VoxelVertex (48 bytes each) and 6 u32 indices per quad,
-// because the incremental edit, the depth-off sort and the GPU debug highlight
-// work on it. The GPU gets one 16-byte PackedQuad per quad instead (216 -> 16
-// bytes). vs_chunk in voxel.wgsl makes the 6 vertices of the 2 triangles from
-// it. unpackCorner below is the same decode in Zig, so a test can check that
-// the decode gives back the exact CPU vertices.
+// The mesher makes one 16-byte PackedQuad per quad. The upload writes these
+// bytes to the GPU with no conversion. vs_chunk in voxel.wgsl makes the 6
+// vertices of the 2 triangles from it. unpackCorner below is the same decode
+// in Zig, so a test can check the decode.
 //
 // Layout (bit 0 = LSB). The cell is the block that owns the face, relative to
 // the chunk origin. W and H are the quad size along the face's in-plane axes.
 //   word 0: cell x (4) | cell y (8) | cell z (4) | face (3) | W-1 (4) | H-1 (8)
 //   words 1-3: 12 six-bit light fields, 5 + 5 + 2 per word, in this order:
 //              ao0..3, sky0..3, bl0..3
-//   word 3, bits 12-19: block type. Bits 20-27: GPU debug highlight.
+//   word 3, bits 12-19: block type. Bits 20-31: 0.
 // ao = field / 42, sky = field / 60, block light = field / 60. Every value the
 // mesher makes is one of these ratios, so the decode gives the same f32.
 
@@ -2190,8 +1640,9 @@ pub const LIGHT_STEPS: f32 = 60.0;
 
 /// Per face: the axis of the face normal, the in-plane axes i (W) and j (H),
 /// and per corner the position step (0 or 1) along i and j and the uv step.
-/// voxel.wgsl has the corner steps as bit constants (FACE_POS_*, FACE_UV_*):
-/// see cornerBits, and the test that checks them.
+/// The corner order is the order of the per-corner light values. voxel.wgsl
+/// has the corner steps as bit constants (FACE_POS_*, FACE_UV_*): see
+/// cornerBits, and the test that checks them.
 const FaceLayout = struct {
     normal_axis: u2,
     i_axis: u2,
@@ -2229,51 +1680,44 @@ fn cornerBits(comptime which: enum { pos, uv }) [2]u32 {
     return out;
 }
 
-fn faceFromNormal(n: [3]f32) Face {
-    for (face_normals, 0..) |fnorm, i| {
-        if (fnorm[0] == n[0] and fnorm[1] == n[1] and fnorm[2] == n[2]) return @fromBackingInt(@intCast(i));
-    }
-    unreachable;
-}
-
 fn quantize(v: f32, steps: f32) u32 {
     return @intFromFloat(@round(v * steps));
 }
 
-/// Pack one quad (its 4 CPU vertices) for a chunk at world (world_ox, world_oz).
-pub fn packQuad(v: *const [4]VoxelVertex, world_ox: i32, world_oz: i32, highlight: u8) PackedQuad {
-    const face = faceFromNormal(v[0].normal);
-    const fl = face_layouts[@backingInt(face)];
-    var lo = v[0].pos;
-    var hi = v[0].pos;
-    for (v[1..]) |vert| {
-        for (0..3) |a| {
-            lo[a] = @min(lo[a], vert.pos[a]);
-            hi[a] = @max(hi[a], vert.pos[a]);
-        }
-    }
-    var cell = [3]i32{
-        @as(i32, @intFromFloat(lo[0])) - world_ox,
-        @as(i32, @intFromFloat(lo[1])),
-        @as(i32, @intFromFloat(lo[2])) - world_oz,
-    };
-    if (fl.positive) cell[fl.normal_axis] -= 1;
-    const w: u32 = @intFromFloat(hi[fl.i_axis] - lo[fl.i_axis]);
-    const h: u32 = @intFromFloat(hi[fl.j_axis] - lo[fl.j_axis]);
-
+/// Pack one quad. `cell` is the local block that owns the face, w and h are
+/// the size along the in-plane axes i and j, and the light values are per
+/// corner, in the corner order of face_layouts.
+fn packQuad(face: Face, cell: [3]u32, w: u32, h: u32, block_type: u32, ao: [4]f32, sky: [4]f32, bl: [4]f32) PackedQuad {
     var fields: [12]u32 = undefined;
     for (0..4) |c| {
-        fields[c] = quantize(v[c].ao, AO_STEPS);
-        fields[4 + c] = quantize(v[c].skylight, LIGHT_STEPS);
-        fields[8 + c] = quantize(v[c].block_light, LIGHT_STEPS);
+        fields[c] = quantize(ao[c], AO_STEPS);
+        fields[4 + c] = quantize(sky[c], LIGHT_STEPS);
+        fields[8 + c] = quantize(bl[c], LIGHT_STEPS);
     }
     var q: PackedQuad = .{ 0, 0, 0, 0 };
-    q[0] = @as(u32, @intCast(cell[0])) | (@as(u32, @intCast(cell[1])) << 4) |
-        (@as(u32, @intCast(cell[2])) << 12) | (@as(u32, @backingInt(face)) << 16) |
+    q[0] = cell[0] | (cell[1] << 4) | (cell[2] << 12) | (@as(u32, @backingInt(face)) << 16) |
         ((w - 1) << 19) | ((h - 1) << 23);
     for (fields, 0..) |f, i| q[1 + i / 5] |= f << @intCast(6 * (i % 5));
-    q[3] |= ((v[0].block_type & 0xFF) << 12) | (@as(u32, highlight) << 20);
+    q[3] |= (block_type & 0xFF) << 12;
     return q;
+}
+
+/// The world-space centroid of a packed quad, for sortByDepth. Each value is
+/// an integer or a half integer, so the result is exact.
+fn quadCentroid(q: PackedQuad, world_ox: i32, world_oz: i32) [3]f32 {
+    const face: u3 = @intCast((q[0] >> 16) & 0x7);
+    const w: f32 = @floatFromInt(((q[0] >> 19) & 0xF) + 1);
+    const h: f32 = @floatFromInt(((q[0] >> 23) & 0xFF) + 1);
+    const fl = face_layouts[face];
+    var c = [3]f32{
+        @floatFromInt(@as(i32, @intCast(q[0] & 0xF)) + world_ox),
+        @floatFromInt((q[0] >> 4) & 0xFF),
+        @floatFromInt(@as(i32, @intCast((q[0] >> 12) & 0xF)) + world_oz),
+    };
+    if (fl.positive) c[fl.normal_axis] += 1;
+    c[fl.i_axis] += w * 0.5;
+    c[fl.j_axis] += h * 0.5;
+    return c;
 }
 
 /// Decode corner `corner` (0..3) of a packed quad. Mirrors vs_chunk.
@@ -2309,21 +1753,6 @@ pub fn unpackCorner(q: PackedQuad, corner: usize, world_ox: i32, world_oz: i32) 
         .skylight = @as(f32, @floatFromInt(field(q, 4 + corner))) / LIGHT_STEPS,
         .block_light = @as(f32, @floatFromInt(field(q, 8 + corner))) / LIGHT_STEPS,
     };
-}
-
-/// Pack every quad of `mesh` into `out` (out.len >= quad count). `order` is
-/// the quad order to write: null for the mesh order, or the sorted index list
-/// from sortByDepth (6 indices per quad). With `gpu_debug`, each quad carries
-/// its quad_highlight value. Returns the number of quads written.
-pub fn packQuads(mesh: *const Mesh, out: []PackedQuad, world_ox: i32, world_oz: i32, order: ?[]const u32, gpu_debug: bool) usize {
-    const quad_count = mesh.indices.items.len / 6;
-    for (0..quad_count) |n| {
-        const qi: usize = if (order) |o| o[n * 6] / 4 else n;
-        const verts: *const [4]VoxelVertex = mesh.vertices.items[qi * 4 ..][0..4];
-        const hl: u8 = if (gpu_debug) mesh.quad_highlight.items[qi] else 0;
-        out[n] = packQuad(verts, world_ox, world_oz, hl);
-    }
-    return quad_count;
 }
 
 /// Test getter for one chunk at world (ox, oz): outside the chunk is air in
@@ -2381,44 +1810,102 @@ test "voxel.wgsl corner constants match face_layouts" {
     try std.testing.expectEqual(uv[1], try wgslHexConst(src, "FACE_UV_B"));
 }
 
-test "packQuad then unpackCorner gives back every vertex of a real mesh" {
+/// A stepped hill with an overhang and a glowstone, so every face, merged
+/// quads, AO and both light channels occur.
+fn testHillChunk(allocator: std.mem.Allocator) !Chunk {
+    var chunk = Chunk.init(allocator);
+    errdefer chunk.deinit();
+    for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
+        const top: usize = 60 + (x + z) / 4;
+        for (0..top) |y| try chunk.setBlock(@intCast(x), @intCast(y), @intCast(z), if (y + 1 == top) .grass else .stone);
+    };
+    for (4..9) |x| for (4..9) |z| try chunk.setBlock(@intCast(x), 75, @intCast(z), .stone);
+    try chunk.setBlock(6, 70, 6, .glowstone);
+    try chunk.computeSkylight();
+    try chunk.computeBlockLight();
+    return chunk;
+}
+
+test "each packed quad decodes to the face, block and light of its cell" {
     const allocator = std.testing.allocator;
     const ox: i32 = 32;
     const oz: i32 = -48;
-    for ([_]MeshingMode{ .naive, .greedy }) |mode| {
-        for ([_]AOStrategy{ .classic, .moore, .propagated }) |ao| {
-            var chunk = Chunk.init(allocator);
-            defer chunk.deinit();
-            // A stepped hill with an overhang and a glowstone, so every face,
-            // merged quads, AO and both light channels occur.
-            for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
-                const top: usize = 60 + (x + z) / 4;
-                for (0..top) |y| try chunk.setBlock(@intCast(x), @intCast(y), @intCast(z), if (y + 1 == top) .grass else .stone);
-            };
-            for (4..9) |x| for (4..9) |z| try chunk.setBlock(@intCast(x), 75, @intCast(z), .stone);
-            try chunk.setBlock(6, 70, 6, .glowstone);
-            try chunk.computeSkylight();
-            try chunk.computeBlockLight();
-            const tg = TestGetter{ .chunk = &chunk, .ox = ox, .oz = oz };
-            var mesh = Mesh.init(allocator);
-            defer mesh.deinit();
-            try generateMeshForMode(&chunk, &mesh, ox, oz, tg.getter(), ao, .skylight, mode);
-            const quad_count = mesh.indices.items.len / 6;
-            try std.testing.expect(quad_count > 0);
-            const out = try allocator.alloc(PackedQuad, quad_count);
-            defer allocator.free(out);
-            _ = packQuads(&mesh, out, ox, oz, null, false);
-            for (0..quad_count) |qi| for (0..4) |c| {
-                const want = mesh.vertices.items[qi * 4 + c];
-                const got = unpackCorner(out[qi], c, ox, oz);
-                try std.testing.expectEqual(want.pos, got.pos);
-                try std.testing.expectEqual(want.normal, got.normal);
-                try std.testing.expectEqual(want.block_type, got.block_type);
-                try std.testing.expectEqual(want.uv, got.uv);
-                try std.testing.expectEqual(want.ao, got.ao);
-                try std.testing.expectEqual(want.skylight, got.skylight);
-                try std.testing.expectEqual(want.block_light, got.block_light);
-            };
+    for ([_]AOStrategy{ .classic, .moore, .propagated }) |ao| {
+        var chunk = try testHillChunk(allocator);
+        defer chunk.deinit();
+        const tg = TestGetter{ .chunk = &chunk, .ox = ox, .oz = oz };
+        var mesh = Mesh.init(allocator);
+        defer mesh.deinit();
+        try generateMesh(&chunk, &mesh, ox, oz, tg.getter(), ao, .skylight);
+        try std.testing.expect(mesh.quadCount() > 0);
+        var y_min: f32 = CHUNK_H;
+        var y_max: f32 = 0;
+        for (mesh.quads.items) |q| {
+            const lx: i32 = @intCast(q[0] & 0xF);
+            const ly: i32 = @intCast((q[0] >> 4) & 0xFF);
+            const lz: i32 = @intCast((q[0] >> 12) & 0xF);
+            const face: Face = @fromBackingInt(@as(u3, @intCast((q[0] >> 16) & 0x7)));
+            const block = chunk.getBlock(lx, ly, lz);
+            try std.testing.expect(block != .air);
+            try std.testing.expect(shouldRenderFace(&chunk, tg.getter(), lx, ly, lz, ox, oz, face));
+            const want = computeGreedyCell(&chunk, tg.getter(), ox, oz, lx, ly, lz, face, block, ao, .skylight);
+            for (0..4) |c| {
+                const got = unpackCorner(q, c, ox, oz);
+                try std.testing.expectEqual(@as(u32, @backingInt(block)), got.block_type);
+                try std.testing.expectEqual(face_normals[@backingInt(face)], got.normal);
+                try std.testing.expectEqual(want.ao[c], got.ao);
+                try std.testing.expectEqual(want.sky[c], got.skylight);
+                try std.testing.expectEqual(want.bl[c], got.block_light);
+                y_min = @min(y_min, got.pos[1]);
+                y_max = @max(y_max, got.pos[1]);
+            }
+            // The centroid is the mean of the 4 corners.
+            var mean = [3]f32{ 0, 0, 0 };
+            for (0..4) |c| {
+                const p = unpackCorner(q, c, ox, oz).pos;
+                for (0..3) |a| mean[a] += p[a];
+            }
+            for (0..3) |a| mean[a] /= 4.0;
+            try std.testing.expectEqual(mean, quadCentroid(q, ox, oz));
         }
+        try std.testing.expectEqual(y_min, mesh.y_min);
+        try std.testing.expectEqual(y_max, mesh.y_max);
+    }
+}
+
+test "sortByDepth writes every quad once, back to front" {
+    const allocator = std.testing.allocator;
+    var chunk = try testHillChunk(allocator);
+    defer chunk.deinit();
+    const tg = TestGetter{ .chunk = &chunk, .ox = 0, .oz = 0 };
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try generateMesh(&chunk, &mesh, 0, 0, tg.getter(), .moore, .skylight);
+    const cam = [3]f32{ 8, 90, -20 };
+    const fwd = [3]f32{ 0, -0.6, 0.8 };
+    // The second sort uses the insertion sort on the first order.
+    for (0..2) |_| {
+        try mesh.sortByDepth(cam, fwd, 0, 0);
+        const n = mesh.quadCount();
+        var prev: f32 = std.math.inf(f32);
+        for (mesh.sorted_quads[0..n]) |q| {
+            const c = quadCentroid(q, 0, 0);
+            const d = (c[0] - cam[0]) * fwd[0] + (c[1] - cam[1]) * fwd[1] + (c[2] - cam[2]) * fwd[2];
+            try std.testing.expect(d <= prev);
+            prev = d;
+        }
+        const a = try allocator.dupe(PackedQuad, mesh.quads.items);
+        defer allocator.free(a);
+        const b = try allocator.dupe(PackedQuad, mesh.sorted_quads[0..n]);
+        defer allocator.free(b);
+        const lt = struct {
+            fn lt(_: void, x: PackedQuad, y: PackedQuad) bool {
+                for (x, y) |u, v| if (u != v) return u < v;
+                return false;
+            }
+        }.lt;
+        std.mem.sort(PackedQuad, a, {}, lt);
+        std.mem.sort(PackedQuad, b, {}, lt);
+        try std.testing.expectEqualSlices(PackedQuad, a, b);
     }
 }

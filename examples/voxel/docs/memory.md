@@ -126,12 +126,12 @@ next bottleneck. See §3 totals below for how this shifts the balance.
 
 ## 2. Per-chunk peak GPU mesh size (VRAM)
 
-> **Out of date for the GPU side.** The GPU now holds one 16-byte
-> `PackedQuad` per quad plus a 16-byte header per chunk, not 216 bytes per
-> quad (see `mesher.zig`, "Packed quads for the GPU"). Measured on the hilly
-> fly-through: 457 279 quads in 7.3 MB of GPU buffers, against about 98.8 MB
-> at 216 bytes per quad. The CPU mesh below is unchanged. The 216-byte figures
-> in this file are the old GPU size.
+> **Out of date.** The mesher now makes one 16-byte `PackedQuad` per quad
+> (see `mesher.zig`, "Packed quads"). The CPU mesh holds these bytes, and the
+> GPU holds the same bytes plus a 16-byte header per chunk, not 216 bytes per
+> quad. Measured on the hilly fly-through: 457 279 quads in 7.3 MB of GPU
+> buffers, against about 98.8 MB at 216 bytes per quad. The 216-byte figures
+> in this file are the old size.
 
 **Source**: `mesher.zig`
 ```
@@ -185,18 +185,16 @@ This is what really matters. The peak numbers above are book-keeping.
 
 ### Host-side mesh overhead
 
-On top of VRAM, the `Mesh` struct keeps three parallel `ArrayList`s in host
-RAM during mesh generation:
+The `Mesh` struct keeps the mesh in the GPU format in host RAM:
 
-- `vertices: ArrayList(VoxelVertex)` — `4 × 48 = 192` B/quad
-- `indices:  ArrayList(u32)`          — `6 × 4 = 24` B/quad
-- `quad_block:     ArrayList(u32)`    — `4` B/quad
-- `quad_highlight: ArrayList(u8)`     — `1` B/quad
-- Plus `sort_scratch` / `sort_indices` persistent buffers at ~`(8 + 24) × quad_count` B
+- `quads: ArrayList(PackedQuad)` — `16` B/quad
+- With `--depth-stencil=off` only: `sort_scratch` (16 B/quad on 64-bit) and
+  `sorted_quads` (16 B/quad), for the back-to-front sort.
 
-Total host-side per quad ≈ **~250 B**, so a realistic chunk's host mesh is
-~1.38 MB and a peak checkerboard chunk's host mesh would be ~442 MB (again,
-pathological).
+Before the mesher made `PackedQuad` directly, the mesh held 4 `VoxelVertex`
+(192 B), 6 indices (24 B), an owner block index (4 B) and a highlight byte
+(1 B) per quad: 221 B/quad, about 250 B with the sort buffers. A realistic
+chunk's host mesh was then ~1.38 MB. At 16 B/quad it is about 88 KB.
 
 ---
 
@@ -271,8 +269,8 @@ Implemented in `voxel/mesh-eviction`. Per-tick pass walks every loaded
 chunk; any whose chunk-grid distance² from the player exceeds
 `EVICT_RADIUS_SQ` is downgraded back to `.generated`:
 
-- `Mesh.freeHostBuffers()` releases the four parallel `ArrayList`s + the
-  `sort_scratch`/`sort_indices` slices back to the allocator (capacity
+- `Mesh.freeHostBuffers()` releases the quad list and the
+  `sort_scratch`/`sorted_quads` slices back to the allocator (capacity
   drops to zero, not just `len`).
 - The owning `chunk_gpu` entry is removed. Its quad buffer is destroyed
   and its bind group is released (`ChunkGPU.release`).
@@ -374,9 +372,8 @@ What this number does **not** include:
   chunks drop to 256 B — effectively zero. See §1b for the full table.
 - **Risk actual**: the `grow` re-pack path is the only allocator call on
   the hot `setBlock` route; it's hit at most 8 times over a chunk's
-  lifetime (once per bit-width increase). `updateForBlockChange` was
-  already routed through `chunk.getBlock`, so the incremental-mesh fast
-  path needed no changes. All four TAS regressions (`framespike`,
+  lifetime (once per bit-width increase). The mesher already read blocks
+  through `chunk.getBlock`, so it needed no changes. All four TAS regressions (`framespike`,
   `ao_corners`, `cave_skylight`, `dig_relight`) produce byte-identical
   PPM dumps before and after — palette compression is a pure storage
   refactor with no visible effects.
@@ -408,8 +405,8 @@ What this number does **not** include:
 
 ### Rank 5 — Greedy meshing *(LANDED)*
 
-Implemented on branch `voxel/greedy-mesh`. Opt in with `--meshing=greedy`
-(now the default); fall back to the per-block path with `--meshing=naive`.
+Implemented on branch `voxel/greedy-mesh`. Greedy is now the only mesher.
+The one-quad-per-face path and its command-line flag are gone.
 
 **Merge rule.** Two coplanar same-material cells may merge iff both have
 *uniform* AO and skylight (all four corner values equal) AND their uniform
@@ -418,7 +415,7 @@ allows any matching corner quadruple — but it's the only rule that
 preserves bilinear interpolation across the merged quad exactly. Under
 the weaker rule a merged w×h rect stretches the per-cell gradient over
 multiple blocks and interior fragments drift by `0.125 × ((a+b) - (c+d))`
-per channel relative to the naive output. See the block comment on
+per channel relative to 1×1 quads (one quad per block face). See the block comment on
 `greedyCellEq` for the worked example.
 
 **Painter's-sort cap.** The voxel demo sorts quads in software
@@ -429,9 +426,9 @@ inversions against smaller overlapping geometry (pit walls, dirt
 exposures, hover outlines). Capping each merge dimension at
 `MAX_GREEDY_DIM = 6` keeps every merged quad's centroid within ±3 blocks
 of its farthest corner — close enough that the greedy output stays within
-the RMS tolerance used by `examples/voxel/tests/greedy_vs_naive.sh`
-(`< 2/255` per channel). Measured per-channel RMS for the pit test at
-various caps:
+`< 2/255` RMS per channel of a 1×1-quad mesh. Measured per-channel RMS on a
+flatland pit scene at various caps (the 1×1 path and its regression are
+removed now):
 
     cap=4 → 0.62/255   (safe)
     cap=6 → 0.65/255   (safe, picked)
@@ -444,7 +441,7 @@ the cap once hardware depth testing comes back.
 
 **Measured quad-count reduction** (48×256×48 chunk, cap=6, `framespike.tas`):
 
-| Preset   | Naive quads         | Greedy quads         | Reduction   | VRAM/chunk  |
+| Preset   | 1×1 quads           | Greedy quads         | Reduction   | VRAM/chunk  |
 |----------|---------------------|----------------------|-------------|-------------|
 | flatland | 4608 baseline       | 128–137 (~130)       | **35×**     | 1.00 MB → 28 KB |
 | hilly    | ~5000–5900 (~5400)  | ~1000–2500 (~1700)   | **~3.2×**   | 1.19 MB → 370 KB |
@@ -457,25 +454,21 @@ comes into play, so the bottleneck is the merge rule, not the cap.
 
 Measured on `examples/voxel/framespike.tas` (hilly):
 
-    2023-04: naive=5324 quads, greedy=1700 quads — 68.1% reduction
-    2023-04: naive=4995 quads, greedy=1007 quads — 79.8% reduction (best)
-    2023-04: naive=5673 quads, greedy=2539 quads — 55.2% reduction (worst)
+    2023-04: 1x1=5324 quads, greedy=1700 quads — 68.1% reduction
+    2023-04: 1x1=4995 quads, greedy=1007 quads — 79.8% reduction (best)
+    2023-04: 1x1=5673 quads, greedy=2539 quads — 55.2% reduction (worst)
 
 Pregen ring (9 meshed chunks) on hilly drops from ~10.7 MB VRAM → ~3.4 MB
 (greedy cap=6). Typical session (49 meshed chunks) drops from ~58.3 MB →
 ~18 MB. On flatland the same ring drops from ~10.7 MB → ~0.27 MB.
 
-**`quad_block` parallel array.** Greedy quads span multiple blocks, so
-`updateForBlockChange`'s "find quads owned by block X" lookup loses
-meaning. In greedy mode the dig/place handlers flag the whole chunk
-`mesh_dirty = true` and let the next tick full-regen the mesh — this
-gives up the 78% incremental-update win from the naive path. The parallel
-array is still populated (with the first block of each rect) so
-`swapRemoveQuad` / `decayHighlights` continue to work as-is.
+**Edits.** Greedy quads span many blocks, so a dig or place meshes the
+whole chunk again, and also the neighbour chunk when the block is at a
+chunk edge. The per-block incremental update of the 1×1 path is gone.
 
 **Risk/payoff summary**: was worth it on flatland and open spaces (gross
 VRAM reduction). Hilly terrain is a more modest win and pays a
-per-dig full-regen cost instead of the incremental path. A future session
+full-chunk mesh per dig. A future session
 that restores hardware depth testing can raise the cap and revisit the
 merge rule.
 

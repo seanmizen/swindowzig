@@ -147,10 +147,10 @@ fn bench(allocator: std.mem.Allocator) !void {
                 const lc = world.chunks.get(.{ .cx = cx, .cz = cz }).?;
                 var mesh = mesher_mod.Mesh.init(allocator);
                 defer mesh.deinit();
-                try mesher_mod.generateMeshForMode(&lc.chunk, &mesh, lc.worldX(), lc.worldZ(), world.asBlockGetter(), .moore, .skylight, .greedy);
-                quads += mesh.indices.items.len / 6;
+                try mesher_mod.generateMesh(&lc.chunk, &mesh, lc.worldX(), lc.worldZ(), world.asBlockGetter(), .moore, .skylight);
+                quads += mesh.quadCount();
                 n_mesh += 1;
-                if (r == 0) quad_hash +%= try meshHash(allocator, &mesh, lc.worldX(), lc.worldZ());
+                if (r == 0) quad_hash +%= try meshHash(allocator, &mesh);
             }
         }
         o.* = nowNs() - t0;
@@ -208,11 +208,9 @@ fn bench(allocator: std.mem.Allocator) !void {
     });
 }
 
-fn meshHash(allocator: std.mem.Allocator, mesh: *const mesher_mod.Mesh, ox: i32, oz: i32) !u64 {
-    const n = mesh.indices.items.len / 6;
-    const packed_quads = try allocator.alloc(mesher_mod.PackedQuad, n);
+fn meshHash(allocator: std.mem.Allocator, mesh: *const mesher_mod.Mesh) !u64 {
+    const packed_quads = try allocator.dupe(mesher_mod.PackedQuad, mesh.quads.items);
     defer allocator.free(packed_quads);
-    _ = mesher_mod.packQuads(mesh, packed_quads, ox, oz, null, false);
     std.mem.sort(mesher_mod.PackedQuad, packed_quads, {}, struct {
         fn lt(_: void, a: mesher_mod.PackedQuad, b: mesher_mod.PackedQuad) bool {
             for (a, b) |x, y| if (x != y) return x < y;

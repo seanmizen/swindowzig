@@ -12,7 +12,7 @@
   missed ticks per chunk. The existing `MESH_GENS_PER_TICK = 1` cap is a
   throttle, not a fix — it just spreads the stall over consecutive frames.
 - All of the expensive work — terrain gen, skylight flood-fill, AO sampling,
-  `VoxelVertex` construction — is **pure math on plain bytes**. No GPU
+  `PackedQuad` construction — is **pure math on plain bytes**. No GPU
   handles, no shared mutable state. It moves to a background thread cleanly.
 - The GPU upload (`wgpuQueueWriteBuffer`) is cheap (tens of µs) and MUST
   stay on the render thread: wgpu-native does not guarantee device/queue
@@ -195,10 +195,9 @@ comptime {
 *(Not landed in phase 1 — it would force `extern struct` which changes
 the field layout semantics slightly. Noted as a follow-up.)*
 
-Incremental mesh state (`quad_block`, `quad_highlight`, `sort_scratch`,
-`sort_indices`) lives on `Mesh`, not `Chunk`, so it does not violate
-this rule — `Mesh` stays on the main thread and is never transferred
-across the worker boundary.
+The sort state (`sort_scratch`, `sorted_quads`) lives on `Mesh`, not
+`Chunk`, so it does not violate this rule — `Mesh` stays on the main
+thread and is never transferred across the worker boundary.
 
 ### Why we don't transfer the whole Mesh
 
@@ -211,13 +210,13 @@ don't, because:
 - The main thread already has a `Mesh` living inside each `LoadedChunk`.
   Overwriting it with a worker-built one means `deinit`ing the old one
   and copying pointer guts — workable but fiddly.
-- The worker produces **raw CPU buffers** (`[]VoxelVertex`, `[]u32`,
-  `[]u32`, `[]u8`) allocated from `std.heap.c_allocator`. Main thread
-  takes the four slices, clears the existing `Mesh`, `appendSlice`s them
-  into the Mesh (one `memcpy` each), then `c_allocator.free`s the
-  worker's slices. Total copy cost per chunk: ~300 KB of vertices + ~60
-  KB of indices + ~30 KB of bookkeeping ≈ **<100 µs on the render
-  thread**, compared to the 32–44 ms we save from not meshing there.
+- The worker produces one **`[]PackedQuad`** slice (the GPU format, 16
+  bytes per quad) and the y range of the mesh, allocated from
+  `std.heap.c_allocator`. Main thread clears the existing `Mesh`,
+  `appendSlice`s the quads into it (one `memcpy`), then
+  `c_allocator.free`s the worker's slice. A typical hilly chunk is about
+  1 700 quads, so the copy is about 27 KB. (Before the mesher made
+  `PackedQuad` directly, it was about 221 bytes per quad.)
 
 ## The boundary — what can and cannot move to the worker
 
@@ -229,7 +228,7 @@ don't, because:
   `chunk.skylight` only. Read+write on the worker's own Chunk.
 - `mesher.generateMesh(...)` — scans `chunk.blocks`, calls
   `BlockGetter.getBlock` / `getSkylight` for neighbour cross-faces,
-  produces vertices+indices. The BlockGetter is a function-pointer
+  produces packed quads. The BlockGetter is a function-pointer
   vtable and its backing `ctx` can be anything — on the main thread it
   points at `*const World`, on the worker it points at a **snapshot
   struct** that holds the 5 chunk pointers (self + 4 neighbours).
@@ -240,12 +239,12 @@ don't, because:
   `createRenderPipeline`, etc. On native, wgpu-native's thread safety is
   not guaranteed for device/queue objects. In-browser, only the main JS
   thread owns the WebGPU device.
-- `Mesh.sortByDepth` — reads the current camera position and mutates
-  `Mesh.indices` to the painter's-algorithm order. This is
-  render-adjacent and runs every frame; easier to keep on main.
-- `updateForBlockChange` (incremental dig path) — affects only 7 blocks,
-  runs in hundreds of µs, is triggered by user input, and requires
-  immediate feedback. Staying synchronous on main is fine.
+- `Mesh.sortByDepth` — reads the current camera position and writes
+  `Mesh.sorted_quads` in the painter's-algorithm order (depth test off
+  only). This is render-adjacent and runs every frame. It is easier to keep on
+  main.
+- The dig and place remesh — user input starts it, and it needs
+  immediate feedback, so it meshes the chunk synchronously on main.
 
 ### The grey zone
 
@@ -253,11 +252,6 @@ don't, because:
   happen on the main thread because the chunk map is main-owned, but
   the main thread is the one draining results, so it's naturally in the
   right place.
-- The `quad_block` / `quad_highlight` bookkeeping for incremental mesh
-  updates. When a worker produces a full mesh, the main thread clears
-  the existing Mesh (which wipes these) and repopulates. The bookkeeping
-  survives — it's just regenerated from the worker's output. No worker
-  access needed.
 
 ## The architecture sketch
 
@@ -367,8 +361,7 @@ points into a live chunk:
   array index. A side border is 16 × 256 × 3 cells, a corner border
   3 × 256 × 3, at 3 bytes per cell (block, skylight, block light).
 - A test meshes through borders and through full chunks and checks that
-  the meshes are the same, for naive and greedy meshing and every AO
-  strategy. If the mesher ever reads deeper than `BORDER`, a debug build
+  the meshes are the same, for every AO strategy. If the mesher ever reads deeper than `BORDER`, a debug build
   stops on the assertion in `SnapshotGetter`.
 
 Measured on the hilly fly-through (690 jobs): 134 MB copied, where whole
@@ -526,10 +519,8 @@ pub const Job = struct {
 pub const Result = struct {
     cx: i32, cz: i32,
     chunk: *chunk_mod.Chunk,          // heap-alloc from c_allocator
-    vertices: []mesher_mod.VoxelVertex, // c_allocator
-    indices: []u32,                   // c_allocator
-    quad_block: []u32,                // c_allocator
-    quad_highlight: []u8,             // c_allocator
+    quads: []mesher_mod.PackedQuad,   // c_allocator
+    y_min: f32, y_max: f32,
 };
 
 pub const Pipeline = struct {
