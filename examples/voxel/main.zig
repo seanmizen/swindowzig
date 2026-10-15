@@ -4912,6 +4912,44 @@ fn wasmFrameImpl(timestamp_ms: f64) callconv(.c) void {
     wasm_bus.clear();
 }
 
+// Debug counts for the headless wasm test (backends/wasm/headless.ts).
+// The test reads 8 i32 values at the returned address:
+//   0, 1: the chunk coordinates (cx, cz) of the player
+//   2:    the loaded chunks in the square of `radius` chunks around the player
+//   3:    the meshed chunks in the same square
+//   4:    the number of chunks in the square, (2 * radius + 1)^2
+//   5, 6: the loaded and meshed chunks in the whole world
+//   7:    1 while the loading screen shows, else 0
+var wasm_debug_counts: [8]i32 = @splat(0);
+
+fn wasmDebugChunkCounts(radius: i32) callconv(.c) [*]const i32 {
+    const r = @max(radius, 0);
+    const pcx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
+    const pcz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
+    var loaded_near: i32 = 0;
+    var meshed_near: i32 = 0;
+    var cz = pcz - r;
+    while (cz <= pcz + r) : (cz += 1) {
+        var cx = pcx - r;
+        while (cx <= pcx + r) : (cx += 1) {
+            const lc = state.world.chunks.get(.{ .cx = cx, .cz = cz }) orelse continue;
+            loaded_near += 1;
+            if (lc.state == .meshed) meshed_near += 1;
+        }
+    }
+    wasm_debug_counts = .{
+        pcx,
+        pcz,
+        loaded_near,
+        meshed_near,
+        (2 * r + 1) * (2 * r + 1),
+        @intCast(state.world.chunks.count()),
+        @intCast(countMeshedChunks(&state.world)),
+        @intFromBool(state.world_loading),
+    };
+    return &wasm_debug_counts;
+}
+
 // Constants read by boot.ts for canvas configuration.
 const wasm_config_disable_context_menu: u8 = 1;
 const wasm_config_hide_cursor: u8 = 0;
@@ -4920,6 +4958,7 @@ comptime {
     if (is_wasm) {
         @export(&wasmInitImpl, .{ .name = "swindowzig_init" });
         @export(&wasmFrameImpl, .{ .name = "swindowzig_frame" });
+        @export(&wasmDebugChunkCounts, .{ .name = "voxel_debug_chunk_counts" });
         @export(&wasm_config_disable_context_menu, .{ .name = "swindowzig_config_disable_context_menu" });
         @export(&wasm_config_hide_cursor, .{ .name = "swindowzig_config_hide_cursor" });
     }
