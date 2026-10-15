@@ -313,6 +313,18 @@ const PREGEN_MESH_GENS_PER_TICK: usize = 4;
 /// change.
 const WEB_PREGEN_BUDGET_NS: u64 = 12 * std.time.ns_per_ms;
 
+/// Web only: chunk job time per frame during gameplay. voxelTick generation,
+/// the sync mesh loop and the AO remesh pass check it through ChunkDeadline,
+/// as pregenStep does with WEB_PREGEN_BUDGET_NS. Without it, a WASM tick
+/// with chunk jobs takes more than 8.3 ms. The timeline then runs catch-up
+/// ticks, each catch-up tick starts more jobs, and the frames get slower
+/// after the loading screen. The value is smaller than the pregen budget
+/// because a gameplay frame must also render: a 144 Hz frame is 6.9 ms.
+/// The check runs before a job starts, so a frame can go past the budget by
+/// one job. 4 ms lets a fast machine do 2 or 3 jobs and a slow machine 1.
+/// Each frame does at least one job, so the world continues to load.
+const WEB_PLAY_BUDGET_NS: u64 = 4 * std.time.ns_per_ms;
+
 /// Max gen+mesh jobs the async path will enqueue per tick during gameplay.
 /// Each enqueue copies the borders of up to 8 neighbours (about 190 KB per
 /// job, see async_chunks.Border), so the per-tick copy cost scales with this.
@@ -677,10 +689,11 @@ const State = struct {
     async_jobs: u64 = 0,
     async_copy_bytes: u64 = 0,
     async_whole_chunk_bytes: u64 = 0,
-    /// Web only: the pregen deadline of the current frame, and the pregen
-    /// jobs done in it (see WEB_PREGEN_BUDGET_NS). wasmFrameImpl sets both.
+    /// Web only: the chunk job deadline of the current frame, and the chunk
+    /// jobs done in it (see WEB_PREGEN_BUDGET_NS and WEB_PLAY_BUDGET_NS).
+    /// wasmFrameImpl sets both.
     web_frame_deadline_ns: u64 = 0,
-    web_frame_pregen_jobs: usize = 0,
+    web_frame_chunk_jobs: usize = 0,
     /// Scratch for packing a chunk's quads before an upload.
     pack_scratch: std.ArrayList(mesher_mod.PackedQuad) = .empty,
     uniform_buffer: ?gpu_mod.Buffer = null,
@@ -1608,19 +1621,19 @@ fn syncCameraToPlayer() void {
 /// returns true, keeping the loading screen animated between ticks.
 /// `deadline`: stop starting jobs when ctx.timeNs() reaches `ns` (web only,
 /// see WEB_PREGEN_BUDGET_NS). null: the count budgets only.
-const PregenDeadline = struct {
+const ChunkDeadline = struct {
     ctx: *sw.Context,
     ns: u64,
 
     /// True when the frame has used its time and has done at least one job
     /// (this tick's `jobs` plus the jobs of earlier ticks in the frame).
-    fn spent(dl: ?PregenDeadline, jobs: usize) bool {
+    fn spent(dl: ?ChunkDeadline, jobs: usize) bool {
         const d = dl orelse return false;
-        return jobs + state.web_frame_pregen_jobs > 0 and d.ctx.timeNs() >= d.ns;
+        return jobs + state.web_frame_chunk_jobs > 0 and d.ctx.timeNs() >= d.ns;
     }
 };
 
-fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy, lighting_mode: gpu_mod.LightingMode, meshing_mode: mesher_mod.MeshingMode, deadline: ?PregenDeadline) !bool {
+fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy, lighting_mode: gpu_mod.LightingMode, meshing_mode: mesher_mod.MeshingMode, deadline: ?ChunkDeadline) !bool {
     const R = world_mod.PREGEN_RADIUS;
 
     // Pass 1 — generate every chunk inside the (2R+1)^2 outer square that is
@@ -1636,10 +1649,10 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
                 // Skip cells from inner radii we've already visited.
                 if (@max(@abs(dx), @abs(dz)) != r) continue;
                 if (gens >= PREGEN_CHUNKS_PER_TICK) break :outer_gen;
-                if (PregenDeadline.spent(deadline, gens)) break :outer_gen;
+                if (ChunkDeadline.spent(deadline, gens)) break :outer_gen;
                 if (try world.generateChunk(spawn_cx + dx, spawn_cz + dz)) {
                     gens += 1;
-                    if (comptime is_wasm) state.web_frame_pregen_jobs += 1;
+                    if (comptime is_wasm) state.web_frame_chunk_jobs += 1;
                 }
             }
         }
@@ -1656,7 +1669,7 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
         var idx: i32 = -inner_r;
         while (idx <= inner_r) : (idx += 1) {
             if (meshes >= PREGEN_MESH_GENS_PER_TICK) break :outer_mesh;
-            if (PregenDeadline.spent(deadline, gens + meshes)) break :outer_mesh;
+            if (ChunkDeadline.spent(deadline, gens + meshes)) break :outer_mesh;
             const key = world_mod.ChunkKey{ .cx = spawn_cx + idx, .cz = spawn_cz + idz };
             const lc = world.chunks.get(key) orelse continue;
             if (!lc.mesh_dirty) continue;
@@ -1678,7 +1691,7 @@ fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy
             lc.mesh_dirty = false;
             lc.mesh_incremental_dirty = true;
             meshes += 1;
-            if (comptime is_wasm) state.web_frame_pregen_jobs += 1;
+            if (comptime is_wasm) state.web_frame_chunk_jobs += 1;
         }
     }
 
@@ -2192,7 +2205,7 @@ fn voxelTick(ctx: *sw.Context) !void {
         const pregen_gen_before: usize = if (state.profile_csv_file != null) state.world.chunks.count() else 0;
         const pregen_mesh_before: usize = if (state.profile_csv_file != null) countMeshedChunks(&state.world) else 0;
         const pregen_t0: i128 = if (state.profile_csv_file != null) perfNowNs() else 0;
-        const deadline: ?PregenDeadline = if (comptime is_wasm) .{ .ctx = ctx, .ns = state.web_frame_deadline_ns } else null;
+        const deadline: ?ChunkDeadline = if (comptime is_wasm) .{ .ctx = ctx, .ns = state.web_frame_deadline_ns } else null;
         const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy, state.lighting_mode, state.meshing_mode, deadline) catch |err| blk: {
             std.log.err("Pregen step failed: {}", .{err});
             break :blk false;
@@ -2284,6 +2297,10 @@ fn voxelTick(ctx: *sw.Context) !void {
     const player_cx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
     const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
 
+    // Web only: the frame budget for gameplay chunk jobs (see
+    // WEB_PLAY_BUDGET_NS). Native passes null and uses the counts only.
+    const chunk_deadline: ?ChunkDeadline = if (comptime is_wasm) .{ .ctx = ctx, .ns = state.web_frame_deadline_ns } else null;
+
     // When dump-frame is pending and TAS has finished, freeze world loading
     // so the async pipeline can fully drain. Without this, asyncTick keeps
     // enqueuing new gen jobs around the teleported position and the dump-frame
@@ -2297,10 +2314,19 @@ fn voxelTick(ctx: *sw.Context) !void {
     if (comptime is_wasm) {
         // WASM: synchronous chunk loading. The async pipeline does not exist
         // on wasm. Without this call, no chunk past the spawn ring generates,
-        // and the sync mesh loop below has nothing new to mesh.
-        try state.world.update(&[_]world_mod.RegionAnchor{
-            .{ .position = state.player.feet_pos },
-        });
+        // and the sync mesh loop below has nothing new to mesh. One chunk
+        // for each call, so the frame budget (WEB_PLAY_BUDGET_NS) can stop
+        // generation between chunks.
+        var gens: usize = 0;
+        while (gens < world_mod.CHUNKS_PER_TICK) {
+            if (ChunkDeadline.spent(chunk_deadline, gens)) break;
+            const n = try state.world.updateUpTo(&[_]world_mod.RegionAnchor{
+                .{ .position = state.player.feet_pos },
+            }, 1);
+            if (n == 0) break;
+            gens += 1;
+            state.web_frame_chunk_jobs += 1;
+        }
     } else if (dump_draining) {
         // Drain-only: process completed async results but do NOT enqueue
         // new gen/mesh jobs. This lets the pipeline fully converge.
@@ -2392,6 +2418,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             const dcz = lc.cz - player_cz;
             if (dcx * dcx + dcz * dcz > state.world.meshRadiusSq()) continue;
             if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
+            if (ChunkDeadline.spent(chunk_deadline, mesh_gens)) break;
             const t0 = perfNowNs();
             mesher_mod.generateMeshForMode(
                 &lc.chunk,
@@ -2418,6 +2445,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             lc.neighbor_ao_dirty = false;
             lc.mesh_incremental_dirty = true;
             mesh_gens += 1;
+            if (comptime is_wasm) state.web_frame_chunk_jobs += 1;
             tick_mesh_us += t_us;
             tick_mesh_chunks += 1;
         }
@@ -2440,6 +2468,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             const dcx = lc.cx - player_cx;
             const dcz = lc.cz - player_cz;
             if (dcx * dcx + dcz * dcz <= state.world.meshRadiusSq()) continue;
+            if (ChunkDeadline.spent(chunk_deadline, ao_remeshes)) break;
             const t0 = perfNowNs();
             mesher_mod.generateMeshForMode(
                 &lc.chunk,
@@ -2461,6 +2490,7 @@ fn voxelTick(ctx: *sw.Context) !void {
             lc.neighbor_ao_dirty = false;
             lc.mesh_incremental_dirty = true;
             ao_remeshes += 1;
+            if (comptime is_wasm) state.web_frame_chunk_jobs += 1;
             tick_mesh_us += t_us;
             tick_mesh_chunks += 1;
         }
@@ -4844,8 +4874,9 @@ fn wasmFrameImpl(timestamp_ms: f64) callconv(.c) void {
     wasm_gpu.setSurfaceSize(info.width, info.height);
 
     const now = wasm_backend.getTime();
-    state.web_frame_deadline_ns = now + WEB_PREGEN_BUDGET_NS;
-    state.web_frame_pregen_jobs = 0;
+    const budget_ns = if (state.world_loading) WEB_PREGEN_BUDGET_NS else WEB_PLAY_BUDGET_NS;
+    state.web_frame_deadline_ns = now + budget_ns;
+    state.web_frame_chunk_jobs = 0;
     const dt = now - wasm_last_time_ns;
     wasm_last_time_ns = now;
 

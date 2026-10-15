@@ -462,13 +462,22 @@ pub const World = struct {
     /// state) completely decoupled from meshing (must wait for neighbours,
     /// produces GPU buffers).
     pub fn update(self: *World, anchors: []const RegionAnchor) !void {
+        _ = try self.updateUpTo(anchors, CHUNKS_PER_TICK);
+    }
+
+    /// Like `update`, but generates at most `limit` new chunks. Returns the
+    /// number of chunks it generated. The web build calls it with limit 1
+    /// and checks its frame time budget between calls. The spiral search
+    /// starts again at the center on each call, which costs only hash map
+    /// lookups.
+    pub fn updateUpTo(self: *World, anchors: []const RegionAnchor, limit: usize) !usize {
         var loaded_this_tick: usize = 0;
 
         outer: for (self.spiral_offsets) |off| {
-            if (loaded_this_tick >= CHUNKS_PER_TICK) break;
+            if (loaded_this_tick >= limit) break;
 
             for (anchors) |anchor| {
-                if (loaded_this_tick >= CHUNKS_PER_TICK) break :outer;
+                if (loaded_this_tick >= limit) break :outer;
 
                 const anchor_cx = chunkCoordOf(@as(i32, @intFromFloat(@floor(anchor.position[0]))));
                 const anchor_cz = chunkCoordOf(@as(i32, @intFromFloat(@floor(anchor.position[2]))));
@@ -477,6 +486,7 @@ pub const World = struct {
                 }
             }
         }
+        return loaded_this_tick;
     }
 
     /// The chunk data at chunk coords (cx, cz), or null when it is not loaded.
