@@ -251,6 +251,46 @@ pub const PalettedBlocks = struct {
         self.bits_per_entry = new_bits;
     }
 
+    /// Write `table[block]` for each cell into `out`, in `blockLinearIdx`
+    /// order. It reads the packed data once in storage order. The bit width
+    /// is a comptime value in the inner loop, so the compiler unrolls each
+    /// word. The light stage (pipeline/stages.zig) reads its cells this way.
+    pub fn decode(self: *const PalettedBlocks, table: *const [256]u8, out: *[BLOCKS_PER_CHUNK]u8) void {
+        if (self.bits_per_entry == 0) {
+            @memset(out, table[@backingInt(self.palette[0])]);
+            return;
+        }
+        var value: [256]u8 = @splat(0);
+        for (self.palette[0..self.palette_len], 0..) |b, i| value[i] = table[@backingInt(b)];
+        switch (self.bits_per_entry) {
+            inline 1...8 => |bits| self.decodeBits(bits, &value, out),
+            else => unreachable,
+        }
+    }
+
+    fn decodeBits(self: *const PalettedBlocks, comptime bits: u6, value: *const [256]u8, out: *[BLOCKS_PER_CHUNK]u8) void {
+        const epw: usize = 64 / @as(usize, bits);
+        const mask: u64 = (@as(u64, 1) << bits) - 1;
+        const full_words = BLOCKS_PER_CHUNK / epw;
+        var idx: usize = 0;
+        for (self.data[0..full_words]) |word| {
+            var w = word;
+            inline for (0..epw) |k| {
+                out[idx + k] = value[@intCast(w & mask)];
+                w >>= bits;
+            }
+            idx += epw;
+        }
+        // The last word can be part full.
+        if (full_words < self.data.len) {
+            var w = self.data[full_words];
+            while (idx < BLOCKS_PER_CHUNK) : (idx += 1) {
+                out[idx] = value[@intCast(w & mask)];
+                w >>= bits;
+            }
+        }
+    }
+
     /// Pack a dense block buffer into a new paletted store, in one pass.
     /// Palette slot 0 is `.air`. The other block types follow in the order
     /// of their first cell. `get` gives back each value of `dense`.
@@ -1173,159 +1213,10 @@ pub const Chunk = struct {
     /// allocate (out-of-memory is the only realistic failure mode).
     pub fn generateTerrain(self: *Chunk, cx: i32, cz: i32, config: world_gen.WorldGenConfig) !void {
         const t_fill_start = clock.nowNs();
-        // The world seed, mixed for the hash functions. Seed 0 keeps the old terrain.
-        const key = config.seedKey();
         const dense = try self.allocator.create(DenseBlocks);
         defer self.allocator.destroy(dense);
-        @memset(dense, .air);
-        var columns: ColumnCache = .{ .cx = cx, .cz = cz, .config = config };
-
-        var x: i32 = 0;
-        while (x < CHUNK_W) : (x += 1) {
-            var z: i32 = 0;
-            while (z < CHUNK_W) : (z += 1) {
-                const wx = cx * CHUNK_W + x;
-                const wz = cz * CHUNK_W + z;
-
-                // For hilly terrain, use biome-blended height; flatland is always flat.
-                // The dominant biome selects the surface block. Flatland
-                // (noise_octaves == 0) is always plains, grass-only.
-                const column = columns.get(wx, wz);
-                const surface = column.height;
-                const biome = column.biome;
-
-                putDense(dense, x, 0, z, .bedrock);
-
-                switch (biome) {
-                    .plains, .forest => {
-                        // Standard Minecraft layout: stone, 3× dirt, grass cap.
-                        var y: i32 = 1;
-                        while (y < surface - 3) : (y += 1) {
-                            putDense(dense, x, y, z, .stone);
-                        }
-                        y = @max(1, surface - 3);
-                        while (y < surface) : (y += 1) {
-                            putDense(dense, x, y, z, .dirt);
-                        }
-                        if (surface >= 1 and surface < CHUNK_H) {
-                            putDense(dense, x, surface, z, .grass);
-                        }
-                    },
-                    .badlands => {
-                        // Badlands: stone exposed all the way to the top — no dirt, no grass.
-                        // This gives the rocky/eroded mesa look.
-                        var y: i32 = 1;
-                        while (y <= surface and y < CHUNK_H) : (y += 1) {
-                            putDense(dense, x, y, z, .stone);
-                        }
-                    },
-                    .desert => {
-                        // Desert: stone base, 3 layers of sand below the surface, sand cap.
-                        var y: i32 = 1;
-                        while (y < surface - 3) : (y += 1) {
-                            putDense(dense, x, y, z, .stone);
-                        }
-                        y = @max(1, surface - 3);
-                        while (y <= surface and y < CHUNK_H) : (y += 1) {
-                            putDense(dense, x, y, z, .sand);
-                        }
-                    },
-                }
-
-                // Scatter glowstone in the stone layer below Y=40 with
-                // ~0.2% probability per block. Uses a splitmix-style hash
-                // seeded from (wx, wz, y) for deterministic placement.
-                const glow_ceil: i32 = @min(40, surface - 4);
-                var gy: i32 = 2; // skip bedrock at Y=0, start above
-                while (gy < glow_ceil) : (gy += 1) {
-                    const seed = @as(u32, @bitCast(wx)) *% 374761393 +%
-                        @as(u32, @bitCast(wz)) *% 668265263 +%
-                        @as(u32, @bitCast(gy)) *% 2654435761;
-                    const h = world_gen.mixSeed((seed ^ (seed >> 16)) *% 0x45d9f3b, key);
-                    if ((h & 0x1FF) == 0) { // ~1/512 chance
-                        putDense(dense, x, gy, z, .glowstone);
-                    }
-                }
-            }
-        }
+        fillTerrain(dense, cx, cz, config);
         const t_fill_us = @divTrunc(clock.nowNs() - t_fill_start, 1000);
-
-        // Cave carver: run after terrain fill so we only carve into solid blocks.
-        // Only active for non-flat terrain (noise_octaves > 0).
-        if (config.noise_octaves > 0) {
-            var cx_idx: i32 = 0;
-            while (cx_idx < CHUNK_W) : (cx_idx += 1) {
-                var cz_idx: i32 = 0;
-                while (cz_idx < CHUNK_W) : (cz_idx += 1) {
-                    const wx = cx * CHUNK_W + cx_idx;
-                    const wz = cz * CHUNK_W + cz_idx;
-                    const surface = columns.get(wx, wz).height;
-                    // Carve from Y=4 (above bedrock zone) to surface-5 (preserve topsoil).
-                    var wy: i32 = 4;
-                    while (wy < surface - 4) : (wy += 1) {
-                        if (world_gen.shouldCarve(wx, wy, wz, key)) {
-                            putDense(dense, cx_idx, wy, cz_idx, .air);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Tree planter: place oak trees seeded from world coordinates.
-        // Searches a halo around the chunk so canopy from trees in adjacent
-        // chunks is correctly placed here as well.
-        // Only active for non-flat terrain AND only in forest biome columns.
-        if (config.noise_octaves > 0) {
-            var tree_wx: i32 = cx * CHUNK_W - TREE_SEARCH;
-            while (tree_wx < cx * CHUNK_W + CHUNK_W + TREE_SEARCH) : (tree_wx += 1) {
-                var tree_wz: i32 = cz * CHUNK_W - TREE_SEARCH;
-                while (tree_wz < cz * CHUNK_W + CHUNK_W + TREE_SEARCH) : (tree_wz += 1) {
-                    if (!world_gen.isTreeCenter(tree_wx, tree_wz, key)) continue;
-
-                    // Trees only spawn in forest biome — check the dominant biome
-                    // at the tree's root column before placing it.
-                    const tree_column = columns.get(tree_wx, tree_wz);
-                    if (tree_column.biome != .forest) continue;
-
-                    const tree_surface = tree_column.height;
-                    const trunk_h = world_gen.treeHeight(tree_wx, tree_wz, key);
-                    const trunk_base = tree_surface + 1;
-                    const trunk_top = tree_surface + trunk_h;
-
-                    // Place trunk — putDense ignores out-of-chunk coords silently.
-                    var ty: i32 = trunk_base;
-                    while (ty <= trunk_top) : (ty += 1) {
-                        const lx = tree_wx - cx * CHUNK_W;
-                        const lz = tree_wz - cz * CHUNK_W;
-                        if (getDense(dense, lx, ty, lz) == .air) {
-                            putDense(dense, lx, ty, lz, .wood);
-                        }
-                    }
-
-                    // Place spherical leaf canopy (radius ~3) around trunk top.
-                    const CANOPY_R: i32 = 3;
-                    var dy: i32 = -CANOPY_R;
-                    while (dy <= CANOPY_R) : (dy += 1) {
-                        var dx: i32 = -CANOPY_R;
-                        while (dx <= CANOPY_R) : (dx += 1) {
-                            var dz: i32 = -CANOPY_R;
-                            while (dz <= CANOPY_R) : (dz += 1) {
-                                if (dx * dx + dy * dy + dz * dz > CANOPY_R * CANOPY_R) continue;
-                                // Don't overwrite trunk column blocks.
-                                if (dx == 0 and dz == 0 and dy <= 0) continue;
-                                const lx = tree_wx + dx - cx * CHUNK_W;
-                                const ly = trunk_top + dy;
-                                const lz = tree_wz + dz - cz * CHUNK_W;
-                                if (ly < 1 or ly >= CHUNK_H) continue;
-                                if (getDense(dense, lx, ly, lz) == .air) {
-                                    putDense(dense, lx, ly, lz, .leaves);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
 
         // Pack the dense buffer into the paletted store, one time.
         const blocks = try PalettedBlocks.fromDense(self.allocator, dense);
@@ -1346,6 +1237,163 @@ pub const Chunk = struct {
         });
     }
 };
+
+/// Write the blocks of chunk (cx, cz) into `dense`: the terrain fill, the
+/// glowstone, the caves and the trees. No light. The result depends only on
+/// the arguments (P2), so the `generate` stage (pipeline/stages.zig) and
+/// `Chunk.generateTerrain` give the same blocks.
+pub fn fillTerrain(dense: *DenseBlocks, cx: i32, cz: i32, config: world_gen.WorldGenConfig) void {
+    // The world seed, mixed for the hash functions. Seed 0 keeps the old terrain.
+    const key = config.seedKey();
+    @memset(dense, .air);
+    var columns: ColumnCache = .{ .cx = cx, .cz = cz, .config = config };
+
+    var x: i32 = 0;
+    while (x < CHUNK_W) : (x += 1) {
+        var z: i32 = 0;
+        while (z < CHUNK_W) : (z += 1) {
+            const wx = cx * CHUNK_W + x;
+            const wz = cz * CHUNK_W + z;
+
+            // For hilly terrain, use biome-blended height; flatland is always flat.
+            // The dominant biome selects the surface block. Flatland
+            // (noise_octaves == 0) is always plains, grass-only.
+            const column = columns.get(wx, wz);
+            const surface = column.height;
+            const biome = column.biome;
+
+            putDense(dense, x, 0, z, .bedrock);
+
+            switch (biome) {
+                .plains, .forest => {
+                    // Standard Minecraft layout: stone, 3× dirt, grass cap.
+                    var y: i32 = 1;
+                    while (y < surface - 3) : (y += 1) {
+                        putDense(dense, x, y, z, .stone);
+                    }
+                    y = @max(1, surface - 3);
+                    while (y < surface) : (y += 1) {
+                        putDense(dense, x, y, z, .dirt);
+                    }
+                    if (surface >= 1 and surface < CHUNK_H) {
+                        putDense(dense, x, surface, z, .grass);
+                    }
+                },
+                .badlands => {
+                    // Badlands: stone exposed all the way to the top — no dirt, no grass.
+                    // This gives the rocky/eroded mesa look.
+                    var y: i32 = 1;
+                    while (y <= surface and y < CHUNK_H) : (y += 1) {
+                        putDense(dense, x, y, z, .stone);
+                    }
+                },
+                .desert => {
+                    // Desert: stone base, 3 layers of sand below the surface, sand cap.
+                    var y: i32 = 1;
+                    while (y < surface - 3) : (y += 1) {
+                        putDense(dense, x, y, z, .stone);
+                    }
+                    y = @max(1, surface - 3);
+                    while (y <= surface and y < CHUNK_H) : (y += 1) {
+                        putDense(dense, x, y, z, .sand);
+                    }
+                },
+            }
+
+            // Scatter glowstone in the stone layer below Y=40 with
+            // ~0.2% probability per block. Uses a splitmix-style hash
+            // seeded from (wx, wz, y) for deterministic placement.
+            const glow_ceil: i32 = @min(40, surface - 4);
+            var gy: i32 = 2; // skip bedrock at Y=0, start above
+            while (gy < glow_ceil) : (gy += 1) {
+                const seed = @as(u32, @bitCast(wx)) *% 374761393 +%
+                    @as(u32, @bitCast(wz)) *% 668265263 +%
+                    @as(u32, @bitCast(gy)) *% 2654435761;
+                const h = world_gen.mixSeed((seed ^ (seed >> 16)) *% 0x45d9f3b, key);
+                if ((h & 0x1FF) == 0) { // ~1/512 chance
+                    putDense(dense, x, gy, z, .glowstone);
+                }
+            }
+        }
+    }
+
+    // Cave carver: run after terrain fill so we only carve into solid blocks.
+    // Only active for non-flat terrain (noise_octaves > 0).
+    if (config.noise_octaves > 0) {
+        var cx_idx: i32 = 0;
+        while (cx_idx < CHUNK_W) : (cx_idx += 1) {
+            var cz_idx: i32 = 0;
+            while (cz_idx < CHUNK_W) : (cz_idx += 1) {
+                const wx = cx * CHUNK_W + cx_idx;
+                const wz = cz * CHUNK_W + cz_idx;
+                const surface = columns.get(wx, wz).height;
+                // Carve from Y=4 (above bedrock zone) to surface-5 (preserve topsoil).
+                var wy: i32 = 4;
+                while (wy < surface - 4) : (wy += 1) {
+                    if (world_gen.shouldCarve(wx, wy, wz, key)) {
+                        putDense(dense, cx_idx, wy, cz_idx, .air);
+                    }
+                }
+            }
+        }
+    }
+
+    // Tree planter: place oak trees seeded from world coordinates.
+    // Searches a halo around the chunk so canopy from trees in adjacent
+    // chunks is correctly placed here as well.
+    // Only active for non-flat terrain AND only in forest biome columns.
+    if (config.noise_octaves > 0) {
+        var tree_wx: i32 = cx * CHUNK_W - TREE_SEARCH;
+        while (tree_wx < cx * CHUNK_W + CHUNK_W + TREE_SEARCH) : (tree_wx += 1) {
+            var tree_wz: i32 = cz * CHUNK_W - TREE_SEARCH;
+            while (tree_wz < cz * CHUNK_W + CHUNK_W + TREE_SEARCH) : (tree_wz += 1) {
+                if (!world_gen.isTreeCenter(tree_wx, tree_wz, key)) continue;
+
+                // Trees only spawn in forest biome — check the dominant biome
+                // at the tree's root column before placing it.
+                const tree_column = columns.get(tree_wx, tree_wz);
+                if (tree_column.biome != .forest) continue;
+
+                const tree_surface = tree_column.height;
+                const trunk_h = world_gen.treeHeight(tree_wx, tree_wz, key);
+                const trunk_base = tree_surface + 1;
+                const trunk_top = tree_surface + trunk_h;
+
+                // Place trunk — putDense ignores out-of-chunk coords silently.
+                var ty: i32 = trunk_base;
+                while (ty <= trunk_top) : (ty += 1) {
+                    const lx = tree_wx - cx * CHUNK_W;
+                    const lz = tree_wz - cz * CHUNK_W;
+                    if (getDense(dense, lx, ty, lz) == .air) {
+                        putDense(dense, lx, ty, lz, .wood);
+                    }
+                }
+
+                // Place spherical leaf canopy (radius ~3) around trunk top.
+                const CANOPY_R: i32 = 3;
+                var dy: i32 = -CANOPY_R;
+                while (dy <= CANOPY_R) : (dy += 1) {
+                    var dx: i32 = -CANOPY_R;
+                    while (dx <= CANOPY_R) : (dx += 1) {
+                        var dz: i32 = -CANOPY_R;
+                        while (dz <= CANOPY_R) : (dz += 1) {
+                            if (dx * dx + dy * dy + dz * dz > CANOPY_R * CANOPY_R) continue;
+                            // Don't overwrite trunk column blocks.
+                            if (dx == 0 and dz == 0 and dy <= 0) continue;
+                            const lx = tree_wx + dx - cx * CHUNK_W;
+                            const ly = trunk_top + dy;
+                            const lz = tree_wz + dz - cz * CHUNK_W;
+                            if (ly < 1 or ly >= CHUNK_H) continue;
+                            if (getDense(dense, lx, ly, lz) == .air) {
+                                putDense(dense, lx, ly, lz, .leaves);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// Type-erased block source. Allows player physics, raycasting, and the
 /// mesher to work with either a single Chunk (local coords) or a World
@@ -1438,6 +1486,34 @@ test "fromDense packs the same blocks as setBlock" {
         for (0..BLOCKS_PER_CHUNK) |idx| {
             try std.testing.expectEqual(dense[idx], p.get(idx));
             try std.testing.expectEqual(ch.blocks.get(idx), p.get(idx));
+        }
+    }
+}
+
+test "decode gives the value of get for each cell" {
+    const a = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0xdec0de);
+    const r = prng.random();
+    const kinds = comptime std.enums.values(BlockType);
+    var table: [256]u8 = undefined;
+    for (&table, 0..) |*t, i| t.* = @truncate(i *% 37 +% 5);
+    const out = try a.create([BLOCKS_PER_CHUNK]u8);
+    defer a.destroy(out);
+    // 0 kinds (uniform air), then 1 kind and more: every bit width that
+    // the block types can make.
+    for (0..kinds.len + 1) |n_kinds| {
+        const dense = try a.create(DenseBlocks);
+        defer a.destroy(dense);
+        @memset(dense, .air);
+        if (n_kinds > 0) for (0..4000) |_| {
+            const idx = r.uintLessThan(usize, BLOCKS_PER_CHUNK);
+            dense[idx] = kinds[r.uintLessThan(usize, n_kinds)];
+        };
+        var p = try PalettedBlocks.fromDense(a, dense);
+        defer p.deinit(a);
+        p.decode(&table, out);
+        for (0..BLOCKS_PER_CHUNK) |idx| {
+            try std.testing.expectEqual(table[@backingInt(p.get(idx))], out[idx]);
         }
     }
 }

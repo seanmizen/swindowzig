@@ -20,6 +20,14 @@
 //!            and block light, seeded from the 4 face neighbours), for the
 //!            inner 7×7 chunks.
 //!
+//! The pure stages of pipeline/stages.zig (C2), on the same area:
+//!   stage_gen    stages.generate: the blocks only, no light.
+//!   light        stages.light: the 44-cell window, skylight and block
+//!                light, for the inner 7×7 chunks.
+//!   stage_mesh   stages.mesh (moore AO, skylight), for the inner 5×5 chunks.
+//!   stage_match  yes when the stages give the blocks, the light and the
+//!                quads of World for the same chunks.
+//!
 //! Hashes (identical on every platform, and before and after a change that
 //! must not change the terrain):
 //!   block_hash  every block of every chunk, by chunk, in y, x, z order.
@@ -31,6 +39,7 @@ const world_mod = @import("world.zig");
 const chunk_mod = @import("chunk.zig");
 const mesher_mod = @import("mesher.zig");
 const clock = @import("clock.zig");
+const stages = @import("pipeline/stages.zig");
 
 const is_wasm = builtin.cpu.arch == .wasm32;
 const target_name = if (is_wasm) "wasm" else "native";
@@ -156,6 +165,10 @@ fn bench(allocator: std.mem.Allocator) !void {
         o.* = nowNs() - t0;
     }
 
+    // 2b. The pure stages. They run before step 3, which changes the
+    // light of World, so that stage_match compares with the World light.
+    const st = try benchStages(allocator, &world);
+
     // 3. Skylight alone, for every generated chunk.
     var sky_ns: [REPS]u64 = undefined;
     var sky_hash: u64 = 0;
@@ -206,6 +219,129 @@ fn bench(allocator: std.mem.Allocator) !void {
     out("target={s} block_hash={x:0>16} sky_hash={x:0>16} quad_hash={x:0>16}", .{
         target_name, block_hash, sky_hash, quad_hash,
     });
+    out("target={s} stage_gen_us_per_chunk={d:.1} light_us_per_chunk={d:.1} stage_mesh_us_per_chunk={d:.1} stage_match={s}", .{
+        target_name,
+        st.gen_us,
+        st.light_us,
+        st.mesh_us,
+        if (st.match) "yes" else "NO",
+    });
+}
+
+const StageTimes = struct { gen_us: f64, light_us: f64, mesh_us: f64, match: bool };
+
+/// Time the pure stages on the area of `world`, and compare their output
+/// with the chunks of `world`.
+fn benchStages(allocator: std.mem.Allocator, world: *const world_mod.World) !StageTimes {
+    const SIDE = 2 * HALF + 1;
+    const at = struct {
+        fn f(cx: i32, cz: i32) usize {
+            return @intCast((cx + HALF) * SIDE + (cz + HALF));
+        }
+    }.f;
+    var blocks: [SIDE * SIDE]chunk_mod.PalettedBlocks = @splat(.{});
+    defer for (&blocks) |*b| b.deinit(allocator);
+    var light: [SIDE * SIDE]?stages.ChunkLight = @splat(null);
+    defer for (&light) |*l| {
+        if (l.*) |*x| x.deinit(allocator);
+    };
+    var match = true;
+
+    // generate: every chunk of the area.
+    var gen_ns: [REPS]u64 = undefined;
+    for (&gen_ns) |*o| {
+        for (&blocks) |*b| b.deinit(allocator);
+        const t0 = nowNs();
+        var cx: i32 = -HALF;
+        while (cx <= HALF) : (cx += 1) {
+            var cz: i32 = -HALF;
+            while (cz <= HALF) : (cz += 1) blocks[at(cx, cz)] = try stages.generate(allocator, world.gen_config.seed, world.gen_config, cx, cz);
+        }
+        o.* = nowNs() - t0;
+    }
+    for (&blocks, 0..) |*b, i| {
+        const cx: i32 = @as(i32, @intCast(i / SIDE)) - HALF;
+        const cz: i32 = @as(i32, @intCast(i % SIDE)) - HALF;
+        const want = &world.chunks.get(.{ .cx = cx, .cz = cz }).?.chunk.blocks;
+        for (0..chunk_mod.BLOCKS_PER_CHUNK) |k| {
+            if (want.get(k) != b.get(k)) match = false;
+        }
+    }
+
+    // light: the inner chunks, which have their 3×3 neighbourhood.
+    const L = HALF - 1;
+    var light_ns: [REPS]u64 = undefined;
+    for (&light_ns) |*o| {
+        const t0 = nowNs();
+        var cx: i32 = -L;
+        while (cx <= L) : (cx += 1) {
+            var cz: i32 = -L;
+            while (cz <= L) : (cz += 1) {
+                var w: stages.Window = undefined;
+                for (0..stages.SLOTS) |s| {
+                    const dcx, const dcz = stages.offsetOf(s);
+                    w[s] = &blocks[at(cx + dcx, cz + dcz)];
+                }
+                if (light[at(cx, cz)]) |*old| old.deinit(allocator);
+                light[at(cx, cz)] = try stages.light(allocator, &w);
+            }
+        }
+        o.* = nowNs() - t0;
+    }
+    // World has all 3×3 neighbours of the inner chunks: the same light.
+    {
+        var cx: i32 = -L;
+        while (cx <= L) : (cx += 1) {
+            var cz: i32 = -L;
+            while (cz <= L) : (cz += 1) {
+                const want = &world.chunks.get(.{ .cx = cx, .cz = cz }).?.chunk;
+                const got = &light[at(cx, cz)].?;
+                for (0..chunk_mod.CHUNK_W) |x| for (0..chunk_mod.CHUNK_H) |y| for (0..chunk_mod.CHUNK_W) |z| {
+                    if (want.skylight.get(x, y, z) != got.sky.get(x, y, z)) match = false;
+                    if (want.block_light.get(x, y, z) != got.block.get(x, y, z)) match = false;
+                };
+            }
+        }
+    }
+
+    // mesh: the chunks whose 3×3 neighbours have light.
+    const M = HALF - 2;
+    const n_mesh: usize = (2 * M + 1) * (2 * M + 1);
+    var mesh_ns: [REPS]u64 = undefined;
+    for (&mesh_ns, 0..) |*o, r| {
+        var t: u64 = 0;
+        var cx: i32 = -M;
+        while (cx <= M) : (cx += 1) {
+            var cz: i32 = -M;
+            while (cz <= M) : (cz += 1) {
+                var hood: stages.Neighbourhood = undefined;
+                for (0..stages.SLOTS) |s| {
+                    const dcx, const dcz = stages.offsetOf(s);
+                    hood[s] = .{ .blocks = &blocks[at(cx + dcx, cz + dcz)], .light = &light[at(cx + dcx, cz + dcz)].? };
+                }
+                const t0 = nowNs();
+                var m = try stages.mesh(allocator, &hood, .moore, .skylight);
+                defer m.deinit(allocator);
+                t += nowNs() - t0;
+                if (r == 0) {
+                    // The World mesh of the same chunk.
+                    const lc = world.chunks.get(.{ .cx = cx, .cz = cz }).?;
+                    var want = mesher_mod.Mesh.init(allocator);
+                    defer want.deinit();
+                    try mesher_mod.generateMesh(&lc.chunk, &want, lc.worldX(), lc.worldZ(), world.asBlockGetter(), .moore, .skylight);
+                    if (!std.mem.eql(u8, std.mem.sliceAsBytes(want.quads.items), std.mem.sliceAsBytes(m.quads))) match = false;
+                }
+            }
+        }
+        o.* = t;
+    }
+
+    return .{
+        .gen_us = us(median(&gen_ns), SIDE * SIDE),
+        .light_us = us(median(&light_ns), (2 * L + 1) * (2 * L + 1)),
+        .mesh_us = us(median(&mesh_ns), n_mesh),
+        .match = match,
+    };
 }
 
 fn meshHash(allocator: std.mem.Allocator, mesh: *const mesher_mod.Mesh) !u64 {

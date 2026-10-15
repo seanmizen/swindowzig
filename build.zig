@@ -397,6 +397,20 @@ pub fn build(b: *std.Build) void {
     });
     async_tests.root_module.addImport("sw_gpu", web_libs.gpu);
     test_step.dependOn(&b.addRunArtifact(async_tests).step);
+    // Chunk stage tests (pipeline/stages.zig): equivalence with World,
+    // install order, and edits with versions (C2, C3, P3).
+    const stages_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/stages_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        // Only the tests of stages_test.zig. The steps above already run
+        // the tests of the files that it imports.
+        .filters = &.{"stages: "},
+    });
+    stages_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    test_step.dependOn(&b.addRunArtifact(stages_tests).step);
 }
 
 /// Compile stb_image (libs/sw_assets/c) into `module`. The shim headers stand
