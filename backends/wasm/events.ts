@@ -235,7 +235,7 @@ export function attachEventListeners(
     }
   });
 
-  // Resize is handled in boot.ts via window resize listener
+  // loader.ts sends resize events from a window resize listener.
 }
 
 function attachTextInput(wasmExports: WasmExports) {

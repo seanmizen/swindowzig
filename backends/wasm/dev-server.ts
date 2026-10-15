@@ -87,6 +87,8 @@ const server = serve({
       '/debug.html': './backends/wasm/debug.html',
       '/boot.js': './backends/wasm/boot.ts',
       '/boot': './backends/wasm/boot.ts',
+      '/loader.js': './backends/wasm/loader.ts',
+      '/loader': './backends/wasm/loader.ts',
       '/webgpu.js': './backends/wasm/webgpu.ts',
       '/webgpu': './backends/wasm/webgpu.ts',
       '/events.js': './backends/wasm/events.ts',
