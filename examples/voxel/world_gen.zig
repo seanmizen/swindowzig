@@ -319,17 +319,15 @@ pub fn sampleBiome(wx: i32, wz: i32) Biome {
 /// fall in each biome. The resulting normalised counts are the blend weights.
 ///
 /// This implements the Minecraft-style "sample neighbours and average" approach:
-/// with BLEND_RADIUS = 16 and N_SAMPLES = 12 the transition zones span about
+/// with BLEND_RADIUS = 16 and N_RING = 12 the transition zones span about
 /// 20–40 blocks, matching the visual feel of vanilla biome blending without
 /// needing a voronoi distance field or Perlin-style multi-channel noise.
 ///
 /// Returned as a [4]f32 indexed by Biome enum ordinal (plains=0, forest=1,
 /// badlands=2, desert=3). Values sum to 1.0.
 pub fn sampleBiomeWeights(wx: i32, wz: i32) [4]f32 {
-    const BLEND_RADIUS: f32 = 16.0;
     // Sample on a ring + centre. Evenly-spaced angles on the ring plus the
     // centre itself so the centre biome always has some weight.
-    const N_RING: usize = 12;
     const N_TOTAL: usize = N_RING + 1;
 
     var counts: [4]f32 = @splat(0.0);
@@ -338,13 +336,9 @@ pub fn sampleBiomeWeights(wx: i32, wz: i32) [4]f32 {
     const centre_biome = sampleBiome(wx, wz);
     counts[@backingInt(centre_biome)] += 1.0;
 
-    // Ring of samples at evenly spaced angles
-    var i: usize = 0;
-    while (i < N_RING) : (i += 1) {
-        const angle = @as(f32, @floatFromInt(i)) * (2.0 * std.math.pi / @as(f32, @floatFromInt(N_RING)));
-        const sx = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(wx)) + @cos(angle) * BLEND_RADIUS)));
-        const sz = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(wz)) + @sin(angle) * BLEND_RADIUS)));
-        const b = sampleBiome(sx, sz);
+    // Ring of samples at evenly spaced angles (see RING_OFFSETS).
+    for (RING_OFFSETS) |off| {
+        const b = sampleBiome(wx + off[0], wz + off[1]);
         counts[@backingInt(b)] += 1.0;
     }
 
@@ -356,6 +350,44 @@ pub fn sampleBiomeWeights(wx: i32, wz: i32) [4]f32 {
         counts[2] / total,
         counts[3] / total,
     };
+}
+
+/// Radius of the biome blend ring, in blocks.
+const BLEND_RADIUS: f32 = 16.0;
+/// Number of samples on the biome blend ring.
+const N_RING: usize = 12;
+
+/// The (dx, dz) offset of each sample on the biome blend ring. Sample i is
+/// at the angle i × 30°, BLEND_RADIUS blocks from the centre, rounded to the
+/// nearest block. Comptime calculates the table with the f32 expression
+/// that the ring used at runtime before. wasm has no trig instructions, so
+/// a runtime @sin or @cos is a slow software function. The offsets are
+/// integers, so wx + dx is equal to the old round(f32(wx) + cos × radius)
+/// while f32 holds wx exactly (|wx| < 2^23). The test below checks this.
+const RING_OFFSETS: [N_RING][2]i32 = blk: {
+    var offsets: [N_RING][2]i32 = undefined;
+    for (0..N_RING) |i| {
+        const angle = @as(f32, @floatFromInt(i)) * (2.0 * std.math.pi / @as(f32, @floatFromInt(N_RING)));
+        offsets[i] = .{
+            @intFromFloat(@round(@cos(angle) * BLEND_RADIUS)),
+            @intFromFloat(@round(@sin(angle) * BLEND_RADIUS)),
+        };
+    }
+    break :blk offsets;
+};
+
+test "the ring offset table gives the same samples as the trig ring" {
+    var w: i32 = -40_000;
+    while (w <= 40_000) : (w += 37) {
+        const fw = @as(f32, @floatFromInt(w));
+        for (RING_OFFSETS, 0..) |off, i| {
+            const angle = @as(f32, @floatFromInt(i)) * (2.0 * std.math.pi / @as(f32, @floatFromInt(N_RING)));
+            const sx: i32 = @intFromFloat(@round(fw + @cos(angle) * BLEND_RADIUS));
+            const sz: i32 = @intFromFloat(@round(fw + @sin(angle) * BLEND_RADIUS));
+            try std.testing.expectEqual(sx, w + off[0]);
+            try std.testing.expectEqual(sz, w + off[1]);
+        }
+    }
 }
 
 /// Per-biome terrain parameters used for height blending.
@@ -375,6 +407,25 @@ fn biomeTerrainParams(b: Biome) BiomeTerrainParams {
     };
 }
 
+/// The surface height and the dominant biome of one world column.
+pub const ColumnSample = struct {
+    height: i32,
+    biome: Biome,
+};
+
+/// Sample the blended surface height and the dominant biome of the column
+/// at (wx, wz). The result is the same as `sampleHeightBiomeBlended` and
+/// `dominantBiome`, but it calculates the biome weights one time, not two
+/// times. For the flatland preset (noise_octaves = 0) the biome is plains.
+pub fn sampleColumn(wx: i32, wz: i32, config: WorldGenConfig) ColumnSample {
+    if (config.noise_octaves == 0) return .{ .height = config.terrain_height_min, .biome = .plains };
+    const weights = sampleBiomeWeights(wx, wz);
+    return .{
+        .height = heightFromWeights(wx, wz, config, weights),
+        .biome = dominantFromWeights(weights),
+    };
+}
+
 /// Sample blended terrain height at (wx, wz), honouring biome influence.
 ///
 /// For the flatland preset (noise_octaves = 0) this short-circuits to the
@@ -387,7 +438,12 @@ fn biomeTerrainParams(b: Biome) BiomeTerrainParams {
 /// biome transitions — desert dunes flow into forest hills without a cliff.
 pub fn sampleHeightBiomeBlended(wx: i32, wz: i32, config: WorldGenConfig) i32 {
     if (config.noise_octaves == 0) return config.terrain_height_min;
+    return heightFromWeights(wx, wz, config, sampleBiomeWeights(wx, wz));
+}
 
+/// The blended surface height at (wx, wz) for the biome `weights` of that
+/// column. Only for noise_octaves > 0.
+fn heightFromWeights(wx: i32, wz: i32, config: WorldGenConfig, weights: [4]f32) i32 {
     // Evaluate raw noise in [0, 1]
     var amplitude: f32 = 1.0;
     var frequency: f32 = config.noise_scale;
@@ -406,7 +462,6 @@ pub fn sampleHeightBiomeBlended(wx: i32, wz: i32, config: WorldGenConfig) i32 {
     const normalized = total / max_value; // [0, 1]
 
     // Blend biome height ranges using the soft biome weights
-    const weights = sampleBiomeWeights(wx, wz);
     const biomes = [_]Biome{ .plains, .forest, .badlands, .desert };
 
     var blended_min: f32 = 0.0;
@@ -425,7 +480,11 @@ pub fn sampleHeightBiomeBlended(wx: i32, wz: i32, config: WorldGenConfig) i32 {
 /// Returns the biome with the highest weight — used by terrain generation
 /// to pick surface block type and to gate tree spawning.
 pub fn dominantBiome(wx: i32, wz: i32) Biome {
-    const weights = sampleBiomeWeights(wx, wz);
+    return dominantFromWeights(sampleBiomeWeights(wx, wz));
+}
+
+/// The biome with the highest weight. On a tie, the first biome wins.
+fn dominantFromWeights(weights: [4]f32) Biome {
     var best_idx: usize = 0;
     var best_w: f32 = weights[0];
     for (weights[1..], 1..) |w, idx| {
