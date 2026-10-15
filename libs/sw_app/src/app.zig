@@ -182,11 +182,12 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
             },
         };
 
-        _ = timeline.advance(dt_ns);
+        const ticks = timeline.advance(dt_ns);
 
         // Assign pending (tick_id=0) platform events to the first tick of this frame.
         // This ensures SDL input only fires once (in tick N), not in every catch-up tick.
-        event_bus.assignPendingToTick(timeline.currentTick() + 1);
+        // A frame with 0 ticks keeps its pending events for the next tick.
+        if (ticks > 0) event_bus.assignPendingToTick(timeline.currentTick() + 1);
 
         // Run tick callbacks — step() advances tick_id by 1 each iteration.
         // ctx.tickId() is always correct for the current iteration.
@@ -217,8 +218,9 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
             }
         }
 
-        // Clear event bus for next frame
-        event_bus.clear();
+        // Clear event bus for next frame. A frame with 0 ticks does not clear:
+        // otherwise a lost key-up event leaves the key held.
+        if (ticks > 0 or !@hasDecl(callbacks, "tick")) event_bus.clear();
     }
 
     // 10. Call shutdown callback

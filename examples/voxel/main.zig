@@ -4839,7 +4839,14 @@ fn wasmFrameImpl(timestamp_ms: f64) callconv(.c) void {
     const dt = now - wasm_last_time_ns;
     wasm_last_time_ns = now;
 
-    _ = wasm_timeline.advance(dt);
+    // A display above 120 Hz gives frames with 0 ticks. Such a frame keeps
+    // its pending events for the next tick: no assign, no clear. If the
+    // frame clears them, a lost key-up event leaves the key held.
+    const ticks = wasm_timeline.advance(dt);
+    if (ticks == 0) {
+        voxelRender(&wasm_ctx) catch {};
+        return;
+    }
     wasm_bus.assignPendingToTick(wasm_timeline.currentTick() + 1);
 
     while (wasm_timeline.step()) {
