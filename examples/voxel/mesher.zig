@@ -457,7 +457,7 @@ const face_offsets = [_][3]i32{
 /// uses direct array access. Only falls back to the world getter for out-of-bounds
 /// neighbours (chunk boundaries), enabling correct cross-chunk face culling.
 fn shouldRenderFace(chunk: *const Chunk, getter: BlockGetter, lx: i32, ly: i32, lz: i32, world_ox: i32, world_oz: i32, face: Face) bool {
-    const offset = face_offsets[@intFromEnum(face)];
+    const offset = face_offsets[@backingInt(face)];
     const nx = lx + offset[0];
     const ny = ly + offset[1];
     const nz = lz + offset[2];
@@ -865,9 +865,15 @@ fn computeFaceAOMoore(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, w
 /// the third slab picks up the ceiling/walls two more hops out, darkening
 /// the shadowed pocket smoothly over ~3 blocks instead of the moore's ~2.
 fn aoPropValue(
-    s1: bool, s2: bool, c: bool,
-    ds1: bool, ds2: bool, dc: bool,
-    fs1: bool, fs2: bool, fc: bool,
+    s1: bool,
+    s2: bool,
+    c: bool,
+    ds1: bool,
+    ds2: bool,
+    dc: bool,
+    fs1: bool,
+    fs2: bool,
+    fc: bool,
 ) f32 {
     if (s1 and s2) return 0.0;
     const near: f32 = @floatFromInt(@as(u32, @intFromBool(s1)) + @as(u32, @intFromBool(s2)) + @as(u32, @intFromBool(c)));
@@ -1395,8 +1401,8 @@ fn addQuad(
     lighting_mode: LightingMode,
 ) !void {
     const base_idx: u32 = @intCast(mesh.vertices.items.len);
-    const normal = face_normals[@intFromEnum(face)];
-    const block_u32: u32 = @intFromEnum(block_type);
+    const normal = face_normals[@backingInt(face)];
+    const block_u32: u32 = @backingInt(block_type);
 
     // Compute per-vertex ambient occlusion for this face according to the
     // selected strategy. The dispatch is centralized in computeFaceAOForStrategy
@@ -1668,8 +1674,8 @@ fn emitGreedyQuad(
     std.debug.assert(w > 0 and h > 0);
 
     const base_idx: u32 = @intCast(mesh.vertices.items.len);
-    const normal = face_normals[@intFromEnum(face)];
-    const block_u32: u32 = @intFromEnum(cell.block_type);
+    const normal = face_normals[@backingInt(face)];
+    const block_u32: u32 = @backingInt(cell.block_type);
 
     const wf: f32 = @floatFromInt(w);
     const hf: f32 = @floatFromInt(h);
@@ -1684,10 +1690,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(ja);
             const z_f: f32 = @floatFromInt(world_oz + ia);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f, y_f,      z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f, y_f + hf, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
                 .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f, y_f,      z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
+                .{ .pos = .{ x_f, y_f, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .nx => blk: {
@@ -1697,10 +1703,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(ja);
             const z_f: f32 = @floatFromInt(world_oz + ia);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f, y_f,      z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
-                .{ .pos = .{ x_f, y_f + hf, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f, y_f,      z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
+                .{ .pos = .{ x_f, y_f, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f, y_f + hf, z_f + wf }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
+                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .py => blk: {
@@ -1710,10 +1716,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(d + 1);
             const z_f: f32 = @floatFromInt(world_oz + ja);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f,      y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f,      y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
                 .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f + wf, y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
+                .{ .pos = .{ x_f + wf, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .ny => blk: {
@@ -1723,10 +1729,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(d);
             const z_f: f32 = @floatFromInt(world_oz + ja);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f,      y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f,      y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
-                .{ .pos = .{ x_f + wf, y_f, z_f      }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
+                .{ .pos = .{ x_f, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f + wf, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
+                .{ .pos = .{ x_f + wf, y_f, z_f + hf }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .pz => blk: {
@@ -1736,10 +1742,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(ja);
             const z_f: f32 = @floatFromInt(world_oz + d + 1);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f,      y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f + wf, y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f + wf, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
                 .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f,      y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
+                .{ .pos = .{ x_f, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
         .nz => blk: {
@@ -1749,10 +1755,10 @@ fn emitGreedyQuad(
             const y_f: f32 = @floatFromInt(ja);
             const z_f: f32 = @floatFromInt(world_oz + d);
             break :blk [_]VoxelVertex{
-                .{ .pos = .{ x_f + wf, y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  0  }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
-                .{ .pos = .{ x_f,      y_f,      z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0  }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
-                .{ .pos = .{ x_f,      y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
-                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0,  hf }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
+                .{ .pos = .{ x_f + wf, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, 0 }, .ao = cell.ao[0], .skylight = cell.sky[0], .block_light = cell.bl[0] },
+                .{ .pos = .{ x_f, y_f, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, 0 }, .ao = cell.ao[1], .skylight = cell.sky[1], .block_light = cell.bl[1] },
+                .{ .pos = .{ x_f, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ wf, hf }, .ao = cell.ao[2], .skylight = cell.sky[2], .block_light = cell.bl[2] },
+                .{ .pos = .{ x_f + wf, y_f + hf, z_f }, .normal = normal, .block_type = block_u32, .uv = .{ 0, hf }, .ao = cell.ao[3], .skylight = cell.sky[3], .block_light = cell.bl[3] },
             };
         },
     };
@@ -1860,18 +1866,18 @@ const VisibleFaces = struct {
             // -Y: neighbour below. Bit 0 has its neighbour out of the chunk.
             var down = andNot(s, shiftUp(s));
             down[0] &= ~@as(u64, 1);
-            self.masks[@intFromEnum(Face.py)][x][z] = up;
-            self.masks[@intFromEnum(Face.ny)][x][z] = down;
-            self.masks[@intFromEnum(Face.px)][x][z] = if (x + 1 < CHUNK_W) andNot(s, solid[x + 1][z]) else .{ 0, 0, 0, 0 };
-            self.masks[@intFromEnum(Face.nx)][x][z] = if (x > 0) andNot(s, solid[x - 1][z]) else .{ 0, 0, 0, 0 };
-            self.masks[@intFromEnum(Face.pz)][x][z] = if (z + 1 < CHUNK_W) andNot(s, solid[x][z + 1]) else .{ 0, 0, 0, 0 };
-            self.masks[@intFromEnum(Face.nz)][x][z] = if (z > 0) andNot(s, solid[x][z - 1]) else .{ 0, 0, 0, 0 };
+            self.masks[@backingInt(Face.py)][x][z] = up;
+            self.masks[@backingInt(Face.ny)][x][z] = down;
+            self.masks[@backingInt(Face.px)][x][z] = if (x + 1 < CHUNK_W) andNot(s, solid[x + 1][z]) else .{ 0, 0, 0, 0 };
+            self.masks[@backingInt(Face.nx)][x][z] = if (x > 0) andNot(s, solid[x - 1][z]) else .{ 0, 0, 0, 0 };
+            self.masks[@backingInt(Face.pz)][x][z] = if (z + 1 < CHUNK_W) andNot(s, solid[x][z + 1]) else .{ 0, 0, 0, 0 };
+            self.masks[@backingInt(Face.nz)][x][z] = if (z > 0) andNot(s, solid[x][z - 1]) else .{ 0, 0, 0, 0 };
 
             // Faces with the neighbour out of the chunk: ask shouldRenderFace.
             const xi: i32 = @intCast(x);
             const zi: i32 = @intCast(z);
-            if (s[3] >> 63 != 0 and shouldRenderFace(chunk, getter, xi, CHUNK_H - 1, zi, world_ox, world_oz, .py)) self.masks[@intFromEnum(Face.py)][x][z][3] |= @as(u64, 1) << 63;
-            if (s[0] & 1 != 0 and shouldRenderFace(chunk, getter, xi, 0, zi, world_ox, world_oz, .ny)) self.masks[@intFromEnum(Face.ny)][x][z][0] |= 1;
+            if (s[3] >> 63 != 0 and shouldRenderFace(chunk, getter, xi, CHUNK_H - 1, zi, world_ox, world_oz, .py)) self.masks[@backingInt(Face.py)][x][z][3] |= @as(u64, 1) << 63;
+            if (s[0] & 1 != 0 and shouldRenderFace(chunk, getter, xi, 0, zi, world_ox, world_oz, .ny)) self.masks[@backingInt(Face.ny)][x][z][0] |= 1;
             inline for (.{ Face.px, Face.nx, Face.pz, Face.nz }) |face| {
                 const at_edge = switch (face) {
                     .px => x + 1 == CHUNK_W,
@@ -1884,7 +1890,7 @@ const VisibleFaces = struct {
                     for (0..CHUNK_H) |y| {
                         if (s[y / 64] >> @intCast(y % 64) & 1 == 0) continue;
                         if (shouldRenderFace(chunk, getter, xi, @intCast(y), zi, world_ox, world_oz, face)) {
-                            self.masks[@intFromEnum(face)][x][z][y / 64] |= @as(u64, 1) << @intCast(y % 64);
+                            self.masks[@backingInt(face)][x][z][y / 64] |= @as(u64, 1) << @intCast(y % 64);
                         }
                     }
                 }
@@ -1894,7 +1900,7 @@ const VisibleFaces = struct {
             var any: Col = .{ 0, 0, 0, 0 };
             for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
                 const c = self.masks[f][x][z];
-                switch (@as(Face, @enumFromInt(f))) {
+                switch (@as(Face, @fromBackingInt(@intCast(f)))) {
                     // y faces: slice d is layer y = d, so OR the columns.
                     .py, .ny => any = .{ any[0] | c[0], any[1] | c[1], any[2] | c[2], any[3] | c[3] },
                     // x faces: slice d is x = d. z faces: slice d is z = d.
@@ -1909,13 +1915,13 @@ const VisibleFaces = struct {
 
     fn has(self: *const VisibleFaces, face: Face, x: i32, y: i32, z: i32) bool {
         const yu: u32 = @intCast(y);
-        return self.masks[@intFromEnum(face)][@intCast(x)][@intCast(z)][yu / 64] >> @intCast(yu % 64) & 1 != 0;
+        return self.masks[@backingInt(face)][@intCast(x)][@intCast(z)][yu / 64] >> @intCast(yu % 64) & 1 != 0;
     }
 
     /// Row ii of slice d, as greedyIJToLocalBlock maps it: bit jj is set when
     /// the face at (d, ii, jj) is visible.
     fn sliceRow(self: *const VisibleFaces, face: Face, d: i32, ii: usize) Row {
-        const f = @intFromEnum(face);
+        const f = @backingInt(face);
         const du: usize = @intCast(d);
         return switch (face) {
             .px, .nx => self.masks[f][du][ii], // i = Z, j = Y: the column (x = d, z = ii)
@@ -1932,7 +1938,7 @@ const VisibleFaces = struct {
 
     /// True when slice d of this face direction has a visible face.
     fn sliceHasFace(self: *const VisibleFaces, face: Face, d: i32) bool {
-        return rowGet(self.nonempty[@intFromEnum(face)], @intCast(d));
+        return rowGet(self.nonempty[@backingInt(face)], @intCast(d));
     }
 
     fn andNot(a: Col, b: Col) Col {
@@ -2225,7 +2231,7 @@ fn cornerBits(comptime which: enum { pos, uv }) [2]u32 {
 
 fn faceFromNormal(n: [3]f32) Face {
     for (face_normals, 0..) |fnorm, i| {
-        if (fnorm[0] == n[0] and fnorm[1] == n[1] and fnorm[2] == n[2]) return @enumFromInt(i);
+        if (fnorm[0] == n[0] and fnorm[1] == n[1] and fnorm[2] == n[2]) return @fromBackingInt(@intCast(i));
     }
     unreachable;
 }
@@ -2237,7 +2243,7 @@ fn quantize(v: f32, steps: f32) u32 {
 /// Pack one quad (its 4 CPU vertices) for a chunk at world (world_ox, world_oz).
 pub fn packQuad(v: *const [4]VoxelVertex, world_ox: i32, world_oz: i32, highlight: u8) PackedQuad {
     const face = faceFromNormal(v[0].normal);
-    const fl = face_layouts[@intFromEnum(face)];
+    const fl = face_layouts[@backingInt(face)];
     var lo = v[0].pos;
     var hi = v[0].pos;
     for (v[1..]) |vert| {
@@ -2263,7 +2269,7 @@ pub fn packQuad(v: *const [4]VoxelVertex, world_ox: i32, world_oz: i32, highligh
     }
     var q: PackedQuad = .{ 0, 0, 0, 0 };
     q[0] = @as(u32, @intCast(cell[0])) | (@as(u32, @intCast(cell[1])) << 4) |
-        (@as(u32, @intCast(cell[2])) << 12) | (@as(u32, @intFromEnum(face)) << 16) |
+        (@as(u32, @intCast(cell[2])) << 12) | (@as(u32, @backingInt(face)) << 16) |
         ((w - 1) << 19) | ((h - 1) << 23);
     for (fields, 0..) |f, i| q[1 + i / 5] |= f << @intCast(6 * (i % 5));
     q[3] |= ((v[0].block_type & 0xFF) << 12) | (@as(u32, highlight) << 20);

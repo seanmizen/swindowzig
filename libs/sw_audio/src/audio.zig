@@ -60,7 +60,7 @@ pub const Audio = struct {
             sound.frequency,
             sound.frequency_end orelse sound.frequency,
             sound.duration,
-            @intFromEnum(sound.waveform),
+            @backingInt(sound.waveform),
             effective_volume,
         );
     }

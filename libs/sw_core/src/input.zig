@@ -16,15 +16,15 @@ pub const MouseState = struct {
     released: std.bit_set.IntegerBitSet(5) = .empty,
 
     pub fn isButtonDown(self: *const MouseState, button: MouseButton) bool {
-        return self.buttons.isSet(@intFromEnum(button));
+        return self.buttons.isSet(@backingInt(button));
     }
 
     pub fn isButtonPressed(self: *const MouseState, button: MouseButton) bool {
-        return self.pressed.isSet(@intFromEnum(button));
+        return self.pressed.isSet(@backingInt(button));
     }
 
     pub fn isButtonReleased(self: *const MouseState, button: MouseButton) bool {
-        return self.released.isSet(@intFromEnum(button));
+        return self.released.isSet(@backingInt(button));
     }
 };
 
@@ -41,17 +41,17 @@ pub const KeyboardState = struct {
     released: std.bit_set.IntegerBitSet(256) = .empty,
 
     pub fn isKeyDown(self: *const KeyboardState, key: KeyCode) bool {
-        const code = @intFromEnum(key);
+        const code = @backingInt(key);
         return code < 256 and self.down.isSet(code);
     }
 
     pub fn isKeyPressed(self: *const KeyboardState, key: KeyCode) bool {
-        const code = @intFromEnum(key);
+        const code = @backingInt(key);
         return code < 256 and self.pressed.isSet(code);
     }
 
     pub fn isKeyReleased(self: *const KeyboardState, key: KeyCode) bool {
-        const code = @intFromEnum(key);
+        const code = @backingInt(key);
         return code < 256 and self.released.isSet(code);
     }
 };
@@ -130,7 +130,7 @@ pub const InputSnapshot = struct {
                 },
 
                 .pointer_button => |p| {
-                    const button_idx = @intFromEnum(p.button);
+                    const button_idx = @backingInt(p.button);
                     if (p.down) {
                         if (!self.mouse.buttons.isSet(button_idx)) {
                             self.mouse.pressed.set(button_idx);
@@ -150,7 +150,7 @@ pub const InputSnapshot = struct {
                 },
 
                 .key => |k| {
-                    const code = @intFromEnum(k.keycode);
+                    const code = @backingInt(k.keycode);
                     if (code < 256) {
                         if (k.down) {
                             if (!self.keyboard.down.isSet(code)) {

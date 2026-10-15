@@ -79,8 +79,8 @@ pub const Strategy = enum {
 
     pub fn cycle(self: Strategy, dir: i32) Strategy {
         const n: i32 = @intCast(std.enums.values(Strategy).len);
-        const i: i32 = @intFromEnum(self);
-        return @enumFromInt(@mod(i + (if (dir > 0) @as(i32, 1) else -1), n));
+        const i: i32 = @backingInt(self);
+        return @fromBackingInt(@intCast(@mod(i + (if (dir > 0) @as(i32, 1) else -1), n)));
     }
 };
 

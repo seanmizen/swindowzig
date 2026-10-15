@@ -64,7 +64,7 @@ pub const Serializer = struct {
 
         // Write payload tag
         const tag = std.meta.activeTag(e.payload);
-        try self.writer.writeInt(u8, @intFromEnum(tag), .little);
+        try self.writer.writeInt(u8, @backingInt(tag), .little);
 
         // Write payload data based on tag
         switch (e.payload) {
@@ -90,14 +90,14 @@ pub const Serializer = struct {
                 try self.writer.writeStruct(f, .little);
             },
             .lifecycle => |l| {
-                try self.writer.writeInt(u8, @intFromEnum(l), .little);
+                try self.writer.writeInt(u8, @backingInt(l), .little);
             },
             .tick => |t| {
                 try self.writer.writeInt(u64, t.dt_ns, .little);
             },
             // command is not an extern struct, so write its fields one by one.
             .command => |c| {
-                try self.writer.writeInt(u8, @intFromEnum(c.kind), .little);
+                try self.writer.writeInt(u8, @backingInt(c.kind), .little);
                 for (c.args) |arg| try self.writer.writeInt(u32, @bitCast(arg), .little);
             },
             .text_composition => |c| {
@@ -160,7 +160,7 @@ pub const Deserializer = struct {
             6 => .{ .focus = try self.reader.takeStruct(@TypeOf(dummy.focus), .little) },
             7 => blk: {
                 const val = try self.reader.takeInt(u8, .little);
-                break :blk .{ .lifecycle = @enumFromInt(val) };
+                break :blk .{ .lifecycle = @fromBackingInt(@intCast(val)) };
             },
             8 => blk: {
                 const dt_ns = try self.reader.takeInt(u64, .little);

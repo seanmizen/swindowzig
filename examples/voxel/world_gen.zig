@@ -336,7 +336,7 @@ pub fn sampleBiomeWeights(wx: i32, wz: i32) [4]f32 {
 
     // Centre point
     const centre_biome = sampleBiome(wx, wz);
-    counts[@intFromEnum(centre_biome)] += 1.0;
+    counts[@backingInt(centre_biome)] += 1.0;
 
     // Ring of samples at evenly spaced angles
     var i: usize = 0;
@@ -345,7 +345,7 @@ pub fn sampleBiomeWeights(wx: i32, wz: i32) [4]f32 {
         const sx = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(wx)) + @cos(angle) * BLEND_RADIUS)));
         const sz = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(wz)) + @sin(angle) * BLEND_RADIUS)));
         const b = sampleBiome(sx, sz);
-        counts[@intFromEnum(b)] += 1.0;
+        counts[@backingInt(b)] += 1.0;
     }
 
     // Normalise to sum to 1.0
@@ -434,5 +434,5 @@ pub fn dominantBiome(wx: i32, wz: i32) Biome {
             best_idx = idx;
         }
     }
-    return @enumFromInt(best_idx);
+    return @fromBackingInt(@intCast(best_idx));
 }

@@ -252,7 +252,6 @@ pub const PalettedBlocks = struct {
     }
 };
 
-
 /// A dense light grid, [x][y][z]: what the light passes compute into.
 pub const DenseLight = [CHUNK_W][CHUNK_H][CHUNK_W]u8;
 

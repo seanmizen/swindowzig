@@ -676,7 +676,7 @@ pub const GPU = struct {
                 desc.size.width,
                 desc.size.height,
                 desc.size.depth_or_array_layers,
-                @intFromEnum(desc.format),
+                @backingInt(desc.format),
                 usage,
                 desc.mip_level_count,
                 desc.sample_count,
@@ -687,13 +687,13 @@ pub const GPU = struct {
                 .next_in_chain = null,
                 .label = null, // TODO: Support labels
                 .usage = native.textureUsageToFlags(desc.usage),
-                .dimension = @enumFromInt(@intFromEnum(desc.dimension)),
+                .dimension = @fromBackingInt(@intCast(@backingInt(desc.dimension))),
                 .size = .{
                     .width = desc.size.width,
                     .height = desc.size.height,
                     .depth_or_array_layers = desc.size.depth_or_array_layers,
                 },
-                .format = @enumFromInt(@intFromEnum(desc.format)),
+                .format = @fromBackingInt(@intCast(@backingInt(desc.format))),
                 .mip_level_count = desc.mip_level_count,
                 .sample_count = desc.sample_count,
                 .view_format_count = 0,
@@ -711,29 +711,29 @@ pub const GPU = struct {
         if (comptime is_wasm) {
             const handle = web.webgpuCreateSampler(
                 self.device,
-                @intFromEnum(desc.address_mode_u),
-                @intFromEnum(desc.address_mode_v),
-                @intFromEnum(desc.address_mode_w),
-                @intFromEnum(desc.mag_filter),
-                @intFromEnum(desc.min_filter),
-                @intFromEnum(desc.mipmap_filter),
+                @backingInt(desc.address_mode_u),
+                @backingInt(desc.address_mode_v),
+                @backingInt(desc.address_mode_w),
+                @backingInt(desc.mag_filter),
+                @backingInt(desc.min_filter),
+                @backingInt(desc.mipmap_filter),
                 desc.lod_min_clamp,
                 desc.lod_max_clamp,
-                if (desc.compare) |c| @intFromEnum(c) else 0,
+                if (desc.compare) |c| @backingInt(c) else 0,
             );
             return Sampler{ .handle = handle };
         } else {
             const c_desc = native.WGPUSamplerDescriptor{
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
-                .address_mode_u = @enumFromInt(@intFromEnum(desc.address_mode_u)),
-                .address_mode_v = @enumFromInt(@intFromEnum(desc.address_mode_v)),
-                .address_mode_w = @enumFromInt(@intFromEnum(desc.address_mode_w)),
-                .mag_filter = @enumFromInt(@intFromEnum(desc.mag_filter)),
-                .min_filter = @enumFromInt(@intFromEnum(desc.min_filter)),
-                .mipmap_filter = @enumFromInt(@intFromEnum(desc.mipmap_filter)),
+                .address_mode_u = @fromBackingInt(@intCast(@backingInt(desc.address_mode_u))),
+                .address_mode_v = @fromBackingInt(@intCast(@backingInt(desc.address_mode_v))),
+                .address_mode_w = @fromBackingInt(@intCast(@backingInt(desc.address_mode_w))),
+                .mag_filter = @fromBackingInt(@intCast(@backingInt(desc.mag_filter))),
+                .min_filter = @fromBackingInt(@intCast(@backingInt(desc.min_filter))),
+                .mipmap_filter = @fromBackingInt(@intCast(@backingInt(desc.mipmap_filter))),
                 .lod_min_clamp = desc.lod_min_clamp,
                 .lod_max_clamp = desc.lod_max_clamp,
-                .compare = if (desc.compare) |c| @enumFromInt(@intFromEnum(c)) else .undefined,
+                .compare = if (desc.compare) |c| @fromBackingInt(@intCast(@backingInt(c))) else .undefined,
                 .max_anisotropy = desc.max_anisotropy,
             };
             const handle = native.wgpuDeviceCreateSampler(self.device, &c_desc);
@@ -801,7 +801,7 @@ pub const GPU = struct {
 
                 for (buffer_layout.attributes, 0..) |attr, j| {
                     js_attrs[j] = .{
-                        .format = @intFromEnum(attr.format),
+                        .format = @backingInt(attr.format),
                         .offset = attr.offset,
                         .shader_location = attr.shader_location,
                     };
@@ -809,7 +809,7 @@ pub const GPU = struct {
 
                 js_vertex_buffers[i] = .{
                     .array_stride = buffer_layout.array_stride,
-                    .step_mode = @intFromEnum(buffer_layout.step_mode),
+                    .step_mode = @backingInt(buffer_layout.step_mode),
                     .attributes_ptr = js_attrs.ptr,
                     .attribute_count = @intCast(js_attrs.len),
                 };
@@ -826,14 +826,14 @@ pub const GPU = struct {
 
                 for (fragment.targets, 0..) |target, i| {
                     targets[i] = .{
-                        .format = @intFromEnum(target.format),
+                        .format = @backingInt(target.format),
                         .blend_enabled = @as(u32, if (target.blend != null) 1 else 0),
-                        .color_operation = if (target.blend) |blend| @intFromEnum(blend.color.operation) else 0,
-                        .color_src_factor = if (target.blend) |blend| @intFromEnum(blend.color.src_factor) else 0,
-                        .color_dst_factor = if (target.blend) |blend| @intFromEnum(blend.color.dst_factor) else 0,
-                        .alpha_operation = if (target.blend) |blend| @intFromEnum(blend.alpha.operation) else 0,
-                        .alpha_src_factor = if (target.blend) |blend| @intFromEnum(blend.alpha.src_factor) else 0,
-                        .alpha_dst_factor = if (target.blend) |blend| @intFromEnum(blend.alpha.dst_factor) else 0,
+                        .color_operation = if (target.blend) |blend| @backingInt(blend.color.operation) else 0,
+                        .color_src_factor = if (target.blend) |blend| @backingInt(blend.color.src_factor) else 0,
+                        .color_dst_factor = if (target.blend) |blend| @backingInt(blend.color.dst_factor) else 0,
+                        .alpha_operation = if (target.blend) |blend| @backingInt(blend.alpha.operation) else 0,
+                        .alpha_src_factor = if (target.blend) |blend| @backingInt(blend.alpha.src_factor) else 0,
+                        .alpha_dst_factor = if (target.blend) |blend| @backingInt(blend.alpha.dst_factor) else 0,
                         .write_mask = target.write_mask,
                     };
                 }
@@ -851,10 +851,10 @@ pub const GPU = struct {
                 js_vertex_buffers.ptr,
                 @intCast(js_vertex_buffers.len),
                 // Primitive
-                @intFromEnum(desc.primitive.topology),
-                if (desc.primitive.strip_index_format) |fmt| @intFromEnum(fmt) else 0,
-                @intFromEnum(desc.primitive.front_face),
-                @intFromEnum(desc.primitive.cull_mode),
+                @backingInt(desc.primitive.topology),
+                if (desc.primitive.strip_index_format) |fmt| @backingInt(fmt) else 0,
+                @backingInt(desc.primitive.front_face),
+                @backingInt(desc.primitive.cull_mode),
                 // Fragment stage
                 if (desc.fragment) |frag| frag.module.handle else 0,
                 if (desc.fragment) |frag| frag.entry_point.ptr else @as([*]const u8, undefined),
@@ -862,9 +862,9 @@ pub const GPU = struct {
                 js_fragment_targets.ptr,
                 @intCast(js_fragment_targets.len),
                 // Depth/stencil
-                if (desc.depth_stencil) |ds| @intFromEnum(ds.format) else 0,
+                if (desc.depth_stencil) |ds| @backingInt(ds.format) else 0,
                 if (desc.depth_stencil) |ds| ds.depth_write_enabled else false,
-                if (desc.depth_stencil) |ds| @intFromEnum(ds.depth_compare) else 0,
+                if (desc.depth_stencil) |ds| @backingInt(ds.depth_compare) else 0,
                 // Multisample
                 desc.multisample.count,
                 desc.multisample.mask,
@@ -895,7 +895,7 @@ pub const GPU = struct {
 
                 for (buffer_layout.attributes, 0..) |attr, j| {
                     wgpu_attrs[j] = .{
-                        .format = @enumFromInt(@intFromEnum(attr.format)),
+                        .format = @fromBackingInt(@intCast(@backingInt(attr.format))),
                         .offset = attr.offset,
                         .shader_location = attr.shader_location,
                     };
@@ -903,7 +903,7 @@ pub const GPU = struct {
 
                 wgpu_vertex_buffers[i] = .{
                     .array_stride = buffer_layout.array_stride,
-                    .step_mode = @enumFromInt(@intFromEnum(buffer_layout.step_mode)),
+                    .step_mode = @fromBackingInt(@intCast(@backingInt(buffer_layout.step_mode))),
                     .attribute_count = wgpu_attrs.len,
                     .attributes = wgpu_attrs.ptr,
                 };
@@ -922,10 +922,10 @@ pub const GPU = struct {
 
             // Build primitive state (zero-initialize to avoid undefined padding)
             var primitive_state = std.mem.zeroes(native.WGPUPrimitiveState);
-            primitive_state.topology = @enumFromInt(@intFromEnum(desc.primitive.topology));
-            primitive_state.strip_index_format = if (desc.primitive.strip_index_format) |fmt| @enumFromInt(@intFromEnum(fmt)) else .undefined;
-            primitive_state.front_face = @enumFromInt(@intFromEnum(desc.primitive.front_face));
-            primitive_state.cull_mode = @enumFromInt(@intFromEnum(desc.primitive.cull_mode));
+            primitive_state.topology = @fromBackingInt(@intCast(@backingInt(desc.primitive.topology)));
+            primitive_state.strip_index_format = if (desc.primitive.strip_index_format) |fmt| @fromBackingInt(@intCast(@backingInt(fmt))) else .undefined;
+            primitive_state.front_face = @fromBackingInt(@intCast(@backingInt(desc.primitive.front_face)));
+            primitive_state.cull_mode = @fromBackingInt(@intCast(@backingInt(desc.primitive.cull_mode)));
 
             // Build multisample state (zero-initialize to avoid undefined padding)
             var multisample_state = std.mem.zeroes(native.WGPUMultisampleState);
@@ -955,19 +955,19 @@ pub const GPU = struct {
 
                 for (fragment.targets, 0..) |target, i| {
                     targets[i] = std.mem.zeroes(native.WGPUColorTargetState);
-                    targets[i].format = @enumFromInt(@intFromEnum(target.format));
+                    targets[i].format = @fromBackingInt(@intCast(@backingInt(target.format)));
                     targets[i].write_mask = target.write_mask;
                     if (target.blend) |blend| {
                         wgpu_blend_states_storage[i] = .{
                             .color = .{
-                                .operation = @enumFromInt(@intFromEnum(blend.color.operation)),
-                                .src_factor = @enumFromInt(@intFromEnum(blend.color.src_factor)),
-                                .dst_factor = @enumFromInt(@intFromEnum(blend.color.dst_factor)),
+                                .operation = @fromBackingInt(@intCast(@backingInt(blend.color.operation))),
+                                .src_factor = @fromBackingInt(@intCast(@backingInt(blend.color.src_factor))),
+                                .dst_factor = @fromBackingInt(@intCast(@backingInt(blend.color.dst_factor))),
                             },
                             .alpha = .{
-                                .operation = @enumFromInt(@intFromEnum(blend.alpha.operation)),
-                                .src_factor = @enumFromInt(@intFromEnum(blend.alpha.src_factor)),
-                                .dst_factor = @enumFromInt(@intFromEnum(blend.alpha.dst_factor)),
+                                .operation = @fromBackingInt(@intCast(@backingInt(blend.alpha.operation))),
+                                .src_factor = @fromBackingInt(@intCast(@backingInt(blend.alpha.src_factor))),
+                                .dst_factor = @fromBackingInt(@intCast(@backingInt(blend.alpha.dst_factor))),
                             },
                         };
                         targets[i].blend = &wgpu_blend_states_storage[i];
@@ -990,21 +990,21 @@ pub const GPU = struct {
             if (desc.depth_stencil) |depth_stencil| {
                 // Zero-initialize depth stencil state to avoid undefined padding (CRITICAL!)
                 depth_stencil_state_storage = std.mem.zeroes(native.WGPUDepthStencilState);
-                depth_stencil_state_storage.format = @enumFromInt(@intFromEnum(depth_stencil.format));
+                depth_stencil_state_storage.format = @fromBackingInt(@intCast(@backingInt(depth_stencil.format)));
                 depth_stencil_state_storage.depth_write_enabled = if (depth_stencil.depth_write_enabled) @as(u32, 1) else 0;
                 depth_stencil_state_storage.depth_compare = toNativeCompareFunction(depth_stencil.depth_compare);
 
                 // Stencil front state
                 depth_stencil_state_storage.stencil_front.compare = toNativeCompareFunction(depth_stencil.stencil_front.compare);
-                depth_stencil_state_storage.stencil_front.fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.fail_op));
-                depth_stencil_state_storage.stencil_front.depth_fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.depth_fail_op));
-                depth_stencil_state_storage.stencil_front.pass_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_front.pass_op));
+                depth_stencil_state_storage.stencil_front.fail_op = @fromBackingInt(@intCast(@backingInt(depth_stencil.stencil_front.fail_op)));
+                depth_stencil_state_storage.stencil_front.depth_fail_op = @fromBackingInt(@intCast(@backingInt(depth_stencil.stencil_front.depth_fail_op)));
+                depth_stencil_state_storage.stencil_front.pass_op = @fromBackingInt(@intCast(@backingInt(depth_stencil.stencil_front.pass_op)));
 
                 // Stencil back state
                 depth_stencil_state_storage.stencil_back.compare = toNativeCompareFunction(depth_stencil.stencil_back.compare);
-                depth_stencil_state_storage.stencil_back.fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.fail_op));
-                depth_stencil_state_storage.stencil_back.depth_fail_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.depth_fail_op));
-                depth_stencil_state_storage.stencil_back.pass_op = @enumFromInt(@intFromEnum(depth_stencil.stencil_back.pass_op));
+                depth_stencil_state_storage.stencil_back.fail_op = @fromBackingInt(@intCast(@backingInt(depth_stencil.stencil_back.fail_op)));
+                depth_stencil_state_storage.stencil_back.depth_fail_op = @fromBackingInt(@intCast(@backingInt(depth_stencil.stencil_back.depth_fail_op)));
+                depth_stencil_state_storage.stencil_back.pass_op = @fromBackingInt(@intCast(@backingInt(depth_stencil.stencil_back.pass_op)));
 
                 // Remaining fields
                 depth_stencil_state_storage.stencil_read_mask = depth_stencil.stencil_read_mask;
@@ -1085,11 +1085,11 @@ pub const GPU = struct {
                         .sint => 4,
                         .uint => 5,
                     } else 0,
-                    .texture_view_dimension = if (entry.texture) |tex| @intFromEnum(tex.view_dimension) else 0,
+                    .texture_view_dimension = if (entry.texture) |tex| @backingInt(tex.view_dimension) else 0,
                     .texture_multisampled = if (entry.texture) |tex| @as(u32, if (tex.multisampled) 1 else 0) else 0,
-                    .storage_access = if (entry.storage_texture) |st| @intFromEnum(st.access) + 1 else 0,
-                    .storage_format = if (entry.storage_texture) |st| @intFromEnum(st.format) else 0,
-                    .storage_view_dimension = if (entry.storage_texture) |st| @intFromEnum(st.view_dimension) else 0,
+                    .storage_access = if (entry.storage_texture) |st| @backingInt(st.access) + 1 else 0,
+                    .storage_format = if (entry.storage_texture) |st| @backingInt(st.format) else 0,
+                    .storage_view_dimension = if (entry.storage_texture) |st| @backingInt(st.view_dimension) else 0,
                 };
             }
 
@@ -1163,7 +1163,7 @@ pub const GPU = struct {
                         .read_only => .read_only,
                         .read_write => .read_write,
                     };
-                    native_entries[i].storage_texture.format = @enumFromInt(@intFromEnum(st.format));
+                    native_entries[i].storage_texture.format = @fromBackingInt(@intCast(@backingInt(st.format)));
                     native_entries[i].storage_texture.view_dimension = switch (st.view_dimension) {
                         .@"1d" => .@"1d",
                         .@"2d" => .@"2d",
@@ -1594,9 +1594,9 @@ pub const Texture = struct {
         if (comptime is_wasm) {
             const handle = web.webgpuCreateTextureView(
                 self.handle,
-                if (desc.format) |f| @intFromEnum(f) else 0,
-                if (desc.dimension) |d| @intFromEnum(d) else 0,
-                @intFromEnum(desc.aspect),
+                if (desc.format) |f| @backingInt(f) else 0,
+                if (desc.dimension) |d| @backingInt(d) else 0,
+                @backingInt(desc.aspect),
                 desc.base_mip_level,
                 desc.mip_level_count orelse 0xFFFFFFFF,
                 desc.base_array_layer,
@@ -1607,13 +1607,13 @@ pub const Texture = struct {
             const c_desc = native.WGPUTextureViewDescriptor{
                 .next_in_chain = null,
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
-                .format = if (desc.format) |f| @enumFromInt(@intFromEnum(f)) else .undefined,
-                .dimension = if (desc.dimension) |d| @enumFromInt(@intFromEnum(d)) else .undefined,
+                .format = if (desc.format) |f| @fromBackingInt(@intCast(@backingInt(f))) else .undefined,
+                .dimension = if (desc.dimension) |d| @fromBackingInt(@intCast(@backingInt(d))) else .undefined,
                 .base_mip_level = desc.base_mip_level,
                 .mip_level_count = desc.mip_level_count orelse 0xFFFFFFFF,
                 .base_array_layer = desc.base_array_layer,
                 .array_layer_count = desc.array_layer_count orelse 0xFFFFFFFF,
-                .aspect = @enumFromInt(@intFromEnum(desc.aspect)),
+                .aspect = @fromBackingInt(@intCast(@backingInt(desc.aspect))),
             };
             const handle = native.wgpuTextureCreateView(self.handle, &c_desc);
             return TextureView{ .handle = handle orelse return error.ViewCreationFailed };
@@ -1691,8 +1691,8 @@ pub const CommandEncoder = struct {
                 color_attachments[i] = .{
                     .view = att.view.handle,
                     .resolve_target = if (att.resolve_target) |rt| rt.handle else 0,
-                    .load_op = @intFromEnum(att.load_op),
-                    .store_op = @intFromEnum(att.store_op),
+                    .load_op = @backingInt(att.load_op),
+                    .store_op = @backingInt(att.store_op),
                     .clear_r = att.clear_value.r,
                     .clear_g = att.clear_value.g,
                     .clear_b = att.clear_value.b,
@@ -1705,14 +1705,14 @@ pub const CommandEncoder = struct {
                 &color_attachments,
                 @intCast(desc.color_attachments.len),
                 if (desc.depth_stencil_attachment) |ds| ds.view.handle else 0,
-                if (desc.depth_stencil_attachment) |ds| @intFromEnum(ds.depth_load_op) else 0,
-                if (desc.depth_stencil_attachment) |ds| @intFromEnum(ds.depth_store_op) else 0,
+                if (desc.depth_stencil_attachment) |ds| @backingInt(ds.depth_load_op) else 0,
+                if (desc.depth_stencil_attachment) |ds| @backingInt(ds.depth_store_op) else 0,
                 if (desc.depth_stencil_attachment) |ds| ds.depth_clear_value else 0,
                 // 0 maps to no stencil op in webgpu.ts. stencil_read_only must
                 // give no ops, the same as the native path: a depth-only
                 // format (depth24plus) rejects any stencil op.
-                if (desc.depth_stencil_attachment) |ds| (if (ds.stencil_read_only) 0 else @intFromEnum(ds.stencil_load_op)) else 0,
-                if (desc.depth_stencil_attachment) |ds| (if (ds.stencil_read_only) 0 else @intFromEnum(ds.stencil_store_op)) else 0,
+                if (desc.depth_stencil_attachment) |ds| (if (ds.stencil_read_only) 0 else @backingInt(ds.stencil_load_op)) else 0,
+                if (desc.depth_stencil_attachment) |ds| (if (ds.stencil_read_only) 0 else @backingInt(ds.stencil_store_op)) else 0,
                 if (desc.depth_stencil_attachment) |ds| ds.stencil_clear_value else 0,
             );
             return RenderPassEncoder{ .handle = handle };
@@ -1725,8 +1725,8 @@ pub const CommandEncoder = struct {
                 color_attachments[i].view = att.view.handle;
                 color_attachments[i].depth_slice = 0xFFFFFFFF; // WGPU_DEPTH_SLICE_UNDEFINED
                 color_attachments[i].resolve_target = if (att.resolve_target) |rt| rt.handle else null;
-                color_attachments[i].load_op = @enumFromInt(@intFromEnum(att.load_op));
-                color_attachments[i].store_op = @enumFromInt(@intFromEnum(att.store_op));
+                color_attachments[i].load_op = @fromBackingInt(@intCast(@backingInt(att.load_op)));
+                color_attachments[i].store_op = @fromBackingInt(@intCast(@backingInt(att.store_op)));
                 color_attachments[i].clear_value.r = att.clear_value.r;
                 color_attachments[i].clear_value.g = att.clear_value.g;
                 color_attachments[i].clear_value.b = att.clear_value.b;
@@ -1741,12 +1741,12 @@ pub const CommandEncoder = struct {
                 // for depth-only textures; any other value triggers a validation error.
                 // The Zig `LoadOp`/`StoreOp` enums start at 1 (no undefined variant),
                 // so we special-case here instead of polluting the public enum.
-                const stencil_load: native.WGPULoadOp = if (ds.stencil_read_only) .undefined else @enumFromInt(@intFromEnum(ds.stencil_load_op));
-                const stencil_store: native.WGPUStoreOp = if (ds.stencil_read_only) .undefined else @enumFromInt(@intFromEnum(ds.stencil_store_op));
+                const stencil_load: native.WGPULoadOp = if (ds.stencil_read_only) .undefined else @fromBackingInt(@intCast(@backingInt(ds.stencil_load_op)));
+                const stencil_store: native.WGPUStoreOp = if (ds.stencil_read_only) .undefined else @fromBackingInt(@intCast(@backingInt(ds.stencil_store_op)));
                 depth_stencil = .{
                     .view = ds.view.handle,
-                    .depth_load_op = @enumFromInt(@intFromEnum(ds.depth_load_op)),
-                    .depth_store_op = @enumFromInt(@intFromEnum(ds.depth_store_op)),
+                    .depth_load_op = @fromBackingInt(@intCast(@backingInt(ds.depth_load_op))),
+                    .depth_store_op = @fromBackingInt(@intCast(@backingInt(ds.depth_store_op))),
                     .depth_clear_value = ds.depth_clear_value,
                     .depth_read_only = if (ds.depth_read_only) @as(u32, 1) else 0,
                     .stencil_load_op = stencil_load,
@@ -1817,7 +1817,7 @@ pub const RenderPassEncoder = struct {
 
     pub fn setIndexBuffer(self: RenderPassEncoder, buffer: Buffer, format: IndexFormat, offset: u64, size: u64) void {
         if (comptime is_wasm) {
-            web.webgpuRenderPassSetIndexBuffer(self.handle, buffer.handle, @intFromEnum(format), offset, size);
+            web.webgpuRenderPassSetIndexBuffer(self.handle, buffer.handle, @backingInt(format), offset, size);
         } else {
             const native_format: native.WGPUIndexFormat = switch (format) {
                 .uint16 => .uint16,

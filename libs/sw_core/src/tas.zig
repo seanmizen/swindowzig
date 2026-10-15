@@ -41,7 +41,7 @@ pub const TasCommand = union(enum) {
         return switch (self) {
             .keydown => |key| Event.init(tick_id, t_ns, seq, .{
                 .key = .{
-                    .keycode = @enumFromInt(@intFromEnum(key)),
+                    .keycode = @fromBackingInt(@intCast(@backingInt(key))),
                     .scancode = 0,
                     .down = true,
                     .repeat = false,
@@ -50,7 +50,7 @@ pub const TasCommand = union(enum) {
             }),
             .keyup => |key| Event.init(tick_id, t_ns, seq, .{
                 .key = .{
-                    .keycode = @enumFromInt(@intFromEnum(key)),
+                    .keycode = @fromBackingInt(@intCast(@backingInt(key))),
                     .scancode = 0,
                     .down = false,
                     .repeat = false,
