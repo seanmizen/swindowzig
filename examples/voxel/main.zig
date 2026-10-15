@@ -2285,7 +2285,12 @@ fn voxelTick(ctx: *sw.Context) !void {
     };
 
     if (comptime is_wasm) {
-        // WASM: always sync path
+        // WASM: synchronous chunk loading. The async pipeline does not exist
+        // on wasm. Without this call, no chunk past the spawn ring generates,
+        // and the sync mesh loop below has nothing new to mesh.
+        try state.world.update(&[_]world_mod.RegionAnchor{
+            .{ .position = state.player.feet_pos },
+        });
     } else if (dump_draining) {
         // Drain-only: process completed async results but do NOT enqueue
         // new gen/mesh jobs. This lets the pipeline fully converge.
