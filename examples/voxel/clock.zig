@@ -11,3 +11,13 @@ pub fn nowNs() i128 {
     const i = io orelse return 0;
     return std.Io.Timestamp.now(i, .awake).toNanoseconds();
 }
+
+/// Wall clock in ns for the frame budget of the chunk pipeline. Native:
+/// the monotonic clock. Web: performance.now() through the jsGetTime import
+/// of the wasm platform.
+pub fn frameNowNs() u64 {
+    if (comptime is_wasm) return @intFromFloat(jsGetTime() * 1_000_000.0);
+    return @intCast(@max(nowNs(), 0));
+}
+
+extern fn jsGetTime() f64;

@@ -18,10 +18,11 @@ the job.
 - The goldens are in `examples/voxel/assets/goldens/lavapipe/`. CI makes them.
   The Metal goldens went stale with no check, so this change deleted them. On macOS
   the runner stops with a message.
-- Every run uses `--async-chunks=off --debug=off`. The async chunk worker and
-  the debug overlay (FPS, frame ms) change the frame from run to run. With
-  these flags, two CI runs give the same pixels. CI thus does not render
-  through the async chunk path.
+- Every run uses `--debug=off`, because the debug overlay (FPS, frame ms)
+  changes the frame from run to run. The capture waits for the TAS to stop
+  and for the chunk scheduler to be idle (see `chunk-pipeline.md`). Thus the
+  frame does not depend on timing, and the goldens run the same chunk
+  scheduler as the game and the web build.
 - To accept a deliberate visual change: the failed job uploads new goldens
   and prints a `gh run download` command. Run it from the repo root, look at
   the frames, and commit them on the same branch.

@@ -53,7 +53,7 @@ pub const Config = struct {
 };
 
 /// Main entry point. Call this from your main() function.
-/// Provide a Config and a struct with optional init/tick/render/shutdown callbacks.
+/// Provide a Config and a struct with optional init/tick/frame/render/shutdown callbacks.
 /// Example: sw.run(.{ .title = "My Game" }, struct { pub fn tick(ctx: *sw.Context) !void { ... } });
 pub fn run(config: Config, comptime callbacks: type) !void {
     const builtin = @import("builtin");
@@ -200,6 +200,12 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
                 input_snapshot.updateFromEvents(events_for_tick);
                 try callbacks.tick(&ctx);
             }
+        }
+
+        // Frame work: once per loop iteration, after the ticks and before
+        // render. It runs also in pure headless mode, where render does not.
+        if (@hasDecl(callbacks, "frame")) {
+            try callbacks.frame(&ctx);
         }
 
         // Render — skipped in pure headless mode (no GPU). Runs in headless_gpu

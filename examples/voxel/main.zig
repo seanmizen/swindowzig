@@ -208,6 +208,11 @@ const Callbacks = struct {
         try voxelTick(ctx);
     }
 
+    /// Once per frame, after the ticks, also in headless runs.
+    pub fn frame(ctx: *sw.Context) !void {
+        try voxelFrame(ctx);
+    }
+
     pub fn render(ctx: *sw.Context) !void {
         try voxelRender(ctx);
     }
@@ -228,28 +233,9 @@ const VoxelVertex = mesher_mod.VoxelVertex;
 const world_mod = @import("world.zig");
 const world_gen = @import("world_gen.zig");
 const clock = @import("clock.zig");
-const async_chunks_mod = if (!is_wasm) @import("async_chunks.zig") else struct {
-    pub const Pipeline = struct {
-        pub fn init(_: std.mem.Allocator, _: std.Io) !*Pipeline {
-            unreachable;
-        }
-        pub fn drainSorted(_: *Pipeline, _: *std.ArrayList(Result), _: std.mem.Allocator) !void {
-            unreachable;
-        }
-        pub fn submit(_: *Pipeline, _: anytype) !void {
-            unreachable;
-        }
-        pub fn deinit(_: *Pipeline) void {
-            unreachable;
-        }
-    };
-    pub const Result = struct {
-        cx: i32 = 0,
-        cz: i32 = 0,
-        chunk_ptr: ?*chunk_mod.Chunk = null,
-        mesh: ?mesher_mod.Mesh = null,
-    };
-};
+const stages = @import("pipeline/stages.zig");
+const scheduler_mod = @import("pipeline/scheduler.zig");
+const exec_inline = @import("pipeline/exec_inline.zig");
 
 const Vec3 = math.Vec3;
 const Mat4 = math.Mat4;
@@ -277,71 +263,22 @@ const IsSolidWorld = struct {
     }
 };
 
-/// Max mesh generations per tick (keeps tick time bounded during chunk loading).
-/// Mesh gen runs in tick so render frames stay smooth.
-///
-/// Rationale for M=1: at `CHUNK_W = 16` (flipped April 2026 on the
-/// `voxel/chunk-size-perf` branch — previously 48), meshing a 16×256×16
-/// column scans 65 536 blocks and costs ~2 ms in Debug on flatland, ~0.3 ms
-/// in ReleaseFast. At 120 Hz sim the frame budget is 8.3 ms — one mesh per
-/// tick leaves plenty of headroom for physics and rendering, with a ~10×
-/// safety margin against the old 48-wide chunks' worst-case 20 ms mesh
-/// spike. See `examples/voxel/docs/chunk-size-investigation.md` for the
-/// measured ReleaseFast/Debug numbers and the "why 16 bounds tail spikes"
-/// writeup. If you bump `MESH_GENS_PER_TICK`, reconsider seam handling —
-/// you still only get one-chunk-per-tick of async outer ring growth, so
-/// sprinting past it briefly shows a seam.
-const MESH_GENS_PER_TICK: usize = 1;
+/// Chunk job time per frame on the loading screen (C7). The loading screen
+/// draws only an animation, so a frame can spend more time on chunks.
+const LOADING_BUDGET_NS: u64 = 12 * std.time.ns_per_ms;
 
-/// Pregen-phase chunk generation budget per tick. Runs only while
-/// state.world_loading is true. Much larger than the gameplay budget because
-/// (a) the player isn't rendered yet, so we don't care about frame smoothness,
-/// and (b) we want the loading screen to clear fast.
-///
-/// Rationale: 5×5 = 25 chunks / 8 per tick ≈ 4 ticks of generation.
-/// At 120Hz sim that's ~33ms wall-clock — barely enough for the loading
-/// animation to draw one full wave. Higher values don't help; lower values
-/// make the screen hang.
-const PREGEN_CHUNKS_PER_TICK: usize = 8;
+/// Chunk job time per frame during gameplay (C7). It is the install budget
+/// of the frame phase. A 144 Hz frame is 6.9 ms, and the frame must also
+/// render. The Inline executor checks the budget before each job, so a
+/// frame can go past it by one job. Each frame does at least one job when
+/// a job can start, so the world continues to load.
+const PLAY_BUDGET_NS: u64 = 4 * std.time.ns_per_ms;
 
-/// Pregen-phase mesh generation budget per tick. Meshing is the slow part
-/// (~2.3ms/chunk vs ~1ms/chunk for generation). 4 per tick = 4 × 2.3ms ≈ 9ms,
-/// comparable to the 8.3ms tick budget. The loading screen doesn't need
-/// 120Hz responsiveness so a tick overrun here is fine.
-/// Inner 3×3 = 9 meshes / 4 per tick ≈ 3 ticks of meshing.
-const PREGEN_MESH_GENS_PER_TICK: usize = 4;
-
-/// Web only: pregen time per frame. A chunk job costs several times more in
-/// WASM than natively, so the count budgets above made 70-140 ms frames at
-/// load. pregenStep stops starting jobs when the frame has used this much
-/// time. The budget is per frame, not per tick: after a slow frame the
-/// fixed-step timeline runs catch-up ticks, and a budget per tick would
-/// multiply with them. Each frame does at least one job, so loading moves
-/// on. Native uses the counts only, so its frames and the goldens do not
-/// change.
-const WEB_PREGEN_BUDGET_NS: u64 = 12 * std.time.ns_per_ms;
-
-/// Web only: chunk job time per frame during gameplay. voxelTick generation,
-/// the sync mesh loop and the AO remesh pass check it through ChunkDeadline,
-/// as pregenStep does with WEB_PREGEN_BUDGET_NS. Without it, a WASM tick
-/// with chunk jobs takes more than 8.3 ms. The timeline then runs catch-up
-/// ticks, each catch-up tick starts more jobs, and the frames get slower
-/// after the loading screen. The value is smaller than the pregen budget
-/// because a gameplay frame must also render: a 144 Hz frame is 6.9 ms.
-/// The check runs before a job starts, so a frame can go past the budget by
-/// one job. 4 ms lets a fast machine do 2 or 3 jobs and a slow machine 1.
-/// Each frame does at least one job, so the world continues to load.
-const WEB_PLAY_BUDGET_NS: u64 = 4 * std.time.ns_per_ms;
-
-/// Max gen+mesh jobs the async path will enqueue per tick during gameplay.
-/// Each enqueue copies the borders of up to 8 neighbours (about 190 KB per
-/// job, see async_chunks.Border), so the per-tick copy cost scales with this.
-const ASYNC_GEN_ENQUEUE_PER_TICK: usize = 4;
-
-/// Max mesh-only (remesh-for-dirty-neighbour) jobs the async path will
-/// enqueue per tick. Same memcpy-cost reasoning as above. Kept separate so
-/// fresh-chunk loading doesn't starve out the dirty-remesh work.
-const ASYNC_MESH_ONLY_ENQUEUE_PER_TICK: usize = 2;
+/// The loading screen stops when the scheduler is "ready" for this radius
+/// (Scheduler.isReady): the simulation radius has blocks, and each chunk
+/// within this radius (and within the render distance) has a current mesh.
+/// docs/chunk-pipeline.md has the definition.
+const LOADING_READY_RADIUS: i32 = 5;
 
 const GameState = @import("game_state.zig").GameState;
 const OverlayRenderer = @import("overlay.zig").OverlayRenderer;
@@ -355,6 +292,9 @@ const GLYPH_GAP = bitmap_font.GLYPH_GAP;
 const player_mod = @import("player.zig");
 const Player = player_mod.Player;
 const keyboard_hud = @import("keyboard_hud.zig");
+
+/// The page of the debug overlay: Cmd+P (Ctrl+P) changes it.
+const DebugPage = enum { general, pipeline };
 
 /// Camera perspective: cycles first → back → front via Cmd+V / Ctrl+V.
 const CameraView = enum {
@@ -517,9 +457,8 @@ fn aaMethodLabel(method: gpu_mod.AAMethod) []const u8 {
 /// AA Method / MSAA Samples / FXAA Quality all write through to
 /// `state.msaa_config` / `state.fxaa_quality`. AO Strategy cycles
 /// state.ao_strategy (none/classic/moore). Lighting flips between
-/// none and skylight. Render Distance writes to
-/// `state.render_distance_stub` with no live effect on the loaded region
-/// (wiring up live spiral rebuild is a follow-up task).
+/// none and skylight. Render Distance changes the desired state of the
+/// chunk scheduler at runtime (C8).
 fn cycleSettingsValue(idx: u8, dir: i32) void {
     const entry = settingsEntryAt(idx);
     switch (entry) {
@@ -599,23 +538,21 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
                 .moore, .propagated, .ssao => if (dir > 0) .none else .classic,
             };
             state.ao_strategy = next_ao;
-            std.log.info("Settings: AO Strategy -> {s} (applies on next chunk remesh)", .{@tagName(next_ao)});
+            state.scheduler.setMeshOptions(state.ao_strategy, state.lighting_mode);
+            std.log.info("Settings: AO Strategy -> {s} (each mesh is stale)", .{@tagName(next_ao)});
         },
         .lighting => {
             // Two-state toggle today (none ↔ skylight). dir is implicitly
             // ignored here — we flip on every press, same as a checkbox.
-            // Mark every loaded chunk dirty so the new mode applies live
-            // (skylight is baked per-vertex at mesh time, same as AO).
+            // Skylight is baked per-vertex at mesh time, same as AO, so
+            // each mesh becomes stale and the scheduler meshes it again.
             const next_mode: gpu_mod.LightingMode = switch (state.lighting_mode) {
                 .none => .skylight,
                 .skylight => .none,
             };
             state.lighting_mode = next_mode;
-            var it = state.world.chunks.valueIterator();
-            while (it.next()) |lc_ptr| {
-                lc_ptr.*.mesh_dirty = true;
-            }
-            std.log.info("Settings: Lighting -> {s} (every loaded chunk marked dirty)", .{@tagName(next_mode)});
+            state.scheduler.setMeshOptions(state.ao_strategy, state.lighting_mode);
+            std.log.info("Settings: Lighting -> {s} (each mesh is stale)", .{@tagName(next_mode)});
         },
         .frustum => {
             // Cycle: none → sphere → cone → none …
@@ -652,11 +589,14 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
         .render_dist => {
             const min_rd: i32 = 1;
             const max_rd: i32 = 16;
-            var next_rd = state.render_distance_stub + dir;
+            var next_rd = state.render_distance + dir;
             if (next_rd < min_rd) next_rd = max_rd;
             if (next_rd > max_rd) next_rd = min_rd;
-            state.render_distance_stub = next_rd;
-            std.log.info("Settings: Render Distance -> {} (no live effect — stub)", .{next_rd});
+            state.render_distance = next_rd;
+            // Live (C8): the next frame plans for the new radius. It loads
+            // the new chunks and evicts the chunks past R + 1.
+            state.scheduler.setRenderDistance(&state.world, next_rd);
+            std.log.info("Settings: Render Distance -> {}", .{next_rd});
         },
         .back => {},
     }
@@ -697,16 +637,14 @@ const State = struct {
     /// Chunk meshes: vs_chunk, with the packed quads at group 1.
     chunk_pipeline: ?gpu_mod.RenderPipeline = null,
     chunk_bg_layout: ?gpu_mod.BindGroupLayout = null,
-    /// Async jobs enqueued, the bytes they copied from the world, and the
-    /// bytes a copy of each whole chunk would have been (see countJobCopy).
-    async_jobs: u64 = 0,
-    async_copy_bytes: u64 = 0,
-    async_whole_chunk_bytes: u64 = 0,
-    /// Web only: the chunk job deadline of the current frame, and the chunk
-    /// jobs done in it (see WEB_PREGEN_BUDGET_NS and WEB_PLAY_BUDGET_NS).
-    /// wasmFrameImpl sets both.
-    web_frame_deadline_ns: u64 = 0,
-    web_frame_chunk_jobs: usize = 0,
+    /// The chunk scheduler (C1, C8) and its executor. voxelFrame runs them
+    /// once per frame. See docs/chunk-pipeline.md.
+    scheduler: scheduler_mod.Scheduler = undefined, // set by voxelInit
+    executor: exec_inline.Inline = undefined, // set by voxelInit
+    /// What the last frame phase did, for the debug overlay (C12).
+    last_frame: exec_inline.FrameReport = .{},
+    /// The debug overlay page. Cmd+P (Ctrl+P) changes it.
+    debug_page: DebugPage = .general,
     uniform_buffer: ?gpu_mod.Buffer = null,
     bind_group: ?gpu_mod.BindGroup = null,
     depth_texture: ?gpu_mod.Texture = null,
@@ -730,18 +668,9 @@ const State = struct {
     /// Exit-confirm defaults to "No" (index 0). Reset every time we enter the screen
     /// to make accidental Enter+Enter on Exit always safe.
     menu_exit_idx: u8 = 0,
-    /// Runtime render distance in chunks, parsed from `--render-distance=N`.
-    /// Used to initialise `World.render_distance` once per session — changing
-    /// it afterwards requires a world reload, so the in-game settings picker
-    /// still writes to `render_distance_stub` instead. Default comes from
-    /// `world_mod.DEFAULT_RENDER_DISTANCE` (currently 4).
+    /// Render distance in chunks. `--render-distance=N` sets it, and the
+    /// Settings picker changes it at runtime (Scheduler.setRenderDistance).
     render_distance: i32 = world_mod.DEFAULT_RENDER_DISTANCE,
-    /// Display-only twin of `render_distance` for the Settings → Render Distance
-    /// picker. The loaded-chunk region is still frozen at `World.render_distance`
-    /// for the lifetime of the World, so writes here only affect the rendered
-    /// label (and the fog curve below, via the same `state.render_distance`
-    /// field).
-    render_distance_stub: i32 = world_mod.DEFAULT_RENDER_DISTANCE,
     hover_block: ?Vec3 = null,
     game_state: GameState = undefined,
     overlay: OverlayRenderer = undefined,
@@ -788,8 +717,8 @@ const State = struct {
     /// World-lighting mode parsed from --lighting=<none|skylight>. Default:
     /// skylight (caves are dark). `.none` is the regression-test baseline that
     /// makes every face fully lit by sky regardless of how enclosed it is.
-    /// Mutating this at runtime requires `mesh_dirty = true` on every loaded
-    /// chunk because skylight is baked per-vertex at mesh time, same as AO.
+    /// A change at runtime goes through Scheduler.setMeshOptions, because
+    /// skylight is baked per-vertex at mesh time, same as AO.
     lighting_mode: gpu_mod.LightingMode = .skylight,
     /// Block type emitted by right-click placement. Parsed from
     /// `--place-block=<stone|glowstone>`; default stone preserves prior
@@ -904,18 +833,6 @@ const State = struct {
     /// number keys still select slots and right-click still places — the
     /// flag is purely cosmetic so screenshots can be taken without the bar.
     hotbar_visible: bool = true,
-    /// `--async-chunks=on|off`. When on, chunk gen+mesh runs on a background
-    /// worker thread and the main-thread mesh loop is skipped for new chunks
-    /// and dirty-neighbour remeshes. When off, restores the legacy synchronous
-    /// time-budgeted path. See `examples/voxel/docs/async-chunks.md`.
-    async_chunks_enabled: bool = true,
-    /// Background gen+mesh pipeline. Non-null iff `async_chunks_enabled`.
-    /// Init'd in voxelInit after the world, deinit'd in voxelShutdown before
-    /// the world so the worker thread is joined before any world data is torn
-    /// down.
-    async_pipeline: ?*async_chunks_mod.Pipeline = null,
-    /// Scratch list reused every tick to receive drained async results.
-    async_result_scratch: std.ArrayList(async_chunks_mod.Result) = .empty,
     /// Active settings tab (Game / Video / Audio). Controls which entries appear
     /// in the Settings screen. Default: Video (most settings live there).
     settings_tab: SettingsTab = .video,
@@ -1006,11 +923,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.fog_distance_mult = 1.00;
     // Depth-stencil enabled by default; overridden by --depth-stencil=off.
     state.depth_stencil_enabled = true;
-    // Runtime render distance: default from world_mod, overridden by
-    // `--render-distance=N` below. `render_distance_stub` shadows the same
-    // value for the Settings picker label.
+    // Render distance: default from world_mod, overridden by
+    // `--render-distance=N` below.
     state.render_distance = world_mod.DEFAULT_RENDER_DISTANCE;
-    state.render_distance_stub = world_mod.DEFAULT_RENDER_DISTANCE;
     state.headless = false;
 
     // Initialize game state layer stack
@@ -1048,11 +963,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.compare_golden_path = null;
     state.golden_max_diff_pct = 0.5;
     state.golden_max_channel_delta = 2;
-    // Default async mode: ON. `--async-chunks=off` restores the legacy sync
-    // time-budgeted gen+mesh loop.
-    state.async_chunks_enabled = true;
-    state.async_pipeline = null;
-    state.async_result_scratch = .empty;
 
     // Hotbar defaults: slot 1 = stone, slot 2 = grass, slot 3 = dirt,
     // slot 4 = glowstone (block-light BFS is live). Slots 5-10 empty.
@@ -1179,7 +1089,6 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
             state.render_distance = n;
-            state.render_distance_stub = n;
         }
         if (std.mem.startsWith(u8, arg, "--fog=")) {
             const val = std.mem.sliceTo(arg["--fog=".len..], 0);
@@ -1280,6 +1189,14 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--debug-page=")) {
+            // The first page of the debug overlay. Cmd+P (Ctrl+P) changes it.
+            const val = std.mem.sliceTo(arg["--debug-page=".len..], 0);
+            state.debug_page = std.meta.stringToEnum(DebugPage, val) orelse {
+                std.log.err("--debug-page: invalid value '{s}'. Accepted: general, pipeline", .{val});
+                fatalExit(1);
+            };
+        }
         if (std.mem.startsWith(u8, arg, "--place-block=")) {
             const val = arg["--place-block=".len..];
             if (std.mem.eql(u8, val, "stone")) {
@@ -1288,17 +1205,6 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.place_block = .glowstone;
             } else {
                 std.log.err("--place-block: invalid value '{s}'. Accepted: stone, glowstone", .{val});
-                fatalExit(1);
-            }
-        }
-        if (std.mem.startsWith(u8, arg, "--async-chunks=")) {
-            const val = arg["--async-chunks=".len..];
-            if (std.mem.eql(u8, val, "on")) {
-                state.async_chunks_enabled = true;
-            } else if (std.mem.eql(u8, val, "off")) {
-                state.async_chunks_enabled = false;
-            } else {
-                std.log.err("--async-chunks: invalid value '{s}'. Accepted: on, off", .{val});
                 fatalExit(1);
             }
         }
@@ -1357,21 +1263,11 @@ fn voxelInit(ctx: *sw.Context) !void {
         }
     }
 
-    // Initialize the background gen+mesh pipeline if async mode is enabled.
-    // The worker thread starts immediately and blocks on the empty job queue
-    // until main pushes the first job in voxelTick.
-    if (comptime !is_wasm) std.log.info("Async chunks (post-parse): {s}", .{if (state.async_chunks_enabled) "on" else "off"});
-    if (comptime !is_wasm) {
-        if (state.async_chunks_enabled) {
-            state.async_pipeline = async_chunks_mod.Pipeline.init(ctx.allocator(), ctx.io.?) catch |init_err| blk: {
-                std.log.err("Async pipeline init failed ({}) — falling back to sync mesh loop", .{init_err});
-                state.async_chunks_enabled = false;
-                break :blk null;
-            };
-        }
-    } else {
-        state.async_chunks_enabled = false;
-    }
+    // The chunk pipeline (C1): one scheduler and the Inline executor, on
+    // every platform. The first frame plans the loading of the spawn area.
+    state.scheduler = scheduler_mod.Scheduler.init(ctx.allocator(), state.render_distance, state.ao_strategy, state.lighting_mode);
+    state.executor = exec_inline.Inline.init(ctx.allocator());
+    state.last_frame = .{};
 
     // TAS loading — native only. `TasScript.parseFile` calls std.fs.cwd()
     // which pulls in posix symbols that don't exist on wasm32-freestanding.
@@ -1441,52 +1337,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     }
 
     std.log.info("Voxel demo ready", .{});
-}
-
-/// After a block is placed/destroyed at world column (wx, wz), check if it sits on a
-/// chunk boundary. If so, mesh the neighbouring chunk again — otherwise that
-/// chunk's face toward the changed block will remain stale (visible gap or
-/// missing face).
-fn updateBoundaryNeighbors(world: *world_mod.World, wx: i32, wz: i32) void {
-    const cx = world_mod.chunkCoordOf(wx);
-    const cz = world_mod.chunkCoordOf(wz);
-    const lx = wx - cx * chunk_mod.CHUNK_W;
-    const lz = wz - cz * chunk_mod.CHUNK_W;
-
-    // Four horizontal neighbours; Y never crosses a chunk boundary.
-    const checks = [_]struct { coord: i32, at_min: bool, dx: i32, dz: i32 }{
-        .{ .coord = lx, .at_min = true, .dx = -1, .dz = 0 }, // −X edge
-        .{ .coord = lx, .at_min = false, .dx = 1, .dz = 0 }, // +X edge
-        .{ .coord = lz, .at_min = true, .dx = 0, .dz = -1 }, // −Z edge
-        .{ .coord = lz, .at_min = false, .dx = 0, .dz = 1 }, // +Z edge
-    };
-    for (checks) |c| {
-        const at_boundary = if (c.at_min) c.coord == 0 else c.coord == chunk_mod.CHUNK_W - 1;
-        if (!at_boundary) continue;
-
-        const nb_wx = wx + c.dx;
-        const nb_wz = wz + c.dz;
-        const nb_lc = world.getChunkAtBlock(nb_wx, nb_wz) orelse continue;
-
-        // Mesh the neighbour again now, as the dig handler does for its own
-        // chunk. mesh_dirty would wait for the mesh loop, which meshes one
-        // chunk per tick: while new chunks load, the neighbour shows a hole
-        // where its face to the edited block belongs.
-        mesher_mod.generateMesh(
-            &nb_lc.chunk,
-            &nb_lc.mesh,
-            nb_lc.worldX(),
-            nb_lc.worldZ(),
-            world.asBlockGetter(),
-            state.ao_strategy,
-            state.lighting_mode,
-        ) catch {
-            nb_lc.mesh_dirty = true;
-            continue;
-        };
-        nb_lc.mesh_dirty = false;
-        nb_lc.mesh_incremental_dirty = true;
-    }
 }
 
 /// Scan upward from spawn[Y] to find the first 1×2 (width×height) air column.
@@ -1586,413 +1436,9 @@ fn syncCameraToPlayer() void {
     state.camera.position = Vec3.init(eye[0], eye[1], eye[2]);
 }
 
-/// Pregen step: generate up to K chunks in a (2*R+1)×(2*R+1) square around the
-/// spawn chunk column, then mesh up to M chunks whose four horizontal neighbours
-/// are all generated. Returns true once the entire INNER ring (the (2*(R-1)+1)
-/// square centred on spawn) is meshed — meaning every chunk inside the outer
-/// ring that has all-neighbours-present has completed meshing and the player
-/// can safely be released without the loading screen having to linger.
-///
-/// Inner ring size: for R = PREGEN_RADIUS = 2 the outer square is 5×5 and the
-/// inner square is 3×3 (9 chunks), since only cells whose four neighbours are
-/// also inside the 5×5 can satisfy `hasAllNeighborsGenerated`.
-///
-/// Running cost: bursts through PREGEN_CHUNKS_PER_TICK generations and
-/// PREGEN_MESH_GENS_PER_TICK mesh builds per call. Caller ticks this until it
-/// returns true, keeping the loading screen animated between ticks.
-/// `deadline`: stop starting jobs when ctx.timeNs() reaches `ns` (web only,
-/// see WEB_PREGEN_BUDGET_NS). null: the count budgets only.
-const ChunkDeadline = struct {
-    ctx: *sw.Context,
-    ns: u64,
-
-    /// True when the frame has used its time and has done at least one job
-    /// (this tick's `jobs` plus the jobs of earlier ticks in the frame).
-    fn spent(dl: ?ChunkDeadline, jobs: usize) bool {
-        const d = dl orelse return false;
-        return jobs + state.web_frame_chunk_jobs > 0 and d.ctx.timeNs() >= d.ns;
-    }
-};
-
-fn pregenStep(world: *world_mod.World, spawn_cx: i32, spawn_cz: i32, ao_strategy: gpu_mod.AOStrategy, lighting_mode: gpu_mod.LightingMode, deadline: ?ChunkDeadline) !bool {
-    const R = world_mod.PREGEN_RADIUS;
-
-    // Pass 1 — generate every chunk inside the (2R+1)^2 outer square that is
-    // not yet present. Inside-out order so the innermost (meshable) ones
-    // come online first.
-    var gens: usize = 0;
-    var r: i32 = 0;
-    outer_gen: while (r <= R) : (r += 1) {
-        var dz: i32 = -r;
-        while (dz <= r) : (dz += 1) {
-            var dx: i32 = -r;
-            while (dx <= r) : (dx += 1) {
-                // Skip cells from inner radii we've already visited.
-                if (@max(@abs(dx), @abs(dz)) != r) continue;
-                if (gens >= PREGEN_CHUNKS_PER_TICK) break :outer_gen;
-                if (ChunkDeadline.spent(deadline, gens)) break :outer_gen;
-                if (try world.generateChunk(spawn_cx + dx, spawn_cz + dz)) {
-                    gens += 1;
-                    if (comptime is_wasm) state.web_frame_chunk_jobs += 1;
-                }
-            }
-        }
-    }
-
-    // Pass 2 — mesh any chunk inside the inner (2*(R-1)+1)^2 square that has
-    // all four neighbours generated. Only the inner ring can mesh cleanly;
-    // the outer ring is intentionally left unmeshed (it's the buffer so the
-    // inner ring can mesh without seam holes).
-    const inner_r = R - 1;
-    var meshes: usize = 0;
-    var idz: i32 = -inner_r;
-    outer_mesh: while (idz <= inner_r) : (idz += 1) {
-        var idx: i32 = -inner_r;
-        while (idx <= inner_r) : (idx += 1) {
-            if (meshes >= PREGEN_MESH_GENS_PER_TICK) break :outer_mesh;
-            if (ChunkDeadline.spent(deadline, gens + meshes)) break :outer_mesh;
-            const key = world_mod.ChunkKey{ .cx = spawn_cx + idx, .cz = spawn_cz + idz };
-            const lc = world.chunks.get(key) orelse continue;
-            if (!lc.mesh_dirty) continue;
-            if (!world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
-            mesher_mod.generateMesh(
-                &lc.chunk,
-                &lc.mesh,
-                lc.worldX(),
-                lc.worldZ(),
-                world.asBlockGetter(),
-                ao_strategy,
-                lighting_mode,
-            ) catch |err| {
-                std.log.err("[PREGEN] mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
-                continue;
-            };
-            lc.state = .meshed;
-            lc.mesh_dirty = false;
-            lc.mesh_incremental_dirty = true;
-            meshes += 1;
-            if (comptime is_wasm) state.web_frame_chunk_jobs += 1;
-        }
-    }
-
-    // Ready? All cells inside the inner square must be .meshed.
-    var cz: i32 = -inner_r;
-    while (cz <= inner_r) : (cz += 1) {
-        var cx: i32 = -inner_r;
-        while (cx <= inner_r) : (cx += 1) {
-            const key = world_mod.ChunkKey{ .cx = spawn_cx + cx, .cz = spawn_cz + cz };
-            const lc = world.chunks.get(key) orelse return false;
-            if (lc.state != .meshed or lc.mesh_dirty) return false;
-        }
-    }
-    return true;
-}
-
 /// Teleport player to the first 1×2 air column at-or-above the current spawn_point.
 /// This is the anti-griefing respawn: if someone places a block on spawn, the next
 /// respawn finds the next clear Y slot instead of embedding the player in rock.
-/// Build a 3×3 neighbour-snapshot array for an async chunk job. Each
-/// non-center slot is filled with a c_allocator-owned Chunk clone if that
-/// neighbour is present in the world map, or left null if missing. The
-/// center slot is handled by the caller (null for gen+mesh, non-null for
-/// mesh-only).
-///
-/// On error, any snapshots already allocated are freed and the error is
-/// propagated — this is what keeps the partial-failure path leak-free.
-fn buildNeighbourSnapshots(world: *const world_mod.World, cx: i32, cz: i32) ![8]?*async_chunks_mod.Border {
-    var out: [8]?*async_chunks_mod.Border = @splat(null);
-    errdefer for (out) |slot| {
-        if (slot) |b| b.free();
-    };
-
-    var idx: usize = 0;
-    var dcz: i32 = -1;
-    while (dcz <= 1) : (dcz += 1) {
-        var dcx: i32 = -1;
-        while (dcx <= 1) : (dcx += 1) {
-            if (dcx == 0 and dcz == 0) continue;
-            const nk = world_mod.ChunkKey{ .cx = cx + dcx, .cz = cz + dcz };
-            if (world.chunks.get(nk)) |nlc| {
-                out[idx] = try async_chunks_mod.Border.fromChunk(&nlc.chunk, dcx, dcz);
-            }
-            idx += 1;
-        }
-    }
-    return out;
-}
-
-/// Unpack a linear `[8]?*Chunk` (skipping center) into the full 9-slot
-/// `[9]?*Chunk` layout the pipeline expects. Slot 4 is the center and is
-/// filled by the caller.
-fn expandNeighboursToFullGrid(n8: [8]?*async_chunks_mod.Border) [9]?*async_chunks_mod.Border {
-    var full: [9]?*async_chunks_mod.Border = @splat(null);
-    // Input order: (dcx,dcz) iteration = (-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)
-    // Grid indices: slot = (dcz+1)*3 + (dcx+1)
-    const map = [8]usize{ 0, 1, 2, 3, 5, 6, 7, 8 };
-    var i: usize = 0;
-    while (i < 8) : (i += 1) {
-        full[map[i]] = n8[i];
-    }
-    return full;
-}
-
-/// Free a 9-slot snapshot grid (used when enqueue fails and we need to
-/// roll back). Center is included because failure can happen after the
-/// caller has populated it.
-fn freeFullGrid(full: *[9]?*async_chunks_mod.Border) void {
-    for (full) |*slot| {
-        if (slot.*) |b| b.free();
-        slot.* = null;
-    }
-}
-
-const JobCopy = struct { copied: usize, whole_chunks: usize };
-
-/// What a job copied from the world, and what a copy of each whole chunk
-/// (the center and every present neighbour) would have been. Call it before
-/// tryEnqueue: after it, the worker can free the job at any time.
-fn jobCopy(job: *const async_chunks_mod.Job) JobCopy {
-    var chunks: usize = if (job.center != null) 1 else 0;
-    for (job.borders) |b| {
-        if (b != null) chunks += 1;
-    }
-    return .{ .copied = async_chunks_mod.jobBytes(job), .whole_chunks = chunks * @sizeOf(chunk_mod.Chunk) };
-}
-
-fn countJobCopy(c: JobCopy) void {
-    state.async_jobs += 1;
-    state.async_copy_bytes += c.copied;
-    state.async_whole_chunk_bytes += c.whole_chunks;
-}
-
-/// One async tick: drain completed results, install them, enqueue new jobs
-/// (fresh chunks innermost-first + any dirty chunks whose 4 axial neighbours
-/// are all present). Replaces the synchronous `world.update` + mesh loop.
-fn asyncTick(p: *async_chunks_mod.Pipeline, world: *world_mod.World, player_pos: [3]f32, ao: gpu_mod.AOStrategy, lighting: gpu_mod.LightingMode, alloc: std.mem.Allocator) !void {
-    const t_tick_start = perfNowNs();
-
-    // ─── 1. Drain completed results ─────────────────────────────────────
-    state.async_result_scratch.clearRetainingCapacity();
-    try p.drainSorted(&state.async_result_scratch, alloc);
-    const drained_count = state.async_result_scratch.items.len;
-
-    for (state.async_result_scratch.items) |*r| {
-        const key = world_mod.ChunkKey{ .cx = r.cx, .cz = r.cz };
-        // Single-line per-chunk log for parity with the sync [MESH] line so
-        // before/after comparison is trivial via `grep`. `kind` distinguishes
-        // fresh gen+mesh from dirty-neighbour remesh.
-        const kind_tag: []const u8 = if (r.chunk != null) "gen+mesh" else "mesh-only";
-        std.log.info("[ASYNC] chunk ({},{}) {s} worker_us={} quads={}", .{
-            r.cx,        r.cz,
-            kind_tag,    r.worker_us,
-            r.quads.len,
-        });
-        if (r.chunk) |new_chunk| {
-            // Gen+mesh result → install as a new LoadedChunk.
-            if (world.chunks.contains(key)) {
-                // Paranoia: drop the duplicate. Shouldn't happen because the
-                // pipeline's in_flight set prevents double-enqueue and we
-                // dedupe against `world.chunks.contains` at enqueue time,
-                // but be defensive in case a future feature (re-load from
-                // disk) races with this path.
-                async_chunks_mod.releaseResult(r);
-                continue;
-            }
-            const lc = try world.allocator.create(world_mod.LoadedChunk);
-            lc.* = world_mod.LoadedChunk.init(world.allocator, r.cx, r.cz);
-            lc.chunk = new_chunk.*;
-            // lc.chunk now owns the block data: free only the struct.
-            async_chunks_mod.freeMovedChunk(new_chunk);
-            try async_chunks_mod.installMeshFromResult(&lc.mesh, r);
-            std.heap.c_allocator.free(r.quads);
-            lc.state = .meshed;
-            lc.mesh_incremental_dirty = true;
-            try world.chunks.put(key, lc);
-
-            // The worker meshed the chunk with its own block light and with
-            // the neighbours of the job snapshot. Mesh it again when a
-            // neighbour was missing (it may have installed since), or when
-            // block light from a neighbour crosses the border.
-            const relit = try world.relightSeams(r.cx, r.cz);
-            lc.mesh_dirty = r.missing_neighbour or relit;
-
-            // Mark all 8 surrounding neighbours dirty so they'll be
-            // re-enqueued as mesh-only jobs next tick. Diagonals matter
-            // because AO sampling reaches ±2 cells — same rationale as
-            // world.zig:generateChunk.
-            const adjacent = [_]world_mod.ChunkKey{
-                // Face-adjacent
-                .{ .cx = r.cx - 1, .cz = r.cz },
-                .{ .cx = r.cx + 1, .cz = r.cz },
-                .{ .cx = r.cx, .cz = r.cz - 1 },
-                .{ .cx = r.cx, .cz = r.cz + 1 },
-                // Diagonal corners
-                .{ .cx = r.cx - 1, .cz = r.cz - 1 },
-                .{ .cx = r.cx - 1, .cz = r.cz + 1 },
-                .{ .cx = r.cx + 1, .cz = r.cz - 1 },
-                .{ .cx = r.cx + 1, .cz = r.cz + 1 },
-            };
-            for (adjacent) |nk| {
-                if (world.chunks.get(nk)) |nlc| {
-                    nlc.mesh_dirty = true;
-                    nlc.neighbor_ao_dirty = true;
-                }
-            }
-        } else {
-            // Mesh-only result → replace the existing chunk's mesh buffers.
-            // The dirty flags were cleared at enqueue. A flag set while the
-            // job ran stays set, so the chunk gets a mesh with that change.
-            if (world.chunks.get(key)) |lc| {
-                async_chunks_mod.installMeshFromResult(&lc.mesh, r) catch |err| {
-                    std.log.err("[ASYNC] mesh install failed for ({},{}): {}", .{ r.cx, r.cz, err });
-                };
-                lc.state = .meshed;
-                lc.mesh_incremental_dirty = true;
-            }
-            std.heap.c_allocator.free(r.quads);
-        }
-    }
-    state.async_result_scratch.clearRetainingCapacity();
-
-    // ─── 2. Enqueue gen+mesh jobs for missing spiral-ring chunks ────────
-    const player_cx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(player_pos[0]))));
-    const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(player_pos[2]))));
-
-    var enqueued_new: usize = 0;
-    for (world.spiral_offsets) |off| {
-        if (enqueued_new >= ASYNC_GEN_ENQUEUE_PER_TICK) break;
-        const cx = player_cx + off.dx;
-        const cz = player_cz + off.dz;
-        if (world.chunks.contains(.{ .cx = cx, .cz = cz })) continue;
-        if (p.isInFlight(cx, cz)) continue;
-
-        const n8 = buildNeighbourSnapshots(world, cx, cz) catch |err| {
-            std.log.err("[ASYNC] snapshot alloc failed for ({},{}): {}", .{ cx, cz, err });
-            break;
-        };
-        var full = expandNeighboursToFullGrid(n8);
-        // Center stays null — worker will generate it.
-
-        const job = async_chunks_mod.Job{
-            .cx = cx,
-            .cz = cz,
-            .gen_config = world.gen_config,
-            .ao = ao,
-            .lighting = lighting,
-            .borders = full,
-        };
-        const copy = jobCopy(&job);
-        const ok = p.tryEnqueue(job) catch |err| {
-            std.log.err("[ASYNC] enqueue gen+mesh ({},{}) failed: {}", .{ cx, cz, err });
-            freeFullGrid(&full);
-            break;
-        };
-        if (!ok) {
-            // At cap or duplicate; roll back the snapshots and stop this tick.
-            freeFullGrid(&full);
-            break;
-        }
-        countJobCopy(copy);
-        enqueued_new += 1;
-    }
-
-    // ─── 3. Enqueue mesh-only jobs for dirty chunks with all 8 neighbours ──
-    var enqueued_mesh: usize = 0;
-    const evict_r_sq = world.evictRadiusSq();
-    var it = world.chunks.iterator();
-    while (it.next()) |entry| {
-        if (enqueued_mesh >= ASYNC_MESH_ONLY_ENQUEUE_PER_TICK) break;
-        const lc = entry.value_ptr.*;
-        if (!lc.mesh_dirty) continue;
-        // Distance gate: don't waste worker cycles on chunks outside the
-        // eviction radius — they'd just be evicted the same tick the result
-        // lands, causing a meshed→evicted→meshed oscillation that starves
-        // the mesh-only budget for chunks the player can actually see.
-        const dcx = lc.cx - player_cx;
-        const dcz = lc.cz - player_cz;
-        if (dcx * dcx + dcz * dcz > evict_r_sq) continue;
-        if (!world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
-        if (p.isInFlight(lc.cx, lc.cz)) continue;
-
-        const n8 = buildNeighbourSnapshots(world, lc.cx, lc.cz) catch |err| {
-            std.log.err("[ASYNC] mesh-only snapshot alloc failed for ({},{}): {}", .{ lc.cx, lc.cz, err });
-            break;
-        };
-        var full = expandNeighboursToFullGrid(n8);
-        // Center = deep copy of the existing chunk (mesh-only signals worker
-        // to skip regeneration and use this Chunk as the mesh target).
-        const center = async_chunks_mod.cloneChunk(&lc.chunk) catch |err| {
-            std.log.err("[ASYNC] mesh-only center snapshot alloc failed for ({},{}): {}", .{ lc.cx, lc.cz, err });
-            freeFullGrid(&full);
-            break;
-        };
-
-        const job = async_chunks_mod.Job{
-            .cx = lc.cx,
-            .cz = lc.cz,
-            .gen_config = world.gen_config,
-            .ao = ao,
-            .lighting = lighting,
-            .center = center,
-            .borders = full,
-        };
-        const copy = jobCopy(&job);
-        const ok = p.tryEnqueue(job) catch |err| {
-            std.log.err("[ASYNC] enqueue mesh-only ({},{}) failed: {}", .{ lc.cx, lc.cz, err });
-            freeFullGrid(&full);
-            async_chunks_mod.freeChunk(center);
-            break;
-        };
-        if (!ok) {
-            freeFullGrid(&full);
-            async_chunks_mod.freeChunk(center);
-            break;
-        }
-        // The job meshes the chunk as it is now. Clear the flags here, not
-        // on install, so a change while the job runs marks the chunk again.
-        lc.mesh_dirty = false;
-        lc.neighbor_ao_dirty = false;
-        countJobCopy(copy);
-        // Optimistically clear the dirty flag so we don't re-enqueue the
-        // same chunk on the next tick while the current job is in flight.
-        // If new neighbour changes arrive during the job, the drain step
-        // will re-set dirty when the result lands — EXCEPT nothing does
-        // that today. Phase 1 accepts this: the regression TAS scripts
-        // don't exercise the case. Follow-up: add versioning if needed.
-        lc.mesh_dirty = false;
-        enqueued_mesh += 1;
-    }
-
-    // ─── 4. Per-tick main-thread cost summary ───────────────────────────
-    // Only log on ticks where we actually did something — otherwise this
-    // fires every tick and drowns the rest of the log output. The reported
-    // figure includes drain+install memcpy and enqueue-time snapshot
-    // memcpy. It does NOT include the mesh upload (that happens in the
-    // render callback) but uploads are cheap.
-    if (drained_count > 0 or enqueued_new > 0 or enqueued_mesh > 0) {
-        const tick_us: u64 = @intCast(@divTrunc(perfNowNs() - t_tick_start, 1000));
-        std.log.info("[ASYNC] main thread work: drained={} enq_new={} enq_mesh={} main_us={}", .{
-            drained_count,
-            enqueued_new,
-            enqueued_mesh,
-            tick_us,
-        });
-    }
-}
-
-/// Returns true when the async pipeline has no pending work — nothing in
-/// flight, nothing queued, no dirty chunks still needing remesh. Used by the
-/// dump-frame gate to wait for the world to fully converge before capturing.
-fn asyncHasPendingWork(p: *async_chunks_mod.Pipeline, world: *const world_mod.World) bool {
-    if (p.inFlightCount() > 0) return true;
-    var it = world.chunks.iterator();
-    while (it.next()) |entry| {
-        const lc = entry.value_ptr.*;
-        if (lc.mesh_dirty and world.hasAllNeighborsGenerated(lc.cx, lc.cz)) return true;
-    }
-    return false;
-}
-
 fn doRespawn() void {
     const resolved = resolveSpawnPos(&state.world, state.spawn_point);
     state.player.feet_pos = resolved;
@@ -2067,17 +1513,96 @@ fn flushProfileRow(ctx: *sw.Context) void {
     f.writeStreamingAll(ctx.io.?, line) catch {};
 }
 
-/// Cheap helper used by the --profile-csv pregen-timing code: returns the
-/// number of LoadedChunks currently in `.meshed` state. O(n) over the loaded
-/// set, called at most twice per tick during pregen and never during
-/// gameplay — no need to maintain a cached count.
-fn countMeshedChunks(world: *world_mod.World) usize {
+/// The chunks of the World with a mesh. O(n) over the loaded set.
+fn countMeshedChunks(world: *const world_mod.World) usize {
     var n: usize = 0;
     var it = world.chunks.valueIterator();
     while (it.next()) |lc_ptr| {
-        if (lc_ptr.*.state == .meshed) n += 1;
+        if (lc_ptr.*.hasMesh()) n += 1;
     }
     return n;
+}
+
+/// The chunk of the player.
+fn playerChunk() struct { i32, i32 } {
+    return .{
+        world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0])))),
+        world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2])))),
+    };
+}
+
+/// The view frustum test for the scheduler priority (C8, class 3).
+fn chunkInView(ctx: *const anyopaque, cx: i32, cz: i32) bool {
+    const f: *const frustum_mod.Frustum = @ptrCast(@alignCast(ctx));
+    return frustum_mod.keepChunk(.frustum, f.*, cx, cz, 0, chunk_mod.CHUNK_H);
+}
+
+/// The frame phase of the chunk pipeline (C1, C7). It runs once per frame,
+/// after the ticks and before render, also in headless runs with no GPU.
+/// Ticks never install results: only this function runs and installs jobs.
+///
+/// 1. Set the desired state: the player chunk and the view.
+/// 2. Run jobs on the Inline executor until the frame budget is spent.
+/// 3. Free the GPU buffers of the meshes that the scheduler evicted.
+/// C6: the simulation reads the blocks of the player chunk and the ring
+/// around it. They are there after loading, because each frame loads them
+/// first. After a teleport or a respawn in a tick, a chunk can be missing:
+/// generate it inline before the simulation reads it. Generation is a pure
+/// function, so the simulation does not depend on timing (P4).
+fn ensureSimRadius() !void {
+    const cx, const cz = playerChunk();
+    const n = try state.scheduler.ensureSimRadius(&state.world, cx, cz);
+    if (n > 0) std.log.info("[SIM] generated {} chunk(s) of the simulation radius inline", .{n});
+}
+
+fn voxelFrame(ctx: *sw.Context) !void {
+    _ = ctx;
+    const cx, const cz = playerChunk();
+    state.scheduler.setCenter(cx, cz);
+    const view = captureFrustum();
+    state.scheduler.view = .{ .ctx = &view, .visibleFn = chunkInView };
+    defer state.scheduler.view = null;
+
+    const budget = if (state.world_loading) LOADING_BUDGET_NS else PLAY_BUDGET_NS;
+    const report = try state.executor.runFrame(&state.scheduler, &state.world, clock.frameNowNs, clock.frameNowNs() + budget);
+    state.last_frame = report;
+    if (state.profile_csv_file != null) {
+        // The gen columns hold generate and light: before the stages, the
+        // generation of a chunk included its light.
+        const g = @backingInt(scheduler_mod.Stage.generate);
+        const l = @backingInt(scheduler_mod.Stage.light);
+        const m = @backingInt(scheduler_mod.Stage.mesh);
+        state.gen_ns = report.job_ns[g] + report.job_ns[l];
+        state.gen_count = @intCast(report.count[g] + report.count[l]);
+        state.mesh_ns = report.job_ns[m];
+        state.mesh_count = @intCast(report.count[m]);
+    }
+    if (report.jobs > 0) {
+        const depth = state.scheduler.queueDepth();
+        std.log.info("[PIPE] jobs={} gen={} light={} mesh={} discarded={} job_us={} install_us={} queue={}/{}/{}", .{
+            report.jobs,
+            report.count[0],
+            report.count[1],
+            report.count[2],
+            report.discarded,
+            (report.job_ns[0] + report.job_ns[1] + report.job_ns[2]) / 1000,
+            report.install_ns / 1000,
+            depth[0],
+            depth[1],
+            depth[2],
+        });
+    }
+
+    for (state.scheduler.evicted.items) |key| {
+        if (state.chunk_gpu.fetchRemove(key)) |kv| {
+            var cg = kv.value;
+            cg.release();
+        }
+    }
+    if (state.scheduler.evicted.items.len > 0) {
+        std.log.info("[EVICT] {} mesh(es) evicted", .{state.scheduler.evicted.items.len});
+        state.scheduler.evicted.clearRetainingCapacity();
+    }
 }
 
 /// Activate the currently-selected menu entry on the active screen.
@@ -2145,72 +1670,25 @@ fn activateMenuEntry(ctx: *sw.Context) void {
 }
 
 fn voxelTick(ctx: *sw.Context) !void {
-    // --profile-csv: reset per-tick accumulators at the top so every phase
-    // we time inside this tick (world.update gen, mesh loop, and the pregen
-    // fast path during world loading) accumulates into a fresh row. render
-    // adds upload_ns then flushes the row.
+    // --profile-csv: mark the tick start. voxelFrame writes the chunk job
+    // columns, and render adds upload_ns then flushes the row.
     if (state.profile_csv_file != null) {
         state.tick_t0_ns = perfNowNs();
         state.tick_ns = 0;
-        state.gen_ns = 0;
-        state.gen_count = 0;
-        state.mesh_ns = 0;
-        state.mesh_count = 0;
     }
 
     // ====================================================================
-    // World loading branch: pregen ring around spawn, mesh inner square,
-    // release player. Runs while state.world_loading is true. No gameplay
-    // input is processed. The render loop shows the loading overlay.
+    // World loading branch. voxelFrame loads the spawn area. The tick only
+    // reads the state: it releases the player when the scheduler is
+    // "ready" (Scheduler.isReady, LOADING_READY_RADIUS). No gameplay input
+    // is processed. The render loop shows the loading overlay.
     // ====================================================================
     if (state.world_loading) {
         const spawn_bx: i32 = @intFromFloat(@floor(state.spawn_point[0]));
         const spawn_bz: i32 = @intFromFloat(@floor(state.spawn_point[2]));
-        const spawn_cx = world_mod.chunkCoordOf(spawn_bx);
-        const spawn_cz = world_mod.chunkCoordOf(spawn_bz);
+        if (!state.scheduler.isReady(&state.world, LOADING_READY_RADIUS)) return;
 
-        // Count pregen gen+mesh into the per-tick profile accumulators. The
-        // pregen path bypasses the gameplay mesh loop so we can't reuse the
-        // counters added below; we measure the whole pregenStep as a single
-        // gen+mesh bundle and split it by diffing chunk count and ring
-        // meshed-count before/after.
-        const pregen_gen_before: usize = if (state.profile_csv_file != null) state.world.chunks.count() else 0;
-        const pregen_mesh_before: usize = if (state.profile_csv_file != null) countMeshedChunks(&state.world) else 0;
-        const pregen_t0: i128 = if (state.profile_csv_file != null) perfNowNs() else 0;
-        const deadline: ?ChunkDeadline = if (comptime is_wasm) .{ .ctx = ctx, .ns = state.web_frame_deadline_ns } else null;
-        const ring_ready = pregenStep(&state.world, spawn_cx, spawn_cz, state.ao_strategy, state.lighting_mode, deadline) catch |err| blk: {
-            std.log.err("Pregen step failed: {}", .{err});
-            break :blk false;
-        };
-        if (state.profile_csv_file != null) {
-            const pregen_t1 = perfNowNs();
-            const dt_ns: u64 = @intCast(pregen_t1 - pregen_t0);
-            const gen_after = state.world.chunks.count();
-            const mesh_after = countMeshedChunks(&state.world);
-            const gens_this_tick: u32 = @intCast(gen_after - pregen_gen_before);
-            const meshes_this_tick: u32 = @intCast(mesh_after - pregen_mesh_before);
-            // Split the pregen wall time proportionally between gen and mesh
-            // phases. Not perfect but good enough to separate the two big
-            // costs in the CSV — the exact split matters less than knowing
-            // "meshing dominated this tick" vs "generation dominated".
-            const total_ops = gens_this_tick + meshes_this_tick;
-            if (total_ops > 0) {
-                const gen_ns_approx: u64 = dt_ns * gens_this_tick / total_ops;
-                state.gen_ns +%= gen_ns_approx;
-                state.mesh_ns +%= dt_ns - gen_ns_approx;
-            } else {
-                state.gen_ns +%= dt_ns;
-            }
-            state.gen_count +%= gens_this_tick;
-            state.mesh_count +%= meshes_this_tick;
-        }
-        if (!ring_ready) {
-            // Still generating/meshing the spawn ring — keep the loading
-            // screen visible and run pregenStep again next tick.
-            return;
-        }
-
-        // Pregen complete: resolve spawn, place player, unlock world.
+        // Ready: resolve spawn, place player, unlock world.
         // First-ever spawn this session: reset spawn Y to the heightmap
         // surface ("overworld Y") so we don't attempt to start from a Y
         // embedded in rock on hilly worlds.
@@ -2260,302 +1738,13 @@ fn voxelTick(ctx: *sw.Context) !void {
         return;
     }
 
-    var tick_mesh_us: i128 = 0;
-    var tick_mesh_chunks: usize = 0;
-    var chunks_generated_this_tick: usize = 0;
-    var t_world_update_us: i128 = 0;
-
-    // Player chunk coords — used by the mesh-radius gate and eviction pass.
-    const player_cx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
-    const player_cz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
-
-    // Web only: the frame budget for gameplay chunk jobs (see
-    // WEB_PLAY_BUDGET_NS). Native passes null and uses the counts only.
-    const chunk_deadline: ?ChunkDeadline = if (comptime is_wasm) .{ .ctx = ctx, .ns = state.web_frame_deadline_ns } else null;
-
-    // When dump-frame is pending and TAS has finished, freeze world loading
-    // so the async pipeline can fully drain. Without this, asyncTick keeps
-    // enqueuing new gen jobs around the teleported position and the dump-frame
-    // convergence gate never fires.
-    const dump_draining = if (comptime is_wasm) false else blk: {
-        const tas_done = if (state.tas_replayer) |*r| r.state == .finished else true;
-        const want_dump = (state.dump_frame_path != null or state.compare_golden_path != null) and !state.dump_frame_done;
-        break :blk tas_done and want_dump;
-    };
-
-    if (comptime is_wasm) {
-        // WASM: synchronous chunk loading. The async pipeline does not exist
-        // on wasm. Without this call, no chunk past the spawn ring generates,
-        // and the sync mesh loop below has nothing new to mesh. One chunk
-        // for each call, so the frame budget (WEB_PLAY_BUDGET_NS) can stop
-        // generation between chunks.
-        var gens: usize = 0;
-        while (gens < world_mod.CHUNKS_PER_TICK) {
-            if (ChunkDeadline.spent(chunk_deadline, gens)) break;
-            const n = try state.world.updateUpTo(&[_]world_mod.RegionAnchor{
-                .{ .position = state.player.feet_pos },
-            }, 1);
-            if (n == 0) break;
-            gens += 1;
-            state.web_frame_chunk_jobs += 1;
-        }
-    } else if (dump_draining) {
-        // Drain-only: process completed async results but do NOT enqueue
-        // new gen/mesh jobs. This lets the pipeline fully converge.
-        if (state.async_pipeline) |p| {
-            state.async_result_scratch.clearRetainingCapacity();
-            try p.drainSorted(&state.async_result_scratch, ctx.allocator());
-            for (state.async_result_scratch.items) |*r| {
-                const key = world_mod.ChunkKey{ .cx = r.cx, .cz = r.cz };
-                if (r.chunk) |new_chunk| {
-                    if (!state.world.chunks.contains(key)) {
-                        const lc = try state.world.allocator.create(world_mod.LoadedChunk);
-                        lc.* = world_mod.LoadedChunk.init(state.world.allocator, r.cx, r.cz);
-                        lc.chunk = new_chunk.*;
-                        async_chunks_mod.freeChunk(new_chunk);
-                        try async_chunks_mod.installMeshFromResult(&lc.mesh, r);
-                        lc.state = .meshed;
-                        lc.mesh_dirty = false;
-                        lc.mesh_incremental_dirty = true;
-                        try state.world.chunks.put(key, lc);
-                    }
-                } else {
-                    if (state.world.chunks.get(key)) |lc| {
-                        async_chunks_mod.installMeshFromResult(&lc.mesh, r) catch {};
-                        lc.state = .meshed;
-                        lc.mesh_dirty = false;
-                        lc.neighbor_ao_dirty = false;
-                        lc.mesh_incremental_dirty = true;
-                    }
-                }
-                std.heap.c_allocator.free(r.quads);
-            }
-            state.async_result_scratch.clearRetainingCapacity();
-        }
-    } else if (state.async_chunks_enabled and state.async_pipeline != null) {
-        // Async path: worker thread owns gen + mesh. Main thread only
-        // drains results, installs them, and enqueues new work.
-        try asyncTick(
-            state.async_pipeline.?,
-            &state.world,
-            state.player.feet_pos,
-            state.ao_strategy,
-            state.lighting_mode,
-            ctx.allocator(),
-        );
-    } else {
-        // Update world: load chunks progressively around active region anchors.
-        // The player is currently the only anchor. This is the async background
-        // fill that keeps the outer ring growing as the player walks.
-        const gen_before: usize = if (state.profile_csv_file != null) state.world.chunks.count() else 0;
-        const gen_t0: i128 = if (state.profile_csv_file != null) perfNowNs() else 0;
-        try state.world.update(&[_]world_mod.RegionAnchor{
-            .{ .position = state.player.feet_pos },
-        });
-        {
-            const gen_t1 = perfNowNs();
-            t_world_update_us = @divTrunc(gen_t1 - gen_t0, 1000);
-            const gen_after = state.world.chunks.count();
-            chunks_generated_this_tick = gen_after - gen_before;
-            if (state.profile_csv_file != null) {
-                state.gen_ns +%= @intCast(gen_t1 - gen_t0);
-                state.gen_count +%= @intCast(gen_after - gen_before);
-            }
-        }
-    }
-
-    // Sync mesh loop — runs for both WASM and native-sync paths.
-    // The async path handles meshing in its worker thread, so skip it there.
-    const run_sync_mesh = if (comptime is_wasm) true else (!state.async_chunks_enabled or state.async_pipeline == null);
-    if (run_sync_mesh) {
-        // Generate meshes for dirty chunks — runs in tick so render frames stay smooth.
-        // Gated by:
-        //   1. `mesh_dirty` (something asked for a rebuild),
-        //   2. `hasAllNeighborsGenerated` (no seam-hole risk),
-        //   3. distance² ≤ MESH_RADIUS_SQ (don't waste cycles meshing chunks that
-        //      are about to be evicted, or that have just been evicted and are
-        //      sitting in the hysteresis dead zone with `mesh_dirty = true`).
-        {
-            var mesh_gens: usize = 0;
-            var it = state.world.chunks.iterator();
-            while (it.next()) |entry| {
-                if (mesh_gens >= MESH_GENS_PER_TICK) break;
-                const lc = entry.value_ptr.*;
-                if (!lc.mesh_dirty) continue;
-                const dcx = lc.cx - player_cx;
-                const dcz = lc.cz - player_cz;
-                if (dcx * dcx + dcz * dcz > state.world.meshRadiusSq()) continue;
-                if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
-                if (ChunkDeadline.spent(chunk_deadline, mesh_gens)) break;
-                const t0 = perfNowNs();
-                mesher_mod.generateMesh(
-                    &lc.chunk,
-                    &lc.mesh,
-                    lc.worldX(),
-                    lc.worldZ(),
-                    state.world.asBlockGetter(),
-                    state.ao_strategy,
-                    state.lighting_mode,
-                ) catch |err| {
-                    std.log.err("Mesh gen failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
-                    continue;
-                };
-                const mesh_dt_ns: i128 = perfNowNs() - t0;
-                const t_us = @divTrunc(mesh_dt_ns, 1000);
-                std.log.info("[MESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.quadCount() });
-                if (state.profile_csv_file != null) {
-                    state.mesh_ns +%= @intCast(mesh_dt_ns);
-                    state.mesh_count +%= 1;
-                }
-                lc.state = .meshed;
-                lc.mesh_dirty = false;
-                lc.neighbor_ao_dirty = false;
-                lc.mesh_incremental_dirty = true;
-                mesh_gens += 1;
-                if (comptime is_wasm) state.web_frame_chunk_jobs += 1;
-                tick_mesh_us += t_us;
-                tick_mesh_chunks += 1;
-            }
-
-            // AO re-mesh pass: handle neighbor_ao_dirty chunks that sit outside
-            // MESH_RADIUS_SQ (in the hysteresis dead zone). These already have
-            // meshes but their AO was computed against missing neighbours. Cap
-            // at 2 per tick to avoid frame spikes.
-            const AO_REMESH_CAP: usize = 2;
-            var ao_remeshes: usize = 0;
-            var ao_it = state.world.chunks.iterator();
-            while (ao_it.next()) |entry| {
-                if (ao_remeshes >= AO_REMESH_CAP) break;
-                const lc = entry.value_ptr.*;
-                if (!lc.neighbor_ao_dirty) continue;
-                if (!lc.mesh_dirty) continue;
-                if (lc.state != .meshed) continue;
-                if (!state.world.hasAllNeighborsGenerated(lc.cx, lc.cz)) continue;
-                // Skip chunks already handled by the regular pass above.
-                const dcx = lc.cx - player_cx;
-                const dcz = lc.cz - player_cz;
-                if (dcx * dcx + dcz * dcz <= state.world.meshRadiusSq()) continue;
-                if (ChunkDeadline.spent(chunk_deadline, ao_remeshes)) break;
-                const t0 = perfNowNs();
-                mesher_mod.generateMesh(
-                    &lc.chunk,
-                    &lc.mesh,
-                    lc.worldX(),
-                    lc.worldZ(),
-                    state.world.asBlockGetter(),
-                    state.ao_strategy,
-                    state.lighting_mode,
-                ) catch |err| {
-                    std.log.err("AO re-mesh failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
-                    continue;
-                };
-                const mesh_dt_ns: i128 = perfNowNs() - t0;
-                const t_us = @divTrunc(mesh_dt_ns, 1000);
-                std.log.info("[AO-REMESH] chunk ({},{}) gen={}us quads={}", .{ lc.cx, lc.cz, t_us, lc.mesh.quadCount() });
-                lc.mesh_dirty = false;
-                lc.neighbor_ao_dirty = false;
-                lc.mesh_incremental_dirty = true;
-                ao_remeshes += 1;
-                if (comptime is_wasm) state.web_frame_chunk_jobs += 1;
-                tick_mesh_us += t_us;
-                tick_mesh_chunks += 1;
-            }
-        }
-    }
-
-    // ====================================================================
-    // Mesh eviction — drop GPU + host mesh storage for chunks that have
-    // wandered outside the eviction radius.
-    //
-    // Design notes (long form lives in `world.zig` next to EVICT_RADIUS_SQ
-    // and in `examples/voxel/docs/memory.md` § "Mesh eviction"):
-    //
-    //   - Cheap enough to run every tick: a typical session has ~50 loaded
-    //     chunks, each check is two int multiplies + a hashmap lookup.
-    //   - Hysteresis: mesh-eligible inside meshRadiusSq (= R²),
-    //     evict outside evictRadiusSq (= (R+1)²). Dead zone prevents
-    //     boundary-wobble flicker.
-    //   - On eviction we (a) destroy GPU vertex+index buffers and drop the
-    //     entry from `state.chunk_gpu`, then (b) call `evictMesh` on the
-    //     LoadedChunk to free its host mesh ArrayLists. The block + skylight
-    //     grids stay in RAM.
-    //   - Re-entry path: a chunk that's been evicted has `state = .generated`
-    //     and `mesh_dirty = true`. When the player walks back inside the
-    //     mesh disc:
-    //       Sync path: the gated mesh loop above picks it up automatically.
-    //       Async path: asyncTick step 3 picks it up once the chunk is
-    //         within EVICT_RADIUS_SQ (its distance gate). This prevents the
-    //         thrash cycle where evicted chunks outside EVICT_RADIUS_SQ keep
-    //         getting re-meshed, consuming all re-mesh queue slots and
-    //         preventing visible chunks from recovering on player return.
-    {
-        var evicted_this_tick: usize = 0;
-        var it = state.world.chunks.valueIterator();
-        while (it.next()) |lc_ptr| {
-            const lc = lc_ptr.*;
-            if (lc.state != .meshed) continue;
-            const dcx = lc.cx - player_cx;
-            const dcz = lc.cz - player_cz;
-            if (dcx * dcx + dcz * dcz <= state.world.evictRadiusSq()) continue;
-
-            // Skip chunks that are currently being re-meshed by the async
-            // worker — evicting mid-flight would discard their mesh buffers
-            // and the subsequent result drain would re-install them, causing
-            // a visible flicker (meshed → evicted → meshed → evicted cycle).
-            if (!comptime is_wasm) {
-                if (state.async_pipeline) |ap| {
-                    if (ap.isInFlight(lc.cx, lc.cz)) continue;
-                }
-            }
-
-            // Drop GPU buffers if any are bound. The chunk_gpu entry can be
-            // absent (e.g. chunk was meshed this tick but the upload pass
-            // hasn't run yet); that's fine — the host-side eviction below
-            // is still safe.
-            if (state.chunk_gpu.fetchRemove(.{ .cx = lc.cx, .cz = lc.cz })) |kv| {
-                var cg = kv.value;
-                cg.release();
-            }
-
-            lc.evictMesh();
-            evicted_this_tick += 1;
-        }
-        if (evicted_this_tick > 0) {
-            std.log.info("[EVICT] {} chunk(s) downgraded to .generated this tick", .{evicted_this_tick});
-        }
-    }
-
-    // Periodic chunk-state stats so we can verify the eviction loop is
-    // actually doing work during a play session. 240 ticks ≈ 2 s at the
-    // default 120 Hz sim rate; in headless TAS runs (unlimited tick rate)
-    // this still fires roughly once per "TAS second" of script time, which
-    // is enough to confirm the counts on the regressions.
+    // Chunk counts every 240 ticks: about 2 s at the 120 Hz tick rate. In a
+    // headless TAS run (unlimited tick rate), it is once per 2 s of script.
     if (ctx.tickId() % 240 == 0) {
-        var meshed_count: usize = 0;
-        var generated_count: usize = 0;
-        var sit = state.world.chunks.valueIterator();
-        while (sit.next()) |lc_ptr| {
-            switch (lc_ptr.*.state) {
-                .meshed => meshed_count += 1,
-                .generated => generated_count += 1,
-            }
-        }
-        std.log.info("[CHUNK_STATS] meshed={} generated-only={} total={}", .{
-            meshed_count,
-            generated_count,
-            meshed_count + generated_count,
-        });
-    }
-
-    // Per-tick spike summary: emit whenever generation or meshing ran this tick.
-    if (chunks_generated_this_tick > 0 or tick_mesh_chunks > 0) {
-        std.log.info("[SPIKE_TICK] tick={} gen_chunks={} gen_total={}us mesh_chunks={} mesh_total={}us total={}us", .{
-            ctx.tickId(),
-            chunks_generated_this_tick,
-            t_world_update_us,
-            tick_mesh_chunks,
-            tick_mesh_us,
-            t_world_update_us + tick_mesh_us,
+        std.log.info("[CHUNK_STATS] meshed={} total={} idle={}", .{
+            countMeshedChunks(&state.world),
+            state.world.chunks.count(),
+            state.scheduler.isIdle(),
         });
     }
 
@@ -2566,9 +1755,8 @@ fn voxelTick(ctx: *sw.Context) !void {
         }
         if (state.headless and replayer.state == .finished) {
             // When --dump-frame or --compare-golden is active, defer shutdown
-            // until the render callback has captured the frame. The dump gate
-            // requires TAS finished + async pipeline drained — killing the
-            // process here would race with the async drain.
+            // until the render callback has captured the frame. The capture
+            // waits for the TAS to finish and for the scheduler to be idle.
             if (comptime !is_wasm) {
                 if ((state.dump_frame_path != null or state.compare_golden_path != null) and !state.dump_frame_done) {
                     // Don't shut down yet — let the render loop capture first.
@@ -2656,6 +1844,16 @@ fn voxelTick(ctx: *sw.Context) !void {
     if (input.keyPressed(.G) and (input.mods.super or input.mods.ctrl)) {
         state.gpu_debug = !state.gpu_debug;
         std.log.info("GPU debug: {}", .{state.gpu_debug});
+    }
+
+    // Cmd+P (macOS) / Ctrl+P (Windows/Linux) — next debug overlay page
+    // (general, chunk pipeline). Cmd+D shows the overlay.
+    if (input.keyPressed(.P) and (input.mods.super or input.mods.ctrl)) {
+        state.debug_page = switch (state.debug_page) {
+            .general => .pipeline,
+            .pipeline => .general,
+        };
+        std.log.info("Debug page: {s}", .{@tagName(state.debug_page)});
     }
 
     // Cmd+F (macOS) / Ctrl+F (Windows/Linux) — freeze / un-freeze the cull
@@ -2780,6 +1978,9 @@ fn voxelTick(ctx: *sw.Context) !void {
         }
     }
 
+    // A command or a respawn above can move the player.
+    try ensureSimRadius();
+
     // =========================================================================
     // 3. Gameplay input — only when no captures_all layer above gameplay
     // =========================================================================
@@ -2849,6 +2050,8 @@ fn voxelTick(ctx: *sw.Context) !void {
                 std.log.info("Void death at Y={d:.1}", .{state.player.feet_pos[1]});
                 doRespawn();
             }
+            // The move can enter a new chunk. The raycast below reads blocks.
+            try ensureSimRadius();
 
             // Sync camera position to player eye, offset by camera view.
             // For 3PV, raymarch from the eye toward the desired camera spot
@@ -2932,30 +2135,11 @@ fn voxelTick(ctx: *sw.Context) !void {
                     const bx: i32 = @intFromFloat(hit.block_pos.x);
                     const by: i32 = @intFromFloat(hit.block_pos.y);
                     const bz: i32 = @intFromFloat(hit.block_pos.z);
-                    _ = try state.world.setBlock(bx, by, bz, .air);
-                    if (state.world.getChunkAtBlock(bx, bz)) |lc| {
-                        // Greedy quads span many blocks, so an edit meshes
-                        // the whole chunk again. Do it now, not in the async
-                        // pipeline: gen+mesh jobs for the outer ring of
-                        // chunks can starve it.
-                        const t_regen0 = perfNowNs();
-                        mesher_mod.generateMesh(
-                            &lc.chunk,
-                            &lc.mesh,
-                            lc.worldX(),
-                            lc.worldZ(),
-                            state.world.asBlockGetter(),
-                            state.ao_strategy,
-                            state.lighting_mode,
-                        ) catch |err| {
-                            std.log.err("Greedy mesh regen failed for remove at ({},{},{}): {}", .{ bx, by, bz, err });
-                        };
-                        lc.mesh_dirty = false;
-                        lc.mesh_incremental_dirty = true;
-                        const t_regen_us = @divTrunc(perfNowNs() - t_regen0, 1000);
-                        std.log.info("[TICK  tick={d:4}] greedy remove ({},{},{}) sync regen={}us", .{ ctx.tickId(), bx, by, bz, t_regen_us });
-                    }
-                    updateBoundaryNeighbors(&state.world, bx, bz);
+                    // The edit changes the blocks only. The frame phase
+                    // relights and meshes the chunks that read the block,
+                    // first in the queue (C7, C8 class 2).
+                    _ = try state.scheduler.editBlock(&state.world, bx, by, bz, .air);
+                    std.log.info("[TICK  tick={d:4}] remove ({},{},{})", .{ ctx.tickId(), bx, by, bz });
                 }
 
                 // Right click: place the currently-selected hotbar block on
@@ -2984,27 +2168,9 @@ fn voxelTick(ctx: *sw.Context) !void {
                         break :place_blk;
                     }
 
-                    _ = try state.world.setBlock(px, py, pz, sel_block);
-                    if (state.world.getChunkAtBlock(px, pz)) |lc| {
-                        // See the note in the break-block path above.
-                        const t_regen0 = perfNowNs();
-                        mesher_mod.generateMesh(
-                            &lc.chunk,
-                            &lc.mesh,
-                            lc.worldX(),
-                            lc.worldZ(),
-                            state.world.asBlockGetter(),
-                            state.ao_strategy,
-                            state.lighting_mode,
-                        ) catch |err| {
-                            std.log.err("Greedy mesh regen failed for place at ({},{},{}): {}", .{ px, py, pz, err });
-                        };
-                        lc.mesh_dirty = false;
-                        lc.mesh_incremental_dirty = true;
-                        const t_regen_us = @divTrunc(perfNowNs() - t_regen0, 1000);
-                        std.log.info("[TICK  tick={d:4}] greedy place ({},{},{}) sync regen={}us", .{ ctx.tickId(), px, py, pz, t_regen_us });
-                    }
-                    updateBoundaryNeighbors(&state.world, px, pz);
+                    // See the note in the break-block path above.
+                    _ = try state.scheduler.editBlock(&state.world, px, py, pz, sel_block);
+                    std.log.info("[TICK  tick={d:4}] place ({},{},{})", .{ ctx.tickId(), px, py, pz });
                 }
             } else {
                 if (!state.tas_step_mode or state.tas_step_executing) state.hover_block = null;
@@ -3314,6 +2480,43 @@ fn renderLoadingScreen(ctx: *sw.Context, g: *gpu_mod.GPU, overlay_w: f32, overla
     g.present();
 }
 
+/// The chunk pipeline page of the debug overlay (C12): the queue depth,
+/// the job time and the install time of the chunk scheduler.
+fn drawPipelinePage(buf: *[96]u8, x: f32, y: *f32, line_h: f32, scale: f32, col: [4]f32, ow: f32, oh: f32) void {
+    const sched = &state.scheduler;
+    const st = &sched.stats;
+    const Line = struct {
+        fn draw(text: []const u8, lx: f32, ly: *f32, lh: f32, sc: f32, c: [4]f32, w: f32, h: f32) void {
+            drawText(&state.overlay, text, lx, ly.*, c, sc, w, h) catch {};
+            ly.* += lh;
+        }
+    };
+    const ms = struct {
+        fn f(ns: u64) f64 {
+            return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+        }
+    }.f;
+    Line.draw("PIPELINE: INLINE (MAIN THREAD)", x, y, line_h, scale, col, ow, oh);
+    Line.draw(if (sched.isIdle()) "STATE: IDLE" else "STATE: BUSY", x, y, line_h, scale, col, ow, oh);
+    const depth = sched.queueDepth();
+    Line.draw(std.fmt.bufPrint(buf, "QUEUE GEN/LIGHT/MESH: {}/{}/{}", .{ depth[0], depth[1], depth[2] }) catch "QUEUE: ?", x, y, line_h, scale, col, ow, oh);
+    Line.draw(" ", x, y, line_h, scale, col, ow, oh);
+    Line.draw("JOB MS (P50 / P95):", x, y, line_h, scale, col, ow, oh);
+    const names = [_][]const u8{ "GEN", "LIGHT", "MESH" };
+    for (names, 0..) |name, k| {
+        const j = &st.job_ns[k];
+        Line.draw(std.fmt.bufPrint(buf, "  {s}: {d:.2} / {d:.2}", .{ name, ms(j.percentile(50)), ms(j.percentile(95)) }) catch "?", x, y, line_h, scale, col, ow, oh);
+    }
+    Line.draw(std.fmt.bufPrint(buf, "INSTALL MS/FRAME: {d:.3} / {d:.3}", .{ ms(st.install_ns.percentile(50)), ms(st.install_ns.percentile(95)) }) catch "?", x, y, line_h, scale, col, ow, oh);
+    Line.draw(std.fmt.bufPrint(buf, "JOBS LAST FRAME: {}", .{state.last_frame.jobs}) catch "?", x, y, line_h, scale, col, ow, oh);
+    Line.draw(" ", x, y, line_h, scale, col, ow, oh);
+    Line.draw(std.fmt.bufPrint(buf, "INSTALLED G/L/M: {}/{}/{}", .{ st.installed[0], st.installed[1], st.installed[2] }) catch "?", x, y, line_h, scale, col, ow, oh);
+    Line.draw(std.fmt.bufPrint(buf, "DISCARDED: {}", .{st.discarded[0] + st.discarded[1] + st.discarded[2]}) catch "?", x, y, line_h, scale, col, ow, oh);
+    Line.draw(std.fmt.bufPrint(buf, "SIM INLINE: {}", .{st.sim_generated}) catch "?", x, y, line_h, scale, col, ow, oh);
+    Line.draw(std.fmt.bufPrint(buf, "CHUNKS: {} ({} MESHED)", .{ state.world.chunks.count(), countMeshedChunks(&state.world) }) catch "?", x, y, line_h, scale, col, ow, oh);
+    Line.draw(std.fmt.bufPrint(buf, "RENDER DIST: {}", .{state.world.render_distance}) catch "?", x, y, line_h, scale, col, ow, oh);
+}
+
 fn voxelRender(ctx: *sw.Context) !void {
     const g = ctx.gpu();
 
@@ -3429,10 +2632,10 @@ fn voxelRender(ctx: *sw.Context) !void {
             const gop = state.chunk_gpu.getOrPut(key) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = .{};
             const first_upload = gop.value_ptr.quad_buffer == null;
-            if (!(lc.mesh_incremental_dirty or first_upload or sort_quads)) continue;
-            const needed_upload = lc.mesh_incremental_dirty;
+            if (!(lc.upload_pending or first_upload or sort_quads)) continue;
+            const needed_upload = lc.upload_pending;
             const up_t0: i128 = if (state.profile_csv_file != null and needed_upload) perfNowNs() else 0;
-            uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.mesh_incremental_dirty, sort_quads) catch |err| {
+            uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.upload_pending, sort_quads) catch |err| {
                 std.log.err("Upload failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
                 continue;
             };
@@ -3441,11 +2644,11 @@ fn voxelRender(ctx: *sw.Context) !void {
                 state.upload_ns +%= @intCast(up_t1 - up_t0);
                 state.upload_count +%= 1;
             }
-            if (lc.mesh_incremental_dirty) {
+            if (lc.upload_pending) {
                 const this_upload_us = @divTrunc(perfNowNs() - up_t0, 1000);
                 render_upload_us += this_upload_us;
                 render_upload_chunks += 1;
-                lc.mesh_incremental_dirty = false;
+                lc.upload_pending = false;
             }
         }
     }
@@ -3840,7 +3043,7 @@ fn voxelRender(ctx: *sw.Context) !void {
                         break :blk s;
                     },
                     .render_dist => blk: {
-                        const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {} (restart)", .{state.render_distance_stub}) catch "Render Distance: ?";
+                        const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {}", .{state.render_distance}) catch "Render Distance: ?";
                         break :blk s;
                     },
                     .back => "Back",
@@ -3927,158 +3130,166 @@ fn voxelRender(ctx: *sw.Context) !void {
         // a worktree, and the spec explicitly allows skipping. Static title.
         drawLine("VOXEL DEMO", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
 
-        // FPS — rolling-window mean from the sampler at the top of voxelRender.
-        {
-            const sample_count: usize = if (state.fps_window_filled) state.fps_window_ns.len else state.fps_window_idx;
-            if (sample_count > 0) {
-                var sum_ns: u64 = 0;
-                for (state.fps_window_ns[0..sample_count]) |s| sum_ns += s;
-                const mean_ns: f64 = @as(f64, @floatFromInt(sum_ns)) / @as(f64, @floatFromInt(sample_count));
-                if (mean_ns > 0) {
-                    const fps: f64 = 1_000_000_000.0 / mean_ns;
-                    const ms: f64 = mean_ns / 1_000_000.0;
-                    const fps_str = std.fmt.bufPrint(&dbg_buf, "FPS: {d:.0}", .{fps}) catch "FPS: ?";
-                    drawLine(fps_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-                    var ms_buf: [32]u8 = undefined;
-                    const ms_str = std.fmt.bufPrint(&ms_buf, "FRAME: {d:.2} MS", .{ms}) catch "FRAME: ? MS";
-                    drawLine(ms_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+        general: {
+            // The chunk pipeline page (C12): Cmd+P (Ctrl+P).
+            if (state.debug_page == .pipeline) {
+                drawPipelinePage(&dbg_buf, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                break :general;
+            }
+
+            // FPS — rolling-window mean from the sampler at the top of voxelRender.
+            {
+                const sample_count: usize = if (state.fps_window_filled) state.fps_window_ns.len else state.fps_window_idx;
+                if (sample_count > 0) {
+                    var sum_ns: u64 = 0;
+                    for (state.fps_window_ns[0..sample_count]) |s| sum_ns += s;
+                    const mean_ns: f64 = @as(f64, @floatFromInt(sum_ns)) / @as(f64, @floatFromInt(sample_count));
+                    if (mean_ns > 0) {
+                        const fps: f64 = 1_000_000_000.0 / mean_ns;
+                        const ms: f64 = mean_ns / 1_000_000.0;
+                        const fps_str = std.fmt.bufPrint(&dbg_buf, "FPS: {d:.0}", .{fps}) catch "FPS: ?";
+                        drawLine(fps_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                        var ms_buf: [32]u8 = undefined;
+                        const ms_str = std.fmt.bufPrint(&ms_buf, "FRAME: {d:.2} MS", .{ms}) catch "FRAME: ? MS";
+                        drawLine(ms_str, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                    } else {
+                        drawLine("FPS: ?", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                        drawLine("FRAME: ? MS", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                    }
                 } else {
                     drawLine("FPS: ?", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
                     drawLine("FRAME: ? MS", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
                 }
-            } else {
-                drawLine("FPS: ?", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-                drawLine("FRAME: ? MS", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
             }
-        }
 
-        // Chunks: rendered / loaded (meshed) — `frustum_drawn` is set this
-        // frame by the cull; loaded count is the live HashMap size. Meshed
-        // count requires a single iterator pass over the HashMap (still
-        // bounded by (2*RD+1)² ≤ 81 entries at the default render distance).
-        {
-            const loaded_count: u32 = @intCast(state.world.chunks.count());
-            var meshed_count: u32 = 0;
-            var it = state.world.chunks.valueIterator();
-            while (it.next()) |lc_ptr| {
-                if (lc_ptr.*.state == .meshed) meshed_count += 1;
-            }
-            const rendered = state.frustum_drawn;
-            const s = std.fmt.bufPrint(&dbg_buf, "CHUNKS: {}/{} ({} MESHED)", .{ rendered, loaded_count, meshed_count }) catch "CHUNKS: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-
-        // Render distance (compile-time constant; --render-distance is reserved).
-        {
-            const s = std.fmt.bufPrint(&dbg_buf, "RENDER DIST: {}", .{world_mod.RENDER_DISTANCE}) catch "RENDER DIST: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-
-        // Blank separator
-        drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-
-        // ── Position ──────────────────────────────────────────────────────
-        // XYZ at eye height (feet + 1.6) — what the player actually sees from.
-        const eye_x = state.player.feet_pos[0];
-        const eye_y = state.player.feet_pos[1] + 1.6;
-        const eye_z = state.player.feet_pos[2];
-        {
-            const s = std.fmt.bufPrint(&dbg_buf, "XYZ: {d:.3} / {d:.3} / {d:.3}", .{ eye_x, eye_y, eye_z }) catch "XYZ: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-        // Block coords (integer floor)
-        const block_x: i32 = @intFromFloat(@floor(eye_x));
-        const block_y: i32 = @intFromFloat(@floor(eye_y));
-        const block_z: i32 = @intFromFloat(@floor(eye_z));
-        {
-            const s = std.fmt.bufPrint(&dbg_buf, "BLOCK: {} {} {}", .{ block_x, block_y, block_z }) catch "BLOCK: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-        // Chunk coords + local block-in-chunk coords (parens, not brackets)
-        {
-            const cx = world_mod.chunkCoordOf(block_x);
-            const cz = world_mod.chunkCoordOf(block_z);
-            const lx = block_x - cx * chunk_mod.CHUNK_W;
-            const lz = block_z - cz * chunk_mod.CHUNK_W;
-            const s = std.fmt.bufPrint(&dbg_buf, "CHUNK: {}, {} IN ({}, {})", .{ cx, cz, lx, lz }) catch "CHUNK: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-        // Facing: cardinal + yaw/pitch in degrees ('D' since the font has no °).
-        // Camera convention: yaw=-π/2 looks toward -Z (= North in MC).
-        // forward.x = cos(yaw)*cos(pitch), forward.z = sin(yaw)*cos(pitch).
-        {
-            const fwd = state.camera.forward();
-            const cardinal: []const u8 = if (@abs(fwd.x) >= @abs(fwd.z))
-                (if (fwd.x >= 0) "EAST" else "WEST")
-            else
-                (if (fwd.z >= 0) "SOUTH" else "NORTH");
-            const yaw_deg = @as(i32, @intFromFloat(std.math.round(state.camera.yaw * (180.0 / std.math.pi))));
-            const pitch_deg = @as(i32, @intFromFloat(std.math.round(state.camera.pitch * (180.0 / std.math.pi))));
-            const s = std.fmt.bufPrint(&dbg_buf, "FACING: {s} ({}D / {}D)", .{ cardinal, yaw_deg, pitch_deg }) catch "FACING: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-
-        // Blank separator
-        drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-
-        // ── Render settings ──────────────────────────────────────────────
-        {
-            const s = std.fmt.bufPrint(&dbg_buf, "AO: {s}", .{@tagName(state.ao_strategy)}) catch "AO: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-        {
-            const s = std.fmt.bufPrint(&dbg_buf, "LIGHTING: {s}", .{@tagName(state.lighting_mode)}) catch "LIGHTING: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-        {
-            const s = std.fmt.bufPrint(&dbg_buf, "ANTIALIAS: {s} ({}X)", .{ aaMethodLabel(state.msaa_config.method), state.msaa_config.msaa_samples }) catch "ANTIALIAS: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-
-        // Blank separator
-        drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-
-        // ── Targeted block + light at player ─────────────────────────────
-        {
-            if (state.hover_block) |hb| {
-                const tbx: i32 = @intFromFloat(@floor(hb.x));
-                const tby: i32 = @intFromFloat(@floor(hb.y));
-                const tbz: i32 = @intFromFloat(@floor(hb.z));
-                const bt = state.world.getBlock(tbx, tby, tbz);
-                const s = std.fmt.bufPrint(&dbg_buf, "TARGETED: {s} {} {} {}", .{ @tagName(bt), tbx, tby, tbz }) catch "TARGETED: ?";
+            // Chunks: rendered / loaded (meshed) — `frustum_drawn` is set this
+            // frame by the cull; loaded count is the live HashMap size. Meshed
+            // count requires a single iterator pass over the HashMap (still
+            // bounded by (2*RD+1)² ≤ 81 entries at the default render distance).
+            {
+                const loaded_count: u32 = @intCast(state.world.chunks.count());
+                var meshed_count: u32 = 0;
+                var it = state.world.chunks.valueIterator();
+                while (it.next()) |lc_ptr| {
+                    if (lc_ptr.*.hasMesh()) meshed_count += 1;
+                }
+                const rendered = state.frustum_drawn;
+                const s = std.fmt.bufPrint(&dbg_buf, "CHUNKS: {}/{} ({} MESHED)", .{ rendered, loaded_count, meshed_count }) catch "CHUNKS: ?";
                 drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-            } else {
-                drawLine("TARGETED: NONE", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
             }
-        }
-        // Skylight at the player's feet (clamped to world Y bounds; >CHUNK_H = open sky).
-        {
-            const sky_y = if (block_y < 0) @as(i32, 0) else block_y;
-            const sky = state.world.getSkylight(block_x, sky_y, block_z);
-            const s = std.fmt.bufPrint(&dbg_buf, "SKYLIGHT: {}", .{sky}) catch "SKYLIGHT: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
-        // Block light at the player's feet. Shows the BFS-propagated block
-        // light value from nearby emissive blocks (e.g. glowstone).
-        {
-            const bl_y = if (block_y < 0) @as(i32, 0) else block_y;
-            const bl = state.world.getBlockLight(block_x, bl_y, block_z);
-            const s = std.fmt.bufPrint(&dbg_buf, "BLOCK LIGHT: {}", .{bl}) catch "BLOCK LIGHT: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-        }
 
-        // Blank separator
-        drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            // Render distance (the Settings picker changes it at runtime).
+            {
+                const s = std.fmt.bufPrint(&dbg_buf, "RENDER DIST: {}", .{state.world.render_distance}) catch "RENDER DIST: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
 
-        // ── Memory estimate ──────────────────────────────────────────────
-        // 576 KB blocks + 576 KB skylight per chunk = ~1.13 MB/chunk.
-        // Spec rounds to 576 KB/chunk × loaded; we honour the spec figure.
-        {
-            const loaded_count: u32 = @intCast(state.world.chunks.count());
-            const kb_total: u64 = @as(u64, loaded_count) * 576;
-            const mb_total: f32 = @as(f32, @floatFromInt(kb_total)) / 1024.0;
-            const s = std.fmt.bufPrint(&dbg_buf, "MEMORY: CHUNKS {d:.1} MB", .{mb_total}) catch "MEMORY: ?";
-            drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            // Blank separator
+            drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+
+            // ── Position ──────────────────────────────────────────────────────
+            // XYZ at eye height (feet + 1.6) — what the player actually sees from.
+            const eye_x = state.player.feet_pos[0];
+            const eye_y = state.player.feet_pos[1] + 1.6;
+            const eye_z = state.player.feet_pos[2];
+            {
+                const s = std.fmt.bufPrint(&dbg_buf, "XYZ: {d:.3} / {d:.3} / {d:.3}", .{ eye_x, eye_y, eye_z }) catch "XYZ: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+            // Block coords (integer floor)
+            const block_x: i32 = @intFromFloat(@floor(eye_x));
+            const block_y: i32 = @intFromFloat(@floor(eye_y));
+            const block_z: i32 = @intFromFloat(@floor(eye_z));
+            {
+                const s = std.fmt.bufPrint(&dbg_buf, "BLOCK: {} {} {}", .{ block_x, block_y, block_z }) catch "BLOCK: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+            // Chunk coords + local block-in-chunk coords (parens, not brackets)
+            {
+                const cx = world_mod.chunkCoordOf(block_x);
+                const cz = world_mod.chunkCoordOf(block_z);
+                const lx = block_x - cx * chunk_mod.CHUNK_W;
+                const lz = block_z - cz * chunk_mod.CHUNK_W;
+                const s = std.fmt.bufPrint(&dbg_buf, "CHUNK: {}, {} IN ({}, {})", .{ cx, cz, lx, lz }) catch "CHUNK: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+            // Facing: cardinal + yaw/pitch in degrees ('D' since the font has no °).
+            // Camera convention: yaw=-π/2 looks toward -Z (= North in MC).
+            // forward.x = cos(yaw)*cos(pitch), forward.z = sin(yaw)*cos(pitch).
+            {
+                const fwd = state.camera.forward();
+                const cardinal: []const u8 = if (@abs(fwd.x) >= @abs(fwd.z))
+                    (if (fwd.x >= 0) "EAST" else "WEST")
+                else
+                    (if (fwd.z >= 0) "SOUTH" else "NORTH");
+                const yaw_deg = @as(i32, @intFromFloat(std.math.round(state.camera.yaw * (180.0 / std.math.pi))));
+                const pitch_deg = @as(i32, @intFromFloat(std.math.round(state.camera.pitch * (180.0 / std.math.pi))));
+                const s = std.fmt.bufPrint(&dbg_buf, "FACING: {s} ({}D / {}D)", .{ cardinal, yaw_deg, pitch_deg }) catch "FACING: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+
+            // Blank separator
+            drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+
+            // ── Render settings ──────────────────────────────────────────────
+            {
+                const s = std.fmt.bufPrint(&dbg_buf, "AO: {s}", .{@tagName(state.ao_strategy)}) catch "AO: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+            {
+                const s = std.fmt.bufPrint(&dbg_buf, "LIGHTING: {s}", .{@tagName(state.lighting_mode)}) catch "LIGHTING: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+            {
+                const s = std.fmt.bufPrint(&dbg_buf, "ANTIALIAS: {s} ({}X)", .{ aaMethodLabel(state.msaa_config.method), state.msaa_config.msaa_samples }) catch "ANTIALIAS: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+
+            // Blank separator
+            drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+
+            // ── Targeted block + light at player ─────────────────────────────
+            {
+                if (state.hover_block) |hb| {
+                    const tbx: i32 = @intFromFloat(@floor(hb.x));
+                    const tby: i32 = @intFromFloat(@floor(hb.y));
+                    const tbz: i32 = @intFromFloat(@floor(hb.z));
+                    const bt = state.world.getBlock(tbx, tby, tbz);
+                    const s = std.fmt.bufPrint(&dbg_buf, "TARGETED: {s} {} {} {}", .{ @tagName(bt), tbx, tby, tbz }) catch "TARGETED: ?";
+                    drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                } else {
+                    drawLine("TARGETED: NONE", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+                }
+            }
+            // Skylight at the player's feet (clamped to world Y bounds; >CHUNK_H = open sky).
+            {
+                const sky_y = if (block_y < 0) @as(i32, 0) else block_y;
+                const sky = state.world.getSkylight(block_x, sky_y, block_z);
+                const s = std.fmt.bufPrint(&dbg_buf, "SKYLIGHT: {}", .{sky}) catch "SKYLIGHT: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+            // Block light at the player's feet. Shows the BFS-propagated block
+            // light value from nearby emissive blocks (e.g. glowstone).
+            {
+                const bl_y = if (block_y < 0) @as(i32, 0) else block_y;
+                const bl = state.world.getBlockLight(block_x, bl_y, block_z);
+                const s = std.fmt.bufPrint(&dbg_buf, "BLOCK LIGHT: {}", .{bl}) catch "BLOCK LIGHT: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
+
+            // Blank separator
+            drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+
+            // ── Memory estimate ──────────────────────────────────────────────
+            // 576 KB blocks + 576 KB skylight per chunk = ~1.13 MB/chunk.
+            // Spec rounds to 576 KB/chunk × loaded; we honour the spec figure.
+            {
+                const loaded_count: u32 = @intCast(state.world.chunks.count());
+                const kb_total: u64 = @as(u64, loaded_count) * 576;
+                const mb_total: f32 = @as(f32, @floatFromInt(kb_total)) / 1024.0;
+                const s = std.fmt.bufPrint(&dbg_buf, "MEMORY: CHUNKS {d:.1} MB", .{mb_total}) catch "MEMORY: ?";
+                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
+            }
         }
 
         // Frustum freeze indicator (red, on its own line) — diagnostic mode.
@@ -4152,30 +3363,17 @@ fn voxelRender(ctx: *sw.Context) !void {
     // --dump-frame / --compare-golden: capture the rendered texture BEFORE present,
     // optionally write PPM, optionally compare against a golden, then exit.
     // When a TAS is running, defer capture until the TAS has finished so both MSAA
-    // comparison runs dump the same deterministic game state. Without a TAS,
-    // capture on the first post-loading frame.
+    // comparison runs dump the same deterministic game state. Then wait until
+    // the chunk scheduler is idle.
     const dump_ready = blk: {
         if (state.world_loading) break :blk false;
         if (state.tas_replayer) |*r| {
             if (r.state != .finished) break :blk false;
         }
-        // Async mode: wait for the pipeline to fully drain before capturing.
-        // In dump-drain mode (TAS finished + dump pending), we only check
-        // in-flight jobs — dirty chunks that got marked after we stopped
-        // enqueuing new work are stale-AO leftovers and won't change the
-        // visual output. Without this relaxation, the dump-frame gate
-        // never fires because the drain keeps creating dirty neighbours.
-        if (comptime !is_wasm) {
-            if (state.async_pipeline) |p| {
-                if (p.inFlightCount() > 0) break :blk false;
-                // Full convergence check only when NOT in dump-drain mode.
-                const tas_done = if (state.tas_replayer) |*r| r.state == .finished else true;
-                const in_dump_drain = tas_done and !state.dump_frame_done;
-                if (!in_dump_drain) {
-                    if (asyncHasPendingWork(p, &state.world)) break :blk false;
-                }
-            }
-        }
+        // "Ready" for a capture: the scheduler is idle. The World has the
+        // whole desired state (C8) and no job runs, so the frame does not
+        // depend on timing. See docs/chunk-pipeline.md.
+        if (!state.scheduler.isIdle()) break :blk false;
         break :blk true;
     };
     // --dump-frame / --compare-golden: native only. WASM builds don't accept
@@ -4382,15 +3580,8 @@ fn compareAgainstGolden(
 }
 
 fn voxelShutdown(ctx: *sw.Context) !void {
-    // Join the async worker thread BEFORE tearing down the world — its
-    // snapshot pointers reference c_allocator-owned copies, not world
-    // data, but we still want the thread gone before we start destroying
-    // anything else it could touch via logging/allocator channels.
-    if (state.async_pipeline) |p| {
-        p.deinit();
-        state.async_pipeline = null;
-    }
-    state.async_result_scratch.deinit(ctx.allocator());
+    state.executor.deinit();
+    state.scheduler.deinit();
 
     // Destroy per-chunk GPU buffers
     var it = state.chunk_gpu.iterator();
@@ -4638,7 +3829,10 @@ fn logGpuMeshStats() void {
         quads += cg.quad_count;
         if (cg.quad_buffer != null) bytes += (cg.capacity + 1) * @sizeOf(mesher_mod.PackedQuad);
     }
-    std.log.info("[ASYNC COPY] jobs={} copied={} bytes (whole chunks would be {} bytes)", .{ state.async_jobs, state.async_copy_bytes, state.async_whole_chunk_bytes });
+    const st = &state.scheduler.stats;
+    std.log.info("[PIPE] installed gen={} light={} mesh={} discarded={} sim_inline={} plans={}", .{
+        st.installed[0], st.installed[1], st.installed[2], st.discarded[0] + st.discarded[1] + st.discarded[2], st.sim_generated, st.plans,
+    });
     std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s})", .{
         state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(),
     });
@@ -4772,9 +3966,6 @@ fn wasmFrameImpl(timestamp_ms: f64) callconv(.c) void {
     wasm_gpu.setSurfaceSize(info.width, info.height);
 
     const now = wasm_backend.getTime();
-    const budget_ns = if (state.world_loading) WEB_PREGEN_BUDGET_NS else WEB_PLAY_BUDGET_NS;
-    state.web_frame_deadline_ns = now + budget_ns;
-    state.web_frame_chunk_jobs = 0;
     const dt = now - wasm_last_time_ns;
     wasm_last_time_ns = now;
 
@@ -4783,6 +3974,7 @@ fn wasmFrameImpl(timestamp_ms: f64) callconv(.c) void {
     // frame clears them, a lost key-up event leaves the key held.
     const ticks = wasm_timeline.advance(dt);
     if (ticks == 0) {
+        voxelFrame(&wasm_ctx) catch {};
         voxelRender(&wasm_ctx) catch {};
         return;
     }
@@ -4797,6 +3989,8 @@ fn wasmFrameImpl(timestamp_ms: f64) callconv(.c) void {
         voxelTick(&wasm_ctx) catch {};
     }
 
+    // The frame phase of the chunk pipeline, as in sw_app's native loop.
+    voxelFrame(&wasm_ctx) catch {};
     voxelRender(&wasm_ctx) catch {};
 
     wasm_bus.clear();
@@ -4824,7 +4018,7 @@ fn wasmDebugChunkCounts(radius: i32) callconv(.c) [*]const i32 {
         while (cx <= pcx + r) : (cx += 1) {
             const lc = state.world.chunks.get(.{ .cx = cx, .cz = cz }) orelse continue;
             loaded_near += 1;
-            if (lc.state == .meshed) meshed_near += 1;
+            if (lc.hasMesh()) meshed_near += 1;
         }
     }
     wasm_debug_counts = .{

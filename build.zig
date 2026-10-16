@@ -386,17 +386,6 @@ pub fn build(b: *std.Build) void {
     });
     world_tests.root_module.addImport("sw_gpu", web_libs.gpu);
     test_step.dependOn(&b.addRunArtifact(world_tests).step);
-    // Async chunk tests: meshing through border copies matches full chunks.
-    const async_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/voxel/async_chunks.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    async_tests.root_module.addImport("sw_gpu", web_libs.gpu);
-    test_step.dependOn(&b.addRunArtifact(async_tests).step);
     // Chunk stage tests (pipeline/stages.zig): equivalence with World,
     // install order, and edits with versions (C2, C3, P3).
     const stages_tests = b.addTest(.{
@@ -411,6 +400,18 @@ pub fn build(b: *std.Build) void {
     });
     stages_tests.root_module.addImport("sw_gpu", web_libs.gpu);
     test_step.dependOn(&b.addRunArtifact(stages_tests).step);
+    // Chunk scheduler tests (pipeline/scheduler.zig, pipeline/exec_inline.zig):
+    // priority order, stale results, eviction and the render distance (C3, C8).
+    const scheduler_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/scheduler_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = &.{"scheduler: "},
+    });
+    scheduler_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    test_step.dependOn(&b.addRunArtifact(scheduler_tests).step);
 }
 
 /// Compile stb_image (libs/sw_assets/c) into `module`. The shim headers stand

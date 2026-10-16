@@ -538,6 +538,23 @@ pub const LightGrid = struct {
         }
     }
 
+    /// True when the two grids have the same value in each cell. `store`
+    /// keeps an array only for a section that is not uniform, so a section
+    /// with an array never equals a section without one.
+    pub fn eql(a: *const LightGrid, b: *const LightGrid) bool {
+        for (0..SECTIONS) |s| {
+            const x = a.arrays[s];
+            const y = b.arrays[s];
+            if (x == null and y == null) {
+                if (a.fill[s] != b.fill[s]) return false;
+                continue;
+            }
+            if (x == null or y == null) return false;
+            if (!std.mem.eql(u8, std.mem.asBytes(x.?), std.mem.asBytes(y.?))) return false;
+        }
+        return true;
+    }
+
     /// A copy that owns its own arrays.
     pub fn clone(self: *const LightGrid, allocator: std.mem.Allocator) !LightGrid {
         var out: LightGrid = .{ .fill = self.fill };

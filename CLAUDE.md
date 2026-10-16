@@ -68,8 +68,8 @@ More rules load only when you touch matching files:
   ABI lessons, the enum-mismatch fixes, how to add a WebGPU feature, the core
   file map, and the event and context API.
 - `.claude/rules/swindowzig-voxel.md` loads for `examples/voxel/**`. It holds
-  the voxel CLI flags, world loading, regression tests, anti-aliasing, async
-  chunks, lighting, the GPU debug system, trackpad latency, and the voxel file
+  the voxel CLI flags, world loading, regression tests, anti-aliasing, the
+  chunk pipeline, lighting, the GPU debug system, trackpad latency, and the voxel file
   map.
 
 ---

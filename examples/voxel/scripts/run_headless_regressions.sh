@@ -107,12 +107,11 @@ declare -a RUNS=(
 )
 
 # Flags for every run, so that one TAS gives the same frame every time:
-#   --async-chunks=off  the async chunk worker is a thread, so the number of
-#                       chunks loaded at capture time changes from run to run.
-#                       The sync loop loads a fixed number of chunks per tick.
 #   --debug=off         a TAS turns on the debug overlay, which shows wall-clock
 #                       values (FPS, frame ms). debug_overlay.sh tests the overlay.
-COMMON_ARGS="--async-chunks=off --debug=off"
+# The capture waits for the chunk scheduler to be idle, so the loaded
+# chunks do not depend on timing (docs/chunk-pipeline.md).
+COMMON_ARGS="--debug=off"
 
 PASS=0; FAIL=0; MISS=0
 
