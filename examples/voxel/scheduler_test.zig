@@ -8,15 +8,17 @@
 //!   stale        a result with old input versions is discarded and queued
 //!                again, and the final state equals a recompute.
 //!   hysteresis   a mesh stays to R + 1 and goes past it. An edited chunk
-//!                keeps its blocks.
+//!                keeps its version, and its blocks come back with the edit.
 //!   render       a change of the render distance at runtime.
 //!   ready        the loading screen check and the simulation radius.
 const std = @import("std");
 const stages = @import("pipeline/stages.zig");
 const scheduler_mod = @import("pipeline/scheduler.zig");
 const exec_inline = @import("pipeline/exec_inline.zig");
+const worker_world = @import("pipeline/worker_world.zig");
 const world_mod = @import("world.zig");
 const chunk_mod = @import("chunk.zig");
+const test_recompute = @import("test_recompute.zig");
 
 const Scheduler = scheduler_mod.Scheduler;
 const Region = scheduler_mod.Region;
@@ -31,11 +33,11 @@ const Fixture = struct {
 
     fn init(a: std.mem.Allocator, r: i32) !*Fixture {
         const f = try a.create(Fixture);
-        f.* = .{
-            .world = try World.init(a, .hilly, r),
-            .sched = Scheduler.init(a, r, .moore, .skylight),
-            .exec = exec_inline.Inline.init(a),
-        };
+        errdefer a.destroy(f);
+        f.world = try World.init(a, .hilly, r);
+        errdefer f.world.deinit();
+        f.sched = Scheduler.init(a, r, .moore, .skylight);
+        f.exec = try exec_inline.Inline.init(a, f.world.gen_config, worker_world.DEFAULT_CACHE_LIMIT);
         return f;
     }
 
@@ -92,39 +94,10 @@ fn eastVisible(_: *const anyopaque, cx: i32, _: i32) bool {
     return cx > 0;
 }
 
-/// Compute the light of each chunk next to a meshed chunk, and each mesh,
-/// from the blocks of the World with the stages. The World must have the
-/// same light and the same quads.
+/// Each current light and mesh of the World must be the result of a
+/// recompute from scratch: generate, the edit log, light and mesh.
 fn expectMatchesRecompute(a: std.mem.Allocator, f: *Fixture) !void {
-    var checked: usize = 0;
-    var it = f.world.chunks.valueIterator();
-    while (it.next()) |lc_ptr| {
-        const lc = lc_ptr.*;
-        if (!f.sched.meshCurrent(&f.world, lc)) continue;
-        var lights: [stages.SLOTS]stages.ChunkLight = undefined;
-        var hood: stages.Neighbourhood = undefined;
-        for (0..stages.SLOTS) |s| {
-            const dcx, const dcz = stages.offsetOf(s);
-            const n = f.world.get(lc.cx + dcx, lc.cz + dcz).?;
-            var window: stages.Window = undefined;
-            for (0..stages.SLOTS) |t| {
-                const ex, const ez = stages.offsetOf(t);
-                window[t] = &f.world.get(n.cx + ex, n.cz + ez).?.chunk.blocks;
-            }
-            lights[s] = try stages.light(a, &window);
-            try std.testing.expect(lights[s].sky.eql(&n.chunk.skylight));
-            try std.testing.expect(lights[s].block.eql(&n.chunk.block_light));
-            hood[s] = .{ .blocks = &n.chunk.blocks, .light = &lights[s] };
-        }
-        defer for (&lights) |*l| l.deinit(a);
-        var want = try stages.mesh(a, &hood, f.sched.ao, f.sched.lighting);
-        defer want.deinit(a);
-        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(want.quads), std.mem.sliceAsBytes(lc.mesh.quads.items));
-        try std.testing.expectEqual(want.y_min, lc.mesh.y_min);
-        try std.testing.expectEqual(want.y_max, lc.mesh.y_max);
-        checked += 1;
-    }
-    try std.testing.expect(checked > 0);
+    _ = try test_recompute.expectMatchesRecompute(a, &f.sched, &f.world);
 }
 
 test "scheduler: the regions have one band of hysteresis" {
@@ -242,16 +215,26 @@ test "scheduler: eviction has hysteresis" {
     defer f.deinit(a);
     try f.idle();
     try std.testing.expect(f.world.get(-2, 0).?.hasMesh());
-    // An edit in chunk (-4, 0), which has blocks only.
+    // Main has no blocks out of the prefetch radius (C6).
     try std.testing.expect(f.world.get(-4, 0) != null);
-    try std.testing.expect(f.world.get(-4, 1) != null);
+    try std.testing.expect(!f.world.get(-4, 0).?.has_blocks);
+    try std.testing.expect(!try f.sched.editBlock(&f.world, -4 * CHUNK_W + 5, 150, 5, .stone));
+    // An edit in chunk (-4, 0), from a player near it.
+    try f.move(-2, 0);
+    try std.testing.expect(f.world.get(-4, 0).?.has_blocks);
     try std.testing.expect(try f.sched.editBlock(&f.world, -4 * CHUNK_W + 5, 150, 5, .stone));
+    try f.move(0, 0);
+    // Back at the start, (-4, 0) has no mesh, and main dropped its blocks.
+    try std.testing.expect(!f.world.get(-4, 0).?.hasMesh());
+    try std.testing.expect(!f.world.get(-4, 0).?.has_blocks);
+    try std.testing.expect(f.world.get(-4, 1) != null);
+    f.sched.evicted.clearRetainingCapacity();
 
     // (-2, 0) is 3 chunks away: out of the mesh disc (R = 2), in the
     // keep disc (R + 1 = 3). The mesh stays.
     try f.move(1, 0);
     try std.testing.expect(f.world.get(-2, 0).?.hasMesh());
-    try std.testing.expectEqual(@as(usize, 0), f.sched.evicted.items.len);
+    for (f.sched.evicted.items) |k| try std.testing.expect(!(k.cx == -2 and k.cz == 0));
 
     // 4 chunks away: the mesh goes, and main gets the key for the GPU.
     try f.move(2, 0);
@@ -259,11 +242,13 @@ test "scheduler: eviction has hysteresis" {
     var found = false;
     for (f.sched.evicted.items) |k| found = found or (k.cx == -2 and k.cz == 0);
     try std.testing.expect(found);
-    // Unedited chunks far away go. The edited chunk keeps its blocks.
+    // Unedited chunks far away go. The edited chunk keeps its version.
+    // Its blocks are in the edit log and in the worker (C4).
     try std.testing.expect(f.world.get(-4, 1) == null);
     const edited = f.world.get(-4, 0).?;
-    try std.testing.expect(!edited.hasLight() and !edited.hasMesh());
-    try std.testing.expectEqual(chunk_mod.BlockType.stone, f.world.getBlock(-4 * CHUNK_W + 5, 150, 5));
+    try std.testing.expect(!edited.hasLight() and !edited.hasMesh() and !edited.has_blocks);
+    try std.testing.expectEqual(@as(stages.Version, 1), edited.block_ver);
+    try std.testing.expectEqual(@as(stages.Version, 1), f.world.editVersion(-4, 0));
 
     // Back to 3 chunks away: no mesh again (no flicker at the edge).
     f.sched.evicted.clearRetainingCapacity();
@@ -274,6 +259,12 @@ test "scheduler: eviction has hysteresis" {
     // Back to the start: the mesh comes back, with the edit.
     try f.move(0, 0);
     try std.testing.expect(f.world.get(-2, 0).?.hasMesh());
+    try expectMatchesRecompute(a, f);
+    // Near the edited chunk, main gets its blocks from the worker, with
+    // the edit (C6).
+    try f.move(-3, 0);
+    try std.testing.expect(f.world.get(-4, 0).?.has_blocks);
+    try std.testing.expectEqual(chunk_mod.BlockType.stone, f.world.getBlock(-4 * CHUNK_W + 5, 150, 5));
     try expectMatchesRecompute(a, f);
 }
 

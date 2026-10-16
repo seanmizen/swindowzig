@@ -236,6 +236,46 @@ const clock = @import("clock.zig");
 const stages = @import("pipeline/stages.zig");
 const scheduler_mod = @import("pipeline/scheduler.zig");
 const exec_inline = @import("pipeline/exec_inline.zig");
+const worker_world = @import("pipeline/worker_world.zig");
+/// The ThreadPool executor uses std.Thread, so only native builds import it.
+/// The web build keeps the Inline executor until the Web Worker pool comes.
+const exec_threads = if (is_wasm) struct {} else @import("pipeline/exec_threads.zig");
+
+/// The chunk executor (C1). Native uses the ThreadPool by default. The web
+/// build, `--chunk-workers=0` and the fallback use the Inline executor.
+const Executor = union(enum) {
+    inline_exec: exec_inline.Inline,
+    threads: if (is_wasm) void else exec_threads.ThreadPool,
+
+    fn runFrame(self: *Executor, sched: *scheduler_mod.Scheduler, world: *world_mod.World, deadline_ns: u64) !exec_inline.FrameReport {
+        return switch (self.*) {
+            .inline_exec => |*e| e.runFrame(sched, world, clock.frameNowNs, deadline_ns),
+            .threads => |*p| if (comptime is_wasm) unreachable else p.runFrame(sched, world, clock.frameNowNs, deadline_ns),
+        };
+    }
+
+    fn traffic(self: *const Executor) exec_inline.Traffic {
+        return switch (self.*) {
+            .inline_exec => |e| e.traffic,
+            .threads => |p| if (comptime is_wasm) unreachable else p.traffic,
+        };
+    }
+
+    fn workerCount(self: *const Executor) usize {
+        return switch (self.*) {
+            .inline_exec => 0,
+            .threads => |p| if (comptime is_wasm) unreachable else p.workers.len,
+        };
+    }
+
+    /// Stop the threads and wait for them, then free the executor.
+    fn deinit(self: *Executor) void {
+        switch (self.*) {
+            .inline_exec => |*e| e.deinit(),
+            .threads => |*p| if (comptime is_wasm) unreachable else p.deinit(),
+        }
+    }
+};
 
 const Vec3 = math.Vec3;
 const Mat4 = math.Mat4;
@@ -640,7 +680,10 @@ const State = struct {
     /// The chunk scheduler (C1, C8) and its executor. voxelFrame runs them
     /// once per frame. See docs/chunk-pipeline.md.
     scheduler: scheduler_mod.Scheduler = undefined, // set by voxelInit
-    executor: exec_inline.Inline = undefined, // set by voxelInit
+    executor: Executor = undefined, // set by voxelInit
+    /// Chunk worker threads from --chunk-workers=N. Null: the default,
+    /// min(CPU count - 1, 4). 0: the Inline executor.
+    chunk_workers: ?usize = null,
     /// What the last frame phase did, for the debug overlay (C12).
     last_frame: exec_inline.FrameReport = .{},
     /// The debug overlay page. Cmd+P (Ctrl+P) changes it.
@@ -1005,6 +1048,18 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             };
         }
+        if (std.mem.startsWith(u8, arg, "--chunk-workers=")) {
+            const val = std.mem.sliceTo(arg["--chunk-workers=".len..], 0);
+            const n = std.fmt.parseInt(usize, val, 10) catch {
+                std.log.err("--chunk-workers: cannot parse '{s}' as an integer", .{val});
+                fatalExit(1);
+            };
+            if (n > 4) {
+                std.log.err("--chunk-workers: {} is more than 4", .{n});
+                fatalExit(1);
+            }
+            state.chunk_workers = n;
+        }
         if (std.mem.startsWith(u8, arg, "--seed=")) {
             const val = std.mem.sliceTo(arg["--seed=".len..], 0);
             state.world_seed = std.fmt.parseInt(u64, val, 10) catch {
@@ -1263,10 +1318,11 @@ fn voxelInit(ctx: *sw.Context) !void {
         }
     }
 
-    // The chunk pipeline (C1): one scheduler and the Inline executor, on
-    // every platform. The first frame plans the loading of the spawn area.
+    // The chunk pipeline (C1): one scheduler and one executor. The pool
+    // starts before the loading screen, and the loading screen uses it
+    // (D6, D7). The first frame plans the loading of the spawn area.
     state.scheduler = scheduler_mod.Scheduler.init(ctx.allocator(), state.render_distance, state.ao_strategy, state.lighting_mode);
-    state.executor = exec_inline.Inline.init(ctx.allocator());
+    try startExecutor(ctx);
     state.last_frame = .{};
 
     // TAS loading — native only. `TasScript.parseFile` calls std.fs.cwd()
@@ -1531,6 +1587,38 @@ fn playerChunk() struct { i32, i32 } {
     };
 }
 
+/// Start the chunk executor (C1, C9). Native: a ThreadPool with
+/// --chunk-workers threads, by default min(CPU count - 1, 4). The web build
+/// and --chunk-workers=0 use the Inline executor. When the threads do not
+/// start, the Inline executor is the fallback.
+fn startExecutor(ctx: *sw.Context) !void {
+    const a = ctx.allocator();
+    const config = state.world.gen_config;
+    const limit = worker_world.DEFAULT_CACHE_LIMIT;
+    if (comptime !is_wasm) {
+        const n = state.chunk_workers orelse exec_threads.defaultWorkerCount();
+        if (n > 0) {
+            if (ctx.io) |io| {
+                // The worker threads allocate much. A debug build gives them
+                // the app allocator, so that it reports each leak. A release
+                // build gives them smp_allocator: the app allocator has one
+                // lock, and the threads waited for it (full load 0.74 s,
+                // and 0.66 s with smp_allocator).
+                const pool_allocator = if (builtin.mode == .debug) a else std.heap.smp_allocator;
+                state.executor = .{ .threads = undefined };
+                if (state.executor.threads.init(pool_allocator, io, n, config, limit)) {
+                    std.log.info("[PIPE] executor: ThreadPool with {} worker thread(s), cache limit {} MB each", .{ n, limit >> 20 });
+                    return;
+                } else |err| {
+                    std.log.warn("[PIPE] the worker threads did not start ({}). The Inline executor runs the chunk jobs", .{err});
+                }
+            }
+        }
+    }
+    state.executor = .{ .inline_exec = try exec_inline.Inline.init(a, config, limit) };
+    std.log.info("[PIPE] executor: Inline (main thread)", .{});
+}
+
 /// The view frustum test for the scheduler priority (C8, class 3).
 fn chunkInView(ctx: *const anyopaque, cx: i32, cz: i32) bool {
     const f: *const frustum_mod.Frustum = @ptrCast(@alignCast(ctx));
@@ -1542,7 +1630,9 @@ fn chunkInView(ctx: *const anyopaque, cx: i32, cz: i32) bool {
 /// Ticks never install results: only this function runs and installs jobs.
 ///
 /// 1. Set the desired state: the player chunk and the view.
-/// 2. Run jobs on the Inline executor until the frame budget is spent.
+/// 2. The executor installs results until the frame budget is spent, and
+///    sends new jobs. The Inline executor runs the jobs here, on the main
+///    thread. The ThreadPool executor only installs and sends.
 /// 3. Free the GPU buffers of the meshes that the scheduler evicted.
 /// C6: the simulation reads the blocks of the player chunk and the ring
 /// around it. They are there after loading, because each frame loads them
@@ -1564,7 +1654,7 @@ fn voxelFrame(ctx: *sw.Context) !void {
     defer state.scheduler.view = null;
 
     const budget = if (state.world_loading) LOADING_BUDGET_NS else PLAY_BUDGET_NS;
-    const report = try state.executor.runFrame(&state.scheduler, &state.world, clock.frameNowNs, clock.frameNowNs() + budget);
+    const report = try state.executor.runFrame(&state.scheduler, &state.world, clock.frameNowNs() + budget);
     state.last_frame = report;
     if (state.profile_csv_file != null) {
         // The gen columns hold generate and light: before the stages, the
@@ -1577,9 +1667,9 @@ fn voxelFrame(ctx: *sw.Context) !void {
         state.mesh_ns = report.job_ns[m];
         state.mesh_count = @intCast(report.count[m]);
     }
-    if (report.jobs > 0) {
+    if (report.jobs > 0 or report.sent > 0) {
         const depth = state.scheduler.queueDepth();
-        std.log.info("[PIPE] jobs={} gen={} light={} mesh={} discarded={} job_us={} install_us={} queue={}/{}/{}", .{
+        std.log.info("[PIPE] jobs={} gen={} light={} mesh={} discarded={} job_us={} install_us={} main_us={} sent={} in_flight={} queue={}/{}/{}", .{
             report.jobs,
             report.count[0],
             report.count[1],
@@ -1587,6 +1677,9 @@ fn voxelFrame(ctx: *sw.Context) !void {
             report.discarded,
             (report.job_ns[0] + report.job_ns[1] + report.job_ns[2]) / 1000,
             report.install_ns / 1000,
+            report.main_ns / 1000,
+            report.sent,
+            state.scheduler.in_flight,
             depth[0],
             depth[1],
             depth[2],
@@ -2496,7 +2589,12 @@ fn drawPipelinePage(buf: *[96]u8, x: f32, y: *f32, line_h: f32, scale: f32, col:
             return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
         }
     }.f;
-    Line.draw("PIPELINE: INLINE (MAIN THREAD)", x, y, line_h, scale, col, ow, oh);
+    const workers = state.executor.workerCount();
+    if (workers == 0) {
+        Line.draw("PIPELINE: INLINE (MAIN THREAD)", x, y, line_h, scale, col, ow, oh);
+    } else {
+        Line.draw(std.fmt.bufPrint(buf, "PIPELINE: {} WORKER THREADS", .{workers}) catch "PIPELINE: THREADS", x, y, line_h, scale, col, ow, oh);
+    }
     Line.draw(if (sched.isIdle()) "STATE: IDLE" else "STATE: BUSY", x, y, line_h, scale, col, ow, oh);
     const depth = sched.queueDepth();
     Line.draw(std.fmt.bufPrint(buf, "QUEUE GEN/LIGHT/MESH: {}/{}/{}", .{ depth[0], depth[1], depth[2] }) catch "QUEUE: ?", x, y, line_h, scale, col, ow, oh);
@@ -2509,6 +2607,20 @@ fn drawPipelinePage(buf: *[96]u8, x: f32, y: *f32, line_h: f32, scale: f32, col:
     }
     Line.draw(std.fmt.bufPrint(buf, "INSTALL MS/FRAME: {d:.3} / {d:.3}", .{ ms(st.install_ns.percentile(50)), ms(st.install_ns.percentile(95)) }) catch "?", x, y, line_h, scale, col, ow, oh);
     Line.draw(std.fmt.bufPrint(buf, "JOBS LAST FRAME: {}", .{state.last_frame.jobs}) catch "?", x, y, line_h, scale, col, ow, oh);
+    Line.draw(std.fmt.bufPrint(buf, "MAIN MS LAST FRAME: {d:.3}", .{ms(state.last_frame.main_ns)}) catch "?", x, y, line_h, scale, col, ow, oh);
+    if (comptime !is_wasm) if (state.executor == .threads) {
+        const pool = &state.executor.threads;
+        for (0..pool.workers.len) |i| {
+            const info = pool.workerInfo(i);
+            const lookups = info.stats.hits + info.stats.misses;
+            const hit_pct = if (lookups == 0) 0 else info.stats.hits * 100 / lookups;
+            Line.draw(std.fmt.bufPrint(buf, "  W{}: IN FLIGHT {} CACHE {} ({} MB) HIT {} PCT", .{ i, info.in_flight, info.cached, info.cache_bytes >> 20, hit_pct }) catch "?", x, y, line_h, scale, col, ow, oh);
+        }
+    };
+    const tr = state.executor.traffic();
+    if (tr.jobs > 0 and tr.results > 0) {
+        Line.draw(std.fmt.bufPrint(buf, "BYTES/JOB: {} BYTES/RESULT: {}", .{ tr.job_bytes / tr.jobs, tr.result_bytes / tr.results }) catch "?", x, y, line_h, scale, col, ow, oh);
+    }
     Line.draw(" ", x, y, line_h, scale, col, ow, oh);
     Line.draw(std.fmt.bufPrint(buf, "INSTALLED G/L/M: {}/{}/{}", .{ st.installed[0], st.installed[1], st.installed[2] }) catch "?", x, y, line_h, scale, col, ow, oh);
     Line.draw(std.fmt.bufPrint(buf, "DISCARDED: {}", .{st.discarded[0] + st.discarded[1] + st.discarded[2]}) catch "?", x, y, line_h, scale, col, ow, oh);
@@ -3261,21 +3373,9 @@ fn voxelRender(ctx: *sw.Context) !void {
                     drawLine("TARGETED: NONE", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
                 }
             }
-            // Skylight at the player's feet (clamped to world Y bounds; >CHUNK_H = open sky).
-            {
-                const sky_y = if (block_y < 0) @as(i32, 0) else block_y;
-                const sky = state.world.getSkylight(block_x, sky_y, block_z);
-                const s = std.fmt.bufPrint(&dbg_buf, "SKYLIGHT: {}", .{sky}) catch "SKYLIGHT: ?";
-                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-            }
-            // Block light at the player's feet. Shows the BFS-propagated block
-            // light value from nearby emissive blocks (e.g. glowstone).
-            {
-                const bl_y = if (block_y < 0) @as(i32, 0) else block_y;
-                const bl = state.world.getBlockLight(block_x, bl_y, block_z);
-                const s = std.fmt.bufPrint(&dbg_buf, "BLOCK LIGHT: {}", .{bl}) catch "BLOCK LIGHT: ?";
-                drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
-            }
+            // The light values are in the chunk workers, not on main (C4).
+            // The mesh holds the light that the player sees.
+            drawLine("LIGHT: IN THE CHUNK WORKERS", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
 
             // Blank separator
             drawLine(" ", dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
@@ -3580,12 +3680,14 @@ fn compareAgainstGolden(
 }
 
 fn voxelShutdown(ctx: *sw.Context) !void {
+    logGpuMeshStats();
+    // Stop the chunk worker threads and wait for them, before the World
+    // and the scheduler go.
     state.executor.deinit();
     state.scheduler.deinit();
 
     // Destroy per-chunk GPU buffers
     var it = state.chunk_gpu.iterator();
-    logGpuMeshStats();
     while (it.next()) |entry| entry.value_ptr.release();
     state.chunk_gpu.deinit();
     state.world.deinit();
@@ -3833,6 +3935,27 @@ fn logGpuMeshStats() void {
     std.log.info("[PIPE] installed gen={} light={} mesh={} discarded={} sim_inline={} plans={}", .{
         st.installed[0], st.installed[1], st.installed[2], st.discarded[0] + st.discarded[1] + st.discarded[2], st.sim_generated, st.plans,
     });
+    // The bytes of the protocol messages (C12, P6).
+    const tr = state.executor.traffic();
+    std.log.info("[PIPE] messages: jobs={} job_bytes={} results={} result_bytes={} edits={} edit_bytes={}", .{
+        tr.jobs, tr.job_bytes, tr.results, tr.result_bytes, tr.edits, tr.edit_bytes,
+    });
+    for (std.enums.values(scheduler_mod.Stage)) |s| {
+        const k = @backingInt(s);
+        if (tr.stage_results[k] == 0) continue;
+        std.log.info("[PIPE] {s} results={} bytes={} bytes/result={}", .{ @tagName(s), tr.stage_results[k], tr.stage_bytes[k], tr.stage_bytes[k] / tr.stage_results[k] });
+    }
+    // The cache of each worker thread (C12, C14).
+    if (comptime !is_wasm) if (state.executor == .threads) {
+        const pool = &state.executor.threads;
+        for (0..pool.workers.len) |i| {
+            const info = pool.workerInfo(i);
+            const st_w = info.stats;
+            std.log.info("[PIPE] worker {}: jobs={} generated={} lit={} hits={} misses={} evicted={} cached={} peak_mb={}", .{
+                i, st_w.jobs, st_w.generated, st_w.lit, st_w.hits, st_w.misses, st_w.evicted, info.cached, st_w.peak_bytes >> 20,
+            });
+        }
+    };
     std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s})", .{
         state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(),
     });

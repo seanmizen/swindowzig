@@ -127,7 +127,7 @@ pub const PalettedBlocks = struct {
 
     /// Return min bits needed to index a palette of `palette_size` entries.
     /// A uniform chunk (size 1) needs zero bits — we don't even allocate.
-    fn minBitsFor(palette_size: usize) u8 {
+    pub fn minBitsFor(palette_size: usize) u8 {
         if (palette_size <= 1) return 0;
         var b: u8 = 1;
         var cap: usize = 2;
@@ -142,7 +142,7 @@ pub const PalettedBlocks = struct {
 
     /// Number of u64 words needed to hold BLOCKS_PER_CHUNK entries at the
     /// given bit width. Only valid when bits > 0.
-    inline fn wordCountFor(bits: u8) usize {
+    pub inline fn wordCountFor(bits: u8) usize {
         const epw = entriesPerWord(bits);
         return (BLOCKS_PER_CHUNK + epw - 1) / epw;
     }

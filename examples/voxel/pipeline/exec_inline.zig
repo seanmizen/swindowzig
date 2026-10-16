@@ -1,18 +1,26 @@
 //! The Inline executor (C1): it runs chunk jobs on the main thread, in the
 //! frame phase, within a frame budget (C7).
 //!
-//! Headless runs, TAS runs, the goldens and the web build use it. Native
-//! uses it too until a thread pool executor replaces it. Each job reads its
-//! inputs from the World in place: the light stage reads the blocks of 9
-//! chunks, and the mesh stage reads the blocks and the light of 9 chunks
-//! (D8). The stages are pure, so the result is the result of a worker.
+//! Headless tools, the tests, the web build and the fallback use it. It has
+//! one WorkerWorld (worker_world.zig) on the main thread. Each edit and
+//! each job goes to it as protocol bytes, and each result comes back as
+//! protocol bytes (P6). So the Inline executor runs the code and the bytes
+//! of the ThreadPool executor and the Web Workers, with no threads.
+//!
+//! The ThreadPool executor uses two parts of this file too: the conversion
+//! of a reply to a scheduler Result, and the counters of the message bytes.
+
 const std = @import("std");
 const stages = @import("stages.zig");
+const protocol = @import("protocol.zig");
 const scheduler_mod = @import("scheduler.zig");
+const worker_world = @import("worker_world.zig");
 const world_mod = @import("../world.zig");
+const world_gen = @import("../world_gen.zig");
 
 const Scheduler = scheduler_mod.Scheduler;
 const Job = scheduler_mod.Job;
+const Started = scheduler_mod.Started;
 const Result = scheduler_mod.Result;
 const World = world_mod.World;
 
@@ -27,54 +35,142 @@ pub const FrameReport = struct {
     job_ns: [scheduler_mod.STAGES]u64 = @splat(0),
     discarded: usize = 0,
     install_ns: u64 = 0,
+    /// The time of the frame phase on the main thread: the plan, the
+    /// messages and the installs. With the Inline executor it includes the
+    /// job time too.
+    main_ns: u64 = 0,
+    /// The jobs that the frame sent to a worker.
+    sent: usize = 0,
 };
+
+/// The bytes of the messages (C12).
+pub const Traffic = struct {
+    jobs: u64 = 0,
+    job_bytes: u64 = 0,
+    results: u64 = 0,
+    result_bytes: u64 = 0,
+    /// Edit messages, one for each edit and each worker.
+    edits: u64 = 0,
+    edit_bytes: u64 = 0,
+    /// Result bytes for each stage.
+    stage_results: [scheduler_mod.STAGES]u64 = @splat(0),
+    stage_bytes: [scheduler_mod.STAGES]u64 = @splat(0),
+
+    pub fn addResult(self: *Traffic, stage: stages.Stage, len: usize) void {
+        self.results += 1;
+        self.result_bytes += len;
+        self.stage_results[@backingInt(stage)] += 1;
+        self.stage_bytes[@backingInt(stage)] += len;
+    }
+};
+
+pub const ReplyError = error{
+    /// The worker sent an Error message.
+    WorkerError,
+    /// The reply is not a Result for the job.
+    BadReply,
+    OutOfMemory,
+};
+
+/// The scheduler Result of the worker reply `reply` to the job `st`. The
+/// blocks and the quads are copies, from `allocator`. The caller still owns
+/// `reply`.
+pub fn resultOf(allocator: std.mem.Allocator, st: Started, reply: []const u8) ReplyError!Result {
+    const d = protocol.decode(reply) catch return error.BadReply;
+    const r = switch (d.msg) {
+        .result => |r| r,
+        .err => |e| {
+            std.log.err("[PIPE] worker error {s} for {s} ({}, {})", .{ @tagName(e.code), @tagName(e.stage), e.cx, e.cz });
+            return error.WorkerError;
+        },
+        else => return error.BadReply,
+    };
+    if (r.head.stage != st.job.stage or r.head.cx != st.job.cx or r.head.cz != st.job.cz) return error.BadReply;
+    const output: scheduler_mod.Output = switch (r.head.stage) {
+        .generate => .{ .generate = .{
+            .block_ver = r.head.block_ver,
+            .blocks = if (r.has_blocks) try protocol.decodeBlocks(allocator, r) else null,
+        } },
+        .light => .{ .light = .{ .hash = r.head.light_hash } },
+        .mesh => blk: {
+            const quads = try allocator.alloc(stages.PackedQuad, r.quadCount());
+            r.copyQuads(quads);
+            break :blk .{ .mesh = .{ .quads = quads, .y_min = r.head.y_min, .y_max = r.head.y_max } };
+        },
+    };
+    return .{ .started = st, .output = output, .job_ns = @as(u64, r.head.job_us) * 1000 };
+}
+
+/// The Hello that starts a worker for `config` (C9).
+pub fn helloOf(config: world_gen.WorldGenConfig, cache_limit: u64) protocol.Hello {
+    return .{ .cache_limit = cache_limit, .config = config };
+}
+
+/// Check the Hello reply of a worker: the same protocol and build (C9).
+pub fn checkHello(reply: ?[]const u8) bool {
+    const bytes = reply orelse return false;
+    const d = protocol.decode(bytes) catch return false;
+    return switch (d.msg) {
+        .hello => |h| h.build_hash == protocol.BUILD_HASH,
+        else => false,
+    };
+}
 
 pub const Inline = struct {
     allocator: std.mem.Allocator,
-    /// The light stage scratch (about 4 MB), kept between jobs.
-    scratch: ?*stages.LightScratch = null,
+    worker: worker_world.WorkerWorld,
+    next_id: u32 = 1,
+    traffic: Traffic = .{},
 
-    pub fn init(allocator: std.mem.Allocator) Inline {
-        return .{ .allocator = allocator };
+    /// Start the worker for the world `config`, through a Hello message.
+    pub fn init(allocator: std.mem.Allocator, config: world_gen.WorldGenConfig, cache_limit: u64) !Inline {
+        var self: Inline = .{ .allocator = allocator, .worker = .init(allocator) };
+        errdefer self.worker.deinit();
+        const hello = try protocol.encodeHello(allocator, helloOf(config, cache_limit));
+        defer allocator.free(hello);
+        const reply = try self.worker.handle(hello);
+        defer if (reply) |r| allocator.free(r);
+        if (!checkHello(reply)) return error.WorkerHandshake;
+        return self;
     }
 
     pub fn deinit(self: *Inline) void {
-        if (self.scratch) |s| self.allocator.destroy(s);
-        self.scratch = null;
+        self.worker.deinit();
     }
 
-    /// Start `job`, read its inputs from the World, and run its stage. The
-    /// caller installs the result (Scheduler.install).
+    /// Send the pending edits of the scheduler to the worker, in order.
+    pub fn sendEdits(self: *Inline, sched: *Scheduler) !void {
+        for (sched.pendingEdits()) |e| {
+            const msg = try protocol.encodeEdit(self.allocator, e);
+            defer self.allocator.free(msg);
+            self.traffic.edits += 1;
+            self.traffic.edit_bytes += msg.len;
+            const reply = try self.worker.handle(msg);
+            if (reply) |r| {
+                defer self.allocator.free(r);
+                std.log.err("[PIPE] the worker did not apply an edit", .{});
+                return error.WorkerError;
+            }
+        }
+        sched.outbox.clearRetainingCapacity();
+    }
+
+    /// Start `job` and run it in the worker. The caller installs the
+    /// result (Scheduler.install).
     pub fn run(self: *Inline, sched: *Scheduler, world: *World, job: Job) !Result {
-        const started = sched.start(world, job);
-        errdefer sched.abandon();
-        const a = world.allocator;
-        const output: scheduler_mod.Output = switch (job.stage) {
-            .generate => .{ .generate = try stages.generate(a, world.gen_config.seed, world.gen_config, job.cx, job.cz) },
-            .light => blk: {
-                var window: stages.Window = undefined;
-                for (0..stages.SLOTS) |s| {
-                    const dcx, const dcz = stages.offsetOf(s);
-                    window[s] = &world.get(job.cx + dcx, job.cz + dcz).?.chunk.blocks;
-                }
-                if (self.scratch == null) self.scratch = try self.allocator.create(stages.LightScratch);
-                break :blk .{ .light = try stages.lightScratch(a, &window, self.scratch.?) };
-            },
-            .mesh => blk: {
-                // ChunkLight views of the light grids of the World. They
-                // own nothing.
-                var lights: [stages.SLOTS]stages.ChunkLight = undefined;
-                var hood: stages.Neighbourhood = undefined;
-                for (0..stages.SLOTS) |s| {
-                    const dcx, const dcz = stages.offsetOf(s);
-                    const lc = world.get(job.cx + dcx, job.cz + dcz).?;
-                    lights[s] = .{ .sky = lc.chunk.skylight, .block = lc.chunk.block_light };
-                    hood[s] = .{ .blocks = &lc.chunk.blocks, .light = &lights[s] };
-                }
-                break :blk .{ .mesh = try stages.mesh(a, &hood, sched.ao, sched.lighting) };
-            },
-        };
-        return .{ .started = started, .output = output };
+        try self.sendEdits(sched);
+        const started = try sched.start(world, job);
+        errdefer sched.abandon(started);
+        const id = self.next_id;
+        self.next_id +%= 1;
+        const msg = try protocol.encodeJob(self.allocator, id, started.message(sched.ao, sched.lighting));
+        defer self.allocator.free(msg);
+        self.traffic.jobs += 1;
+        self.traffic.job_bytes += msg.len;
+        const reply = (try self.worker.handle(msg)) orelse return error.BadReply;
+        defer self.allocator.free(reply);
+        self.traffic.addResult(job.stage, reply.len);
+        return resultOf(world.allocator, started, reply);
     }
 
     /// The frame phase: plan, then run and install jobs in priority order
@@ -84,6 +180,8 @@ pub const Inline = struct {
     /// deadline by one job.
     pub fn runFrame(self: *Inline, sched: *Scheduler, world: *World, clock: Clock, deadline_ns: u64) !FrameReport {
         var report: FrameReport = .{};
+        const t_start = clock();
+        try self.sendEdits(sched);
         try sched.plan(world);
         while (true) {
             if (report.jobs > 0 and clock() >= deadline_ns) break;
@@ -103,7 +201,9 @@ pub const Inline = struct {
             if (try sched.install(world, &result) == .discarded) report.discarded += 1;
             report.install_ns += clock() - t1;
             report.jobs += 1;
+            report.sent += 1;
         }
+        report.main_ns = clock() - t_start;
         if (report.jobs > 0) {
             sched.stats.install_ns.push(report.install_ns);
             sched.stats.last_frame_jobs = report.jobs;

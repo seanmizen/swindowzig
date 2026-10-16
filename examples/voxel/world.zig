@@ -3,6 +3,7 @@ const chunk_mod = @import("chunk.zig");
 const mesher_mod = @import("mesher.zig");
 const world_gen = @import("world_gen.zig");
 const stages = @import("pipeline/stages.zig");
+const protocol = @import("pipeline/protocol.zig");
 const Chunk = chunk_mod.Chunk;
 const Mesh = mesher_mod.Mesh;
 const Version = stages.Version;
@@ -39,17 +40,25 @@ pub const ChunkKey = struct {
 
 pub const ChunkMap = std.HashMap(ChunkKey, *LoadedChunk, ChunkKey.HashContext, std.hash_map.default_max_load_percentage);
 
-/// A chunk in the World: its blocks, its light, its mesh, and the versions
-/// that the chunk scheduler uses (pipeline/scheduler.zig, C3).
+/// A chunk in the World: its versions, its mesh, and the blocks near the
+/// player. The chunk scheduler uses it (pipeline/scheduler.zig, C3).
 ///
 /// The stages of a chunk (C2): Generated (blocks), Lit (light), Meshed
-/// (mesh), Uploaded (on the GPU). A chunk in the World has blocks. It has
-/// light when `light_inputs` is not null, and a mesh when `mesh_inputs` is
-/// not null. A result is current when its input versions are the versions
-/// of now. The scheduler decides that.
+/// (mesh), Uploaded (on the GPU). A worker generated each chunk in the
+/// World, and has its blocks (C4). Main has the blocks too when `has_blocks`
+/// is true (the prefetch radius, C6). The chunk has light when
+/// `light_inputs` is not null, and a mesh when `mesh_inputs` is not null.
+/// The light is in the workers. Main keeps only its hash. A result is
+/// current when its input versions are the versions of now. The scheduler
+/// decides that.
 pub const LoadedChunk = struct {
-    /// The blocks and the light. A chunk with no light reads skylight 0.
+    /// The blocks, when `has_blocks` is true. The scheduler path keeps no
+    /// light here. The reference path (`World.generateChunk`) does.
     chunk: Chunk,
+    /// True when main has the blocks of the chunk (C6).
+    has_blocks: bool = false,
+    /// The hash of the installed light (protocol.lightHash).
+    light_hash: u64 = 0,
     mesh: Mesh,
     cx: i32,
     cz: i32,
@@ -104,6 +113,14 @@ pub const LoadedChunk = struct {
         self.chunk.block_light = .{};
         self.light_inputs = null;
         self.light_ver = 0;
+        self.light_hash = 0;
+    }
+
+    /// Free the blocks on main. The workers and the edit log keep them (C4).
+    /// The chunk then reads as a missing chunk.
+    pub fn dropBlocks(self: *LoadedChunk) void {
+        self.chunk.blocks.deinit(self.chunk.allocator);
+        self.has_blocks = false;
     }
 
     /// World-space X origin of this chunk in block units.
@@ -140,6 +157,9 @@ pub const World = struct {
     /// The next light version. Light versions are never used again, so a
     /// recorded light version names one light content (C3).
     next_light_version: Version = 1,
+    /// The edit log (P2): the edits of each chunk, in order. A chunk that
+    /// main generates inline gets its edits from it (C6).
+    edits: std.HashMapUnmanaged(ChunkKey, std.ArrayList(protocol.Edit), ChunkKey.HashContext, std.hash_map.default_max_load_percentage) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, preset: world_gen.Preset, render_distance: i32) !World {
         return .{
@@ -157,20 +177,63 @@ pub const World = struct {
             self.allocator.destroy(lc_ptr.*);
         }
         self.chunks.deinit();
+        var eit = self.edits.valueIterator();
+        while (eit.next()) |list| list.deinit(self.allocator);
+        self.edits.deinit(self.allocator);
     }
 
     /// Add chunk (cx, cz) with the blocks of a generate result. The chunk
-    /// takes `blocks`. The chunk has no light and no mesh. The chunk must
-    /// not be in the World.
+    /// takes `blocks`. The chunk has no light and no mesh. Its block version
+    /// is the version of the edit log. The chunk must not be in the World.
     pub fn installBlocks(self: *World, cx: i32, cz: i32, blocks: chunk_mod.PalettedBlocks) !*LoadedChunk {
+        const lc = try self.installRemote(cx, cz, self.editVersion(cx, cz));
+        lc.chunk.blocks = blocks;
+        lc.has_blocks = true;
+        return lc;
+    }
+
+    /// Add chunk (cx, cz) with no blocks on main: a worker generated it
+    /// (C4). The chunk must not be in the World.
+    pub fn installRemote(self: *World, cx: i32, cz: i32, block_ver: Version) !*LoadedChunk {
         const key = ChunkKey{ .cx = cx, .cz = cz };
         std.debug.assert(!self.chunks.contains(key));
         const lc = try self.allocator.create(LoadedChunk);
         errdefer self.allocator.destroy(lc);
         lc.* = LoadedChunk.init(self.allocator, cx, cz);
-        lc.chunk.blocks = blocks;
+        lc.block_ver = block_ver;
         try self.chunks.put(key, lc);
         return lc;
+    }
+
+    /// Give `lc` the blocks `blocks`. The chunk takes them. `lc` must have
+    /// no blocks on main.
+    pub fn setBlocks(self: *World, lc: *LoadedChunk, blocks: chunk_mod.PalettedBlocks) void {
+        _ = self;
+        std.debug.assert(!lc.has_blocks);
+        lc.chunk.blocks.deinit(lc.chunk.allocator);
+        lc.chunk.blocks = blocks;
+        lc.has_blocks = true;
+    }
+
+    /// Add an edit to the edit log.
+    pub fn logEdit(self: *World, edit: protocol.Edit) !void {
+        const gop = try self.edits.getOrPut(self.allocator, .{ .cx = edit.cx, .cz = edit.cz });
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.allocator, edit);
+    }
+
+    /// The block version of chunk (cx, cz) in the edit log: the version
+    /// after its last edit, or 0.
+    pub fn editVersion(self: *const World, cx: i32, cz: i32) Version {
+        const list = self.edits.get(.{ .cx = cx, .cz = cz }) orelse return 0;
+        return list.items[list.items.len - 1].version;
+    }
+
+    /// Apply the edits of chunk (cx, cz) from the edit log to `blocks`, in
+    /// order (P2).
+    pub fn applyEditLog(self: *const World, cx: i32, cz: i32, blocks: *chunk_mod.PalettedBlocks) !void {
+        const list = self.edits.get(.{ .cx = cx, .cz = cz }) orelse return;
+        for (list.items) |e| try blocks.set(self.allocator, chunk_mod.blockLinearIdx(e.x, e.y, e.z), e.block);
     }
 
     /// Remove chunk (cx, cz) and free it. The GPU buffers belong to main.
@@ -200,6 +263,7 @@ pub const World = struct {
         const lc = try self.allocator.create(LoadedChunk);
         lc.* = LoadedChunk.init(self.allocator, cx, cz);
         try lc.chunk.generateTerrain(cx, cz, self.gen_config);
+        lc.has_blocks = true;
         try self.chunks.put(key, lc);
 
         // Per-chunk RAM audit — log palette width + byte cost once on first
@@ -309,11 +373,14 @@ pub const World = struct {
         return &lc.chunk;
     }
 
-    /// Get a block at world-space coordinates. Returns .air for unloaded chunks.
+    /// Get a block at world-space coordinates. Returns MISSING_BLOCK (air)
+    /// for a chunk that main has no blocks for.
     pub fn getBlock(self: *const World, wx: i32, wy: i32, wz: i32) chunk_mod.BlockType {
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
         const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return chunk_mod.MISSING_BLOCK;
+        if (!lc.has_blocks) return chunk_mod.MISSING_BLOCK;
+
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
         return lc.chunk.getBlock(lx, wy, lz);

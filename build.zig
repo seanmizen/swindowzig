@@ -412,6 +412,56 @@ pub fn build(b: *std.Build) void {
     });
     scheduler_tests.root_module.addImport("sw_gpu", web_libs.gpu);
     test_step.dependOn(&b.addRunArtifact(scheduler_tests).step);
+    // Chunk protocol tests (pipeline/protocol.zig): round trip, layout and
+    // fuzz (P6).
+    const protocol_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/protocol_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = &.{"protocol: "},
+    });
+    protocol_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    test_step.dependOn(&b.addRunArtifact(protocol_tests).step);
+    // Executor tests (pipeline/worker_world.zig, pipeline/exec_threads.zig):
+    // the cache limit, and Inline and ThreadPool give the same bytes (C14,
+    // P4). Run them again to look for races: zig build test-exec.
+    const exec_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/exec_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = &.{"exec: "},
+    });
+    exec_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    const run_exec_tests = b.addRunArtifact(exec_tests);
+    test_step.dependOn(&run_exec_tests.step);
+    const exec_test_step = b.step("test-exec", "Run the chunk executor tests only (no cache: run it again to look for races)");
+    const run_exec_again = b.addRunArtifact(exec_tests);
+    run_exec_again.has_side_effects = true;
+    exec_test_step.dependOn(&run_exec_again.step);
+    // The worker side of the chunk pipeline must build for
+    // wasm32-freestanding: no threads and no OS (C9). chunks.wasm will use
+    // it. zig build test compiles it. zig build worker-wasm installs it.
+    const worker_wasm = b.addExecutable(.{
+        .name = "chunk_worker",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/worker_wasm.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+            .single_threaded = true,
+        }),
+    });
+    worker_wasm.root_module.addImport("sw_gpu", web_libs.gpu);
+    worker_wasm.entry = .disabled;
+    worker_wasm.rdynamic = true;
+    // The light stage scratch is on the heap. The stages use a small stack.
+    worker_wasm.stack_size = 16 * 1024 * 1024;
+    test_step.dependOn(&worker_wasm.step);
+    const worker_wasm_step = b.step("worker-wasm", "Build zig-out/bin/chunk_worker.wasm: the worker side of the chunk pipeline for wasm32");
+    worker_wasm_step.dependOn(&b.addInstallArtifact(worker_wasm, .{}).step);
 }
 
 /// Compile stb_image (libs/sw_assets/c) into `module`. The shim headers stand

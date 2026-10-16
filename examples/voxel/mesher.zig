@@ -290,14 +290,15 @@ fn computeFaceAOForStrategy(
     };
 }
 
-/// One-shot warning state for strategies that fall back to classic.
+/// One-shot warning state for strategies that fall back to classic. The
+/// flag is atomic, because the chunk workers of the thread pool mesh in
+/// parallel (pipeline/exec_threads.zig).
 const UnimplementedWarn = struct {
-    ssao: bool = false,
+    ssao: std.atomic.Value(bool) = .init(false),
 
     fn warn(self: *UnimplementedWarn, strat: AOStrategy) void {
         switch (strat) {
-            .ssao => if (!self.ssao) {
-                self.ssao = true;
+            .ssao => if (!self.ssao.swap(true, .monotonic)) {
                 std.log.warn("AO strategy '.ssao' not yet implemented — falling back to .classic", .{});
             },
             else => {},

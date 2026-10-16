@@ -32,8 +32,16 @@
 //! is `ensureSimRadius` (C6): a tick that needs the blocks of a missing
 //! simulation-radius chunk generates them inline. Generation is a pure
 //! function, so the result does not depend on timing (P4).
+//!
+//! Workers own the world (C4 option b). Main keeps the state of each chunk:
+//! its versions, and whether it has light and a mesh. Main keeps the blocks
+//! only for the prefetch radius (C6), and no light. A light result gives a
+//! hash of the light, and a mesh result gives the quads. An edit goes to
+//! the edit log of the World and to `outbox`. The executor sends each edit
+//! to each worker before the jobs that start after it.
 const std = @import("std");
 const stages = @import("stages.zig");
+const protocol = @import("protocol.zig");
 const chunk_mod = @import("../chunk.zig");
 const world_mod = @import("../world.zig");
 
@@ -47,6 +55,11 @@ const CHUNK_W = chunk_mod.CHUNK_W;
 
 /// The simulation radius in chunks (C6): the player chunk and its ring.
 pub const SIM_RADIUS: i32 = 1;
+
+/// Main keeps the blocks of the chunks in this square around the player
+/// chunk (C6). The workers send them with the generate results, so the
+/// simulation radius has its blocks before the player gets there.
+pub const PREFETCH_RADIUS: i32 = 2;
 
 pub const STAGES = std.enums.values(Stage).len;
 
@@ -73,6 +86,12 @@ pub const Region = struct {
 
     pub fn sim(dx: i32, dz: i32) bool {
         return shrink(dx, SIM_RADIUS) == 0 and shrink(dz, SIM_RADIUS) == 0;
+    }
+
+    /// Main needs the blocks of the chunk (C6). `extra` makes the square
+    /// larger, for the hysteresis of eviction.
+    pub fn prefetch(dx: i32, dz: i32, extra: i32) bool {
+        return shrink(dx, PREFETCH_RADIUS + extra) == 0 and shrink(dz, PREFETCH_RADIUS + extra) == 0;
     }
 
     /// The chunk needs a mesh at radius r.
@@ -106,6 +125,9 @@ pub const Job = struct {
     class: Class,
     /// Squared distance in chunks from the player chunk.
     dist_sq: i32,
+    /// Generate: main needs the blocks (the prefetch radius, C6). A chunk
+    /// in the World without blocks gets them from a generate job too.
+    want_blocks: bool = false,
 
     fn lessThan(_: void, a: Job, b: Job) bool {
         if (a.class != b.class) return @backingInt(a.class) < @backingInt(b.class);
@@ -122,22 +144,47 @@ pub const Started = struct {
     inputs: Inputs,
     /// The mesh options at the start (mesh jobs).
     options: u32,
+
+    /// The protocol message of the job (protocol.zig).
+    pub fn message(self: Started, ao: stages.AOStrategy, lighting: stages.LightingMode) protocol.Job {
+        return .{
+            .stage = self.job.stage,
+            .cx = self.job.cx,
+            .cz = self.job.cz,
+            .ao = ao,
+            .lighting = lighting,
+            .want_blocks = self.job.want_blocks,
+            .blocks = self.inputs.blocks,
+            .light = self.inputs.light,
+        };
+    }
 };
 
-/// The output of a stage. The caller of `install` gives it to the scheduler.
+/// The output of a stage, from a worker. The caller of `install` gives it
+/// to the scheduler.
 pub const Output = union(Stage) {
-    generate: chunk_mod.PalettedBlocks,
-    light: stages.ChunkLight,
+    generate: struct {
+        /// The block version of the chunk in the worker.
+        block_ver: Version,
+        /// The blocks, when the job wanted them (C6).
+        blocks: ?chunk_mod.PalettedBlocks,
+    },
+    /// Main keeps no light (C4). The hash tells if the light changed (C3).
+    light: struct { hash: u64 },
     mesh: stages.MeshResult,
 
     pub fn deinit(self: *Output, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .generate => |*b| b.deinit(allocator),
-            .light => |*l| l.deinit(allocator),
+            .generate => |*g| if (g.blocks) |*b| b.deinit(allocator),
+            .light => {},
             .mesh => |*m| m.deinit(allocator),
         }
     }
 };
+
+/// The key of a job in flight. The scheduler does not start a second job
+/// for the same stage and chunk until the first result comes back.
+const JobKey = struct { stage: Stage, cx: i32, cz: i32 };
 
 pub const Result = struct {
     started: Started,
@@ -222,6 +269,10 @@ pub const Scheduler = struct {
     dirty: bool = true,
     /// Jobs that started and are not installed or discarded.
     in_flight: usize = 0,
+    /// The jobs in flight.
+    started: std.AutoHashMapUnmanaged(JobKey, void) = .empty,
+    /// The edits that the executor did not send yet, in order (C4).
+    outbox: std.ArrayList(protocol.Edit) = .empty,
     /// Chunks whose mesh the scheduler removed. Main frees their GPU
     /// buffers and clears the list.
     evicted: std.ArrayList(ChunkKey) = .empty,
@@ -239,6 +290,8 @@ pub const Scheduler = struct {
         self.evicted.deinit(self.allocator);
         self.cells.deinit(self.allocator);
         self.remove.deinit(self.allocator);
+        self.started.deinit(self.allocator);
+        self.outbox.deinit(self.allocator);
     }
 
     // -- Desired state ------------------------------------------------------
@@ -310,7 +363,7 @@ pub const Scheduler = struct {
     pub fn canStart(self: *const Scheduler, world: *const World, job: Job) bool {
         const lc = world.get(job.cx, job.cz);
         return switch (job.stage) {
-            .generate => lc == null,
+            .generate => lc == null or (job.want_blocks and !lc.?.has_blocks),
             .light => lc != null and inputsNow(world, .light, job.cx, job.cz) != null and !lightCurrent(world, lc.?),
             .mesh => lc != null and allLightsCurrent(world, job.cx, job.cz) and !self.meshCurrent(world, lc.?),
         };
@@ -326,11 +379,11 @@ pub const Scheduler = struct {
     }
 
     /// True when the scheduler has no work: the World has the desired
-    /// state, and no job runs. A change of the player chunk, the render
-    /// distance, the mesh options or the blocks makes it false until the
-    /// next plan.
+    /// state, no job runs, and each edit went to the workers. A change of
+    /// the player chunk, the render distance, the mesh options or the
+    /// blocks makes it false until the next plan.
     pub fn isIdle(self: *const Scheduler) bool {
-        return !self.dirty and self.head >= self.queue.items.len and self.in_flight == 0;
+        return !self.dirty and self.head >= self.queue.items.len and self.in_flight == 0 and self.outbox.items.len == 0;
     }
 
     /// The "ready" check of the loading screen. True when:
@@ -345,7 +398,8 @@ pub const Scheduler = struct {
         while (dz <= SIM_RADIUS) : (dz += 1) {
             var dx: i32 = -SIM_RADIUS;
             while (dx <= SIM_RADIUS) : (dx += 1) {
-                if (world.get(self.center_cx + dx, self.center_cz + dz) == null) return false;
+                const lc = world.get(self.center_cx + dx, self.center_cz + dz) orelse return false;
+                if (!lc.has_blocks) return false;
             }
         }
         const r = @min(radius, self.render_distance);
@@ -373,7 +427,9 @@ pub const Scheduler = struct {
     /// Set a block (a dig or a place). The block version of the chunk goes
     /// up by 1, so each result that read the old block becomes stale (C3).
     /// No light or mesh runs here: the scheduler queues them as class 2.
-    /// Returns false when the chunk has no blocks or y is out of the world.
+    /// The edit goes to the edit log of the World and to `outbox` (C4).
+    /// Returns false when main has no blocks for the chunk or y is out of
+    /// the world.
     ///
     /// A neighbour result that cannot read the cell stays current: the
     /// light of a neighbour reads stages.MARGIN cells into this chunk, and
@@ -382,10 +438,23 @@ pub const Scheduler = struct {
     pub fn editBlock(self: *Scheduler, world: *World, wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) !bool {
         if (wy < 0 or wy >= chunk_mod.CHUNK_H) return false;
         const lc = world.getChunkAtBlock(wx, wz) orelse return false;
+        if (!lc.has_blocks) return false;
         const lx = wx - lc.worldX();
         const lz = wz - lc.worldZ();
         if (lc.chunk.getBlock(lx, wy, lz) == block) return true;
+        const edit: protocol.Edit = .{
+            .cx = lc.cx,
+            .cz = lc.cz,
+            .version = lc.block_ver + 1,
+            .x = @intCast(lx),
+            .y = @intCast(wy),
+            .z = @intCast(lz),
+            .block = block,
+        };
+        try self.outbox.ensureUnusedCapacity(self.allocator, 1);
+        try world.logEdit(edit);
         try lc.chunk.setBlock(lx, wy, lz, block);
+        self.outbox.appendAssumeCapacity(edit);
         const old = lc.block_ver;
         lc.block_ver += 1;
         for (0..stages.SLOTS) |s| {
@@ -414,19 +483,33 @@ pub const Scheduler = struct {
         return wx >= x0 and wx < x0 + w and wz >= z0 and wz < z0 + w;
     }
 
+    /// The edits that the executor must send to each worker, in order.
+    /// The executor clears `outbox` after it sends them.
+    pub fn pendingEdits(self: *const Scheduler) []const protocol.Edit {
+        return self.outbox.items;
+    }
+
     /// C6: give each chunk of the simulation radius around (cx, cz) its
-    /// blocks now, with an inline generate. A tick calls it before the
-    /// simulation reads blocks, for example after a teleport. Returns the
-    /// number of chunks it generated.
+    /// blocks now, with an inline generate and the edits of the edit log.
+    /// This is the inline fallback: a tick calls it before the simulation
+    /// reads blocks, for example after a teleport. Returns the number of
+    /// chunks it generated.
     pub fn ensureSimRadius(self: *Scheduler, world: *World, cx: i32, cz: i32) !usize {
         var n: usize = 0;
         var dz: i32 = -SIM_RADIUS;
         while (dz <= SIM_RADIUS) : (dz += 1) {
             var dx: i32 = -SIM_RADIUS;
             while (dx <= SIM_RADIUS) : (dx += 1) {
-                if (world.get(cx + dx, cz + dz) != null) continue;
-                const blocks = try stages.generate(world.allocator, world.gen_config.seed, world.gen_config, cx + dx, cz + dz);
-                _ = try world.installBlocks(cx + dx, cz + dz, blocks);
+                const lc = world.get(cx + dx, cz + dz);
+                if (lc != null and lc.?.has_blocks) continue;
+                var blocks = try stages.generate(world.allocator, world.gen_config.seed, world.gen_config, cx + dx, cz + dz);
+                errdefer blocks.deinit(world.allocator);
+                try world.applyEditLog(cx + dx, cz + dz, &blocks);
+                if (lc) |l| {
+                    world.setBlocks(l, blocks);
+                } else {
+                    _ = try world.installBlocks(cx + dx, cz + dz, blocks);
+                }
                 n += 1;
             }
         }
@@ -439,19 +522,26 @@ pub const Scheduler = struct {
 
     // -- Jobs -----------------------------------------------------------------
 
-    /// The next job that can start, or null. Call `plan` first.
+    /// The next job that can start, or null. Call `plan` first. It skips a
+    /// job that is in flight.
     pub fn next(self: *Scheduler, world: *const World) ?Job {
         while (self.head < self.queue.items.len) {
             const job = self.queue.items[self.head];
             self.head += 1;
+            if (self.started.contains(keyOf(job))) continue;
             if (self.canStart(world, job)) return job;
         }
         return null;
     }
 
+    fn keyOf(job: Job) JobKey {
+        return .{ .stage = job.stage, .cx = job.cx, .cz = job.cz };
+    }
+
     /// Start `job`: record the versions of its inputs.
-    pub fn start(self: *Scheduler, world: *const World, job: Job) Started {
+    pub fn start(self: *Scheduler, world: *const World, job: Job) !Started {
         std.debug.assert(self.canStart(world, job));
+        try self.started.put(self.allocator, keyOf(job), {});
         self.in_flight += 1;
         return .{
             .job = job,
@@ -460,8 +550,15 @@ pub const Scheduler = struct {
         };
     }
 
-    /// The executor did not finish a started job (an error).
-    pub fn abandon(self: *Scheduler) void {
+    /// The executor did not finish a started job (an error, or a worker
+    /// stopped). The next plan queues the job again.
+    pub fn abandon(self: *Scheduler, st: Started) void {
+        self.finish(st);
+    }
+
+    fn finish(self: *Scheduler, st: Started) void {
+        const removed = self.started.remove(keyOf(st.job));
+        std.debug.assert(removed);
         self.in_flight -= 1;
         self.dirty = true;
     }
@@ -472,13 +569,21 @@ pub const Scheduler = struct {
     /// discard it. The scheduler takes the output in both cases. Call it
     /// only in the frame phase (C7).
     pub fn install(self: *Scheduler, world: *World, result: *Result) !Outcome {
-        self.in_flight -= 1;
-        self.dirty = true;
         const st = result.started;
+        self.finish(st);
         const k = @backingInt(st.job.stage);
         self.stats.job_ns[k].push(result.job_ns);
         const ok = switch (st.job.stage) {
-            .generate => world.get(st.job.cx, st.job.cz) == null,
+            .generate => blk: {
+                const g = result.output.generate;
+                // The chunk left the region while the job ran.
+                if (!Region.blocks(st.job.cx - self.center_cx, st.job.cz - self.center_cz, self.render_distance + 1)) break :blk false;
+                if (world.get(st.job.cx, st.job.cz)) |lc| {
+                    // The blocks for the prefetch radius (C6).
+                    break :blk !lc.has_blocks and g.blocks != null and g.block_ver == lc.block_ver;
+                }
+                break :blk g.block_ver == world.editVersion(st.job.cx, st.job.cz);
+            },
             else => blk: {
                 const now = inputsNow(world, st.job.stage, st.job.cx, st.job.cz) orelse break :blk false;
                 if (st.job.stage == .mesh and st.options != self.options) break :blk false;
@@ -491,21 +596,23 @@ pub const Scheduler = struct {
             return .discarded;
         }
         switch (result.output) {
-            .generate => |blocks| _ = try world.installBlocks(st.job.cx, st.job.cz, blocks),
+            .generate => |g| {
+                if (world.get(st.job.cx, st.job.cz)) |lc| {
+                    world.setBlocks(lc, g.blocks.?);
+                } else if (g.blocks) |blocks| {
+                    const lc = try world.installBlocks(st.job.cx, st.job.cz, blocks);
+                    lc.block_ver = g.block_ver;
+                } else {
+                    _ = try world.installRemote(st.job.cx, st.job.cz, g.block_ver);
+                }
+            },
             .light => |l| {
                 const lc = world.get(st.job.cx, st.job.cz).?;
-                var light = l;
                 // Same content: keep the version, so meshes that read the
                 // old light stay current.
-                const same = lc.light_inputs != null and
-                    light.sky.eql(&lc.chunk.skylight) and light.block.eql(&lc.chunk.block_light);
-                if (same) {
-                    light.deinit(world.allocator);
-                } else {
-                    lc.chunk.skylight.deinit(world.allocator);
-                    lc.chunk.block_light.deinit(world.allocator);
-                    lc.chunk.skylight = light.sky;
-                    lc.chunk.block_light = light.block;
+                const same = lc.light_inputs != null and lc.light_hash == l.hash;
+                if (!same) {
+                    lc.light_hash = l.hash;
                     lc.light_ver = world.next_light_version;
                     world.next_light_version += 1;
                 }
@@ -589,8 +696,13 @@ pub const Scheduler = struct {
                 }
             } else if (Region.blocks(dx, dz, r)) {
                 const class: Class = if (sim) .sim else if (inView(cells, i, side, 2)) .view else .other;
-                try self.queue.append(self.allocator, .{ .stage = .generate, .cx = cx, .cz = cz, .class = class, .dist_sq = d2 });
+                try self.queue.append(self.allocator, .{ .stage = .generate, .cx = cx, .cz = cz, .class = class, .dist_sq = d2, .want_blocks = Region.prefetch(dx, dz, 0) });
             }
+            // C6: main gets the blocks of the prefetch radius from a worker.
+            if (c.lc) |lc| if (!lc.has_blocks and Region.prefetch(dx, dz, 0)) {
+                const class: Class = if (sim) .sim else .view;
+                try self.queue.append(self.allocator, .{ .stage = .generate, .cx = cx, .cz = cz, .class = class, .dist_sq = d2, .want_blocks = true });
+            };
         }
         std.mem.sort(Job, self.queue.items, {}, Job.lessThan);
     }
@@ -632,8 +744,9 @@ pub const Scheduler = struct {
     }
 
     /// Remove the results that are out of the region for R + 1 (the
-    /// hysteresis). An edited chunk keeps its blocks: the World has no
-    /// other copy of the edit.
+    /// hysteresis). An edited chunk keeps its place in the World, with its
+    /// block version. Main drops the blocks out of the prefetch radius + 1,
+    /// because the edit log and the workers have the edits (C4, C14).
     fn evict(self: *Scheduler, world: *World) !void {
         const keep_r = self.render_distance + 1;
         self.remove.clearRetainingCapacity();
@@ -647,6 +760,8 @@ pub const Scheduler = struct {
                 try self.evicted.append(self.allocator, e.key_ptr.*);
             }
             if (lc.hasLight() and !Region.light(dx, dz, keep_r)) lc.dropLight();
+            if (lc.has_blocks and !Region.prefetch(dx, dz, 1)) lc.dropBlocks();
+
             if (!Region.blocks(dx, dz, keep_r) and lc.block_ver == 0) try self.remove.append(self.allocator, e.key_ptr.*);
         }
         for (self.remove.items) |k| world.removeChunk(k.cx, k.cz);
