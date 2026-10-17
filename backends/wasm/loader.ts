@@ -6,8 +6,11 @@
 //
 // This file builds the full import table. Each wasm import has one
 // definition, here or in a module that this file imports. Put a new import
-// into createImports() and nowhere else. Put start-up code for Web Workers
-// here too.
+// into createImports() and nowhere else.
+//
+// The start-up code of the chunk worker pool (C9, C13) is here too. The
+// pool starts first, before the fetch of app.wasm and before the loading
+// screen (D7).
 
 import { createAssetImports } from './assets';
 import { audioImports } from './audio';
@@ -19,6 +22,12 @@ import {
 } from './events';
 import { createStorageImports } from './storage';
 import { type GPUBridge, initWebGPU } from './webgpu';
+import {
+  attachPool,
+  chunkImports,
+  type PoolHolder,
+  WorkerPool,
+} from './worker-pool';
 
 export interface SwindowzigDebug {
   tick: number;
@@ -82,6 +91,20 @@ export interface LoaderOptions {
   onFailure?: (failure: LoadFailure) => void;
   /** Called immediately before swindowzig_init(). */
   onStart?: () => void;
+  /**
+   * The chunk worker pool (C9). The URLs must name the files of the same
+   * build as the wasm file: use content-hashed names or a version query.
+   * Without this option, or when no worker starts, the main thread runs the
+   * chunk jobs (the Inline executor).
+   */
+  chunkWorkers?: {
+    /** The URL of chunks.wasm. */
+    wasmUrl: string;
+    /** The URL of the worker bundle (chunk-worker.js). */
+    workerUrl: string;
+    /** The number of workers. The default is min(cores - 1, 4). */
+    size?: number;
+  };
 }
 
 type Exports = WasmExports & {
@@ -118,6 +141,7 @@ export function createImports(
   canvas: HTMLCanvasElement,
   gpu: GPUBridge,
   setCursorVisible: (visible: boolean) => void,
+  pool: PoolHolder = { pool: null },
 ): WebAssembly.Imports {
   const getMemory = (): WebAssembly.Memory => {
     if (!window.wasmMemory) throw new Error('wasm memory is not set');
@@ -205,6 +229,8 @@ export function createImports(
     // The Zig extern declarations use the module name "webgpu".
     webgpu: gpu.imports,
     audio: audioImports,
+    // The chunk worker pool (pipeline/exec_web.zig).
+    chunks: chunkImports(pool, getMemory),
   } as WebAssembly.Imports;
 }
 
@@ -251,6 +277,13 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
     return;
   }
 
+  // D7: start the chunk worker pool first. It compiles chunks.wasm and
+  // starts the workers while app.wasm loads. The promise never rejects.
+  const poolT0 = performance.now();
+  const poolStart = options.chunkWorkers
+    ? WorkerPool.start({ ...options.chunkWorkers, logPrefix })
+    : null;
+
   let wasmBytes: ArrayBuffer;
   try {
     const response = await fetch(wasmUrl, { cache: 'no-cache' });
@@ -286,9 +319,10 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
     setCursorVisible(true);
   }
 
+  const poolHolder: PoolHolder = { pool: null };
   let instance: WebAssembly.Instance;
   try {
-    const imports = createImports(canvas, gpu, setCursorVisible);
+    const imports = createImports(canvas, gpu, setCursorVisible, poolHolder);
     instance = (await WebAssembly.instantiate(wasmBytes, imports)).instance;
   } catch (err) {
     fail('instantiate', err);
@@ -297,6 +331,15 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
 
   const exports = instance.exports as unknown as Exports;
   window.wasmMemory = exports.memory;
+
+  // C9: the pool runs only when each worker has the protocol version, the
+  // build hash and the build id of app.wasm. Else the main thread runs the
+  // chunk jobs, and the console says why.
+  if (poolStart) {
+    const pool = await poolStart;
+    attachPool(poolHolder, pool, exports, logPrefix);
+    performance.measure('chunk worker pool start', { start: poolT0 });
+  }
 
   const init = exports.swindowzig_init;
   const frame = exports.swindowzig_frame;

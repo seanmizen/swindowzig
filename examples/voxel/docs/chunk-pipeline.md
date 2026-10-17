@@ -14,25 +14,30 @@ the design items of the voxel chunk pipeline rework.
 | `pipeline/worker_world.zig` | The world of a worker: the seed, the edit log and an LRU chunk cache (C4, C14). |
 | `pipeline/exec_inline.zig` | The Inline executor: one worker on the main thread, within a frame budget (C7). |
 | `pipeline/exec_threads.zig` | The ThreadPool executor: native worker threads (C9). |
-| `worker_wasm.zig` | The worker side, built for wasm32-freestanding (`zig build worker-wasm`). |
+| `pipeline/exec_web.zig` | The WorkerPool executor: the main side of the Web Worker pool (C9). |
+| `pipeline/chunk_worker_main.zig` | The exports of `chunks.wasm`, the chunk worker of the web build. The build root is `chunks_wasm.zig`. |
+| `backends/wasm/worker-pool.ts` | The JS worker pool: start, handshake, restart, the result queue (C9). |
+| `backends/wasm/chunk-worker.ts` | The script of each Web Worker: it runs `chunks.wasm` (C9, C12). |
+| `backends/wasm/worker-pool.test.ts` | The Bun tests of the pool with real Web Workers (C11). |
 | `scheduler_test.zig` | Priority order, stale results, eviction with hysteresis, runtime render distance. |
 | `stages_test.zig` | The stages give the light and the quads of the reference path in `world.zig`. |
 | `protocol_test.zig` | Round trip, layout and fuzz tests of the protocol. |
-| `exec_test.zig` | The cache limit, and Inline and ThreadPool give the same bytes, also with random edits. |
+| `exec_test.zig` | The cache limit, and Inline, ThreadPool and WorkerPool give the same bytes, also with random edits. |
 
 ## Executors
 
 | Executor | Where | Used by |
 |----------|-------|---------|
 | ThreadPool | `min(CPU count - 1, 4)` native threads, at least 1 | native, by default |
-| Inline | one worker on the main thread | the web build, `--chunk-workers=0`, the fallback when no thread starts |
-| WorkerPool | Web Workers with `chunks.wasm` | a later step |
+| WorkerPool | `min(navigator.hardwareConcurrency - 1, 4)` Web Workers with `chunks.wasm`, at least 1 | the web build |
+| Inline | one worker on the main thread | `--chunk-workers=0`, headless tools, the fallback when no thread or worker starts |
 
-Both executors use the same worker code (`WorkerWorld.handle`) and the
+The executors use the same worker code (`WorkerWorld.handle`) and the
 same protocol bytes. So a native test also tests the web format (P6). The
 test `exec: Inline and ThreadPool give the same bytes, with random edits
-while jobs run` compares the two byte for byte. Run it again to look for
-races: `zig build test-exec`.
+while jobs run` compares the two byte for byte. The `exec: web:` tests do
+the same for the WorkerPool executor, with a transport of in-process
+workers. Run them again to look for races: `zig build test-exec`.
 
 The ThreadPool starts before the loading screen, and the loading screen
 uses it (D6, D7). At exit, main stops each thread and waits for it. A job
@@ -378,3 +383,168 @@ Bytes for each message, full load:
 The old async path copied about 50,880 bytes for each job (508,800 bytes
 for 10 jobs) into the worker. A job message is now 104 bytes.
 
+## The Web Worker pool (C9)
+
+The web build runs the chunk stages in Web Workers. Main runs only the
+scheduler, the installs and the simulation-radius fallback (C6).
+
+```
+loader.ts            worker-pool.ts             chunk-worker.ts (N times)
+---------            --------------             -------------------------
+start pool --------> compileStreaming
+                     (chunks.wasm, one time)
+                     new Worker x N ----------> init: instance of the Module
+load app.wasm                                   'ready': version, build hash,
+instantiate app.wasm                            build id
+attachPool --------> verify: same values as
+                     app.wasm, else stop
+swindowzig_init
+  exec_web: Hello -> broadcast --------------> chunk_worker_handle
+frame phase:
+  Edit -------------> broadcast (kept) -------> applies the edit
+  Job --------------> post to one worker -----> runs the stage
+  take results <----- JS queue <--------------- 'reply' (ArrayBuffer, moved)
+```
+
+### Start-up (D6, D7)
+
+The loader starts the pool first, before the download of `app.wasm` and
+before the loading screen. The pool compiles `chunks.wasm` one time with
+`WebAssembly.compileStreaming`, and sends the `Module` to each worker. The
+pool lasts for the whole session. `chunks.wasm` is about 157 KB
+(ReleaseFast, no debug info). Its only wasm imports are `env.jsGetTime`
+and `env.jsLog`. It has no GPU code.
+
+### Handshake and cache safety (C9)
+
+`app.wasm` and `chunks.wasm` both export three values:
+
+| Value | Source |
+|-------|--------|
+| Protocol version | `protocol.VERSION` |
+| Build hash | `protocol.BUILD_HASH`: the protocol version and the stage sizes |
+| Build id | `build.zig`: a hash of the path and the bytes of each `.zig` file under `examples/voxel` |
+
+After the instantiation of `app.wasm`, `attachPool` compares the values of
+each worker with the values of `app.wasm`. A worker with other values
+stops, and the console shows the two values and "A cached old file?".
+When no worker runs, the main thread runs the chunk jobs (the Inline
+executor). So a cached old file cannot make wrong terrain. The worker also
+checks the build hash of the Hello (`version_mismatch`), and the pool then
+stops that worker for good.
+
+Production files have content-hashed names (`bundle.sh`):
+
+| File | Name |
+|------|------|
+| `chunks.wasm` | `chunks-<16 hex digits of SHA-256>.wasm` |
+| The worker bundle | `chunk-worker-<16 hex digits>.js` |
+| `boot.js` | the same name. It holds the two names above (`bun build --define`). |
+
+`serve.json` gives the hashed files `Cache-Control: public,
+max-age=31536000, immutable`, and each other file `no-cache`. An old
+`boot.js` from a cache asks for an old name. `serve -s` then sends
+`index.html`, `compileStreaming` fails on the MIME type, and the Inline
+executor runs the jobs. The dev server sends each file with `no-cache`,
+so the dev page uses the plain names (`/chunks.wasm`, `/chunk-worker.js`).
+
+### Jobs, edits and results
+
+`exec_web.zig` has the design of the ThreadPool executor:
+
+- An edit goes to each worker (broadcast), in order. The pool keeps the
+  Hello and all the edits, for a worker that starts again.
+- A job goes to the worker of its 8 × 8 region (`exec_threads.ownerOf`).
+  When that worker is full, a worker with no job takes it.
+- A worker sends each reply as a transferable `ArrayBuffer`. The pool
+  keeps the replies in a JS queue. Main takes them only in the frame
+  phase, within the install budget (C7). A tick never installs.
+- The replies go into the main wasm memory, as with the other executors.
+  For the next step of C5, main JS writes the mesh bytes to the GPU with
+  `queue.writeBuffer`, and the main wasm keeps only the counts.
+
+Main sends new jobs to a Web Worker only once in each frame. With 2 jobs of
+about 1.3 ms in each worker, a worker waits for most of a 16.7 ms frame.
+So each worker holds the jobs of one frame interval, and one more:
+`exec_web.depthFor(frame, mean job time)` = ceil(frame / job) + 1, from 2
+to 16. A job in a worker queue waits for at most about one frame, so a
+change of priority shows in one or two frames (C8). With the fixed limit of
+2, the loading screen took 2.7 s in the measurement below. With
+`depthFor`, it took 1.2 s.
+
+### A worker that stops
+
+When a worker sends an `error` or a `messageerror` event (Bun also sends
+`close`), the pool stops it and starts a new worker in the same slot. It
+sends the new worker the `Module`, the Hello, all the edits, and then the jobs
+in flight of the old worker, in their order. The results come back with
+the same job ids, so `exec_web.zig` does not see the restart. A job that
+an edit made stale gets an Error (`stale_input`), and the scheduler queues
+it again (C3).
+
+After 3 restarts (`MAX_RESTARTS`), the slot stops for good, and the pool
+sends its jobs to another worker. When no worker runs, `Web.runFrame` gives
+each job in flight back to the scheduler and returns `error.NoWorkers`.
+`main.zig` then starts the Inline executor with the edit log of the World
+(`Inline.initFromWorld`), and the frame budget limits the jobs.
+
+### Observability (C12)
+
+- Each worker job shows in the DevTools Performance panel as a measure
+  named `chunk <stage> <cx>,<cz>`. The loader adds the measure
+  `chunk worker pool start`.
+- The pipeline page of the debug overlay shows "N WEB WORKERS", the jobs
+  in flight of each worker, and a line when the pool stopped.
+- `voxel_debug_pipeline_counts` (an `app.wasm` export) gives the counters
+  that the Bun tests read: the executor, the main-thread jobs, the
+  simulation-radius chunks, the worker jobs and the fallbacks.
+
+### Tests (C11)
+
+`bun test backends/wasm/worker-pool.test.ts` (CI) runs `app.wasm` headless
+with real Bun Web Workers. It compares `voxel_debug_world_hash` (the block
+versions, the light hashes, the meshes and the blocks of the desired
+state) with a run of the Inline executor:
+
+| Test | Check |
+|------|-------|
+| equivalence | 1, 3 and 4 workers, 40 random edits while jobs run: the same hash. 0 jobs on the main thread. |
+| restart | 3 workers stop during the load: they start again, and the hash does not change. |
+| fallback | the Worker constructor throws, or all workers stop: the Inline executor runs the jobs, with the same hash. |
+| mismatch | another build id, build hash or protocol version: no worker starts, the console names the value, and the hash does not change. |
+| Hello | a worker refuses a Hello of another build, and the slot stops. |
+| serve | the pool compiles `chunks.wasm` over HTTP. An old file name (HTML from `serve -s`) gives a clear error. |
+
+`bun backends/wasm/headless.ts` (CI) uses the pool too, and fails when a
+chunk job runs on the main thread. `--workers 0` runs it with the Inline
+executor. `--chunks-wasm` and `--worker` run it with the production files
+of `bundle.sh`.
+
+## Measurements of the WorkerPool (2026-10-16, x86_64 Linux container, 4 CPUs)
+
+`bun backends/wasm/headless.ts --measure`: wasm ReleaseFast in Bun 1.4,
+the real clock, 60 frames per second as in a browser, stub WebGPU. 3 Web
+Workers. "Main" is the time of `swindowzig_frame` on the main thread: the
+ticks, the frame phase and the render with stub GPU calls. "Loading
+screen" is the time from the start to "World ready". "Walk" is the flight
+of 5 chunks after the loading screen.
+
+| | Inline, main before this change | Inline | WorkerPool |
+|-|---------------------------------|--------|------------|
+| Loading screen | 1535 ms | 1553 ms | 1239 ms |
+| Main, loading frame, p50 | 13.16 ms | 13.13 ms | 1.01 ms |
+| Main, loading frame, p95 | 14.12 ms | 14.39 ms | 7.37 ms |
+| Main, first 3 s after loading, p50 | 5.11 ms | 5.16 ms | 0.57 ms |
+| Main, first 3 s after loading, p99 | 6.62 ms | 7.62 ms | 6.60 ms |
+| Main, walk frame, p50 | 0.54 ms | 0.53 ms | 0.36 ms |
+| Main, walk frame, p95 | 6.09 ms | 6.18 ms | 1.48 ms |
+| Main, walk frame, p99 | 7.19 ms | 7.18 ms | 2.24 ms |
+| Main, walk frame, max | 8.44 ms | 8.30 ms | 4.12 ms |
+
+Each value is the median of 3 runs. A loading frame of the WorkerPool
+installs the results of 3 workers, within the loading budget of 12 ms.
+The frame that ends the loading screen takes 13 to 16 ms in 2 of 3 runs.
+It installs only about 6 results: the time is the start of the game.
+
+The main-thread time of the WorkerPool is the installs (the copy of the
+quads into the main wasm memory) and the plan.

@@ -238,19 +238,39 @@ const scheduler_mod = @import("pipeline/scheduler.zig");
 const exec_inline = @import("pipeline/exec_inline.zig");
 const worker_world = @import("pipeline/worker_world.zig");
 /// The ThreadPool executor uses std.Thread, so only native builds import it.
-/// The web build keeps the Inline executor until the Web Worker pool comes.
 const exec_threads = if (is_wasm) struct {} else @import("pipeline/exec_threads.zig");
+/// The WorkerPool executor: Web Workers that run chunks.wasm (C9). Only the
+/// web build has the JS pool.
+const exec_web = @import("pipeline/exec_web.zig");
+/// The build id of app.wasm and chunks.wasm (build.zig, C9).
+const chunk_build = @import("chunk_build");
 
-/// The chunk executor (C1). Native uses the ThreadPool by default. The web
-/// build, `--chunk-workers=0` and the fallback use the Inline executor.
+/// The chunk executor (C1). Native uses the ThreadPool by default, and the
+/// web build uses the WorkerPool. `--chunk-workers=0` and the fallback use
+/// the Inline executor.
 const Executor = union(enum) {
     inline_exec: exec_inline.Inline,
     threads: if (is_wasm) void else exec_threads.ThreadPool,
+    web: if (is_wasm) exec_web.Web else void,
 
     fn runFrame(self: *Executor, sched: *scheduler_mod.Scheduler, world: *world_mod.World, deadline_ns: u64) !exec_inline.FrameReport {
         return switch (self.*) {
             .inline_exec => |*e| e.runFrame(sched, world, clock.frameNowNs, deadline_ns),
             .threads => |*p| if (comptime is_wasm) unreachable else p.runFrame(sched, world, clock.frameNowNs, deadline_ns),
+            .web => |*w| if (comptime !is_wasm) unreachable else w.runFrame(sched, world, clock.frameNowNs, deadline_ns) catch |err| switch (err) {
+                // C9: no Web Worker runs. runFrame gave each job in flight
+                // back to the scheduler. The Inline executor runs the jobs
+                // from now on, within the frame budget.
+                error.NoWorkers => {
+                    std.log.err("[PIPE] no chunk worker runs. The Inline executor runs the chunk jobs on the main thread", .{});
+                    state.web_jobs_sent += w.traffic.jobs;
+                    w.deinit();
+                    self.* = .{ .inline_exec = try exec_inline.Inline.initFromWorld(sched.allocator, world, sched, worker_world.DEFAULT_CACHE_LIMIT) };
+                    state.executor_fallbacks += 1;
+                    return self.runFrame(sched, world, deadline_ns);
+                },
+                else => |e| return e,
+            },
         };
     }
 
@@ -258,6 +278,7 @@ const Executor = union(enum) {
         return switch (self.*) {
             .inline_exec => |e| e.traffic,
             .threads => |p| if (comptime is_wasm) unreachable else p.traffic,
+            .web => |w| if (comptime !is_wasm) unreachable else w.traffic,
         };
     }
 
@@ -265,6 +286,7 @@ const Executor = union(enum) {
         return switch (self.*) {
             .inline_exec => 0,
             .threads => |p| if (comptime is_wasm) unreachable else p.workers.len,
+            .web => |*w| if (comptime !is_wasm) unreachable else w.workerCount(),
         };
     }
 
@@ -273,6 +295,7 @@ const Executor = union(enum) {
         switch (self.*) {
             .inline_exec => |*e| e.deinit(),
             .threads => |*p| if (comptime is_wasm) unreachable else p.deinit(),
+            .web => |*w| if (comptime !is_wasm) unreachable else w.deinit(),
         }
     }
 };
@@ -684,6 +707,11 @@ const State = struct {
     /// Chunk worker threads from --chunk-workers=N. Null: the default,
     /// min(CPU count - 1, 4). 0: the Inline executor.
     chunk_workers: ?usize = null,
+    /// The times that the WorkerPool stopped and the Inline executor took
+    /// its jobs (C9).
+    executor_fallbacks: u32 = 0,
+    /// The jobs that the WorkerPool sent before a fallback (C12).
+    web_jobs_sent: u64 = 0,
     /// What the last frame phase did, for the debug overlay (C12).
     last_frame: exec_inline.FrameReport = .{},
     /// The debug overlay page. Cmd+P (Ctrl+P) changes it.
@@ -1588,9 +1616,9 @@ fn playerChunk() struct { i32, i32 } {
 }
 
 /// Start the chunk executor (C1, C9). Native: a ThreadPool with
-/// --chunk-workers threads, by default min(CPU count - 1, 4). The web build
-/// and --chunk-workers=0 use the Inline executor. When the threads do not
-/// start, the Inline executor is the fallback.
+/// --chunk-workers threads, by default min(CPU count - 1, 4). Web: the
+/// WorkerPool of the JS loader. --chunk-workers=0 uses the Inline executor.
+/// When no thread or worker starts, the Inline executor is the fallback.
 fn startExecutor(ctx: *sw.Context) !void {
     const a = ctx.allocator();
     const config = state.world.gen_config;
@@ -1613,6 +1641,18 @@ fn startExecutor(ctx: *sw.Context) !void {
                     std.log.warn("[PIPE] the worker threads did not start ({}). The Inline executor runs the chunk jobs", .{err});
                 }
             }
+        }
+    }
+    if (comptime is_wasm) {
+        // The JS loader started the worker pool before init (D7), and
+        // checked the protocol version and the build id of each worker
+        // (C9). No pool: the Inline executor is the fallback.
+        if (exec_web.Web.init(a, exec_web.webTransport(), config, limit)) |w| {
+            state.executor = .{ .web = w };
+            std.log.info("[PIPE] executor: WorkerPool with {} Web Worker(s)", .{w.workerCount()});
+            return;
+        } else |err| {
+            std.log.warn("[PIPE] no chunk worker pool ({s}). The Inline executor runs the chunk jobs on the main thread", .{@errorName(err)});
         }
     }
     state.executor = .{ .inline_exec = try exec_inline.Inline.init(a, config, limit) };
@@ -2592,6 +2632,8 @@ fn drawPipelinePage(buf: *[96]u8, x: f32, y: *f32, line_h: f32, scale: f32, col:
     const workers = state.executor.workerCount();
     if (workers == 0) {
         Line.draw("PIPELINE: INLINE (MAIN THREAD)", x, y, line_h, scale, col, ow, oh);
+    } else if (state.executor == .web) {
+        Line.draw(std.fmt.bufPrint(buf, "PIPELINE: {} WEB WORKERS", .{workers}) catch "PIPELINE: WEB WORKERS", x, y, line_h, scale, col, ow, oh);
     } else {
         Line.draw(std.fmt.bufPrint(buf, "PIPELINE: {} WORKER THREADS", .{workers}) catch "PIPELINE: THREADS", x, y, line_h, scale, col, ow, oh);
     }
@@ -2617,6 +2659,16 @@ fn drawPipelinePage(buf: *[96]u8, x: f32, y: *f32, line_h: f32, scale: f32, col:
             Line.draw(std.fmt.bufPrint(buf, "  W{}: IN FLIGHT {} CACHE {} ({} MB) HIT {} PCT", .{ i, info.in_flight, info.cached, info.cache_bytes >> 20, hit_pct }) catch "?", x, y, line_h, scale, col, ow, oh);
         }
     };
+    if (comptime is_wasm) if (state.executor == .web) {
+        const web = &state.executor.web;
+        for (web.in_flight, 0..) |f, i| {
+            const alive = web.transport.alive(i);
+            Line.draw(std.fmt.bufPrint(buf, "  W{}: IN FLIGHT {}{s}", .{ i, f, if (alive) "" else " (STOPPED)" }) catch "?", x, y, line_h, scale, col, ow, oh);
+        }
+    };
+    if (state.executor_fallbacks > 0) {
+        Line.draw(std.fmt.bufPrint(buf, "WORKER POOL STOPPED: INLINE FALLBACK x{}", .{state.executor_fallbacks}) catch "?", x, y, line_h, scale, col, ow, oh);
+    }
     const tr = state.executor.traffic();
     if (tr.jobs > 0 and tr.results > 0) {
         Line.draw(std.fmt.bufPrint(buf, "BYTES/JOB: {} BYTES/RESULT: {}", .{ tr.job_bytes / tr.jobs, tr.result_bytes / tr.results }) catch "?", x, y, line_h, scale, col, ow, oh);
@@ -4157,6 +4209,101 @@ fn wasmDebugChunkCounts(radius: i32) callconv(.c) [*]const i32 {
     return &wasm_debug_counts;
 }
 
+// Pipeline counters for the Bun tests (backends/wasm/worker-pool.test.ts).
+// The tests read 12 u32 values at the returned address:
+//   0:  the executor: 0 Inline, 1 WorkerPool
+//   1:  the Web Workers that run
+//   2:  the chunk jobs that ran on the main thread (the Inline executor)
+//   3:  the chunks that the simulation radius generated inline (C6)
+//   4:  the jobs sent to Web Workers
+//   5:  the results installed, 6: the results discarded
+//   7:  1 when the scheduler is idle
+//   8:  the times that the pool stopped and the Inline executor took over
+//   9:  the jobs in flight
+//   10: 1 while the loading screen shows
+//   11: the results that were not for a job in flight
+var wasm_pipeline_counts: [12]u32 = @splat(0);
+
+fn wasmDebugPipelineCounts() callconv(.c) [*]const u32 {
+    const st = &state.scheduler.stats;
+    const tr = state.executor.traffic();
+    const web = state.executor == .web;
+    wasm_pipeline_counts = .{
+        @intFromBool(web),
+        @intCast(state.executor.workerCount()),
+        if (state.executor == .inline_exec) @intCast(tr.jobs) else 0,
+        @intCast(st.sim_generated),
+        @intCast(state.web_jobs_sent + if (web) tr.jobs else 0),
+        @intCast(st.installed[0] + st.installed[1] + st.installed[2]),
+        @intCast(st.discarded[0] + st.discarded[1] + st.discarded[2]),
+        @intFromBool(state.scheduler.isIdle()),
+        state.executor_fallbacks,
+        @intCast(state.scheduler.in_flight),
+        @intFromBool(state.world_loading),
+        if (web) @intCast(state.executor.web.bad_replies) else 0,
+    };
+    return &wasm_pipeline_counts;
+}
+
+/// A hash of the desired state around the player (C11): the block
+/// versions, the light hashes, the meshes and the blocks of the prefetch
+/// radius, as in the native executor test (exec_test.zig). Two runs with the
+/// same edits give the same hash, with any executor. Returns 0 while a mesh
+/// of the desired state is not current.
+fn wasmDebugWorldHash() callconv(.c) u64 {
+    const sched = &state.scheduler;
+    const world = &state.world;
+    const r = sched.render_distance;
+    var h = std.hash.Wyhash.init(0);
+    var dz: i32 = -r - 2;
+    while (dz <= r + 2) : (dz += 1) {
+        var dx: i32 = -r - 2;
+        while (dx <= r + 2) : (dx += 1) {
+            if (!scheduler_mod.Region.blocks(dx, dz, r)) continue;
+            const lc = world.get(sched.center_cx + dx, sched.center_cz + dz) orelse return 0;
+            h.update(std.mem.asBytes(&[_]i32{ dx, dz }));
+            h.update(std.mem.asBytes(&lc.block_ver));
+            if (scheduler_mod.Region.prefetch(dx, dz, 0)) {
+                if (!lc.has_blocks) return 0;
+                for (0..chunk_mod.BLOCKS_PER_CHUNK) |i| h.update(&[_]u8{@backingInt(lc.chunk.blocks.get(i))});
+            }
+            if (scheduler_mod.Region.light(dx, dz, r)) {
+                if (!scheduler_mod.Scheduler.lightCurrent(world, lc)) return 0;
+                h.update(std.mem.asBytes(&lc.light_hash));
+            }
+            if (scheduler_mod.Region.mesh(dx, dz, r)) {
+                if (!sched.meshCurrent(world, lc)) return 0;
+                h.update(std.mem.sliceAsBytes(lc.mesh.quads.items));
+                h.update(std.mem.asBytes(&[_]f32{ lc.mesh.y_min, lc.mesh.y_max }));
+            }
+        }
+    }
+    const v = h.final();
+    return if (v == 0) 1 else v;
+}
+
+/// Set a block, as a dig or a place does (Scheduler.editBlock). For the Bun
+/// tests: random edits while jobs run. Returns 1 when the edit applied.
+fn wasmDebugEdit(wx: i32, wy: i32, wz: i32, block: u32) callconv(.c) u32 {
+    if (!wasm_initialised or block >= std.enums.values(chunk_mod.BlockType).len) return 0;
+    const b: chunk_mod.BlockType = @fromBackingInt(@intCast(block));
+    const ok = state.scheduler.editBlock(&state.world, wx, wy, wz, b) catch return 0;
+    return @intFromBool(ok);
+}
+
+// The handshake values of the worker pool (C9). chunks.wasm exports the
+// same values (pipeline/chunk_worker_main.zig). The loader starts the pool
+// only when all three are equal.
+fn wasmChunkProtocolVersion() callconv(.c) u32 {
+    return @import("pipeline/protocol.zig").VERSION;
+}
+fn wasmChunkBuildHash() callconv(.c) u64 {
+    return @import("pipeline/protocol.zig").BUILD_HASH;
+}
+fn wasmChunkBuildId() callconv(.c) u64 {
+    return chunk_build.id;
+}
+
 // Constants read by boot.ts for canvas configuration.
 const wasm_config_disable_context_menu: u8 = 1;
 const wasm_config_hide_cursor: u8 = 0;
@@ -4166,6 +4313,12 @@ comptime {
         @export(&wasmInitImpl, .{ .name = "swindowzig_init" });
         @export(&wasmFrameImpl, .{ .name = "swindowzig_frame" });
         @export(&wasmDebugChunkCounts, .{ .name = "voxel_debug_chunk_counts" });
+        @export(&wasmDebugPipelineCounts, .{ .name = "voxel_debug_pipeline_counts" });
+        @export(&wasmDebugWorldHash, .{ .name = "voxel_debug_world_hash" });
+        @export(&wasmDebugEdit, .{ .name = "voxel_debug_edit" });
+        @export(&wasmChunkProtocolVersion, .{ .name = "voxel_chunk_protocol_version" });
+        @export(&wasmChunkBuildHash, .{ .name = "voxel_chunk_build_hash" });
+        @export(&wasmChunkBuildId, .{ .name = "voxel_chunk_build_id" });
         @export(&wasm_config_disable_context_menu, .{ .name = "swindowzig_config_disable_context_menu" });
         @export(&wasm_config_hide_cursor, .{ .name = "swindowzig_config_hide_cursor" });
     }

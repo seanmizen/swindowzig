@@ -114,10 +114,40 @@ pub fn build(b: *std.Build) void {
     const install_example = b.addInstallArtifact(example, .{});
     b.getInstallStep().dependOn(&install_example.step);
 
-    // Web build step
+    // The build id of the voxel web pair (C9): app.wasm and chunks.wasm
+    // export it, and the worker pool starts only when the two are equal.
+    const chunk_build = b.addOptions();
+    chunk_build.addOption(u64, "id", voxelBuildId(b));
+    example.root_module.addOptions("chunk_build", chunk_build);
+
+    // chunks.wasm: the chunk worker of the Web Worker pool (C9). Its only
+    // wasm imports are the clock and the log. It has no GPU code.
+    const chunks_wasm = b.addExecutable(.{
+        .name = "chunks",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/chunks_wasm.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+            .single_threaded = true,
+            // Each Web Worker downloads it: no debug info in a release.
+            .strip = optimize != .debug,
+        }),
+    });
+    // mesher.zig takes the AO and lighting enums from sw_gpu. They are
+    // types only: chunks.wasm imports no WebGPU function.
+    chunks_wasm.root_module.addImport("sw_gpu", web_libs.gpu);
+    chunks_wasm.root_module.addOptions("chunk_build", chunk_build);
+    chunks_wasm.entry = .disabled;
+    chunks_wasm.rdynamic = true;
+    // The light stage scratch is on the heap. The stages use a small stack.
+    chunks_wasm.stack_size = 16 * 1024 * 1024;
+    const install_chunks = b.addInstallArtifact(chunks_wasm, .{});
+
+    // Web build step. The voxel web build also installs chunks.wasm.
     const web_step_desc = b.fmt("Build '{s}' example for web (WASM)", .{example_name});
     const web_step = b.step("web", web_step_desc);
     web_step.dependOn(&install_example.step);
+    if (std.mem.eql(u8, example_name, "voxel")) web_step.dependOn(&install_chunks.step);
 
     // Native executable (for SDL2/desktop). This step translates the SDL2
     // headers and gives them to sw_platform as the "sdl" module.
@@ -145,6 +175,7 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_text", native_libs.text);
     native_exe.root_module.addImport("sw_ui", native_libs.ui);
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
+    native_exe.root_module.addOptions("chunk_build", chunk_build);
 
     // Link SDL2 for native builds.
     native_exe.root_module.linkSystemLibrary("SDL2", .{});
@@ -442,26 +473,40 @@ pub fn build(b: *std.Build) void {
     const run_exec_again = b.addRunArtifact(exec_tests);
     run_exec_again.has_side_effects = true;
     exec_test_step.dependOn(&run_exec_again.step);
-    // The worker side of the chunk pipeline must build for
-    // wasm32-freestanding: no threads and no OS (C9). chunks.wasm will use
-    // it. zig build test compiles it. zig build worker-wasm installs it.
-    const worker_wasm = b.addExecutable(.{
-        .name = "chunk_worker",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/voxel/worker_wasm.zig"),
-            .target = wasm_target,
-            .optimize = optimize,
-            .single_threaded = true,
-        }),
-    });
-    worker_wasm.root_module.addImport("sw_gpu", web_libs.gpu);
-    worker_wasm.entry = .disabled;
-    worker_wasm.rdynamic = true;
-    // The light stage scratch is on the heap. The stages use a small stack.
-    worker_wasm.stack_size = 16 * 1024 * 1024;
-    test_step.dependOn(&worker_wasm.step);
-    const worker_wasm_step = b.step("worker-wasm", "Build zig-out/bin/chunk_worker.wasm: the worker side of the chunk pipeline for wasm32");
-    worker_wasm_step.dependOn(&b.addInstallArtifact(worker_wasm, .{}).step);
+    // chunks.wasm must build for wasm32-freestanding: no threads and no
+    // OS (C9). zig build test compiles it.
+    test_step.dependOn(&chunks_wasm.step);
+    const worker_wasm_step = b.step("worker-wasm", "Build zig-out/bin/chunks.wasm: the chunk worker of the Web Worker pool");
+    worker_wasm_step.dependOn(&install_chunks.step);
+}
+
+/// The build id of the voxel web build (C9): a hash of the path and the
+/// bytes of each .zig file under examples/voxel. app.wasm and chunks.wasm of
+/// one build have the same id. A browser cache that keeps an old chunks.wasm
+/// gives another id, and the worker pool does not start.
+fn voxelBuildId(b: *std.Build) u64 {
+    const io = b.graph.io;
+    var dir = b.root.openDir(io, "examples/voxel", .{ .iterate = true }) catch return 0;
+    defer dir.close(io);
+    var walker = dir.walk(b.allocator) catch @panic("OOM");
+    defer walker.deinit();
+    var paths: std.ArrayList([]const u8) = .empty;
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
+        paths.append(b.allocator, b.dupe(entry.path)) catch @panic("OOM");
+    }
+    std.mem.sort([]const u8, paths.items, {}, struct {
+        fn lessThan(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lessThan);
+    var h = std.hash.Wyhash.init(0);
+    for (paths.items) |p| {
+        const data = dir.readFileAlloc(io, p, b.allocator, .limited(64 << 20)) catch @panic("cannot read a voxel source file");
+        h.update(p);
+        h.update(data);
+    }
+    return h.final();
 }
 
 /// Compile stb_image (libs/sw_assets/c) into `module`. The shim headers stand

@@ -134,6 +134,21 @@ pub const Inline = struct {
         return self;
     }
 
+    /// Start the worker for a world that has edits: the fallback when the
+    /// WorkerPool stops (C9). The worker gets each edit of the edit log of
+    /// `world`. The edits in the outbox of the scheduler are in the edit
+    /// log too, so the outbox is then empty.
+    pub fn initFromWorld(allocator: std.mem.Allocator, world: *const World, sched: *Scheduler, cache_limit: u64) !Inline {
+        var self = try init(allocator, world.gen_config, cache_limit);
+        errdefer self.deinit();
+        var it = world.edits.valueIterator();
+        while (it.next()) |list| {
+            for (list.items) |e| try self.worker.applyEdit(e);
+        }
+        sched.outbox.clearRetainingCapacity();
+        return self;
+    }
+
     pub fn deinit(self: *Inline) void {
         self.worker.deinit();
     }

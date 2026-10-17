@@ -11,12 +11,19 @@
 //!                Both give the result of a recompute from scratch.
 //!   shutdown     a pool stops with jobs in flight, and starts again for a
 //!                new world, with no leaks.
+//!   web          the WorkerPool executor (exec_web.zig) with a transport of
+//!                in-process workers gives the bytes of the Inline
+//!                executor: replies in any order between workers, random
+//!                edits, workers that stop and start again, and a pool that
+//!                stops (the Inline fallback). The Bun tests run the same
+//!                executor with real Web Workers.
 const std = @import("std");
 const stages = @import("pipeline/stages.zig");
 const protocol = @import("pipeline/protocol.zig");
 const scheduler_mod = @import("pipeline/scheduler.zig");
 const exec_inline = @import("pipeline/exec_inline.zig");
 const exec_threads = @import("pipeline/exec_threads.zig");
+const exec_web = @import("pipeline/exec_web.zig");
 const worker_world = @import("pipeline/worker_world.zig");
 const world_mod = @import("world.zig");
 const chunk_mod = @import("chunk.zig");
@@ -346,4 +353,306 @@ test "exec: the affinity regions spread the chunks near the player over the pool
     }
     try std.testing.expect(exec_threads.defaultWorkerCount() >= 1);
     try std.testing.expect(exec_threads.defaultWorkerCount() <= exec_threads.MAX_WORKERS);
+}
+
+// ---------------------------------------------------------------------------
+// The WorkerPool executor (exec_web.zig), with in-process workers
+// ---------------------------------------------------------------------------
+
+/// A transport with in-process WorkerWorlds, as the JS pool
+/// (backends/wasm/worker-pool.ts) does it with Web Workers: a FIFO inbox
+/// for each worker, replies in a shared queue, and a restart that sends the
+/// Hello, all the edits and the jobs in flight again.
+const FakePool = struct {
+    a: std.mem.Allocator,
+    rand: std.Random,
+    workers: []FakeWorker,
+    hello: ?[]u8 = null,
+    edits: std.ArrayList([]u8) = .empty,
+    replies: std.ArrayList([]u8) = .empty,
+    restarts: usize = 0,
+
+    const FakeWorker = struct {
+        world: worker_world.WorkerWorld,
+        alive: bool = true,
+        inbox: std.ArrayList([]u8) = .empty,
+        /// The job messages in flight, in order.
+        pending: std.ArrayList([]u8) = .empty,
+    };
+
+    fn init(a: std.mem.Allocator, rand: std.Random, n: usize) !FakePool {
+        const workers = try a.alloc(FakeWorker, n);
+        for (workers) |*w| w.* = .{ .world = .init(a) };
+        return .{ .a = a, .rand = rand, .workers = workers };
+    }
+
+    fn deinit(self: *FakePool) void {
+        for (self.workers) |*w| {
+            w.world.deinit();
+            for (w.inbox.items) |m| self.a.free(m);
+            w.inbox.deinit(self.a);
+            for (w.pending.items) |m| self.a.free(m);
+            w.pending.deinit(self.a);
+        }
+        self.a.free(self.workers);
+        if (self.hello) |h| self.a.free(h);
+        for (self.edits.items) |m| self.a.free(m);
+        self.edits.deinit(self.a);
+        for (self.replies.items) |m| self.a.free(m);
+        self.replies.deinit(self.a);
+    }
+
+    fn transport(self: *FakePool) exec_web.Transport {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable: exec_web.Transport.VTable = .{
+        .slots = slots,
+        .alive = alive,
+        .post = post,
+        .broadcast = broadcast,
+        .nextLen = nextLen,
+        .take = take,
+    };
+
+    fn from(ptr: *anyopaque) *FakePool {
+        return @ptrCast(@alignCast(ptr));
+    }
+    fn slots(ptr: *anyopaque) usize {
+        return from(ptr).workers.len;
+    }
+    fn alive(ptr: *anyopaque, slot: usize) bool {
+        return from(ptr).workers[slot].alive;
+    }
+    fn send(self: *FakePool, w: *FakeWorker, msg: []const u8) void {
+        w.inbox.append(self.a, self.a.dupe(u8, msg) catch @panic("OOM")) catch @panic("OOM");
+    }
+    fn post(ptr: *anyopaque, slot: usize, msg: []const u8) bool {
+        const self = from(ptr);
+        const w = &self.workers[slot];
+        if (!w.alive) return false;
+        w.pending.append(self.a, self.a.dupe(u8, msg) catch @panic("OOM")) catch @panic("OOM");
+        self.send(w, msg);
+        return true;
+    }
+    fn broadcast(ptr: *anyopaque, msg: []const u8) bool {
+        const self = from(ptr);
+        const copy = self.a.dupe(u8, msg) catch @panic("OOM");
+        if (msg[6] == @backingInt(protocol.Kind.hello)) {
+            if (self.hello) |h| self.a.free(h);
+            self.hello = copy;
+        } else {
+            self.edits.append(self.a, copy) catch @panic("OOM");
+        }
+        for (self.workers) |*w| {
+            if (w.alive) self.send(w, msg);
+        }
+        return true;
+    }
+    fn nextLen(ptr: *anyopaque) usize {
+        const self = from(ptr);
+        return if (self.replies.items.len == 0) 0 else self.replies.items[0].len;
+    }
+    fn take(ptr: *anyopaque, buf: []u8) void {
+        const self = from(ptr);
+        const r = self.replies.orderedRemove(0);
+        defer self.a.free(r);
+        @memcpy(buf, r);
+    }
+
+    /// Let the workers handle up to `n` messages, from random workers. Each
+    /// worker handles its own messages in order.
+    fn pump(self: *FakePool, n: usize) !void {
+        for (0..n) |_| {
+            const i = self.rand.uintLessThan(usize, self.workers.len);
+            const w = &self.workers[i];
+            if (!w.alive or w.inbox.items.len == 0) continue;
+            const msg = w.inbox.orderedRemove(0);
+            defer self.a.free(msg);
+            const reply = try w.world.handle(msg) orelse continue;
+            const id = std.mem.readInt(u32, reply[12..16], .little);
+            if (id == 0) {
+                // A Hello reply. The JS pool checks it.
+                defer self.a.free(reply);
+                try std.testing.expect(reply[6] == @backingInt(protocol.Kind.hello));
+                continue;
+            }
+            for (w.pending.items, 0..) |p, k| {
+                if (std.mem.readInt(u32, p[12..16], .little) == id) {
+                    self.a.free(w.pending.orderedRemove(k));
+                    break;
+                }
+            }
+            try self.replies.append(self.a, reply);
+        }
+    }
+
+    /// The worker in `slot` stops. A new worker gets the Hello, all the
+    /// edits and the jobs in flight of the old worker, in order.
+    fn restart(self: *FakePool, slot: usize) void {
+        const w = &self.workers[slot];
+        if (!w.alive) return;
+        w.world.deinit();
+        w.world = .init(self.a);
+        for (w.inbox.items) |m| self.a.free(m);
+        w.inbox.clearRetainingCapacity();
+        if (self.hello) |h| self.send(w, h);
+        for (self.edits.items) |e| self.send(w, e);
+        for (w.pending.items) |p| self.send(w, p);
+        self.restarts += 1;
+    }
+
+    /// The worker in `slot` stops for good. Its jobs go to another worker.
+    fn kill(self: *FakePool, slot: usize) void {
+        const w = &self.workers[slot];
+        w.alive = false;
+        for (w.inbox.items) |m| self.a.free(m);
+        w.inbox.clearRetainingCapacity();
+        for (self.workers) |*o| {
+            if (!o.alive) continue;
+            for (w.pending.items) |p| {
+                self.send(o, p);
+                o.pending.append(self.a, p) catch @panic("OOM");
+            }
+            w.pending.clearRetainingCapacity();
+            return;
+        }
+        for (w.pending.items) |p| self.a.free(p);
+        w.pending.clearRetainingCapacity();
+    }
+};
+
+/// The WorkerPool executor for Run(): each frame, the workers handle some
+/// messages first, so replies arrive in any order and some jobs stay in
+/// flight. When no worker runs, it changes to the Inline executor, as
+/// main.zig does.
+const WebRun = struct {
+    pool: *FakePool,
+    web: exec_web.Web,
+    fallback: ?exec_inline.Inline = null,
+
+    fn runFrame(self: *WebRun, sched: *Scheduler, world: *World, clock: exec_inline.Clock, deadline: u64) !exec_inline.FrameReport {
+        if (self.fallback) |*f| return f.runFrame(sched, world, clock, deadline);
+        try self.pool.pump(self.pool.rand.uintLessThan(usize, 12));
+        return self.web.runFrame(sched, world, clock, deadline) catch |err| switch (err) {
+            error.NoWorkers => {
+                self.fallback = try exec_inline.Inline.initFromWorld(std.testing.allocator, world, sched, worker_world.DEFAULT_CACHE_LIMIT);
+                return self.fallback.?.runFrame(sched, world, clock, deadline);
+            },
+            else => |e| return e,
+        };
+    }
+
+    fn runUntilIdle(self: *WebRun, sched: *Scheduler, world: *World) !void {
+        var frames: usize = 0;
+        while (true) : (frames += 1) {
+            try std.testing.expect(frames < 100_000);
+            _ = try self.runFrame(sched, world, zeroClock, 0);
+            try sched.plan(world);
+            if (sched.isIdle()) return;
+            if (self.fallback == null) try self.pool.pump(64);
+        }
+    }
+
+    fn deinit(self: *WebRun) void {
+        if (self.fallback) |*f| f.deinit();
+        self.web.deinit();
+    }
+
+    fn zeroClock() u64 {
+        return 0;
+    }
+};
+
+const WebFault = enum { none, restart, stop_all };
+
+fn webEquivalence(a: std.mem.Allocator, seed: u64, workers: usize, fault: WebFault) !void {
+    const steps = try makeScenario(a, seed);
+    defer a.free(steps);
+    const config = hilly(seed % 3);
+    var prng = std.Random.DefaultPrng.init(seed ^ 0x709);
+
+    var inl = try exec_inline.Inline.init(a, config, worker_world.DEFAULT_CACHE_LIMIT);
+    defer inl.deinit();
+    var r1: Run(exec_inline.Inline) = .{ .world = try World.init(a, .hilly, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &inl };
+    defer r1.world.deinit();
+    defer r1.sched.deinit();
+    r1.world.gen_config = config;
+
+    var pool = try FakePool.init(a, prng.random(), workers);
+    defer pool.deinit();
+    var web: WebRun = .{ .pool = &pool, .web = try exec_web.Web.init(a, pool.transport(), config, 8 << 20) };
+    defer web.deinit();
+    var r2: Run(WebRun) = .{ .world = try World.init(a, .hilly, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &web };
+    defer r2.world.deinit();
+    defer r2.sched.deinit();
+    r2.world.gen_config = config;
+
+    var edits_in_flight: usize = 0;
+    for (steps, 0..) |s, i| {
+        if (s == .edit and r2.sched.in_flight > 0) edits_in_flight += 1;
+        try r1.step(s);
+        try r2.step(s);
+        switch (fault) {
+            .none => {},
+            // A worker stops while it has jobs.
+            .restart => if (i % 7 == 3) pool.restart(prng.random().uintLessThan(usize, workers)),
+            // The workers stop one by one. Then no worker runs.
+            .stop_all => if (i % 12 == 11) {
+                for (pool.workers, 0..) |w, k| {
+                    if (w.alive) {
+                        pool.kill(k);
+                        break;
+                    }
+                }
+            },
+        }
+    }
+    try inl.runUntilIdle(&r1.sched, &r1.world);
+    try web.runUntilIdle(&r2.sched, &r2.world);
+
+    const meshes = try expectSameState(a, &r1.world, &r1.sched, &r2.world, &r2.sched);
+    try std.testing.expect(meshes >= 13);
+    try std.testing.expect(edits_in_flight > 0);
+    try std.testing.expectEqual(@as(u64, 0), web.web.bad_replies);
+    switch (fault) {
+        .none => try std.testing.expect(web.fallback == null),
+        .restart => {
+            try std.testing.expect(pool.restarts > 0);
+            try std.testing.expect(web.fallback == null);
+        },
+        .stop_all => try std.testing.expect(web.fallback != null),
+    }
+    _ = try test_recompute.expectMatchesRecompute(a, &r2.sched, &r2.world);
+}
+
+test "exec: web: WorkerPool and Inline give the same bytes, with random edits while jobs run" {
+    const a = std.testing.allocator;
+    const sizes = [_]usize{ 3, 1, 4 };
+    for (sizes, 0..) |n, i| try webEquivalence(a, 0x709 + i, n, .none);
+}
+
+test "exec: web: a worker that stops and starts again gives the same bytes" {
+    const a = std.testing.allocator;
+    const sizes = [_]usize{ 3, 2 };
+    for (sizes, 0..) |n, i| try webEquivalence(a, 0x7090 + i, n, .restart);
+}
+
+test "exec: web: when no worker runs, the Inline executor takes the jobs" {
+    const a = std.testing.allocator;
+    try webEquivalence(a, 0x7091, 4, .stop_all);
+}
+
+test "exec: web: no live worker gives NoWorkers, and the depth follows the frame" {
+    const a = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(1);
+    var pool = try FakePool.init(a, prng.random(), 2);
+    defer pool.deinit();
+    for (pool.workers) |*w| w.alive = false;
+    try std.testing.expectError(error.NoWorkers, exec_web.Web.init(a, pool.transport(), hilly(0), 1 << 20));
+    // 16.7 ms frames and 1.3 ms jobs: 13 jobs and 1 more.
+    try std.testing.expectEqual(@as(usize, 14), exec_web.depthFor(16_700_000, 1_300_000));
+    try std.testing.expectEqual(@as(usize, exec_web.JOBS_PER_WORKER), exec_web.depthFor(0, 1_300_000));
+    try std.testing.expectEqual(@as(usize, exec_web.JOBS_PER_WORKER), exec_web.depthFor(1_000_000, 4_000_000));
+    try std.testing.expectEqual(@as(usize, exec_web.MAX_DEPTH), exec_web.depthFor(100_000_000, 1_000));
 }

@@ -99,6 +99,12 @@ const server = serve({
       '/storage': './backends/wasm/storage.ts',
       '/assets.js': './backends/wasm/assets.ts',
       '/assets': './backends/wasm/assets.ts',
+      // The chunk worker pool (C9). chunk-worker.ts has no imports, so the
+      // worker gets one transpiled file.
+      '/worker-pool.js': './backends/wasm/worker-pool.ts',
+      '/worker-pool': './backends/wasm/worker-pool.ts',
+      '/chunk-worker.js': './backends/wasm/chunk-worker.ts',
+      '/chunks.wasm': './zig-out/bin/chunks.wasm',
       '/app.wasm': './zig-out/bin/app.wasm',
       '/zig-out/bin/app.wasm': './zig-out/bin/app.wasm',
     };
@@ -153,6 +159,9 @@ const server = serve({
       return new Response(responseBody, {
         headers: {
           'Content-Type': contentType,
+          // Each rebuild changes app.wasm and chunks.wasm together. The
+          // browser must not keep an old copy of one of them (C9).
+          'Cache-Control': 'no-cache',
           'Cross-Origin-Embedder-Policy': 'require-corp',
           'Cross-Origin-Opener-Policy': 'same-origin',
         },
