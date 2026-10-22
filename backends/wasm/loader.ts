@@ -20,6 +20,7 @@ import {
   setTextInputActive,
   type WasmExports,
 } from './events';
+import { createNetImports } from './net';
 import { createStorageImports } from './storage';
 import { type GPUBridge, initWebGPU } from './webgpu';
 import {
@@ -160,6 +161,11 @@ export function createImports(
         // late in some browsers.
         setCursorVisible(lock === 0);
       },
+      // 1 while the canvas has the pointer lock. A game reads the real
+      // state here, so a lock that the browser refused or ended cannot
+      // leave the game without the mouse.
+      jsPointerLocked: (): number =>
+        document.pointerLockElement === canvas ? 1 : 0,
       jsSetTextInput: (active: number): void => {
         setTextInputActive(active !== 0);
       },
@@ -229,6 +235,8 @@ export function createImports(
     // The Zig extern declarations use the module name "webgpu".
     webgpu: gpu.imports,
     audio: audioImports,
+    // WebSocket bridge (backends/wasm/net.ts).
+    net: createNetImports(getMemory),
     // The chunk worker pool (pipeline/exec_web.zig).
     chunks: chunkImports(pool, getMemory),
   } as WebAssembly.Imports;

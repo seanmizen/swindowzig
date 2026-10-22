@@ -36,6 +36,34 @@ export function setPointerLock(canvas: HTMLCanvasElement, lock: boolean) {
   }
 }
 
+// Keyboard default actions. One rule for every key: a key belongs to the
+// game, and a browser shortcut belongs to the browser, unless the engine
+// uses it. The rule does not change with the pointer lock.
+// - Plain, Shift and Alt keys: the game's. preventDefault stops Space and
+//   the arrows from scrolling, Tab from moving focus, ' and / from opening
+//   Quick Find, and Backspace from going back.
+// - F1 to F12: the browser's (reload, full screen, dev tools). The engine
+//   uses no function keys.
+// - Ctrl or Cmd with a key: the browser's (reload, address bar, dev tools,
+//   zoom), except the engine shortcuts in ENGINE_SHORTCUT_KEYCODES. While
+//   text input is on, all of them stay with the browser (copy and paste).
+// - The browser keeps Cmd+W, Cmd+T, Cmd+N and Cmd+Q whatever the page does.
+//
+// The engine shortcuts, Cmd on macOS and Ctrl elsewhere: D debug, F frustum
+// freeze, G GPU debug, P debug page, S set spawn, V camera view. The browser
+// would bookmark, find, find next, print, save and paste.
+const ENGINE_SHORTCUT_KEYCODES = new Set([68, 70, 71, 80, 83, 86]);
+const META_KEYCODES = new Set([91, 92, 93, 224]);
+
+/** True when the page takes the key from the browser (preventDefault). */
+export function gameOwnsKey(e: KeyboardEvent): boolean {
+  if (/^F\d{1,2}$/.test(e.key)) return false;
+  if (e.ctrlKey || e.metaKey) {
+    return !textInputActive && ENGINE_SHORTCUT_KEYCODES.has(e.keyCode);
+  }
+  return true;
+}
+
 // Text input (IME) strategy:
 // - A hidden <input> takes focus while the game has text input on. The
 //   browser then runs the platform input method (dead keys, IME) on it.
@@ -180,15 +208,13 @@ export function attachEventListeners(
 
   attachTextInput(wasmExports);
 
-  // Keyboard — prevent browser defaults only while pointer is locked (gameplay).
-  // When the pause menu is open (pointer unlocked), browser shortcuts work normally.
+  // Keyboard. gameOwnsKey (above) decides which default actions stop.
   window.addEventListener('keydown', (e) => {
     // While text input is on, the hidden <input> handles printable keys.
     // Backspace, Enter, arrows and the like still reach the game.
     if (textInputActive && isTextKey(e)) return;
-    if (pointerLocked) {
-      e.preventDefault();
-    }
+    if (gameOwnsKey(e)) e.preventDefault();
+    syncModifiers(e);
     const keycode = e.keyCode || e.which;
     if (keycode === ESCAPE_KEYCODE && !e.repeat) {
       // A synthetic Escape from a lock exit already went to the game.
@@ -201,6 +227,32 @@ export function attachEventListeners(
     wasmExports.swindowzig_event_key?.(keycode, true);
   });
 
+  // The modifier flags of each event are the truth. A modifier pressed
+  // before the page had focus sends no keydown, and the game would not see
+  // Cmd in Cmd+D. Send the game the modifier keys that differ.
+  const syncModifiers = (e: KeyboardEvent) => {
+    const flags: [number, boolean][] = [
+      [16, e.shiftKey],
+      [17, e.ctrlKey],
+      [18, e.altKey],
+      [91, e.metaKey],
+    ];
+    for (const [code, down] of flags) {
+      const held =
+        code === 91
+          ? [...META_KEYCODES].some((k) => keysDown.has(k))
+          : keysDown.has(code);
+      if (down === held || code === (e.keyCode || e.which)) continue;
+      if (down) {
+        keysDown.add(code);
+      } else {
+        for (const k of code === 91 ? META_KEYCODES : [code])
+          keysDown.delete(k);
+      }
+      wasmExports.swindowzig_event_key?.(code, down);
+    }
+  };
+
   window.addEventListener('keyup', (e) => {
     const keycode = e.keyCode || e.which;
     // Release a key the game saw go down, even if it is a text key now.
@@ -208,6 +260,13 @@ export function attachEventListeners(
     keysDown.delete(keycode);
     updateKeysDisplay();
     wasmExports.swindowzig_event_key?.(keycode, false);
+    // macOS sends no keyup for a key that is released while Cmd is down.
+    // After Cmd+D the game would hold D. Release every key on the Cmd keyup.
+    if (META_KEYCODES.has(keycode)) {
+      for (const held of keysDown)
+        wasmExports.swindowzig_event_key?.(held, false);
+      keysDown.clear();
+    }
   });
 
   // Release all keys and buttons when window loses focus - prevents stuck inputs

@@ -16,6 +16,7 @@ pub const RenderPipeline = gpu_mod.RenderPipeline;
 pub const ComputePipeline = gpu_mod.ComputePipeline;
 pub const BindGroupLayout = gpu_mod.BindGroupLayout;
 pub const BindGroup = gpu_mod.BindGroup;
+pub const PipelineLayout = gpu_mod.PipelineLayout;
 pub const CommandEncoder = gpu_mod.CommandEncoder;
 pub const RenderPassEncoder = gpu_mod.RenderPassEncoder;
 pub const CommandBuffer = gpu_mod.CommandBuffer;

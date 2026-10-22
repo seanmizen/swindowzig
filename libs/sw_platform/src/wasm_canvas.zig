@@ -164,6 +164,8 @@ fn mapKeyCode(js_keycode: u16) core.KeyCode {
         16 => .Shift,
         17 => .Ctrl,
         18 => .Alt,
+        // Cmd (Meta): 91 and 93 in Chrome and Safari, 92 on Windows, 224 in Firefox.
+        91, 92, 93, 224 => .Super,
         else => .Unknown,
     };
 }

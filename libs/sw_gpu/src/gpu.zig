@@ -709,17 +709,19 @@ pub const GPU = struct {
         if (!self.isReady()) return error.GPUNotReady;
 
         if (comptime is_wasm) {
+            // webgpu.ts numbers the address modes and compare functions in
+            // its own order. Map each value by name, never by @backingInt.
             const handle = web.webgpuCreateSampler(
                 self.device,
-                @backingInt(desc.address_mode_u),
-                @backingInt(desc.address_mode_v),
-                @backingInt(desc.address_mode_w),
+                webAddressMode(desc.address_mode_u),
+                webAddressMode(desc.address_mode_v),
+                webAddressMode(desc.address_mode_w),
                 @backingInt(desc.mag_filter),
                 @backingInt(desc.min_filter),
                 @backingInt(desc.mipmap_filter),
                 desc.lod_min_clamp,
                 desc.lod_max_clamp,
-                if (desc.compare) |c| @backingInt(c) else 0,
+                if (desc.compare) |c| webCompare(c) else 0,
             );
             return Sampler{ .handle = handle };
         } else {
@@ -1574,6 +1576,29 @@ pub const GPU = struct {
 // Resource Handle Types
 // =============================================================================
 // These wrap the platform-specific handles
+
+/// The address mode number of webgpu.ts (createSampler).
+fn webAddressMode(mode: types.AddressMode) u32 {
+    return switch (mode) {
+        .repeat => 0,
+        .mirror_repeat => 1,
+        .clamp_to_edge => 2,
+    };
+}
+
+/// The compare function number of webgpu.ts (createSampler). 0 is none.
+fn webCompare(c: types.CompareFunction) u32 {
+    return switch (c) {
+        .never => 1,
+        .less => 2,
+        .less_equal => 3,
+        .greater => 4,
+        .greater_equal => 5,
+        .equal => 6,
+        .not_equal => 7,
+        .always => 8,
+    };
+}
 
 pub const Buffer = struct {
     handle: if (is_wasm) web.WebGPUBuffer else native.WGPUBuffer,

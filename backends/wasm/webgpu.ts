@@ -72,6 +72,14 @@ export async function initWebGPU(
   }
 
   const device = await adapter.requestDevice();
+  // Validation errors do not throw. Log them, so a bad descriptor shows in
+  // the console with its message.
+  device.addEventListener('uncapturederror', (ev) => {
+    console.error(
+      '[WebGPU] error:',
+      (ev as GPUUncapturedErrorEvent).error.message,
+    );
+  });
   const context = canvas.getContext('webgpu');
   if (!context) {
     throw new Error('Failed to get WebGPU context');
