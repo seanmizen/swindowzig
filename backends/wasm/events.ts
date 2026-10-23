@@ -23,13 +23,60 @@ const ESCAPE_DEDUP_MS = 250;
 let gameReleasedLock = false;
 let lastEscapeMs = Number.NEGATIVE_INFINITY;
 
+// Mouse movement under the pointer lock:
+// - Chrome on Windows sometimes gives one mousemove with a very large
+//   movementX or movementY: a spike of hundreds of pixels that the mouse did
+//   not move. It is worst with high polling-rate mice, and in the first
+//   event after the lock. A game turns the spike into a jerk of the camera,
+//   sometimes a half turn. A trackpad on macOS gives no spikes.
+// - lockPointer asks for unadjustedMovement (raw input, no OS mouse
+//   acceleration), which avoids most spikes. A browser that does not
+//   support it rejects the request, so lockPointer asks again with no
+//   options. A browser that ignores the options locks as usual.
+// - The mousemove handler drops the first event after a lock, and any event
+//   much larger than the recent average (isSpike).
+let skipNextMove = false;
+let avgMove = 0;
+let fallbackLock = false;
+const SPIKE_MIN_PX = 150;
+const SPIKE_RATIO = 8;
+
+/** Lock the pointer to the canvas, with raw input when the browser has it. */
+export function lockPointer(canvas: HTMLCanvasElement) {
+  let req: Promise<void> | undefined;
+  try {
+    req = canvas.requestPointerLock({ unadjustedMovement: true }) as
+      | Promise<void>
+      | undefined;
+  } catch {
+    canvas.requestPointerLock();
+    return;
+  }
+  req?.catch?.((err: unknown) => {
+    // No raw input here: lock with no options. The error event of the
+    // first request must not pause the game.
+    if (err instanceof DOMException && err.name === 'NotSupportedError') {
+      fallbackLock = true;
+      canvas.requestPointerLock();
+    }
+  });
+}
+
+/** True when a move is a spike: large, and far over the recent average. */
+function isSpike(dx: number, dy: number): boolean {
+  const m = Math.hypot(dx, dy);
+  const spike = m > SPIKE_MIN_PX && m > SPIKE_RATIO * (avgMove + 4);
+  if (!spike) avgMove += (m - avgMove) * 0.1;
+  return spike;
+}
+
 /**
  * The env.jsSetPointerLock import. Every loader must use this function, so
  * that an exit that the game requests sends no synthetic Escape.
  */
 export function setPointerLock(canvas: HTMLCanvasElement, lock: boolean) {
   if (lock) {
-    canvas.requestPointerLock();
+    lockPointer(canvas);
   } else if (document.pointerLockElement === canvas) {
     gameReleasedLock = true;
     document.exitPointerLock();
@@ -170,8 +217,15 @@ export function attachEventListeners(
       x = mouseEvent.clientX;
       y = mouseEvent.clientY;
     }
-    const dx = mouseEvent.movementX;
-    const dy = mouseEvent.movementY;
+    let dx = mouseEvent.movementX;
+    let dy = mouseEvent.movementY;
+    // A spike under the lock (see lockPointer): keep the position, drop the
+    // move.
+    if (pointerLocked && (skipNextMove || isSpike(dx, dy))) {
+      skipNextMove = false;
+      dx = 0;
+      dy = 0;
+    }
     wasmExports.swindowzig_event_mouse_move?.(x, y, dx, dy);
   });
 
@@ -199,12 +253,23 @@ export function attachEventListeners(
   document.addEventListener('pointerlockchange', () => {
     const wasLocked = pointerLocked;
     pointerLocked = document.pointerLockElement === canvas;
+    if (pointerLocked && !wasLocked) {
+      skipNextMove = true;
+      avgMove = 0;
+      fallbackLock = false;
+    }
     if (wasLocked && !pointerLocked && !gameReleasedLock) sendEscape();
     if (!pointerLocked) gameReleasedLock = false;
   });
   // A failed request (for example, a new lock within about 1 s of an Esc
   // exit in Chrome) leaves the game with no mouse. Pause the game as well.
-  document.addEventListener('pointerlockerror', sendEscape);
+  // The error of a raw-input request that lockPointer asks again for is not
+  // a failure: wait a moment to see.
+  document.addEventListener('pointerlockerror', () => {
+    setTimeout(() => {
+      if (!fallbackLock && !pointerLocked) sendEscape();
+    }, 50);
+  });
 
   attachTextInput(wasmExports);
 

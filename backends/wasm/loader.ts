@@ -16,6 +16,7 @@ import { createAssetImports } from './assets';
 import { audioImports } from './audio';
 import {
   attachEventListeners,
+  lockPointer,
   setPointerLock,
   setTextInputActive,
   type WasmExports,
@@ -382,7 +383,7 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
 
   if (lockOnClick) {
     canvas.addEventListener('click', () => {
-      canvas.requestPointerLock();
+      lockPointer(canvas);
     });
   }
 
