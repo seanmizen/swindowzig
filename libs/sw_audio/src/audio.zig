@@ -20,6 +20,23 @@ pub const Sound = struct {
     waveform: Waveform = .sine,
     /// Volume 0.0 - 1.0
     volume: f32 = 0.5,
+    /// Stereo position: -1 left, 0 centre, 1 right.
+    pan: f32 = 0,
+    /// Seconds from now to the start of the sound.
+    delay: f32 = 0,
+};
+
+/// Samples to play: one channel for the left ear and one for the right
+/// ear, at `sample_rate`. The backend copies the samples during the call,
+/// so the caller can use the memory again after the call.
+pub const Buffer = struct {
+    left: []const f32,
+    right: []const f32,
+    sample_rate: f32 = 48000,
+    /// Volume 0.0 - 1.0. The master volume applies too.
+    volume: f32 = 1,
+    /// Seconds from now to the start of the first sample.
+    delay: f32 = 0,
 };
 
 pub const AudioState = enum {
@@ -62,6 +79,24 @@ pub const Audio = struct {
             sound.duration,
             @backingInt(sound.waveform),
             effective_volume,
+            std.math.clamp(sound.pan, -1, 1),
+            @max(0, sound.delay),
+        );
+    }
+
+    /// Play a block of samples (applies master volume). Use it for sounds
+    /// that the caller makes sample by sample.
+    pub fn playBuffer(self: *Audio, buffer: Buffer) void {
+        const effective_volume = buffer.volume * self.master_volume;
+        const frames = @min(buffer.left.len, buffer.right.len);
+        if (effective_volume <= 0.001 or frames == 0) return;
+        audioPlayBuffer(
+            buffer.left.ptr,
+            buffer.right.ptr,
+            @intCast(frames),
+            buffer.sample_rate,
+            effective_volume,
+            @max(0, buffer.delay),
         );
     }
 
@@ -119,4 +154,5 @@ pub const Audio = struct {
 
 // WASM imports from audio namespace
 extern "audio" fn audioInit() void;
-extern "audio" fn audioPlay(freq_start: f32, freq_end: f32, duration: f32, waveform: u8, volume: f32) void;
+extern "audio" fn audioPlay(freq_start: f32, freq_end: f32, duration: f32, waveform: u8, volume: f32, pan: f32, delay: f32) void;
+extern "audio" fn audioPlayBuffer(left: [*]const f32, right: [*]const f32, frames: u32, sample_rate: f32, volume: f32, delay: f32) void;
