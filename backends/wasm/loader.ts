@@ -93,6 +93,13 @@ export interface LoaderOptions {
   /** Called immediately before swindowzig_init(). */
   onStart?: () => void;
   /**
+   * The app's own functions for the wasm import module "env" (a Zig
+   * `extern fn` with no library name). The loader adds them to the engine
+   * imports. A name that the engine imports too is an 'instantiate'
+   * failure.
+   */
+  env?: Record<string, (...args: number[]) => number | undefined>;
+  /**
    * The chunk worker pool (C9). The URLs must name the files of the same
    * build as the wasm file: use content-hashed names or a version query.
    * Without this option, or when no worker starts, the main thread runs the
@@ -331,6 +338,11 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
   let instance: WebAssembly.Instance;
   try {
     const imports = createImports(canvas, gpu, setCursorVisible, poolHolder);
+    const env = imports.env as Record<string, unknown>;
+    for (const [name, fn] of Object.entries(options.env ?? {})) {
+      if (name in env) throw new Error(`env.${name} is an engine import`);
+      env[name] = fn;
+    }
     instance = (await WebAssembly.instantiate(wasmBytes, imports)).instance;
   } catch (err) {
     fail('instantiate', err);
