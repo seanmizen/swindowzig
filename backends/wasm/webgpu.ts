@@ -2,10 +2,14 @@
 // Implements all extern functions declared in libs/sw_gpu/src/web_bridge.zig
 // Maps JavaScript WebGPU objects to numeric handles for WASM interop
 
+import { HeldBytes } from './held-bytes';
+
 export interface GPUBridge {
   device: GPUDevice;
   context: GPUCanvasContext;
   imports: Record<string, (...args: never[]) => unknown>;
+  /** Bytes that JS holds for the wasm (C5). The chunk imports fill it. */
+  held: HeldBytes;
 }
 
 // Handle management for WebGPU objects
@@ -101,12 +105,15 @@ export async function initWebGPU(
   console.log('[WebGPU] Canvas format:', format);
 
   // WASM imports
-  const imports = createWebGPUImports();
+  const held = new HeldBytes();
+  const imports = createWebGPUImports(held);
 
-  return { device, context, imports };
+  return { device, context, imports, held };
 }
 
-function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
+function createWebGPUImports(
+  held: HeldBytes,
+): Record<string, (...args: never[]) => unknown> {
   return {
     // =======================================================================
     // Initialization
@@ -198,6 +205,31 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
 
       const data = new Uint8Array(memory.buffer, dataPtr, Number(dataSize));
       queue.writeBuffer(buffer, Number(bufferOffset), data);
+    },
+
+    // Write bytes that JS holds (C5): a mesh from a chunk worker. The
+    // bytes go from the transferred ArrayBuffer to the GPU, and never
+    // through the wasm memory.
+    webgpuWriteBufferHeld: (
+      queueHandle: number,
+      bufferHandle: number,
+      bufferOffset: bigint,
+      heldHandle: number,
+      heldOffset: number,
+      dataSize: bigint,
+    ): void => {
+      const queue = getHandle<GPUQueue>(queueHandle);
+      const buffer = getHandle<GPUBuffer>(bufferHandle);
+      const bytes = held.get(heldHandle);
+      const size = Number(dataSize);
+      queue.writeBuffer(
+        buffer,
+        Number(bufferOffset),
+        bytes.buffer,
+        bytes.byteOffset + heldOffset,
+        size,
+      );
+      held.countGpuWrite(size);
     },
 
     // =======================================================================

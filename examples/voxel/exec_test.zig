@@ -211,7 +211,6 @@ fn Run(comptime Exec: type) type {
 
 /// The two runs must have the same desired state, byte for byte.
 fn expectSameState(a: std.mem.Allocator, w1: *const World, s1: *const Scheduler, w2: *const World, s2: *const Scheduler) !usize {
-    _ = a;
     try std.testing.expectEqual(s1.center_cx, s2.center_cx);
     var meshes: usize = 0;
     var dz: i32 = -R - 2;
@@ -237,9 +236,15 @@ fn expectSameState(a: std.mem.Allocator, w1: *const World, s1: *const Scheduler,
             }
             if (Region.mesh(dx, dz, R)) {
                 try std.testing.expect(s1.meshCurrent(w1, c1) and s2.meshCurrent(w2, c2));
-                try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(c1.mesh.quads.items), std.mem.sliceAsBytes(c2.mesh.quads.items));
-                try std.testing.expectEqual(c1.mesh.y_min, c2.mesh.y_min);
-                try std.testing.expectEqual(c1.mesh.y_max, c2.mesh.y_max);
+                // Main keeps only the counts and the hash of a mesh (C5).
+                try std.testing.expectEqual(c1.mesh, c2.mesh);
+                // No upload ran, so both still have the quad bytes. They
+                // must be the same bytes.
+                const q1 = try test_recompute.uploadQuads(a, c1);
+                defer a.free(q1);
+                const q2 = try test_recompute.uploadQuads(a, c2);
+                defer a.free(q2);
+                try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(q1), std.mem.sliceAsBytes(q2));
                 meshes += 1;
             }
         }
@@ -371,6 +376,12 @@ const FakePool = struct {
     edits: std.ArrayList([]u8) = .empty,
     replies: std.ArrayList([]u8) = .empty,
     restarts: usize = 0,
+    /// The results that main took, by handle, as the JS pool holds them
+    /// (C5). Main reads only the head of a mesh result.
+    held: std.AutoHashMapUnmanaged(u32, []u8) = .empty,
+    next_handle: u32 = 1,
+    /// The bytes of a mesh payload that main read (C5): must stay 0.
+    mesh_payload_reads: usize = 0,
 
     const FakeWorker = struct {
         world: worker_world.WorkerWorld,
@@ -400,6 +411,9 @@ const FakePool = struct {
         self.edits.deinit(self.a);
         for (self.replies.items) |m| self.a.free(m);
         self.replies.deinit(self.a);
+        var it = self.held.valueIterator();
+        while (it.next()) |m| self.a.free(m.*);
+        self.held.deinit(self.a);
     }
 
     fn transport(self: *FakePool) exec_web.Transport {
@@ -412,7 +426,8 @@ const FakePool = struct {
         .post = post,
         .broadcast = broadcast,
         .nextLen = nextLen,
-        .take = take,
+        .takeHead = takeHead,
+        .held = .{ .read = read, .release = release },
     };
 
     fn from(ptr: *anyopaque) *FakePool {
@@ -453,11 +468,27 @@ const FakePool = struct {
         const self = from(ptr);
         return if (self.replies.items.len == 0) 0 else self.replies.items[0].len;
     }
-    fn take(ptr: *anyopaque, buf: []u8) void {
+    fn takeHead(ptr: *anyopaque, head: []u8) u32 {
         const self = from(ptr);
         const r = self.replies.orderedRemove(0);
-        defer self.a.free(r);
-        @memcpy(buf, r);
+        @memcpy(head, r[0..head.len]);
+        const h = self.next_handle;
+        self.next_handle += 1;
+        self.held.put(self.a, h, r) catch @panic("OOM");
+        return h;
+    }
+    fn read(ptr: *anyopaque, handle: u32, offset: usize, out: []u8) void {
+        const self = from(ptr);
+        const m = self.held.get(handle).?;
+        if (m[6] == @backingInt(protocol.Kind.result) and m[protocol.HEADER_LEN] == @backingInt(stages.Stage.mesh)) {
+            self.mesh_payload_reads += out.len;
+        }
+        @memcpy(out, m[offset..][0..out.len]);
+    }
+    fn release(ptr: *anyopaque, handle: u32) void {
+        const self = from(ptr);
+        const kv = self.held.fetchRemove(handle).?;
+        self.a.free(kv.value);
     }
 
     /// Let the workers handle up to `n` messages, from random workers. Each
@@ -610,11 +641,21 @@ fn webEquivalence(a: std.mem.Allocator, seed: u64, workers: usize, fault: WebFau
     }
     try inl.runUntilIdle(&r1.sched, &r1.world);
     try web.runUntilIdle(&r2.sched, &r2.world);
+    // C5: main read the head of each result, and no byte of a mesh payload.
+    // (expectSameState below reads the quads through the test helper.)
+    try std.testing.expectEqual(@as(usize, 0), pool.mesh_payload_reads);
+    try std.testing.expect(web.web.held_meshes > 0);
+    try std.testing.expect(web.web.head_bytes <= web.web.traffic.results * protocol.PAYLOAD_OFFSET);
 
     const meshes = try expectSameState(a, &r1.world, &r1.sched, &r2.world, &r2.sched);
     try std.testing.expect(meshes >= 13);
     try std.testing.expect(edits_in_flight > 0);
     try std.testing.expectEqual(@as(u64, 0), web.web.bad_replies);
+    // Each result that JS still holds is a mesh that waits for its upload.
+    // Drop them, as an upload does: then JS holds nothing (no leak).
+    var it = r2.world.chunks.valueIterator();
+    while (it.next()) |lc| lc.*.dropUpload();
+    try std.testing.expectEqual(@as(u32, 0), pool.held.count());
     switch (fault) {
         .none => try std.testing.expect(web.fallback == null),
         .restart => {

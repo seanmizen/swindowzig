@@ -106,7 +106,12 @@ is no longer required for correctness. Sort key is view-space depth
   Web Worker. It has no imports, so the dev server sends it as one file.
 - Headless: `backends/wasm/headless-app.ts` runs `app.wasm` in Bun with stub
   WebGPU imports and the real worker pool. `headless.ts` (CI) and
-  `worker-pool.test.ts` use it.
+  `worker-pool.test.ts` use it. The stub records the GPU buffers and the
+  writes to them, and checks the rules of `writeBuffer` (`StubGpu`).
+- Web: `gpu.writeBufferHeld` writes bytes that JS holds
+  (`backends/wasm/held-bytes.ts`, by handle) to a GPU buffer. The bytes do
+  not go through the wasm memory. The WebGPU bridge owns the store, and the
+  "chunks" imports fill it. A native build has no held bytes.
 
 ### UI tree (sw_ui)
 

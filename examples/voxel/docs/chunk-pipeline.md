@@ -11,12 +11,14 @@ the design items of the voxel chunk pipeline rework.
 | `pipeline/stages.zig` | The pure stages: `generate`, `light`, `mesh` (C2), and the versions (C3). |
 | `pipeline/scheduler.zig` | The desired state, the priority order, version checks, eviction, edits (C3, C6, C8). |
 | `pipeline/protocol.zig` | The bytes between main and a worker: Hello, Edit, Job, Result, Error (P6). |
+| `pipeline/mesh_bytes.zig` | The quad bytes of a mesh result, from the worker to the GPU upload, with no copy (C5). |
 | `pipeline/worker_world.zig` | The world of a worker: the seed, the edit log and an LRU chunk cache (C4, C14). |
 | `pipeline/exec_inline.zig` | The Inline executor: one worker on the main thread, within a frame budget (C7). |
 | `pipeline/exec_threads.zig` | The ThreadPool executor: native worker threads (C9). |
 | `pipeline/exec_web.zig` | The WorkerPool executor: the main side of the Web Worker pool (C9). |
 | `pipeline/chunk_worker_main.zig` | The exports of `chunks.wasm`, the chunk worker of the web build. The build root is `chunks_wasm.zig`. |
 | `backends/wasm/worker-pool.ts` | The JS worker pool: start, handshake, restart, the result queue (C9). |
+| `backends/wasm/held-bytes.ts` | The results that JS holds for `app.wasm`, by handle, and the byte counters (C5). |
 | `backends/wasm/chunk-worker.ts` | The script of each Web Worker: it runs `chunks.wasm` (C9, C12). |
 | `backends/wasm/worker-pool.test.ts` | The Bun tests of the pool with real Web Workers (C11). |
 | `scheduler_test.zig` | Priority order, stale results, eviction with hysteresis, runtime render distance. |
@@ -61,7 +63,8 @@ Main keeps:
   light hash, and the input versions of its light and mesh (C3),
 - the blocks of the chunks in the prefetch radius: the square of 2 chunks
   around the player chunk (C6). Main drops them past 3 chunks,
-- the meshes, for the upload to the GPU,
+- the quad count, the y range and the hash of each mesh. The quad bytes
+  stay on main only until the GPU upload (C5),
 - the edit log.
 
 Main keeps no light. A light result holds a hash of the light. When the
@@ -156,7 +159,7 @@ Job, 88 bytes
   16 u32×9 block versions of the 3×3 chunks
   52 u32×9 light versions of the 3×3 chunks
 
-Result, 32 bytes, then the payload
+Result, 48 bytes, then the payload
   0  u8    stage
   1  u8    flags: bit 0 = the payload holds blocks
   2  u16   0
@@ -166,7 +169,9 @@ Result, 32 bytes, then the payload
   16 u64   light hash (light), or y min f32 and y max f32 (mesh)
   24 u32   quad count (mesh), or payload length (generate)
   28 u32   job time in µs
-  32 ...   payload
+  32 u64   mesh hash (mesh), else 0
+  40 u64   0
+  48 ...   payload
 
 Error, 16 bytes, then the text
   0  u16   code
@@ -179,8 +184,11 @@ Error, 16 bytes, then the text
 ```
 
 
-The Result payload starts at byte 48, so the PackedQuad bytes of a mesh are
-16-byte aligned, ready for upload (C5). A generate payload holds the
+The Result payload starts at byte 64 of the message, so the PackedQuad
+bytes of a mesh are 16-byte aligned, ready for upload (C5). The mesh hash
+is `protocol.meshHash` of the payload. The worker calculates it, so main
+can compare meshes without the quads. Main reads only the first 64 bytes of
+a mesh Result (`protocol.decodeResultHead`). A generate payload holds the
 blocks: palette length u16, bits u8, 0 u8, word count u32, the palette
 (padded to 8 bytes), then the packed u64 words.
 
@@ -196,7 +204,8 @@ A chunk goes through these stages (C2):
    gives the light of the middle chunk.
 3. **Meshed.** `mesh` reads the blocks and the light of the 3×3 chunks and
    gives the `PackedQuad` list. It reads the 8 neighbours in place (D8).
-4. **Uploaded.** Main copies the quads to the GPU (`upload_pending`).
+4. **Uploaded.** Main writes the quad bytes of the result to the GPU, then
+   frees them (`LoadedChunk.upload`, C5).
 
 A light job can start when the 3×3 chunks have blocks. A mesh job can start
 when the 3×3 chunks have current light. So the result does not depend on
@@ -376,9 +385,12 @@ Bytes for each message, full load:
 |---------|-------|
 | Job | 104 |
 | Edit | 32 for each worker |
-| Result, light | 48 |
-| Result, generate | 48, or about 25 KB with the blocks (25 chunks of the prefetch radius) |
-| Result, mesh | 8383 on average (48 + 16 for each quad) |
+| Result, light | 64 |
+| Result, generate | 64, or about 25 KB with the blocks (25 chunks of the prefetch radius) |
+| Result, mesh | about 8400 on average (64 + 16 for each quad) |
+
+The measurement was with protocol version 1, when the fixed part of a
+Result was 16 bytes shorter. Version 2 added the mesh hash (C5).
 
 The old async path copied about 50,880 bytes for each job (508,800 bytes
 for 10 jobs) into the worker. A job message is now 104 bytes.
@@ -403,7 +415,10 @@ swindowzig_init
 frame phase:
   Edit -------------> broadcast (kept) -------> applies the edit
   Job --------------> post to one worker -----> runs the stage
-  take results <----- JS queue <--------------- 'reply' (ArrayBuffer, moved)
+  take the heads <--- JS queue <--------------- 'reply' (ArrayBuffer, moved)
+  (JS holds each result)
+render:
+  upload a mesh ----> queue.writeBuffer from the held ArrayBuffer (C5)
 ```
 
 ### Start-up (D6, D7)
@@ -459,9 +474,9 @@ so the dev page uses the plain names (`/chunks.wasm`, `/chunk-worker.js`).
 - A worker sends each reply as a transferable `ArrayBuffer`. The pool
   keeps the replies in a JS queue. Main takes them only in the frame
   phase, within the install budget (C7). A tick never installs.
-- The replies go into the main wasm memory, as with the other executors.
-  For the next step of C5, main JS writes the mesh bytes to the GPU with
-  `queue.writeBuffer`, and the main wasm keeps only the counts.
+- Main copies only the first 64 bytes of each reply into its wasm
+  memory. JS holds the whole reply. A mesh goes to the GPU from the
+  ArrayBuffer of the worker. See "Mesh bytes (C5)" below.
 
 Main sends new jobs to a Web Worker only once in each frame. With 2 jobs of
 about 1.3 ms in each worker, a worker waits for most of a 16.7 ms frame.
@@ -514,6 +529,8 @@ state) with a run of the Inline executor:
 | mismatch | another build id, build hash or protocol version: no worker starts, the console names the value, and the hash does not change. |
 | Hello | a worker refuses a Hello of another build, and the slot stops. |
 | serve | the pool compiles `chunks.wasm` over HTTP. An old file name (HTML from `serve -s`) gives a clear error. |
+| uploads | each run above checks the mesh uploads (`checkMeshUploads`, C5). |
+| memory | the main wasm memory does not grow with the meshed chunks (C5). |
 
 `bun backends/wasm/headless.ts` (CI) uses the pool too, and fails when a
 chunk job runs on the main thread. `--workers 0` runs it with the Inline
@@ -547,4 +564,116 @@ The frame that ends the loading screen takes 13 to 16 ms in 2 of 3 runs.
 It installs only about 6 results: the time is the start of the game.
 
 The main-thread time of the WorkerPool is the installs (the copy of the
-quads into the main wasm memory) and the plan.
+quads into the main wasm memory) and the plan. The next section removes
+the copy.
+
+## Mesh bytes (C5)
+
+Main does not copy the quads of a mesh, and keeps no CPU copy after the
+GPU upload. The main wasm knows only the counts of a mesh
+(`world.MeshInfo`): the quad count, the y range and the mesh hash. The
+chunk record has the chunk coordinates and the versions.
+
+The quad bytes of a new mesh go from the worker to the GPU like this
+(`pipeline/mesh_bytes.zig`):
+
+| Executor | Bytes until the upload | Upload |
+|----------|------------------------|--------|
+| WorkerPool | the transferred ArrayBuffer, which JS holds (`held`) | JS calls `queue.writeBuffer` with the ArrayBuffer (`gpu.writeBufferHeld`) |
+| ThreadPool, Inline | the reply of the worker, in main memory (`local`) | one `writeBuffer` from the reply |
+
+1. A worker sends the Result as a transferable ArrayBuffer.
+2. In the frame phase, `exec_web.zig` takes the next result
+   (`jsChunkTakeHead`). JS holds the ArrayBuffer under a handle
+   (`held-bytes.ts`), and copies its first 64 bytes into the wasm memory.
+3. For a mesh, the scheduler gets the counts and the handle. Any other
+   result comes into the wasm memory as a whole (`jsChunkRead`): a
+   generate result has the blocks of the prefetch radius (C6).
+4. The render (`uploadNewMeshes` in `main.zig`) writes the 16-byte GPU
+   header of the chunk from the wasm memory, then asks JS to write the
+   quads from the ArrayBuffer (`webgpuWriteBufferHeld`). Then it releases
+   the handle.
+
+A mesh that a new mesh replaces before the upload, or that the scheduler
+evicts, releases its bytes too. The uploads run also during the loading
+screen, so the frame that ends the loading screen does not upload all the
+meshes. A pure headless run (no GPU) frees the bytes in the frame phase.
+
+### GPU buffers
+
+The old upload made a new buffer and a new bind group for each mesh, also
+for a remesh of the same chunk. Now a chunk keeps its buffer when its new
+mesh fits. A buffer of an evicted chunk goes to a pool
+(`QuadBufferPool` in `main.zig`). The pool has size classes of 2^k,
+1.25 × 2^k, 1.5 × 2^k and 1.75 × 2^k elements of 16 bytes, from 4 KB. A
+buffer has at most 1.25 times the bytes that its mesh needs, or 4 KB.
+
+| Run | Uploads | Buffers made, old | Buffers made, pool | Taken from the pool |
+|-----|---------|-------------------|--------------------|---------------------|
+| `headless.ts`, a walk of 5 chunks | 540 | 540 | 530 | 10 |
+| Bun memory test: R = 4, R = 12, a walk of 24 chunks | 1041 | 1041 | 641 | 400 |
+
+Bun has no real `createBuffer`, so the time of one buffer is not known.
+The on-machine session measures it in a browser. With R = 12, the quad
+buffers hold 4.6 MB for 3.7 MB of quads (framespike.tas, native).
+
+### --depth-stencil=off
+
+The back-to-front sort of each frame needs the quads on the CPU. With the
+depth test off, the upload keeps a CPU copy of the quads
+(`ChunkGPU.sort_mesh`). On the web, that copy comes from JS with
+`jsChunkRead`. This is the only CPU copy of a mesh on main. The flag has
+no web option.
+
+### Proof (C11)
+
+- `exec_test.zig`: the WorkerPool executor with in-process workers reads
+  no mesh payload byte (`FakePool.mesh_payload_reads`), and no handle stays
+  held after the uploads. The Inline, ThreadPool and WorkerPool executors
+  give the same quad bytes.
+- `checkMeshUploads` (`headless-app.ts`), in `headless.ts` (CI) and in each
+  run of `worker-pool.test.ts`: JS copied no mesh quad into the wasm memory,
+  and at most 64 bytes for each result. Each mesh went to the GPU from the
+  held bytes, with the size of its quads, at byte 16 of its buffer, after
+  the GPU header of its chunk. The stub WebGPU checks the rules of
+  `writeBuffer`. No chunk keeps a CPU copy, and JS holds no result at the
+  end.
+- The memory test of `worker-pool.test.ts`: the main wasm memory grows by
+  at most 1 MB from R = 4 (49 meshes) to R = 12 (441 meshes), and by at
+  most 1 MB over a walk of 24 chunks. A copy of each mesh (about 8 KB)
+  adds about 3 MB from R = 4 to R = 12.
+- The native log at exit has `[GPU MESH] uploads ... waiting=0
+  cpu_copies=0`.
+
+## Measurements of C5 (2026-10-17, x86_64 Linux container, 4 CPUs)
+
+`bun backends/wasm/headless.ts --measure`, 3 Web Workers, as above. The
+stub WebGPU of both builds does not record the writes. "Rise" is the
+first 3 s after the loading screen, while the rest of R = 12 loads. Each
+value is the median of 9 runs, one run of each build in turn.
+
+| Main time of a frame | Before | After |
+|----------------------|--------|-------|
+| Loading screen | 935 ms | 971 ms |
+| Loading frame, p50 | 0.81 ms | 0.77 ms |
+| Loading frame, p95 | 2.96 ms | 2.77 ms |
+| Loading frame, max | 6.08 ms | 4.89 ms |
+| Rise, p95 | 1.86 ms | 1.10 ms |
+| Rise, p99 | 4.16 ms | 1.47 ms |
+| Rise, max | 9.08 ms | 2.03 ms |
+| Walk, p50 | 0.19 ms | 0.18 ms |
+| Walk, p95 | 0.92 ms | 0.89 ms |
+| Walk, p99 | 1.41 ms | 1.22 ms |
+| Walk, max | 2.27 ms | 1.80 ms |
+
+The time of the loading screen changes by about 10% from run to run, in
+both builds.
+
+The main wasm memory, in one script for both builds (3 workers, load
+R = 12, then a walk of 30 chunks):
+
+| Main wasm memory | Before | After |
+|------------------|--------|-------|
+| At the start | 16.4 MB | 16.4 MB |
+| R = 12 loaded (441 meshes) | 24.0 MB | 18.7 MB |
+| After the walk | 24.9 MB | 18.9 MB |

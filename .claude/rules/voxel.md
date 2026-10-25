@@ -18,13 +18,17 @@ were already correct.
 
 - Greedy meshing is the only mesher. `generateMesh` writes one 16-byte
   `PackedQuad` per quad to `Mesh.quads`, and the y range to `Mesh.y_min`
-  and `Mesh.y_max`. This is the GPU format. The upload copies the bytes and
-  does not convert them.
+  and `Mesh.y_max`. This is the GPU format. The upload writes the bytes of
+  the worker result to the GPU as they are, and main keeps no copy (C5).
+  Main keeps only `world.MeshInfo`: the quad count, the y range and the
+  mesh hash.
 - A greedy quad spans many blocks. A dig or a place meshes the whole chunk
   again, on the main thread, in the same tick. If the block is at a chunk
   edge, `updateBoundaryNeighbors` also meshes the neighbour chunk.
-- With `--depth-stencil=off`, `sortByDepth` writes the quads back to front
-  into `Mesh.sorted_quads`, and the upload writes that list.
+- With `--depth-stencil=off`, the upload keeps a CPU copy of each mesh
+  (`ChunkGPU.sort_mesh`). Each frame, `sortByDepth` writes the quads back to
+  front into `Mesh.sorted_quads`, and main writes that list to the GPU.
+  This is the only CPU copy of a mesh on main.
 - `bench_mesher` (`zig build bench-mesher -Doptimize=ReleaseFast`) hashes
   the packed quads of a fixed world. The quad hash is `4b4f00654f783b36`.
   A mesher change that must not change the output must keep this hash.
@@ -206,6 +210,20 @@ Web Worker pool rules (C9):
   Bun Web Workers. Run it 10 times after a change to the pool, to look
   for races.
 
+Mesh bytes (C5):
+
+- Main never copies the quads of a mesh. JS holds each worker result
+  (`backends/wasm/held-bytes.ts`), and `app.wasm` copies only its first 64
+  bytes. The render writes a mesh to the GPU from the held ArrayBuffer
+  (`gpu.writeBufferHeld`), then releases it. Native executors upload from
+  the reply bytes (`pipeline/mesh_bytes.zig`).
+- Do not read the quads of a mesh on main. Use `LoadedChunk.mesh`
+  (`MeshInfo`). The tests compare meshes by the mesh hash of the worker.
+- A chunk keeps its GPU quad buffer for a new mesh that fits. Evicted
+  buffers go to `QuadBufferPool` (`main.zig`).
+- `checkMeshUploads` (`headless-app.ts`) and the memory test of
+  `worker-pool.test.ts` prove it in CI.
+
 ---
 
 ## Voxel Demo — Lighting
@@ -226,7 +244,7 @@ fades in about 0.5 s.
 - `State.debug_tick` (main.zig) is the debug clock. It advances one step per
   tick. In TAS step mode it advances only on executing ticks, so the tint
   stays between steps.
-- `uploadChunkMeshToGPU` writes the clock value into `ChunkGPU.rebuilt_tick`
+- `uploadChunkMesh` writes the clock value into `ChunkGPU.rebuilt_tick`
   when the mesh is new. The 16-byte header of the quad buffer holds it:
   (origin x, rebuilt tick, origin z, 0).
 - The uniforms hold `debug_tick`: the clock when GPU debug is on, 0 when off.
@@ -361,6 +379,7 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `pipeline/chunk_worker_main.zig` | The exports of `chunks.wasm`, the chunk worker of the web build. `chunks_wasm.zig` is its build root (C9) |
 | `pipeline/worker_world.zig` | The world of a chunk worker: seed, edit log, LRU cache with a memory limit (C4, C14). Builds for wasm32 |
 | `pipeline/protocol.zig` | The chunk protocol: Hello, Edit, Job, Result, Error bytes (P6) |
+| `pipeline/mesh_bytes.zig` | The quad bytes of a mesh result until the GPU upload: in main memory, or held by JS (C5) |
 | `world_gen.zig` | Procedural terrain, `Preset` enum (flatland / hilly), `presetConfig()`, value-noise `sampleHeight` |
 | `mesher.zig` | Greedy quad mesher (writes `PackedQuad`), `sortByDepth` |
 | `camera.zig` | FPS camera, view/projection matrices |

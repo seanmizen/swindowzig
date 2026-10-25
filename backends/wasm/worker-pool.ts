@@ -24,9 +24,13 @@
 //      fallback). Without a pool, chunkImports() gives 0 slots.
 //
 // No SharedArrayBuffer and no wasm threads (section 11). Each message is a
-// transferable ArrayBuffer.
+// transferable ArrayBuffer. app.wasm takes a result in two steps (C5): JS
+// holds the whole result (held-bytes.ts) and copies only its head into the
+// wasm memory. A mesh stays in JS until the WebGPU bridge writes it to the
+// GPU. app.wasm reads the payload of any other result.
 
 import type { FromWorker, ToWorker } from './chunk-worker';
+import type { HeldBytes } from './held-bytes';
 
 /** The most workers of a pool (C9). */
 export const MAX_WORKERS = 4;
@@ -304,17 +308,17 @@ export class WorkerPool {
     return this.queue[this.queueHead]?.byteLength ?? 0;
   }
 
-  /** Copy the next result into `out`, and remove it from the queue. */
-  take(out: Uint8Array): void {
+  /** Remove the next result from the queue and return it, or null. */
+  takeNext(): Uint8Array | null {
     const r = this.queue[this.queueHead];
-    if (!r) return;
-    out.set(r.subarray(0, out.byteLength));
+    if (!r) return null;
     this.queue[this.queueHead] = EMPTY_RESULT;
     this.queueHead++;
     if (this.queueHead === this.queue.length) {
       this.queue = [];
       this.queueHead = 0;
     }
+    return r;
   }
 
   // -- Workers ---------------------------------------------------------------
@@ -490,11 +494,13 @@ const EMPTY_RESULT = new Uint8Array(0);
  * The "chunks" imports of app.wasm (pipeline/exec_web.zig). They read the
  * pool from `holder` when they run, so the loader can set the pool after
  * the instantiation. With no pool, jsChunkSlots returns 0, and app.wasm
- * uses the Inline executor.
+ * uses the Inline executor. `held` keeps each result that app.wasm takes,
+ * until app.wasm releases it (C5). The WebGPU bridge reads the same store.
  */
 export function chunkImports(
   holder: PoolHolder,
   getMemory: () => WebAssembly.Memory,
+  held: HeldBytes,
 ): Record<string, (...args: never[]) => unknown> {
   const bytes = (ptr: number, len: number) =>
     new Uint8Array(getMemory().buffer, ptr, len);
@@ -507,8 +513,25 @@ export function chunkImports(
     jsChunkBroadcast: (ptr: number, len: number): number =>
       holder.pool?.broadcast(bytes(ptr, len)) ? 1 : 0,
     jsChunkNextLen: (): number => holder.pool?.nextLength() ?? 0,
-    jsChunkTake: (ptr: number, len: number): void => {
-      holder.pool?.take(bytes(ptr, len));
+    // Hold the next result, and copy its first `len` bytes into the wasm
+    // memory. Returns the handle (0: no result).
+    jsChunkTakeHead: (ptr: number, len: number): number => {
+      const r = holder.pool?.takeNext();
+      if (!r) return 0;
+      const handle = held.hold(r);
+      held.copyTo(handle, 0, bytes(ptr, len));
+      return handle;
+    },
+    jsChunkRead: (
+      handle: number,
+      offset: number,
+      ptr: number,
+      len: number,
+    ): void => {
+      held.copyTo(handle, offset, bytes(ptr, len));
+    },
+    jsChunkRelease: (handle: number): void => {
+      held.release(handle);
     },
   };
 }

@@ -9,6 +9,7 @@
 //!
 //! The ThreadPool executor uses two parts of this file too: the conversion
 //! of a reply to a scheduler Result, and the counters of the message bytes.
+//! A mesh reply goes to the scheduler with no copy of its quads (C5).
 
 const std = @import("std");
 const stages = @import("stages.zig");
@@ -17,6 +18,7 @@ const scheduler_mod = @import("scheduler.zig");
 const worker_world = @import("worker_world.zig");
 const world_mod = @import("../world.zig");
 const world_gen = @import("../world_gen.zig");
+const MeshBytes = @import("mesh_bytes.zig").MeshBytes;
 
 const Scheduler = scheduler_mod.Scheduler;
 const Job = scheduler_mod.Job;
@@ -72,33 +74,64 @@ pub const ReplyError = error{
     OutOfMemory,
 };
 
-/// The scheduler Result of the worker reply `reply` to the job `st`. The
-/// blocks and the quads are copies, from `allocator`. The caller still owns
-/// `reply`.
-pub fn resultOf(allocator: std.mem.Allocator, st: Started, reply: []const u8) ReplyError!Result {
-    const d = protocol.decode(reply) catch return error.BadReply;
-    const r = switch (d.msg) {
-        .result => |r| r,
-        .err => |e| {
+/// The scheduler Result of the worker reply `reply` to the job `st`. It
+/// takes `reply`, which `owner` allocated. A mesh result keeps the reply as
+/// its quad bytes, so main does not copy the quads (C5). The upload frees
+/// them. For the other stages, it frees the reply, and the blocks are copies
+/// from `allocator`.
+pub fn resultOf(allocator: std.mem.Allocator, st: Started, reply: []u8, owner: std.mem.Allocator) ReplyError!Result {
+    var keep = false;
+    defer if (!keep) owner.free(reply);
+    const info = (protocol.decodeResultHead(reply, reply.len) catch return error.BadReply) orelse {
+        const d = protocol.decode(reply) catch return error.BadReply;
+        if (d.msg == .err) {
+            const e = d.msg.err;
             std.log.err("[PIPE] worker error {s} for {s} ({}, {})", .{ @tagName(e.code), @tagName(e.stage), e.cx, e.cz });
             return error.WorkerError;
-        },
-        else => return error.BadReply,
+        }
+        return error.BadReply;
     };
-    if (r.head.stage != st.job.stage or r.head.cx != st.job.cx or r.head.cz != st.job.cz) return error.BadReply;
+    try checkJob(st, info.head);
+    if (info.head.stage == .mesh) {
+        keep = true;
+        return meshResult(st, info, .{ .local = .{ .msg = reply, .allocator = owner } });
+    }
+    const d = protocol.decode(reply) catch return error.BadReply;
+    const r = d.msg.result;
     const output: scheduler_mod.Output = switch (r.head.stage) {
         .generate => .{ .generate = .{
             .block_ver = r.head.block_ver,
             .blocks = if (r.has_blocks) try protocol.decodeBlocks(allocator, r) else null,
         } },
         .light => .{ .light = .{ .hash = r.head.light_hash } },
-        .mesh => blk: {
-            const quads = try allocator.alloc(stages.PackedQuad, r.quadCount());
-            r.copyQuads(quads);
-            break :blk .{ .mesh = .{ .quads = quads, .y_min = r.head.y_min, .y_max = r.head.y_max } };
-        },
+        .mesh => unreachable,
     };
     return .{ .started = st, .output = output, .job_ns = @as(u64, r.head.job_us) * 1000 };
+}
+
+/// The scheduler Result of a mesh reply, from its fixed part `info` and its
+/// quad bytes. Main reads only the counts (C5). The Result takes `bytes`.
+pub fn meshResult(st: Started, info: protocol.ResultInfo, bytes: MeshBytes) Result {
+    std.debug.assert(info.head.stage == .mesh);
+    std.debug.assert(bytes.quadBytesLen() == info.payload_len);
+    return .{
+        .started = st,
+        .output = .{ .mesh = .{
+            .info = .{
+                .quad_count = info.quad_count,
+                .y_min = info.head.y_min,
+                .y_max = info.head.y_max,
+                .hash = info.head.mesh_hash,
+            },
+            .bytes = bytes,
+        } },
+        .job_ns = @as(u64, info.head.job_us) * 1000,
+    };
+}
+
+/// A reply must be for the stage and the chunk of its job.
+pub fn checkJob(st: Started, head: protocol.ResultHead) ReplyError!void {
+    if (head.stage != st.job.stage or head.cx != st.job.cx or head.cz != st.job.cz) return error.BadReply;
 }
 
 /// The Hello that starts a worker for `config` (C9).
@@ -183,9 +216,8 @@ pub const Inline = struct {
         self.traffic.jobs += 1;
         self.traffic.job_bytes += msg.len;
         const reply = (try self.worker.handle(msg)) orelse return error.BadReply;
-        defer self.allocator.free(reply);
         self.traffic.addResult(job.stage, reply.len);
-        return resultOf(world.allocator, started, reply);
+        return resultOf(world.allocator, started, reply, self.allocator);
     }
 
     /// The frame phase: plan, then run and install jobs in priority order

@@ -1516,6 +1516,22 @@ pub const GPU = struct {
         }
     }
 
+    /// Write `size` bytes that the JS host holds to `buffer` at `offset`.
+    /// `held` is the handle of the bytes in the host store
+    /// (backends/wasm/held-bytes.ts), and `held_offset` is the first byte.
+    /// JS calls `queue.writeBuffer` with the ArrayBuffer, so the bytes never
+    /// go through the wasm memory. The voxel demo uses it for the meshes
+    /// that Web Workers send (C5). Web only: a native build has no
+    /// host-held bytes, and stops with a panic.
+    pub fn writeBufferHeld(self: *GPU, buffer: Buffer, offset: u64, held: u32, held_offset: u32, size: u64) void {
+        if (!self.isReady()) return;
+        if (comptime is_wasm) {
+            web.webgpuWriteBufferHeld(self.queue, buffer.handle, offset, held, held_offset, size);
+        } else {
+            @panic("writeBufferHeld: a native build has no host-held bytes");
+        }
+    }
+
     /// Write data to a texture
     pub fn writeTexture(
         self: *GPU,

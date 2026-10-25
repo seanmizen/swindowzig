@@ -1,11 +1,10 @@
 const std = @import("std");
 const chunk_mod = @import("chunk.zig");
-const mesher_mod = @import("mesher.zig");
 const world_gen = @import("world_gen.zig");
 const stages = @import("pipeline/stages.zig");
 const protocol = @import("pipeline/protocol.zig");
+const mesh_bytes = @import("pipeline/mesh_bytes.zig");
 const Chunk = chunk_mod.Chunk;
-const Mesh = mesher_mod.Mesh;
 const Version = stages.Version;
 const Inputs = stages.Inputs;
 
@@ -40,6 +39,22 @@ pub const ChunkKey = struct {
 
 pub const ChunkMap = std.HashMap(ChunkKey, *LoadedChunk, ChunkKey.HashContext, std.hash_map.default_max_load_percentage);
 
+/// What main knows of the mesh of a chunk (C5). The quads go to the GPU
+/// and main keeps no copy of them.
+pub const MeshInfo = struct {
+    quad_count: u32 = 0,
+    /// The y range of the quads, for the frustum cull. With no quads, y_min
+    /// is CHUNK_H and y_max is 0.
+    y_min: f32 = chunk_mod.CHUNK_H,
+    y_max: f32 = 0,
+    /// protocol.meshHash of the quad bytes. The tests compare meshes by it.
+    hash: u64 = 0,
+
+    pub fn quadCount(self: MeshInfo) usize {
+        return self.quad_count;
+    }
+};
+
 /// A chunk in the World: its versions, its mesh, and the blocks near the
 /// player. The chunk scheduler uses it (pipeline/scheduler.zig, C3).
 ///
@@ -59,7 +74,11 @@ pub const LoadedChunk = struct {
     has_blocks: bool = false,
     /// The hash of the installed light (protocol.lightHash).
     light_hash: u64 = 0,
-    mesh: Mesh,
+    /// The counts of the installed mesh. Main keeps no quads (C5).
+    mesh: MeshInfo = .{},
+    /// The quad bytes of a new mesh, until main uploads them to the GPU and
+    /// frees them (C5). Null when no upload waits.
+    upload: ?mesh_bytes.MeshBytes = null,
     cx: i32,
     cz: i32,
     /// The content version of the blocks: 0 after generation, and 1 more
@@ -73,20 +92,17 @@ pub const LoadedChunk = struct {
     mesh_inputs: ?Inputs = null,
     /// The mesh options (AO, lighting) of the installed mesh.
     mesh_options: u32 = 0,
-    /// True from a mesh install until main uploads the mesh to the GPU.
-    upload_pending: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, cx: i32, cz: i32) LoadedChunk {
         return .{
             .chunk = Chunk.init(allocator),
-            .mesh = Mesh.init(allocator),
             .cx = cx,
             .cz = cz,
         };
     }
 
     pub fn deinit(self: *LoadedChunk) void {
-        self.mesh.deinit();
+        self.dropUpload();
         self.chunk.deinit();
     }
 
@@ -98,11 +114,25 @@ pub const LoadedChunk = struct {
         return self.mesh_inputs != null;
     }
 
-    /// Free the mesh. The GPU buffers belong to main.zig, and main frees them.
+    /// Forget the mesh. The GPU buffers belong to main.zig, and main frees them.
     pub fn dropMesh(self: *LoadedChunk) void {
-        self.mesh.freeHostBuffers();
+        self.dropUpload();
+        self.mesh = .{};
         self.mesh_inputs = null;
-        self.upload_pending = false;
+    }
+
+    /// Free the quad bytes that wait for the upload, if any.
+    pub fn dropUpload(self: *LoadedChunk) void {
+        if (self.upload) |u| u.release();
+        self.upload = null;
+    }
+
+    /// Set a new mesh: the counts, and the quad bytes for the upload. The
+    /// chunk takes `bytes`.
+    pub fn setMesh(self: *LoadedChunk, info: MeshInfo, bytes: mesh_bytes.MeshBytes) void {
+        self.dropUpload();
+        self.mesh = info;
+        self.upload = bytes;
     }
 
     /// Free the light. The chunk then reads skylight 0 and block light 0.

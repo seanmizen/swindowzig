@@ -227,6 +227,7 @@ const Chunk = chunk_mod.Chunk;
 const BlockType = chunk_mod.BlockType;
 
 const mesher_mod = @import("mesher.zig");
+const mesh_bytes = @import("pipeline/mesh_bytes.zig");
 const Mesh = mesher_mod.Mesh;
 const VoxelVertex = mesher_mod.VoxelVertex;
 
@@ -665,14 +666,128 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
     }
 }
 
-/// GPU copy of one chunk mesh: a 16-byte header (the chunk origin and the
-/// rebuild tick) and one 16-byte PackedQuad per quad, bound at group 1 for
-/// vs_chunk.
+/// A GPU quad buffer and its bind group (group 1 of vs_chunk). The buffer
+/// holds a 16-byte header (the chunk origin and the rebuild tick) and room
+/// for `capacity` PackedQuads.
+const QuadBuffer = struct {
+    buffer: gpu_mod.Buffer,
+    bind_group: gpu_mod.BindGroup,
+    capacity: u32,
+
+    fn bytes(self: QuadBuffer) u64 {
+        return (@as(u64, self.capacity) + 1) * @sizeOf(mesher_mod.PackedQuad);
+    }
+
+    fn destroy(self: QuadBuffer) void {
+        self.bind_group.release();
+        self.buffer.destroy();
+    }
+};
+
+/// The quad buffers that no chunk uses now, for the next chunks (C5).
+///
+/// The size classes are in elements of 16 bytes (the header and the quads):
+/// 2^k, 1.25 × 2^k, 1.5 × 2^k and 1.75 × 2^k, from 2^8 (4 KB) to 2^MAX_LOG2.
+/// A mesh gets a buffer of the smallest class that holds it, so a buffer
+/// has at most 1.25 times the bytes that the mesh needs, or 4 KB. When a
+/// chunk gets a new mesh that fits, it keeps its buffer. When the scheduler
+/// evicts a chunk, its buffer comes here. So during a walk, the new chunks
+/// mostly take the buffers of the evicted chunks, and main makes few
+/// buffers and bind groups. The free list of a class holds at most
+/// MAX_FREE_PER_CLASS buffers.
+const QuadBufferPool = struct {
+    free: [CLASSES]std.ArrayList(QuadBuffer) = @splat(.empty),
+    /// Counters for the debug overlay and the Bun tests (C12).
+    created: u64 = 0,
+    reused: u64 = 0,
+    destroyed: u64 = 0,
+
+    const MIN_LOG2 = 8;
+    const MAX_LOG2 = 20;
+    /// Classes for each power of two.
+    const STEPS = 4;
+    const CLASSES = (MAX_LOG2 - MIN_LOG2) * STEPS + 1;
+    const MAX_FREE_PER_CLASS = 32;
+
+    /// The elements of a buffer of `class`.
+    fn elementsOf(class: usize) usize {
+        const k = class / STEPS + MIN_LOG2;
+        const j = class % STEPS;
+        return (@as(usize, 1) << @intCast(k)) + j * (@as(usize, 1) << @intCast(k - 2));
+    }
+
+    /// The smallest class for `quads` quads, or null when the mesh is too
+    /// large to pool.
+    fn classOf(quads: usize) ?usize {
+        const elements = quads + 1;
+        if (elements <= (1 << MIN_LOG2)) return 0;
+        // 2^k < elements <= 2^(k + 1)
+        const k = std.math.log2_int(usize, elements - 1);
+        const base = @as(usize, 1) << @intCast(k);
+        const step = base >> 2;
+        const j = (elements - base + step - 1) / step; // 1 to 4
+        const class = (k - MIN_LOG2) * STEPS + j;
+        return if (class < CLASSES) class else null;
+    }
+
+    fn capacityOf(class: usize) u32 {
+        return @intCast(elementsOf(class) - 1);
+    }
+
+    /// A buffer that holds at least `quads` quads: a free buffer of the
+    /// class, or a new buffer.
+    fn acquire(self: *QuadBufferPool, g: *gpu_mod.GPU, quads: usize) !QuadBuffer {
+        const class = classOf(quads);
+        if (class) |c| {
+            if (self.free[c].pop()) |qb| {
+                self.reused += 1;
+                return qb;
+            }
+        }
+        const capacity: u32 = if (class) |c| capacityOf(c) else @intCast(quads);
+        const size = (@as(u64, capacity) + 1) * @sizeOf(mesher_mod.PackedQuad);
+        const buffer = try g.createBuffer(.{ .size = size, .usage = .{ .storage = true, .copy_dst = true } });
+        errdefer buffer.destroy();
+        var buffer_ref = buffer;
+        const bind_group = try g.createBindGroup(.{
+            .layout = &state.chunk_bg_layout.?,
+            .entries = &[_]gpu_mod.BindGroupEntry{.{ .binding = 0, .buffer = &buffer_ref, .size = size }},
+        });
+        self.created += 1;
+        return .{ .buffer = buffer, .bind_group = bind_group, .capacity = capacity };
+    }
+
+    /// Give a buffer back. It goes to the free list of its class, or it is
+    /// destroyed when the list is full.
+    fn put(self: *QuadBufferPool, a: std.mem.Allocator, qb: QuadBuffer) void {
+        if (classOf(qb.capacity)) |c| {
+            if (capacityOf(c) == qb.capacity and self.free[c].items.len < MAX_FREE_PER_CLASS) {
+                if (self.free[c].append(a, qb)) |_| return else |_| {}
+            }
+        }
+        qb.destroy();
+        self.destroyed += 1;
+    }
+
+    fn freeCount(self: *const QuadBufferPool) usize {
+        var n: usize = 0;
+        for (self.free) |l| n += l.items.len;
+        return n;
+    }
+
+    fn deinit(self: *QuadBufferPool, a: std.mem.Allocator) void {
+        for (&self.free) |*l| {
+            for (l.items) |qb| qb.destroy();
+            l.deinit(a);
+        }
+    }
+};
+
+/// The GPU side of one chunk mesh. Main keeps no CPU copy of the quads
+/// (C5), except with --depth-stencil=off.
 const ChunkGPU = struct {
-    quad_buffer: ?gpu_mod.Buffer = null,
-    bind_group: ?gpu_mod.BindGroup = null,
-    /// Quads the buffer can hold, and quads in it now.
-    capacity: usize = 0,
+    quads: ?QuadBuffer = null,
+    /// Quads in the buffer now.
     quad_count: u32 = 0,
     /// The y range of the mesh, for the frustum cull.
     y_min: f32 = 0,
@@ -681,10 +796,14 @@ const ChunkGPU = struct {
     /// header of the quad buffer holds it, and vs_chunk tints the chunk
     /// orange for 64 ticks after it when GPU debug is on.
     rebuilt_tick: u32 = 0,
+    /// --depth-stencil=off only: a CPU copy of the quads. The
+    /// back-to-front sort of each frame reads it (sortByDepth).
+    sort_mesh: ?mesher_mod.Mesh = null,
 
+    /// Give the buffer to the pool, and free the CPU copy.
     fn release(self: *ChunkGPU) void {
-        if (self.bind_group) |bg| bg.release();
-        if (self.quad_buffer) |buf| buf.destroy();
+        if (self.quads) |qb| state.quad_pool.put(state.allocator, qb);
+        if (self.sort_mesh) |*m| m.deinit();
         self.* = .{};
     }
 };
@@ -693,6 +812,16 @@ const ChunkGPU = struct {
 const State = struct {
     world: world_mod.World = undefined, // set by voxelInit
     chunk_gpu: std.HashMap(world_mod.ChunkKey, ChunkGPU, world_mod.ChunkKey.HashContext, std.hash_map.default_max_load_percentage) = undefined, // set by voxelInit
+    /// The free GPU quad buffers (C5).
+    quad_pool: QuadBufferPool = .{},
+    /// The app allocator, for the pool lists and the depth-off CPU copies.
+    allocator: std.mem.Allocator = undefined, // set by voxelInit
+    /// Mesh uploads (C5): from bytes in main memory (Inline, ThreadPool),
+    /// and from bytes that JS holds (WorkerPool).
+    uploads_local: u64 = 0,
+    uploads_held: u64 = 0,
+    /// Quad bytes freed with no upload: a pure headless run has no GPU.
+    uploads_dropped: u64 = 0,
     camera: CameraType = undefined, // set by voxelInit
     player: Player = undefined, // set by voxelInit
     pipeline: ?gpu_mod.RenderPipeline = null,
@@ -957,6 +1086,8 @@ fn voxelInit(ctx: *sw.Context) !void {
 
     // World init is deferred until after arg parsing (so --world= can select the preset).
     state.chunk_gpu = std.HashMap(world_mod.ChunkKey, ChunkGPU, world_mod.ChunkKey.HashContext, std.hash_map.default_max_load_percentage).init(ctx.allocator());
+    state.allocator = ctx.allocator();
+    state.quad_pool = .{};
 
     // Initialize camera
     const window_info = ctx.window();
@@ -1686,7 +1817,6 @@ fn ensureSimRadius() !void {
 }
 
 fn voxelFrame(ctx: *sw.Context) !void {
-    _ = ctx;
     const cx, const cz = playerChunk();
     state.scheduler.setCenter(cx, cz);
     const view = captureFrustum();
@@ -1735,6 +1865,17 @@ fn voxelFrame(ctx: *sw.Context) !void {
     if (state.scheduler.evicted.items.len > 0) {
         std.log.info("[EVICT] {} mesh(es) evicted", .{state.scheduler.evicted.items.len});
         state.scheduler.evicted.clearRetainingCapacity();
+    }
+
+    // A pure headless run has no GPU and no render. Free the quad bytes of
+    // the new meshes here, as the upload does, so main keeps no copy (C5).
+    if (state.headless and !ctx.gpu().isReady()) {
+        var it = state.world.chunks.valueIterator();
+        while (it.next()) |lc| {
+            if (lc.*.upload == null) continue;
+            lc.*.dropUpload();
+            state.uploads_dropped += 1;
+        }
     }
 }
 
@@ -2753,6 +2894,10 @@ fn voxelRender(ctx: *sw.Context) !void {
         }
     }
 
+    // Upload the new meshes, also during the loading screen, so the frame
+    // that ends the loading screen does not upload them all (P1).
+    uploadNewMeshes(g);
+
     // Early path: world still loading — render a purple loading overlay only.
     // Skips all 3D work, HUD, crosshair, and the --dump-frame capture (which waits
     // for the real scene). Exits via submit+present.
@@ -2763,63 +2908,32 @@ fn voxelRender(ctx: *sw.Context) !void {
         return;
     }
 
-    // Upload each chunk's mesh when it changes. With depth on, the pipeline is
-    // opaque and the depth test resolves occlusion, so no per-quad sort runs
-    // and an unchanged chunk costs nothing here. With --depth-stencil=off the
-    // draw order is the only occlusion: each chunk sorts its quads back to
-    // front and uploads its indices every frame.
-    const sort_quads = !state.depth_stencil_enabled;
-    var render_sort_us: i128 = 0;
-    var render_upload_us: i128 = 0;
-    var render_upload_chunks: usize = 0;
+    // With --depth-stencil=off, the draw order is the only occlusion: each
+    // chunk sorts its CPU copy of the quads back to front and writes them
+    // to its buffer, each frame. With depth on, no sort runs, and an
+    // unchanged chunk costs nothing here.
     const cam_fwd = viewForward();
-    {
-        var it = state.world.chunks.iterator();
+    if (!state.depth_stencil_enabled) {
+        const t_sort = perfNowNs();
+        var it = state.chunk_gpu.iterator();
         while (it.next()) |entry| {
+            const cg = entry.value_ptr;
+            const m = &(cg.sort_mesh orelse continue);
+            const qb = cg.quads orelse continue;
+            if (m.quadCount() == 0) continue;
             const key = entry.key_ptr.*;
-            const lc = entry.value_ptr.*;
-            if (lc.mesh.quadCount() == 0) continue;
-
-            if (sort_quads) {
-                const t_sort = perfNowNs();
-                lc.mesh.sortByDepth(.{
-                    state.camera.position.x,
-                    state.camera.position.y,
-                    state.camera.position.z,
-                }, cam_fwd, lc.worldX(), lc.worldZ()) catch |err| {
-                    std.log.err("Sort failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
-                    continue;
-                };
-                render_sort_us += @divTrunc(perfNowNs() - t_sort, 1000);
-            }
-
-            const gop = state.chunk_gpu.getOrPut(key) catch continue;
-            if (!gop.found_existing) gop.value_ptr.* = .{};
-            const first_upload = gop.value_ptr.quad_buffer == null;
-            if (!(lc.upload_pending or first_upload or sort_quads)) continue;
-            const needed_upload = lc.upload_pending;
-            const up_t0: i128 = if (state.profile_csv_file != null and needed_upload) perfNowNs() else 0;
-            uploadChunkMeshToGPU(g, lc, gop.value_ptr, lc.upload_pending, sort_quads) catch |err| {
-                std.log.err("Upload failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
+            m.sortByDepth(.{
+                state.camera.position.x,
+                state.camera.position.y,
+                state.camera.position.z,
+            }, cam_fwd, key.cx * chunk_mod.CHUNK_W, key.cz * chunk_mod.CHUNK_W) catch |err| {
+                std.log.err("Sort failed for chunk ({},{}): {}", .{ key.cx, key.cz, err });
                 continue;
             };
-            if (state.profile_csv_file != null and needed_upload) {
-                const up_t1 = perfNowNs();
-                state.upload_ns +%= @intCast(up_t1 - up_t0);
-                state.upload_count +%= 1;
-            }
-            if (lc.upload_pending) {
-                const this_upload_us = @divTrunc(perfNowNs() - up_t0, 1000);
-                render_upload_us += this_upload_us;
-                render_upload_chunks += 1;
-                lc.upload_pending = false;
-            }
+            g.writeBuffer(qb.buffer, @sizeOf(mesher_mod.PackedQuad), std.mem.sliceAsBytes(m.sorted_quads[0..m.quadCount()]));
         }
-    }
-    if (render_upload_chunks > 0) {
-        std.log.info("[SPIKE_RENDER] sort_total={}us upload_total={}us upload_chunks={}", .{
-            render_sort_us, render_upload_us, render_upload_chunks,
-        });
+        const sort_us = @divTrunc(perfNowNs() - t_sort, 1000);
+        if (sort_us > 1000) std.log.info("[SPIKE_RENDER] sort_total={}us", .{sort_us});
     }
 
     // Update uniforms — front-facing view needs a flipped lookAt direction.
@@ -2975,8 +3089,9 @@ fn voxelRender(ctx: *sw.Context) !void {
     for (sorted_chunks.items) |lc| {
         const key = world_mod.ChunkKey{ .cx = lc.cx, .cz = lc.cz };
         const cg = state.chunk_gpu.get(key) orelse continue;
-        if (cg.bind_group == null or cg.quad_count == 0) continue;
-        pass.setBindGroup(1, cg.bind_group.?);
+        const qb = cg.quads orelse continue;
+        if (cg.quad_count == 0) continue;
+        pass.setBindGroup(1, qb.bind_group);
         pass.draw(cg.quad_count * 6, 1, 0, 0);
     }
     // =========================================================================
@@ -3738,10 +3853,12 @@ fn voxelShutdown(ctx: *sw.Context) !void {
     state.executor.deinit();
     state.scheduler.deinit();
 
-    // Destroy per-chunk GPU buffers
+    // Destroy per-chunk GPU buffers. release() gives each buffer to the
+    // pool, and the pool destroys them all.
     var it = state.chunk_gpu.iterator();
     while (it.next()) |entry| entry.value_ptr.release();
     state.chunk_gpu.deinit();
+    state.quad_pool.deinit(state.allocator);
     state.world.deinit();
 
     state.overlay.deinit();
@@ -3972,8 +4089,6 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     std.log.info("GPU resources created", .{});
 }
 
-/// `sorted`: upload the per-quad back-to-front order from sortByDepth (depth
-/// off) instead of the mesh's own index order (depth on).
 /// Log the chunk meshes on the GPU: chunk count, quad count and buffer bytes.
 fn logGpuMeshStats() void {
     var quads: u64 = 0;
@@ -3981,7 +4096,7 @@ fn logGpuMeshStats() void {
     var it = state.chunk_gpu.valueIterator();
     while (it.next()) |cg| {
         quads += cg.quad_count;
-        if (cg.quad_buffer != null) bytes += (cg.capacity + 1) * @sizeOf(mesher_mod.PackedQuad);
+        if (cg.quads) |qb| bytes += qb.bytes();
     }
     const st = &state.scheduler.stats;
     std.log.info("[PIPE] installed gen={} light={} mesh={} discarded={} sim_inline={} plans={}", .{
@@ -4011,52 +4126,115 @@ fn logGpuMeshStats() void {
     std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s})", .{
         state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(),
     });
+    // C5: main keeps no CPU copy of a mesh after its upload. `waiting` is
+    // the meshes whose bytes wait for the upload, and `cpu_copies` the
+    // copies for the --depth-stencil=off sort.
+    var waiting: usize = 0;
+    var wit = state.world.chunks.valueIterator();
+    while (wit.next()) |lc| {
+        if (lc.*.upload != null) waiting += 1;
+    }
+    var copies: usize = 0;
+    var cit = state.chunk_gpu.valueIterator();
+    while (cit.next()) |cg| {
+        if (cg.sort_mesh != null) copies += 1;
+    }
+    const pool = &state.quad_pool;
+    std.log.info("[GPU MESH] uploads local={} held={} dropped={} waiting={} cpu_copies={} quad buffers created={} reused={} destroyed={} free={}", .{
+        state.uploads_local, state.uploads_held, state.uploads_dropped, waiting, copies, pool.created, pool.reused, pool.destroyed, pool.freeCount(),
+    });
 }
 
-/// Write a chunk's packed quads to its quad buffer. The mesher makes the GPU
-/// format, so the upload copies the bytes as they are. `sorted`: write the
-/// quads in the back-to-front order from sortByDepth (depth off).
-/// The buffer and its bind group are made again when the quad count grows
-/// past the buffer, or when `structure_changed` (a new mesh). A new mesh
-/// also sets the "rebuilt at" tick of the chunk for the GPU debug tint.
-fn uploadChunkMeshToGPU(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, structure_changed: bool, sorted: bool) !void {
-    const quad_count = lc.mesh.quadCount();
-    if (quad_count == 0) return;
-    const recreate = structure_changed or cg.quad_buffer == null or quad_count > cg.capacity;
+/// Upload the new mesh of each chunk that has one (`LoadedChunk.upload`).
+fn uploadNewMeshes(g: *gpu_mod.GPU) void {
+    var upload_us: i128 = 0;
+    var upload_chunks: usize = 0;
+    var it = state.world.chunks.iterator();
+    while (it.next()) |entry| {
+        const lc = entry.value_ptr.*;
+        if (lc.upload == null) continue;
+        const t0 = perfNowNs();
+        const gop = state.chunk_gpu.getOrPut(entry.key_ptr.*) catch continue;
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        uploadChunkMesh(g, lc, gop.value_ptr) catch |err| {
+            // The bytes stay, and the next frame tries again.
+            std.log.err("Upload failed for chunk ({},{}): {}", .{ lc.cx, lc.cz, err });
+            continue;
+        };
+        const dt = perfNowNs() - t0;
+        upload_us += @divTrunc(dt, 1000);
+        upload_chunks += 1;
+        if (state.profile_csv_file != null) {
+            state.upload_ns +%= @intCast(dt);
+            state.upload_count +%= 1;
+        }
+    }
+    if (upload_chunks > 0) {
+        std.log.info("[SPIKE_RENDER] upload_total={}us upload_chunks={}", .{ upload_us, upload_chunks });
+    }
+}
 
-    if (recreate) {
-        cg.release();
-        // The header element holds the chunk origin and the rebuild tick
-        // (x, rebuilt tick, z, unused).
-        const buffer = try g.createBuffer(.{
-            .size = (quad_count + 1) * @sizeOf(mesher_mod.PackedQuad),
-            .usage = .{ .storage = true, .copy_dst = true },
-        });
-        var buffer_ref = buffer;
-        cg.quad_buffer = buffer;
-        cg.bind_group = try g.createBindGroup(.{
-            .layout = &state.chunk_bg_layout.?,
-            .entries = &[_]gpu_mod.BindGroupEntry{.{
-                .binding = 0,
-                .buffer = &buffer_ref,
-                .size = (quad_count + 1) * @sizeOf(mesher_mod.PackedQuad),
-            }},
-        });
-        cg.capacity = quad_count;
+/// Write the new mesh of `lc` to its quad buffer, then free the quad bytes
+/// (C5). Main does not copy the quads:
+///
+///   - Bytes in main memory (Inline, ThreadPool): one writeBuffer from the
+///     worker reply.
+///   - Bytes that JS holds (WorkerPool): JS writes them to the GPU from the
+///     transferred ArrayBuffer (writeBufferHeld). They never go into the
+///     wasm memory.
+///
+/// The header (the chunk origin and the "rebuilt at" tick of the GPU debug
+/// tint) comes from main. A buffer that is too small goes back to the pool
+/// for a larger one. With --depth-stencil=off, main keeps a CPU copy of the
+/// quads for the sort of each frame: the only copy of a mesh on main.
+fn uploadChunkMesh(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !void {
+    const bytes = lc.upload.?;
+    const n = lc.mesh.quad_count;
+    if (cg.sort_mesh) |*m| m.deinit();
+    cg.sort_mesh = null;
+    if (n == 0) {
+        // Nothing to draw. The buffer goes back to the pool.
+        if (cg.quads) |qb| state.quad_pool.put(state.allocator, qb);
+        cg.quads = null;
+        cg.quad_count = 0;
+        lc.dropUpload();
+        return;
+    }
+    if (cg.quads) |qb| if (qb.capacity < n) {
+        state.quad_pool.put(state.allocator, qb);
+        cg.quads = null;
+    };
+    if (cg.quads == null) cg.quads = try state.quad_pool.acquire(g, n);
+    const buffer = cg.quads.?.buffer;
+
+    if (!state.depth_stencil_enabled) {
+        var m = mesher_mod.Mesh.init(state.allocator);
+        errdefer m.deinit();
+        try m.quads.resize(state.allocator, n);
+        bytes.copyQuads(m.quads.items);
+        m.y_min = lc.mesh.y_min;
+        m.y_max = lc.mesh.y_max;
+        cg.sort_mesh = m;
     }
 
-    if (structure_changed) cg.rebuilt_tick = state.debug_tick;
-    if (!(recreate or sorted)) return;
-    const world_ox = lc.cx * chunk_mod.CHUNK_W;
-    const world_oz = lc.cz * chunk_mod.CHUNK_W;
-    const header = mesher_mod.PackedQuad{ @bitCast(world_ox), cg.rebuilt_tick, @bitCast(world_oz), 0 };
-    const quads = if (sorted) lc.mesh.sorted_quads[0..quad_count] else lc.mesh.quads.items;
+    cg.rebuilt_tick = state.debug_tick;
+    const header = mesher_mod.PackedQuad{ @bitCast(lc.cx * chunk_mod.CHUNK_W), cg.rebuilt_tick, @bitCast(lc.cz * chunk_mod.CHUNK_W), 0 };
     const quad_size = @sizeOf(mesher_mod.PackedQuad);
-    g.writeBuffer(cg.quad_buffer.?, 0, std.mem.asBytes(&header));
-    g.writeBuffer(cg.quad_buffer.?, quad_size, std.mem.sliceAsBytes(quads));
-    cg.quad_count = @intCast(quad_count);
+    g.writeBuffer(buffer, 0, std.mem.asBytes(&header));
+    switch (bytes) {
+        .local => |l| {
+            g.writeBuffer(buffer, quad_size, l.msg[mesh_bytes.QUADS_OFFSET..]);
+            state.uploads_local += 1;
+        },
+        .held => |h| {
+            g.writeBufferHeld(buffer, quad_size, h.handle, mesh_bytes.QUADS_OFFSET, bytes.quadBytesLen());
+            state.uploads_held += 1;
+        },
+    }
+    cg.quad_count = n;
     cg.y_min = lc.mesh.y_min;
     cg.y_max = lc.mesh.y_max;
+    lc.dropUpload();
 }
 
 // ----------------------------------------------------------------------------
@@ -4273,13 +4451,72 @@ fn wasmDebugWorldHash() callconv(.c) u64 {
             }
             if (scheduler_mod.Region.mesh(dx, dz, r)) {
                 if (!sched.meshCurrent(world, lc)) return 0;
-                h.update(std.mem.sliceAsBytes(lc.mesh.quads.items));
+                // Main has the counts and the hash of the quads, not the
+                // quads (C5). The worker calculated the hash.
+                h.update(std.mem.asBytes(&lc.mesh.hash));
+                h.update(std.mem.asBytes(&lc.mesh.quad_count));
                 h.update(std.mem.asBytes(&[_]f32{ lc.mesh.y_min, lc.mesh.y_max }));
             }
         }
     }
     const v = h.final();
     return if (v == 0) 1 else v;
+}
+
+// The mesh upload counters for the Bun tests (C5). The tests read 12 u32
+// values at the returned address:
+//   0:  mesh uploads from bytes in the wasm memory (the Inline executor)
+//   1:  mesh uploads from bytes that JS holds (the WorkerPool executor)
+//   2:  quad buffers created (each with one bind group)
+//   3:  quad buffers taken again from the pool
+//   4:  quad buffers destroyed
+//   5:  free quad buffers in the pool
+//   6:  chunks whose quad bytes wait for the upload now
+//   7:  chunks with a CPU copy of their quads (--depth-stencil=off only)
+//   8:  WorkerPool: the result bytes that came into the wasm memory: heads
+//   9:  WorkerPool: the result bytes that came into the wasm memory: other
+//       payloads (blocks, Error text). A mesh payload never comes in.
+//   10: WorkerPool: mesh results that stayed in JS
+//   11: chunks with a mesh on the GPU
+var wasm_gpu_counts: [12]u32 = @splat(0);
+
+fn wasmDebugGpuCounts() callconv(.c) [*]const u32 {
+    var waiting: u32 = 0;
+    var it = state.world.chunks.valueIterator();
+    while (it.next()) |lc| {
+        if (lc.*.upload != null) waiting += 1;
+    }
+    var copies: u32 = 0;
+    var on_gpu: u32 = 0;
+    var git = state.chunk_gpu.valueIterator();
+    while (git.next()) |cg| {
+        if (cg.sort_mesh != null) copies += 1;
+        if (cg.quads != null and cg.quad_count > 0) on_gpu += 1;
+    }
+    const web = if (comptime is_wasm) state.executor == .web else false;
+    const pool = &state.quad_pool;
+    wasm_gpu_counts = .{
+        @truncate(state.uploads_local),
+        @truncate(state.uploads_held),
+        @truncate(pool.created),
+        @truncate(pool.reused),
+        @truncate(pool.destroyed),
+        @intCast(pool.freeCount()),
+        waiting,
+        copies,
+        if (web) @truncate(state.executor.web.head_bytes) else 0,
+        if (web) @truncate(state.executor.web.payload_bytes) else 0,
+        if (web) @truncate(state.executor.web.held_meshes) else 0,
+        on_gpu,
+    };
+    return &wasm_gpu_counts;
+}
+
+/// Set the render distance, as the Settings picker does. For the Bun memory
+/// test (C5): the main wasm memory must not grow with the meshes.
+fn wasmDebugSetRenderDistance(r: i32) callconv(.c) void {
+    if (!wasm_initialised) return;
+    state.scheduler.setRenderDistance(&state.world, std.math.clamp(r, 1, 32));
 }
 
 /// Set a block, as a dig or a place does (Scheduler.editBlock). For the Bun
@@ -4316,6 +4553,8 @@ comptime {
         @export(&wasmDebugPipelineCounts, .{ .name = "voxel_debug_pipeline_counts" });
         @export(&wasmDebugWorldHash, .{ .name = "voxel_debug_world_hash" });
         @export(&wasmDebugEdit, .{ .name = "voxel_debug_edit" });
+        @export(&wasmDebugGpuCounts, .{ .name = "voxel_debug_gpu_counts" });
+        @export(&wasmDebugSetRenderDistance, .{ .name = "voxel_debug_set_render_distance" });
         @export(&wasmChunkProtocolVersion, .{ .name = "voxel_chunk_protocol_version" });
         @export(&wasmChunkBuildHash, .{ .name = "voxel_chunk_build_hash" });
         @export(&wasmChunkBuildId, .{ .name = "voxel_chunk_build_id" });

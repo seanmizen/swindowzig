@@ -22,9 +22,14 @@
 //! flight back to the scheduler and returns error.NoWorkers. main.zig then
 //! starts the Inline executor (the fallback).
 //!
-//! The results go into the main wasm memory, as with the other executors.
-//! C5 (main JS writes the mesh bytes to the GPU, and the main wasm never
-//! copies them) is a later step.
+//! Main does not copy mesh bytes into its wasm memory (C5). For each result,
+//! main copies only the first protocol.PAYLOAD_OFFSET bytes (`takeHead`):
+//! the header and the fixed part of the Result. JS keeps the whole message
+//! (the transferred ArrayBuffer) under a handle. A mesh result goes to the
+//! scheduler as that handle (mesh_bytes.MeshBytes.held). The GPU upload in
+//! main.zig tells JS to write the quads to the GPU from the ArrayBuffer
+//! (gpu.writeBufferHeld), then releases the handle. Only a generate result
+//! with blocks (C6) and an Error copy their payload into the wasm memory.
 //!
 //! Native tests (exec_test.zig) run this file with a Transport of
 //! in-process WorkerWorlds. The Bun tests (backends/wasm/worker-pool.test.ts)
@@ -37,6 +42,7 @@ const scheduler_mod = @import("scheduler.zig");
 const exec_inline = @import("exec_inline.zig");
 const world_mod = @import("../world.zig");
 const world_gen = @import("../world_gen.zig");
+const mesh_bytes = @import("mesh_bytes.zig");
 
 const Scheduler = scheduler_mod.Scheduler;
 const Started = scheduler_mod.Started;
@@ -68,7 +74,9 @@ pub fn depthFor(frame_ns: u64, job_ns: u64) usize {
 }
 
 /// The link from main to the worker pool. Each message is protocol bytes.
-/// The transport copies the bytes: the caller keeps them.
+/// The transport copies the bytes that main sends: the caller keeps them.
+/// The transport holds each result that main takes, until main releases it
+/// (C5).
 pub const Transport = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -86,9 +94,12 @@ pub const Transport = struct {
         broadcast: *const fn (ptr: *anyopaque, msg: []const u8) bool,
         /// The length of the next result in the queue, or 0.
         nextLen: *const fn (ptr: *anyopaque) usize,
-        /// Copy the next result into `buf` (its length is `nextLen`), and
-        /// remove it from the queue.
-        take: *const fn (ptr: *anyopaque, buf: []u8) void,
+        /// Remove the next result from the queue, and hold it. Copy its
+        /// first `head.len` bytes into `head`. Returns the handle of the
+        /// held result, never 0.
+        takeHead: *const fn (ptr: *anyopaque, head: []u8) u32,
+        /// Read and release a held result.
+        held: mesh_bytes.Store.VTable,
     };
 
     pub fn slots(self: Transport) usize {
@@ -106,8 +117,18 @@ pub const Transport = struct {
     pub fn nextLen(self: Transport) usize {
         return self.vtable.nextLen(self.ptr);
     }
-    pub fn take(self: Transport, buf: []u8) void {
-        self.vtable.take(self.ptr, buf);
+    pub fn takeHead(self: Transport, head: []u8) u32 {
+        return self.vtable.takeHead(self.ptr, head);
+    }
+    /// The store of the held results, for the mesh bytes (C5).
+    pub fn store(self: Transport) mesh_bytes.Store {
+        return .{ .ptr = self.ptr, .vtable = &self.vtable.held };
+    }
+    pub fn read(self: Transport, handle: u32, offset: usize, out: []u8) void {
+        self.vtable.held.read(self.ptr, handle, offset, out);
+    }
+    pub fn release(self: Transport, handle: u32) void {
+        self.vtable.held.release(self.ptr, handle);
     }
 };
 
@@ -132,6 +153,13 @@ pub const Web = struct {
     traffic: exec_inline.Traffic = .{},
     /// Results that were not a Result for a job in flight (C12).
     bad_replies: u64 = 0,
+    /// The bytes of the results that came into the wasm memory: the heads,
+    /// and the other payloads (blocks, Error text). A mesh payload never
+    /// comes in (C5). The Bun tests check these counters.
+    head_bytes: u64 = 0,
+    payload_bytes: u64 = 0,
+    /// Mesh results that stayed in JS.
+    held_meshes: u64 = 0,
     /// The jobs that each worker holds now (depthFor).
     depth: usize = JOBS_PER_WORKER,
     /// The clock at the start of the last frame phase, and the mean time of
@@ -200,14 +228,22 @@ pub const Web = struct {
         job_ns: u64,
     };
 
-    /// Install one reply. Returns null when the reply is not for a job in
-    /// flight, or when the job failed and went back to the scheduler.
-    fn installReply(self: *Web, sched: *Scheduler, world: *World, bytes: []const u8) !?Installed {
-        if (bytes.len < protocol.HEADER_LEN) {
+    /// Take the next result from the transport and install it. `len` is
+    /// its length. Main copies only the head of a mesh result (C5). Returns
+    /// null when the reply is not for a job in flight, or when the job
+    /// failed and went back to the scheduler.
+    fn installNext(self: *Web, sched: *Scheduler, world: *World, len: usize) !?Installed {
+        var head: [protocol.PAYLOAD_OFFSET]u8 = undefined;
+        const n = @min(len, head.len);
+        const handle = self.transport.takeHead(head[0..n]);
+        var held = true;
+        defer if (held) self.transport.release(handle);
+        self.head_bytes += n;
+        if (n < protocol.HEADER_LEN) {
             self.bad_replies += 1;
             return null;
         }
-        const id = std.mem.readInt(u32, bytes[12..16], .little);
+        const id = std.mem.readInt(u32, head[12..16], .little);
         const kv = self.jobs.fetchRemove(id) orelse {
             std.log.err("[PIPE] a worker reply has an unknown job id {}", .{id});
             self.bad_replies += 1;
@@ -215,16 +251,39 @@ pub const Web = struct {
         };
         const job = kv.value;
         self.in_flight[job.slot] -|= 1;
-        self.traffic.addResult(job.started.job.stage, bytes.len);
-        var result = exec_inline.resultOf(world.allocator, job.started, bytes) catch |err| switch (err) {
+        self.traffic.addResult(job.started.job.stage, len);
+        const result = self.resultOf(world, job.started, head[0..n], len, handle, &held) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => {
                 sched.abandon(job.started);
                 return null;
             },
         };
-        const outcome = try sched.install(world, &result);
-        return .{ .stage = job.started.job.stage, .outcome = outcome, .job_ns = result.job_ns };
+        var r = result;
+        const outcome = try sched.install(world, &r);
+        return .{ .stage = job.started.job.stage, .outcome = outcome, .job_ns = r.job_ns };
+    }
+
+    /// The scheduler Result of a held reply. A mesh Result keeps the handle
+    /// as its quad bytes and sets `held.*` to false: the scheduler owns the
+    /// handle then. Any other reply comes into the wasm memory as a whole.
+    fn resultOf(self: *Web, world: *World, st: Started, head: []const u8, len: usize, handle: u32, held: *bool) !scheduler_mod.Result {
+        const maybe = protocol.decodeResultHead(head, len) catch return error.BadReply;
+        if (maybe) |info| {
+            if (info.head.stage == .mesh) {
+                try exec_inline.checkJob(st, info.head);
+                held.* = false;
+                self.held_meshes += 1;
+                return exec_inline.meshResult(st, info, .{ .held = .{ .handle = handle, .len = len, .store = self.transport.store() } });
+            }
+        }
+        // Generate (with the blocks for C6), light and Error replies.
+        const bytes = try self.allocator.alloc(u8, len);
+        errdefer self.allocator.free(bytes);
+        @memcpy(bytes[0..head.len], head);
+        if (len > head.len) self.transport.read(handle, head.len, bytes[head.len..]);
+        self.payload_bytes += len - head.len;
+        return exec_inline.resultOf(world.allocator, st, bytes, self.allocator);
     }
 
     /// The frame phase (C7). It installs the results in the queue until
@@ -247,11 +306,8 @@ pub const Web = struct {
             const len = self.transport.nextLen();
             if (len == 0) break;
             if (report.jobs > 0 and clock() >= deadline_ns) break;
-            const bytes = try self.allocator.alloc(u8, len);
-            defer self.allocator.free(bytes);
-            self.transport.take(bytes);
             const t0 = clock();
-            const done = try self.installReply(sched, world, bytes);
+            const done = try self.installNext(sched, world, len);
             report.install_ns += clock() - t0;
             const d = done orelse continue;
             const k = @backingInt(d.stage);
@@ -341,7 +397,9 @@ const js = struct {
     extern "chunks" fn jsChunkPost(slot: u32, ptr: [*]const u8, len: u32) u32;
     extern "chunks" fn jsChunkBroadcast(ptr: [*]const u8, len: u32) u32;
     extern "chunks" fn jsChunkNextLen() u32;
-    extern "chunks" fn jsChunkTake(ptr: [*]u8, len: u32) void;
+    extern "chunks" fn jsChunkTakeHead(ptr: [*]u8, len: u32) u32;
+    extern "chunks" fn jsChunkRead(handle: u32, offset: u32, ptr: [*]u8, len: u32) void;
+    extern "chunks" fn jsChunkRelease(handle: u32) void;
 };
 
 fn webSlots(_: *anyopaque) usize {
@@ -359,8 +417,14 @@ fn webBroadcast(_: *anyopaque, msg: []const u8) bool {
 fn webNextLen(_: *anyopaque) usize {
     return js.jsChunkNextLen();
 }
-fn webTake(_: *anyopaque, buf: []u8) void {
-    js.jsChunkTake(buf.ptr, @intCast(buf.len));
+fn webTakeHead(_: *anyopaque, head: []u8) u32 {
+    return js.jsChunkTakeHead(head.ptr, @intCast(head.len));
+}
+fn webRead(_: *anyopaque, handle: u32, offset: usize, out: []u8) void {
+    js.jsChunkRead(handle, @intCast(offset), out.ptr, @intCast(out.len));
+}
+fn webRelease(_: *anyopaque, handle: u32) void {
+    js.jsChunkRelease(handle);
 }
 
 var web_dummy: u8 = 0;
@@ -370,7 +434,8 @@ const web_vtable: Transport.VTable = .{
     .post = webPost,
     .broadcast = webBroadcast,
     .nextLen = webNextLen,
-    .take = webTake,
+    .takeHead = webTakeHead,
+    .held = .{ .read = webRead, .release = webRelease },
 };
 
 /// The transport of the web build: the JS worker pool. Only app.wasm uses

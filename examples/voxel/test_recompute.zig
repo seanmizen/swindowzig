@@ -95,11 +95,28 @@ pub fn expectMatchesRecompute(a: std.mem.Allocator, sched: *const Scheduler, wor
         if (!sched.meshCurrent(world, lc)) continue;
         var want = try rc.mesh(lc.cx, lc.cz, sched.ao, sched.lighting);
         defer want.deinit(a);
-        try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(want.quads), std.mem.sliceAsBytes(lc.mesh.quads.items));
+        // Main keeps the counts and the hash of the quads (C5).
+        try std.testing.expectEqual(@as(u32, @intCast(want.quads.len)), lc.mesh.quad_count);
+        try std.testing.expectEqual(protocol.meshHash(std.mem.sliceAsBytes(want.quads)), lc.mesh.hash);
         try std.testing.expectEqual(want.y_min, lc.mesh.y_min);
         try std.testing.expectEqual(want.y_max, lc.mesh.y_max);
+        // With no upload, the quad bytes still wait. They are the quads.
+        if (lc.upload != null) {
+            const got = try uploadQuads(a, lc);
+            defer a.free(got);
+            try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(want.quads), std.mem.sliceAsBytes(got));
+        }
         meshes += 1;
     }
     try std.testing.expect(meshes > 0);
     return meshes;
+}
+
+/// A copy of the quad bytes that wait for the upload of `lc`. The caller
+/// frees it. Tests only: main does not copy the quads (C5).
+pub fn uploadQuads(a: std.mem.Allocator, lc: *const world_mod.LoadedChunk) ![]stages.PackedQuad {
+    const bytes = lc.upload orelse return error.NoUpload;
+    const out = try a.alloc(stages.PackedQuad, bytes.quadBytesLen() / @sizeOf(stages.PackedQuad));
+    bytes.copyQuads(out);
+    return out;
 }
