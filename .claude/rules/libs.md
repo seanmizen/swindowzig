@@ -80,7 +80,12 @@ is no longer required for correctness. Sort key is view-space depth
 .key = .{ .keycode = key, .scancode = 0, .down = true, .repeat = false, .mods = mods }
 .pointer_move = .{ .x = 0, .y = 0, .dx = dx, .dy = dy, .device_id = 0, .mods = mods }
 .pointer_button = .{ .button = btn, .down = true, .mods = mods }
+.wheel = .{ .dx = 0, .dy = 1, .mode = .line, .mods = mods } // dy > 0 scrolls up
 ```
+
+- `KeyCode` is append-only: a recording stores its values (REQ-INPUT-001).
+  The punctuation and navigation keys follow the physical key on the web
+  (`KeyboardEvent.code`) and on SDL (the scancode) (REQ-INPUT-002).
 
 ### Text input (IME)
 

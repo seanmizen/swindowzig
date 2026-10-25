@@ -20,7 +20,9 @@ pub const MouseButton = enum(u8) {
     x2 = 4,
 };
 
-/// Keyboard key codes (subset for v0.1)
+/// Keyboard key codes. A recording stores the integer value of a key code, so
+/// a value never changes. Add a new member after the last member only
+/// (REQ-INPUT-001).
 pub const KeyCode = enum(u16) {
     // Letters
     A,
@@ -94,6 +96,29 @@ pub const KeyCode = enum(u16) {
     F12,
 
     Unknown,
+
+    // Punctuation keys. Each name is the key at that position on a US
+    // keyboard. The backends find these keys by position, so each name is
+    // correct on every layout (REQ-INPUT-002).
+    Grave,
+    Minus,
+    Equal,
+    LeftBracket,
+    RightBracket,
+    Backslash,
+    Semicolon,
+    Quote,
+    Comma,
+    Period,
+    Slash,
+
+    // Navigation keys
+    Delete,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Insert,
 };
 
 /// Mouse wheel scroll mode
@@ -182,6 +207,8 @@ pub const EventPayload = union(enum) {
         mods: Modifiers,
     },
 
+    /// `dy > 0` scrolls up (away from the user). `dx > 0` scrolls right.
+    /// `mode` gives the unit: pixels, lines or pages.
     wheel: extern struct {
         dx: f32,
         dy: f32,
@@ -270,6 +297,22 @@ test "Event creation" {
     });
     try std.testing.expectEqual(@as(u64, 0), e.tick_id);
     try std.testing.expectEqual(EventPayload.lifecycle, std.meta.activeTag(e.payload));
+}
+
+test "KeyCode values do not change" {
+    // A recording stores these values (REQ-INPUT-001).
+    try std.testing.expectEqual(@as(u16, 0), @backingInt(KeyCode.A));
+    try std.testing.expectEqual(@as(u16, 26), @backingInt(KeyCode.Num0));
+    try std.testing.expectEqual(@as(u16, 36), @backingInt(KeyCode.Left));
+    try std.testing.expectEqual(@as(u16, 40), @backingInt(KeyCode.Space));
+    try std.testing.expectEqual(@as(u16, 48), @backingInt(KeyCode.Super));
+    try std.testing.expectEqual(@as(u16, 49), @backingInt(KeyCode.F1));
+    try std.testing.expectEqual(@as(u16, 60), @backingInt(KeyCode.F12));
+    try std.testing.expectEqual(@as(u16, 61), @backingInt(KeyCode.Unknown));
+    try std.testing.expectEqual(@as(u16, 62), @backingInt(KeyCode.Grave));
+    try std.testing.expectEqual(@as(u16, 72), @backingInt(KeyCode.Slash));
+    try std.testing.expectEqual(@as(u16, 73), @backingInt(KeyCode.Delete));
+    try std.testing.expectEqual(@as(u16, 78), @backingInt(KeyCode.Insert));
 }
 
 test "Modifiers packing" {

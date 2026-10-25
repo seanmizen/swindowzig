@@ -212,7 +212,7 @@ pub const SDL2Backend = struct {
 
                 sdl.SDL_KEYDOWN, sdl.SDL_KEYUP => {
                     const key_event = event.key;
-                    const keycode = sdlKeycodeToKeyCode(key_event.keysym.sym);
+                    const keycode = sdlKeyToKeyCode(key_event.keysym.sym, key_event.keysym.scancode);
 
                     try bus.push(0, now_ns, .{
                         .key = .{
@@ -288,6 +288,41 @@ pub const SDL2Backend = struct {
             sdl.SDL_BUTTON_X1 => .x1,
             sdl.SDL_BUTTON_X2 => .x2,
             else => .left, // Default to left
+        };
+    }
+
+    // Map an SDL key to our KeyCode enum. The key symbol (the layout) gives
+    // the letters, digits and the other keys of sdlKeycodeToKeyCode. The
+    // scancode (the physical key) gives the punctuation and navigation keys,
+    // as KeyboardEvent.code does on the web (REQ-INPUT-002).
+    fn sdlKeyToKeyCode(sym: c_int, scancode: c_uint) core.KeyCode {
+        const by_symbol = sdlKeycodeToKeyCode(sym);
+        if (by_symbol != .Unknown) return by_symbol;
+        return sdlScancodeToKeyCode(scancode);
+    }
+
+    // The punctuation and navigation keys, by physical position. Each name is
+    // the key at that position on a US keyboard.
+    fn sdlScancodeToKeyCode(scancode: c_uint) core.KeyCode {
+        return switch (scancode) {
+            sdl.SDL_SCANCODE_GRAVE => .Grave,
+            sdl.SDL_SCANCODE_MINUS => .Minus,
+            sdl.SDL_SCANCODE_EQUALS => .Equal,
+            sdl.SDL_SCANCODE_LEFTBRACKET => .LeftBracket,
+            sdl.SDL_SCANCODE_RIGHTBRACKET => .RightBracket,
+            sdl.SDL_SCANCODE_BACKSLASH => .Backslash,
+            sdl.SDL_SCANCODE_SEMICOLON => .Semicolon,
+            sdl.SDL_SCANCODE_APOSTROPHE => .Quote,
+            sdl.SDL_SCANCODE_COMMA => .Comma,
+            sdl.SDL_SCANCODE_PERIOD => .Period,
+            sdl.SDL_SCANCODE_SLASH => .Slash,
+            sdl.SDL_SCANCODE_DELETE => .Delete,
+            sdl.SDL_SCANCODE_HOME => .Home,
+            sdl.SDL_SCANCODE_END => .End,
+            sdl.SDL_SCANCODE_PAGEUP => .PageUp,
+            sdl.SDL_SCANCODE_PAGEDOWN => .PageDown,
+            sdl.SDL_SCANCODE_INSERT => .Insert,
+            else => .Unknown,
         };
     }
 
