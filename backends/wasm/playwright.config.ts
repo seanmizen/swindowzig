@@ -20,8 +20,10 @@ export default defineConfig({
     baseURL: `http://localhost:${port}`,
     browserName: 'chromium',
     launchOptions: {
-      // WebGPU in headless Chromium. On Linux (CI) it uses the Vulkan
-      // driver of the runner (lavapipe).
+      // WebGPU in headless Chromium. On Linux (CI) it uses the SwiftShader
+      // Vulkan driver of Chromium. Do not set VK_LOADER_DRIVERS_SELECT for
+      // the browser: a filter such as '*lvp*' hides SwiftShader, and then
+      // Chromium has no WebGPU adapter.
       args: [
         '--enable-unsafe-webgpu',
         '--enable-features=Vulkan',
