@@ -10,6 +10,12 @@ pub const context = @import("context.zig");
 
 /// Main entry point - call this from your main() function.
 pub const run = app.run;
+/// The web entry: export `swindowzig_init` and `swindowzig_frame` for an app
+/// that uses `run`. Call it from a `comptime` block on the wasm build.
+pub const exportWeb = @import("web_entry.zig").exportWeb;
+/// The `std_options.logFn` for the web build: messages go to the browser
+/// console.
+pub const webLogFn = @import("web_entry.zig").webLogFn;
 /// App configuration (title, size, tick rate).
 pub const Config = app.Config;
 /// Context passed to all callbacks (provides input, GPU, timing, etc).

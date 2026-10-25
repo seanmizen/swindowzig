@@ -317,3 +317,7 @@ test_sdl
 /voxel
 # The voxel regression goldens are gzipped frames. `*.gz` above ignores them.
 !examples/voxel/assets/goldens/**/*.gz
+
+# Playwright output (yarn test:a11y).
+test-results/
+playwright-report/

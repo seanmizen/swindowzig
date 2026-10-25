@@ -107,6 +107,14 @@ jobs:
           zig build web -Dexample=flat2d
           zig build native -Dexample=flat2d
 
+      - name: Screen-reader mirror in Chromium (flat2d)
+        # Playwright opens flat2d with WebGPU on lavapipe, moves the focus
+        # with Tab, and reads the accessibility tree (REQ-A11Y-001).
+        run: |
+          yarn install --immutable
+          yarn playwright install --with-deps --only-shell chromium
+          yarn test:a11y
+
       - name: Compare with the goldens
         run: ./examples/voxel/scripts/run_headless_regressions.sh --out "$RUNNER_TEMP/frames"
 

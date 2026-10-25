@@ -7,8 +7,8 @@
 //!
 //! - events (`frameEvents`): activations, cancel, text changes;
 //! - drawing (`draw.draw`): sw_gfx2d shapes and sw_text text, with a focus ring;
-//! - the semantic tree (`semanticTree`): plain data for a backend, such as a
-//!   web screen-reader mirror.
+//! - the semantic tree (`semanticTree`): plain data for a backend. The web
+//!   build sends it to the screen-reader mirror (`web_mirror.zig`).
 //!
 //! `ui.zig` holds the tree, the layout and the focus rules. It has no GPU or
 //! font code. `draw.zig` is the only part that uses sw_gfx2d and sw_text.
@@ -17,6 +17,7 @@ const ui_mod = @import("ui.zig");
 
 pub const semantic = @import("semantic.zig");
 pub const draw = @import("draw.zig");
+pub const web_mirror = @import("web_mirror.zig");
 
 pub const Ui = ui_mod.Ui;
 pub const Opts = ui_mod.Opts;

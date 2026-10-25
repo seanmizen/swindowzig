@@ -17,12 +17,21 @@ const sw_text = @import("sw_text");
 const sw_ui = @import("sw_ui");
 const assets = @import("sw_assets");
 
+// The default log function does not compile for freestanding WASM.
+pub const std_options: std.Options = .{
+    .logFn = if (builtin.cpu.arch.isWasm()) sw.webLogFn else std.log.defaultLog,
+};
+
 // Freestanding WASM has no std.process.Init, so the web build gets a main
 // with no parameters. The native build passes Io to the app (ctx.io).
 pub const main = if (builtin.cpu.arch.isWasm()) mainWasm else mainNative;
 
-fn mainWasm() !void {
-    try sw.run(config, Callbacks);
+// The browser does not call main. backends/wasm/loader.ts calls the
+// swindowzig_init and swindowzig_frame exports that exportWeb makes.
+fn mainWasm() void {}
+
+comptime {
+    if (builtin.cpu.arch.isWasm()) sw.exportWeb(config, Callbacks);
 }
 
 fn mainNative(init: std.process.Init) !void {

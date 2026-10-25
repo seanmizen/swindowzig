@@ -186,6 +186,35 @@ export function setTextInputActive(active: boolean) {
   applyTextInput?.(active);
 }
 
+// The screen-reader mirror (a11y.ts) names the hidden <input> while a text
+// field of the game has focus (REQ-A11Y-002). With no name, the <input> is
+// aria-hidden.
+let textInputEl: HTMLInputElement | null = null;
+let textInputLabel: string | null = null;
+
+function applyTextInputLabel() {
+  if (!textInputEl) return;
+  if (textInputLabel === null) {
+    textInputEl.setAttribute('aria-hidden', 'true');
+    textInputEl.removeAttribute('aria-label');
+  } else {
+    textInputEl.removeAttribute('aria-hidden');
+    textInputEl.setAttribute('aria-label', textInputLabel);
+  }
+}
+
+/** Give the hidden <input> an accessible name, or null to hide it. */
+export function setTextInputLabel(label: string | null) {
+  if (label === textInputLabel) return;
+  textInputLabel = label;
+  applyTextInputLabel();
+}
+
+/** True while the hidden <input> has DOM focus. */
+export function textInputHasFocus(): boolean {
+  return textInputEl !== null && document.activeElement === textInputEl;
+}
+
 /** Does this key press make text? True also for dead keys and IME keys. */
 function isTextKey(e: KeyboardEvent): boolean {
   if (e.isComposing || e.keyCode === 229 || e.key === 'Dead') return true;
@@ -460,6 +489,8 @@ function attachTextInput(wasmExports: WasmExports) {
     fontSize: '16px',
   });
   document.body.appendChild(input);
+  textInputEl = input;
+  applyTextInputLabel();
 
   // Write UTF-8 into the WASM text buffer, then call the export.
   const send = (

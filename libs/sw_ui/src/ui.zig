@@ -27,6 +27,7 @@
 
 const std = @import("std");
 const semantic = @import("semantic.zig");
+const web_mirror = @import("web_mirror.zig");
 
 pub const Rect = semantic.Rect;
 pub const Role = semantic.Role;
@@ -278,6 +279,9 @@ pub const Ui = struct {
     live_next: std.ArrayList(LiveState) = .empty,
     sem_nodes: std.ArrayList(SemanticNode) = .empty,
     sem_children: std.ArrayList(u32) = .empty,
+    /// The web build sends the semantic tree to the screen-reader mirror in
+    /// `finish` (REQ-A11Y-001). Set `web_mirror.enabled` to false to stop it.
+    web_mirror: web_mirror.WebMirror = .{},
 
     pub fn init(alloc: std.mem.Allocator, measurer: Measurer, theme: Theme) Ui {
         return .{ .alloc = alloc, .theme = theme, .measurer = measurer };
@@ -291,6 +295,8 @@ pub const Ui = struct {
         self.live_next.deinit(self.alloc);
         self.sem_nodes.deinit(self.alloc);
         self.sem_children.deinit(self.alloc);
+        self.web_mirror.clear();
+        self.web_mirror.deinit(self.alloc);
     }
 
     // ---- Building the tree --------------------------------------------
@@ -454,7 +460,8 @@ pub const Ui = struct {
     // ---- The end of the frame -------------------------------------------
 
     /// End the frame: lay out the tree, apply the input, build the semantic
-    /// tree. The tree is then ready to draw.
+    /// tree. The tree is then ready to draw. On the web build, also send the
+    /// semantic tree to the screen-reader mirror when it changed.
     pub fn finish(self: *Ui) Error!void {
         if (!self.in_frame) return error.NotInFrame;
         self.in_frame = false;
@@ -467,6 +474,7 @@ pub const Ui = struct {
 
         try self.applyInput();
         try self.buildSemantic();
+        try self.web_mirror.publish(self.alloc, self.semanticTree());
     }
 
     fn checkIds(self: *const Ui) Error!void {
@@ -893,6 +901,10 @@ pub const Ui = struct {
 };
 
 // ---- Tests ----------------------------------------------------------------
+
+test {
+    _ = web_mirror;
+}
 
 fn fakeMeasure(context: ?*const anyopaque, s: []const u8, size: f32) Size {
     _ = context;
