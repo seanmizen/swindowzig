@@ -1,6 +1,6 @@
 name: Feature
 description: Request a new feature or enhancement
-title: "[TEMPLATE-???] feat: "
+title: "[SWZ-???] feat: "
 labels: ["backlog"]
 body:
   - type: textarea

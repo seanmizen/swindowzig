@@ -38,12 +38,12 @@ Ready to work now: `--add-label ready --remove-label backlog`.
 ```bash
 gh issue edit {n} --add-label in-progress --remove-label ready
 git fetch origin
-git worktree add -b TEMPLATE-{n}/{short-description} ../{repo}-{n} origin/main
+git worktree add -b SWZ-{n}/{short-description} ../{repo}-{n} origin/main
 ```
 
 `{repo}` is the name of the checkout directory.
 
-- Branch: lowercase, hyphenated, at most 5 words, e.g. `TEMPLATE-42/fix-hover-flicker`.
+- Branch: lowercase, hyphenated, at most 5 words, e.g. `SWZ-42/fix-hover-flicker`.
 - Work in the worktree. Never edit the `main` checkout.
 - A worktree has no `node_modules`, and the commit hook needs it. Run
   `yarn install` in the worktree. The global Yarn cache makes it fast. Never
@@ -57,13 +57,13 @@ git worktree add -b TEMPLATE-{n}/{short-description} ../{repo}-{n} origin/main
 
 1. `yarn fix` from the root, and `tsc --noEmit` in every TypeScript backend you
    touched. Fix everything.
-2. Commit: `[TEMPLATE-{n}] {type}: {description}`. Types: `feat fix chore docs
+2. Commit: `[SWZ-{n}] {type}: {description}`. Types: `feat fix chore docs
    refactor test style perf ci`. Never `--no-verify`.
 3. Push and open the PR:
 
 ```bash
-git push -u origin TEMPLATE-{n}/{short-description}
-gh pr create --title "[TEMPLATE-{n}] {type}: {description}" \
+git push -u origin SWZ-{n}/{short-description}
+gh pr create --title "[SWZ-{n}] {type}: {description}" \
   --body "Closes #{n}
 
 ## Summary
@@ -81,7 +81,7 @@ acceptance criteria, then squash-merge your own PR:
 
 ```bash
 gh pr merge {pr} --squash --delete-branch \
-  --subject "[TEMPLATE-{n}] {type}: {description} (#{pr})"
+  --subject "[SWZ-{n}] {type}: {description} (#{pr})"
 ```
 
 Then remove the worktree (`git worktree remove --force ../{repo}-{n}`) and its
