@@ -27,7 +27,7 @@
 # want you to see it be slow." The profile CSV captured under
 # `--profile-csv=<path>` is the "see it be slow" output.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   ./zig-out/bin/voxel --headless --world=flatland \
 #     --tas examples/voxel/tests/flatland_forward.tas \

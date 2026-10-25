@@ -19,7 +19,7 @@
 # for a 1280×720 capture. Re-run and update the bbox constants if you touch
 # the TAS camera script.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   ./examples/voxel/tests/glowstone_cave.sh
 #   ./examples/voxel/tests/glowstone_cave.sh --skip-build
 #

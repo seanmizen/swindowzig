@@ -13,7 +13,7 @@
 # --profile-csv=<path> to capture per-tick timings under each mode and
 # compare the GPU cost of the depth pass vs. paint-only rendering.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   # Hardware depth test (default):
 #   ./zig-out/bin/voxel --world=flatland --aa=none --depth-stencil=on \

@@ -13,12 +13,12 @@
 #   3. Mean brightness of the sky region is roughly equal in both frames,
 #      confirming the depth test does not perceptibly change lit geometry.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   ./examples/voxel/tests/depth_stencil_regression.sh
 #   ./examples/voxel/tests/depth_stencil_regression.sh --skip-build
 #
 # Requires: zig, python3
-# Must be run from the swindowzig root (utils/swindowzig) or any subdirectory;
+# Must be run from the repo root or any subdirectory;
 # the script resolves the root from its own location.
 set -euo pipefail
 

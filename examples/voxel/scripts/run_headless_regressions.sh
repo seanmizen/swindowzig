@@ -5,7 +5,7 @@
 # diffs the result against a golden PPM in examples/voxel/assets/goldens/lavapipe/.
 #
 # Where: Linux with lavapipe (Mesa software Vulkan). The swindowzig-check
-#        workflow runs it on every PR that touches utils/swindowzig.
+#        workflow runs it on every PR that touches the engine.
 # When:  CI runs it. Run it yourself on a Linux box to debug a CI failure.
 # Why:   lavapipe gives the same pixels on every CI runner, so the goldens
 #        catch any change to the rendered frame. A GPU gives different pixels
@@ -14,7 +14,7 @@
 # To accept a deliberate visual change, download the goldens that the failed
 # CI run uploaded. The job log prints the command.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   ./examples/voxel/scripts/run_headless_regressions.sh                # compare mode
 #   ./examples/voxel/scripts/run_headless_regressions.sh --update       # regenerate the goldens
 #   ./examples/voxel/scripts/run_headless_regressions.sh --out DIR      # keep frames and logs in DIR
@@ -37,7 +37,7 @@ cd "$ROOT"
 
 if [[ "$(uname -s)" != Linux ]]; then
     echo "run_headless_regressions.sh: the goldens are lavapipe frames, and only Linux has lavapipe."
-    echo "The swindowzig-check workflow runs this script on every PR that touches utils/swindowzig."
+    echo "The swindowzig-check workflow runs this script on every PR that touches the engine."
     exit 2
 fi
 BACKEND=lavapipe

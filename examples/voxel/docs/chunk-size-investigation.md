@@ -334,7 +334,7 @@ was optimising for the wrong metric.
 
 ## Reproducing the experiment
 
-From `utils/swindowzig`:
+From the repo root:
 
 ```bash
 # Baseline

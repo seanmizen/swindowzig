@@ -16,7 +16,7 @@
 # keys, so the .D event would arrive without the .super/.ctrl bit set
 # and the in-game handler would ignore it. The CLI flag is the way.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   ./examples/voxel/tests/debug_overlay.sh
 #

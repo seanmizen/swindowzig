@@ -17,7 +17,7 @@
 # Spawn is at approximately (24, 65, 20) on the default flatland world.
 # The chunk boundary is at world x=16.  We walk left (−X) to reach it.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   ./zig-out/bin/voxel --world=flatland --aa=none --render-distance=4 \
 #     --ao=moore --lighting=skylight \

@@ -4,7 +4,7 @@
 # scheduler. The scheduler evicts the meshes past the new R + 1 and keeps
 # loading.
 #
-# Usage (from utils/swindowzig). `--aa=none` puts Render Distance at row 6
+# Usage (from the repo root). `--aa=none` puts Render Distance at row 6
 # of the Video tab:
 #   zig build native -Dexample=voxel
 #   ./zig-out/bin/voxel --headless --aa=none --world=flatland \

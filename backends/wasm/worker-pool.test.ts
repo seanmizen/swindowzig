@@ -17,7 +17,7 @@
 //                or build id) does not start, with a clear error. The Inline
 //                executor runs the jobs, so the terrain is correct.
 //
-// Usage (from utils/swindowzig, after `zig build web -Dexample=voxel`):
+// Usage (from the repo root, after `zig build web -Dexample=voxel`):
 //   bun test backends/wasm/worker-pool.test.ts
 // The tests use zig-out/bin/app.wasm and zig-out/bin/chunks.wasm. Set
 // VOXEL_WASM to use another app.wasm.

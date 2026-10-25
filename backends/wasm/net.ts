@@ -1,7 +1,7 @@
 // WebSocket bridge for wasm apps (wasm import module "net").
 //
 // A socket is a small integer handle. Received text messages wait in a queue
-// until the app reads them with netRecv. Zig: apps/action/game/net.zig.
+// until the app reads them with netRecv. Zig: seanorepo apps/action/game/src/net.zig.
 //
 // netOpen takes a path such as "/api/ws". The bridge connects to the same
 // host as the page, with wss: on an https: page and ws: otherwise.

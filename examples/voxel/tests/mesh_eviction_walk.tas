@@ -24,7 +24,7 @@
 #   movement per tick = 9 / 120 = 0.075 blocks
 #   3200 ticks → 240 blocks → 240/48 = 5 chunks
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   ./zig-out/bin/voxel --headless --world=flatland \
 #     --tas examples/voxel/tests/mesh_eviction_walk.tas 2>&1 | grep CHUNK_STATS

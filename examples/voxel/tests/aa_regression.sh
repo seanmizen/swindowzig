@@ -12,7 +12,7 @@
 #   ./examples/voxel/tests/aa_regression.sh --skip-build               # reuse existing binary
 #
 # Requires: zig, magick (ImageMagick 7), python3
-# Must be run from the swindowzig root (utils/swindowzig).
+# Must be run from the repo root.
 set -euo pipefail
 
 OUTPUT_DIR="/tmp"

@@ -24,7 +24,7 @@
 #     newly added stone block as a small contiguous patch in front of the
 #     crosshair.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   ./zig-out/bin/voxel --world=flatland --aa=none \
 #     --tas examples/voxel/tests/hotbar_place.tas \

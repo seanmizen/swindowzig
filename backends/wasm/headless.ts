@@ -19,7 +19,7 @@
 // browser does. It prints the main-thread time of the frames during the
 // load and during the walk, and the load times.
 //
-// Usage (from utils/swindowzig, after `zig build web -Dexample=voxel`):
+// Usage (from the repo root, after `zig build web -Dexample=voxel`):
 //   bun backends/wasm/headless.ts [--wasm zig-out/bin/app.wasm] [--chunks 5]
 //       [--workers auto|0|N] [--measure]
 //       [--chunks-wasm <path>] [--worker <path of the worker script>]

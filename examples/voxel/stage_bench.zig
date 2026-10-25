@@ -1,7 +1,7 @@
 //! stage_bench: time each chunk stage, native and wasm, and print three
 //! terrain hashes to compare the two platforms.
 //!
-//! Where: utils/swindowzig.
+//! Where: the repo root.
 //!          zig build bench-stages -Doptimize=ReleaseFast
 //!          zig build bench-stages-wasm -Doptimize=ReleaseFast
 //!          node examples/voxel/scripts/bench_stages.mjs zig-out/bin/stage_bench.wasm

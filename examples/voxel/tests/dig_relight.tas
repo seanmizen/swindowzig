@@ -16,7 +16,7 @@
 # fix, the new air cells get their skylight recomputed and the pit
 # interior shows a natural brightness gradient from rim to floor.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   ./zig-out/bin/voxel --world=flatland --aa=none \
 #     --tas examples/voxel/tests/dig_relight.tas \

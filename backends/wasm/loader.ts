@@ -1,7 +1,7 @@
 // The one wasm loader for swindowzig.
 //
 // Two pages start the wasm: the dev page (backends/wasm/boot.ts) and
-// minecraft.seanmizen.com (apps/minecraft.seanmizen.com/src/boot.ts). Each
+// minecraft.seanmizen.com (seanorepo apps/minecraft.seanmizen.com/src/boot.ts). Each
 // page is a thin entry point that calls loadWasm() with its options.
 //
 // This file builds the full import table. Each wasm import has one

@@ -166,7 +166,7 @@ swindowzig publishes tagged releases. A dependent repo pins one release by URL
 and hash:
 
 ```bash
-zig fetch --save https://github.com/seanmizen/seanorepo/releases/download/swindowzig-v<version>/swindowzig.tar.gz
+zig fetch --save https://github.com/seanmizen/swindowzig/releases/download/v<version>/swindowzig.tar.gz
 ```
 
 ```zig
@@ -196,7 +196,7 @@ zig build --fork=<path to local swindowzig>
 
 1. Set `.version` in `build.zig.zon` (for example `0.2.0`).
 2. Merge that change to `main`.
-3. Push a tag that matches the version: `git tag swindowzig-v0.2.0 && git push origin swindowzig-v0.2.0`.
+3. Push a tag that matches the version: `git tag v0.2.0 && git push origin v0.2.0`.
 
 `.github/workflows/swindowzig-release.yml` runs on the tag. It makes
 `swindowzig.tar.gz` from the `.paths` in `build.zig.zon`, and builds a small

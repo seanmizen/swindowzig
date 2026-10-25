@@ -15,7 +15,7 @@
 #     far_mean_with_glowstone   <  near_mean_with_glowstone
 #     near_mean_stone_baseline  <  near_mean_with_glowstone
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #
 #   # Baseline: same TAS with stone placed (no emission) — the pit stays dark.

@@ -6,7 +6,7 @@
 # Because we end on the Settings screen, the dumped PPM shows all six rows
 # (AA Method, FXAA Quality, AO Strategy, Lighting, Render Distance, Back).
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   ./zig-out/bin/voxel \
 #     --tas examples/voxel/tests/settings_menu.tas \

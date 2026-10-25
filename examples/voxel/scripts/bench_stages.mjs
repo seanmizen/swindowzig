@@ -1,6 +1,6 @@
 // bench_stages.mjs: run the wasm chunk stage benchmark (stage_bench.zig).
 //
-// Usage, from utils/swindowzig:
+// Usage, from the repo root:
 //   zig build bench-stages-wasm -Doptimize=ReleaseFast
 //   node examples/voxel/scripts/bench_stages.mjs zig-out/bin/stage_bench.wasm
 //   bun examples/voxel/scripts/bench_stages.mjs zig-out/bin/stage_bench.wasm

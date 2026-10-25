@@ -20,7 +20,7 @@
 # camera's hard lower limit), so this script does NOT depend on exact
 # pitch values — only on "fully looking down".
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #
 #   zig build native -Dexample=voxel
 #

@@ -21,7 +21,7 @@
 # -----------
 # 1. Make sure the voxel binary is built (or pass --build to do it here):
 #
-#      cd utils/swindowzig
+#      cd swindowzig
 #      zig build native -Dexample=voxel
 #
 # 2. Run the built-in default benchmark (depth-stencil on vs off, 3 reps each
@@ -101,7 +101,7 @@
 #   - zig       (to build the binary, if --build is passed)
 #   - python3   (for the summary statistics at the end)
 #
-# Must be run from the swindowzig root (utils/swindowzig) or any subdirectory;
+# Must be run from the repo root or any subdirectory;
 # the script resolves the root from its own path.
 # =============================================================================
 set -euo pipefail

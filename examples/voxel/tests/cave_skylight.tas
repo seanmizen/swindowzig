@@ -14,7 +14,7 @@
 #   --lighting=none     → baseline, every wall face fully bright
 #   --lighting=skylight → wall faces darken progressively with depth
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   # NOTE: --ao=classic and --render-distance=4 are passed explicitly so the
 #   # post-default-change world defaults (AA=fxaa, AO=moore) don't contaminate

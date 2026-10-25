@@ -1,6 +1,6 @@
 //! terrain_hash: the block hash of a 9×9 area of hilly terrain, for a seed.
 //!
-//! Where: utils/swindowzig.
+//! Where: the repo root.
 //!          zig build terrain-hash -Doptimize=ReleaseFast
 //!          ./zig-out/bin/terrain_hash 0 1 12345
 //!          node examples/voxel/scripts/terrain_hash_wasm.mjs 0 1 12345

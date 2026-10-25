@@ -1,0 +1,139 @@
+name: Check (swindowzig)
+
+# Builds swindowzig, runs its unit tests, and renders the voxel regression
+# scenes with lavapipe (Mesa software Vulkan). Each frame must match its
+# golden in examples/voxel/assets/goldens/lavapipe/. Without
+# this job the goldens went stale with nobody aware of it.
+#
+# A failed comparison is either a regression or a deliberate visual change.
+# For a deliberate change, the job uploads new goldens and prints the command
+# that puts them in the repo. Commit them on the same branch.
+
+on:
+  pull_request:
+    branches: [main]
+  # A merge that skipped the check is still caught on main.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: zig build test + web + lavapipe goldens
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # lavapipe is the only Vulkan driver on the runner. Name it anyway.
+      VK_LOADER_DRIVERS_SELECT: '*lvp*'
+      # build.zig links wgpu-native from ~/.local/lib.
+      LD_LIBRARY_PATH: /home/runner/.local/lib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install lavapipe and SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-tools libsdl2-dev
+          vulkaninfo --summary | grep -i llvmpipe
+
+      - name: Install Zig
+        # No version: setup-zig reads minimum_zig_version from build.zig.zon.
+        uses: mlugg/setup-zig@v2
+
+      - name: Format
+        run: zig fmt --check .
+
+      - name: Install wgpu-native
+        # The same version as the bindings in libs/sw_gpu/src/native_webgpu.zig.
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
+            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+          mkdir -p ~/.local
+          unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
+
+      - name: Unit tests
+        run: zig build test --summary all
+
+      - name: Terrain hash, native and wasm
+        # Terrain must be identical on every platform and in every engine.
+        # Native and wasm (in Node) print the block hash of each seed. The
+        # two outputs must be equal. Seed 0 must keep its pinned hash.
+        run: |
+          zig build terrain-hash -Doptimize=ReleaseFast
+          ./zig-out/bin/terrain_hash 0 1 12345 > "$RUNNER_TEMP/terrain-native.txt"
+          node examples/voxel/scripts/terrain_hash_wasm.mjs 0 1 12345 > "$RUNNER_TEMP/terrain-wasm.txt"
+          echo "native:" && cat "$RUNNER_TEMP/terrain-native.txt"
+          echo "wasm (node $(node --version)):" && cat "$RUNNER_TEMP/terrain-wasm.txt"
+          diff "$RUNNER_TEMP/terrain-native.txt" "$RUNNER_TEMP/terrain-wasm.txt"
+          grep -qx '0 db5d8508a4c6cd54' "$RUNNER_TEMP/terrain-native.txt"
+
+      - name: Web build
+        run: zig build web -Dexample=voxel -Doptimize=ReleaseFast
+
+      - name: Set up Bun for the headless web run
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Headless run of the voxel web build in Bun
+        # app.wasm runs with stub WebGPU imports. The player flies 5 chunks
+        # from spawn. The step fails if the chunks near the player are not
+        # loaded and meshed. CI then tests the wasm-only code paths too.
+        # The first run uses the chunk worker pool (real Bun Web Workers
+        # with chunks.wasm), and fails if a chunk job runs on the main
+        # thread. The second run uses the Inline executor (no pool).
+        run: |
+          bun backends/wasm/headless.ts --wasm zig-out/bin/app.wasm
+          bun backends/wasm/headless.ts --wasm zig-out/bin/app.wasm --workers 0
+
+      - name: Chunk worker pool tests in Bun
+        # Real Web Workers: the pool gives the state of the Inline executor
+        # with random edits, a worker that stops starts again, the fallback
+        # works, and a chunks.wasm of another build does not start.
+        run: bun test backends/wasm/worker-pool.test.ts
+
+      - name: Native build
+        run: zig build native -Dexample=voxel
+
+      - name: Web and native build of the 2D example (flat2d)
+        run: |
+          zig build web -Dexample=flat2d
+          zig build native -Dexample=flat2d
+
+      - name: Compare with the goldens
+        run: ./examples/voxel/scripts/run_headless_regressions.sh --out "$RUNNER_TEMP/frames"
+
+      - name: Make new goldens
+        if: failure()
+        run: ./examples/voxel/scripts/run_headless_regressions.sh --update --out "$RUNNER_TEMP/frames/update"
+
+      - name: Upload the new goldens
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-lavapipe-goldens
+          path: examples/voxel/assets/goldens/lavapipe/*.ppm.gz
+          if-no-files-found: ignore
+
+      - name: Upload the frames and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-frames
+          path: ${{ runner.temp }}/frames
+          if-no-files-found: ignore
+
+      - name: How to accept a deliberate visual change
+        if: failure()
+        run: |
+          echo "If the change to the frames is deliberate, run this from the repo root and commit the result:"
+          echo
+          echo "  rm examples/voxel/assets/goldens/lavapipe/*.ppm.gz"
+          echo "  gh run download ${{ github.run_id }} -R ${{ github.repository }} -n voxel-lavapipe-goldens -D examples/voxel/assets/goldens/lavapipe"
+          echo
+          echo "(gh run download does not overwrite files, so remove the old goldens first.)"
+          echo
+          echo "If not, the frames and logs are in the voxel-frames artifact."

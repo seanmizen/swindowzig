@@ -10,7 +10,7 @@
 ## Status: the CI gate (current)
 
 The `swindowzig-check` workflow (`.github/workflows/swindowzig-check.yml`) runs
-on each PR to `main` that touches `utils/swindowzig`, and on push to `main`. On
+on each PR to `main` that touches the engine, and on push to `main`. On
 an Ubuntu runner with lavapipe it runs `zig build test`, the web build, and
 `run_headless_regressions.sh`. A scene that does not match its golden fails
 the job.
@@ -83,7 +83,7 @@ All Tier 3 / Tier 4 work.
 
 ### Reproducing locally (mac)
 
-From `utils/swindowzig`:
+From the repo root:
 
 ```bash
 # 1. Build
@@ -175,7 +175,7 @@ Summary: 10 passed, 0 failed, 0 missing (backend=metal)
 
 ## Current state
 
-### TAS replay (`utils/swindowzig/libs/sw_core/src/replay.zig`, wired in `examples/voxel/main.zig`)
+### TAS replay (`libs/sw_core/src/replay.zig`, wired in `examples/voxel/main.zig`)
 
 - Tick-based, fully deterministic. The main loop runs at fixed 120Hz (`Config.tick_hz = 120`).
 - `Config.tick_timing` has two modes (`libs/sw_app/src/app.zig:9`):
@@ -480,7 +480,7 @@ jobs:
           curl -L https://github.com/gfx-rs/wgpu-native/releases/download/v0.19.4.1/wgpu-linux-x86_64-release.zip -o wgpu.zip
           unzip wgpu.zip -d ~/.local
       - name: Run regression
-        working-directory: utils/swindowzig
+        working-directory: .
         run: zig build test-voxel
         env:
           VK_LOADER_DRIVERS_SELECT: lvp     # belt-and-braces; lavapipe is the
@@ -543,12 +543,12 @@ Tier 4 (later):
 
 ## References
 
-- App loop / config: `utils/swindowzig/libs/sw_app/src/app.zig`
-- Headless null backend: `utils/swindowzig/libs/sw_platform/src/null_backend.zig`
-- SDL2 backend: `utils/swindowzig/libs/sw_platform/src/native_sdl.zig`
-- GPU init + surface chain: `utils/swindowzig/libs/sw_gpu/src/gpu.zig:363`
-- Per-platform surface creation: `utils/swindowzig/libs/sw_gpu/src/native_webgpu.zig:1093`
-- Frame capture: `utils/swindowzig/libs/sw_gpu/src/gpu.zig:1160`
-- Frame dump CLI handling: `utils/swindowzig/examples/voxel/main.zig:1606`
-- AA regression runner (currently print-only): `utils/swindowzig/examples/voxel/tests/aa_regression.sh`
-- Existing TAS samples: `utils/swindowzig/examples/voxel/framespike.tas`, `utils/swindowzig/examples/voxel/tests/msaa_flatland.tas`
+- App loop / config: `libs/sw_app/src/app.zig`
+- Headless null backend: `libs/sw_platform/src/null_backend.zig`
+- SDL2 backend: `libs/sw_platform/src/native_sdl.zig`
+- GPU init + surface chain: `libs/sw_gpu/src/gpu.zig:363`
+- Per-platform surface creation: `libs/sw_gpu/src/native_webgpu.zig:1093`
+- Frame capture: `libs/sw_gpu/src/gpu.zig:1160`
+- Frame dump CLI handling: `examples/voxel/main.zig:1606`
+- AA regression runner (currently print-only): `examples/voxel/tests/aa_regression.sh`
+- Existing TAS samples: `examples/voxel/framespike.tas`, `examples/voxel/tests/msaa_flatland.tas`

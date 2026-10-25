@@ -14,3 +14,16 @@ docs:
   - changed-files:
       - any-glob-to-any-file: 'docs/**'
       - any-glob-to-any-file: '*.md'
+
+voxel:
+  - changed-files:
+      - any-glob-to-any-file: 'examples/voxel/**'
+
+web:
+  - changed-files:
+      - any-glob-to-any-file: 'backends/wasm/**'
+
+release:
+  - changed-files:
+      - any-glob-to-any-file: 'build.zig.zon'
+      - any-glob-to-any-file: '.github/workflows/swindowzig-release.yml'

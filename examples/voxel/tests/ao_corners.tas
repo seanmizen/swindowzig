@@ -6,7 +6,7 @@
 # situation Moore-style AO darkens but classic Mojang AO misses, because
 # classic only sees the single slab one cell beyond the face.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   # NOTE: --aa=none and --render-distance=4 are passed explicitly so the
 #   # post-default-change world defaults (AA=fxaa, AO=moore) don't contaminate

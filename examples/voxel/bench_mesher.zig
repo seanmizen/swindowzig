@@ -1,6 +1,6 @@
 //! bench_mesher: time the voxel mesher on a fixed world, with no GPU.
 //!
-//! Where: utils/swindowzig.
+//! Where: the repo root.
 //!          zig build bench-mesher -Doptimize=ReleaseFast
 //! When:  before and after a change to the mesher, to state the change in
 //!        the PR.

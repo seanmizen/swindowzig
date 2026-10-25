@@ -31,7 +31,7 @@ let gpuContext: GPUCanvasContext | null = null;
 let canvasFormat: GPUTextureFormat | null = null;
 
 // Source of truth: must match `TextureFormat` in
-// utils/swindowzig/libs/sw_gpu/src/types.zig. Only the formats actually
+// libs/sw_gpu/src/types.zig. Only the formats actually
 // used by the voxel engine are populated; add more as needed.
 const TEXTURE_FORMAT_MAP: Record<number, GPUTextureFormat> = {
   18: 'rgba8unorm',
@@ -1140,7 +1140,7 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
       const buffer = getHandle<GPUBuffer>(bufferHandle);
 
       // IndexFormat enum values must match `types.IndexFormat` in
-      // utils/swindowzig/libs/sw_gpu/src/types.zig:
+      // libs/sw_gpu/src/types.zig:
       //   uint16 = 0
       //   uint32 = 1
       // The old `{1:'uint16', 2:'uint32'}` map was off-by-one and caused
@@ -1148,7 +1148,7 @@ function createWebGPUImports(): Record<string, (...args: never[]) => unknown> {
       // every second index pointed to vertex 0 (the high 16 bits of each
       // u32 index are normally zero for small meshes), producing the
       // classic "fan-from-origin" rendering bug.
-      // See utils/swindowzig/CLAUDE.md for the native-side version of the
+      // See CLAUDE.md for the native-side version of the
       // same enum mismatch that was fixed in gpu.zig's setIndexBuffer.
       const formatMap: Record<number, GPUIndexFormat> = {
         0: 'uint16',

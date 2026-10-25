@@ -4,7 +4,7 @@
 # silhouette diagonals are exposed. Frame diffs between --msaa=none and
 # --msaa=4 should produce many ±1 LSB pixel differences (the MSAA signature).
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   ./zig-out/bin/voxel --world=flatland --msaa=none \
 #     --tas examples/voxel/tests/msaa_flatland.tas \

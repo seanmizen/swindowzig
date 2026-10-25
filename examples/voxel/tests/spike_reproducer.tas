@@ -15,7 +15,7 @@
 #      anchor and adds new outer-ring targets.
 #   4. Stop.
 #
-# Usage (from utils/swindowzig):
+# Usage (from the repo root):
 #   zig build native -Dexample=voxel
 #   ./zig-out/bin/voxel --headless \
 #     --tas examples/voxel/tests/spike_reproducer.tas \

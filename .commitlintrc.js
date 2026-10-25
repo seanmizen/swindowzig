@@ -1,5 +1,5 @@
 /**
- * Custom commitlint config. Change the ticket prefix.
+ * Custom commitlint config. The ticket prefix is SWZ.
  * Expected format: [SWZ-{number}] {type}: {description}
  * Example: [SWZ-42] fix: resolve hover flicker on subsection cards
  */

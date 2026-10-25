@@ -29,7 +29,7 @@ pub const SDL2Backend = struct {
         // tap-to-click delay that the OS adds while it disambiguates a tap from a
         // double-tap or drag-start. That delay is system-level (Trackpad prefs) and
         // cannot be bypassed via SDL — see the "macOS Trackpad Click Latency" section
-        // in utils/swindowzig/CLAUDE.md.
+        // in CLAUDE.md.
         _ = sdl.SDL_SetHint(sdl.SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
 
         // Let the OS draw the IME candidate list. The game draws the

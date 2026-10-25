@@ -15,7 +15,7 @@
 # vista where the borders sit well below the top of the frame.
 set -euo pipefail
 
-cd "$(dirname "$0")/../../.."  # → utils/swindowzig
+cd "$(dirname "$0")/../../.."  # → the repo root
 
 VOXEL=./zig-out/bin/voxel
 TAS=examples/voxel/tests/debug_overlay.tas
