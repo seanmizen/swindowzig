@@ -1,0 +1,41 @@
+name: Check (requirements)
+
+# Validates every requirement artefact in the repo: ID and grammar conformance
+# to ISO/IEC/IEEE 29148, relation integrity, supersession consistency, and that
+# each Verification link still points at a file that exists.
+#
+# That last check is the load-bearing one. A requirement whose test was renamed
+# or deleted is a requirement nobody is proving any more, which is exactly the
+# silent drop this system exists to catch — see requirements/README.md.
+#
+# Runs repo-wide rather than path-filtered, because a requirement can be
+# invalidated by a change somewhere else entirely: deleting a spec file breaks
+# the requirement that cited it, without touching requirements/ at all.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  requirements:
+    name: requirements conform and indexes are current
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      # No install step on purpose: the validator is dependency-free so this
+      # job stays fast enough that nobody is tempted to skip it.
+      - name: Validate requirements
+        run: node requirements/check.mjs
+
+      - name: Test the validator
+        run: node --test requirements/check.test.mjs

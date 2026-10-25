@@ -1,0 +1,57 @@
+name: Feature
+description: Request a new feature or enhancement
+title: "[TEMPLATE-???] feat: "
+labels: ["backlog"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why is this feature needed? What problem does it solve?
+      placeholder: Describe the motivation and background for this feature.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Checklist of conditions that must be true for this issue to be considered done.
+      placeholder: |
+        - [ ] Criterion one
+        - [ ] Criterion two
+        - [ ] Criterion three
+    validations:
+      required: true
+
+  - type: textarea
+    id: files_likely_touched
+    attributes:
+      label: Files Likely Touched
+      description: List files or directories expected to be created or modified.
+      placeholder: |
+        - `apps/my-app/src/components/Foo.tsx` (create)
+        - `apps/my-app/src/routes/bar.ts` (update)
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 - Critical / blocking
+        - P1 - High
+        - P2 - Medium
+        - P3 - Low / nice-to-have
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Any additional context, constraints, design decisions, or links.
+      placeholder: Optional — leave blank if nothing to add.
+    validations:
+      required: false

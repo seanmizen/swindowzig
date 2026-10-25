@@ -1,0 +1,56 @@
+name: Chore
+description: Maintenance, refactoring, tooling, or dependency updates
+title: "[TEMPLATE-???] chore: "
+labels: ["backlog", "chore"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why is this maintenance work needed?
+      placeholder: Describe what needs cleaning up, updating, or improving and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Checklist of conditions that must be true for this chore to be considered done.
+      placeholder: |
+        - [ ] Criterion one
+        - [ ] Criterion two
+    validations:
+      required: true
+
+  - type: textarea
+    id: files_likely_touched
+    attributes:
+      label: Files Likely Touched
+      description: List files or directories expected to be created or modified.
+      placeholder: |
+        - `package.json`
+        - `apps/my-app/dockerfile`
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 - Critical / blocking
+        - P1 - High
+        - P2 - Medium
+        - P3 - Low / nice-to-have
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Links to docs, related issues, or any other relevant context.
+      placeholder: Optional — leave blank if nothing to add.
+    validations:
+      required: false

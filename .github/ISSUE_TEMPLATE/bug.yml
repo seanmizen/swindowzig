@@ -1,0 +1,77 @@
+name: Bug
+description: Report a bug or unexpected behaviour
+title: "[TEMPLATE-???] fix: "
+labels: ["backlog", "bug"]
+body:
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps needed to trigger the bug.
+      placeholder: |
+        1. Go to ...
+        2. Click on ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behaviour
+      description: What should happen?
+      placeholder: Describe what you expected to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behaviour
+      description: What actually happens?
+      placeholder: Describe what you actually observed. Paste error messages or stack traces here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Checklist of conditions that must be true for this bug to be considered fixed.
+      placeholder: |
+        - [ ] The bug no longer reproduces on steps above
+        - [ ] No regressions introduced
+    validations:
+      required: true
+
+  - type: textarea
+    id: files_likely_touched
+    attributes:
+      label: Files Likely Touched
+      description: List files or directories expected to be created or modified.
+      placeholder: |
+        - `apps/my-app/src/components/Foo.tsx`
+        - `apps/my-app/src/utils/bar.ts`
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 - Critical / blocking
+        - P1 - High
+        - P2 - Medium
+        - P3 - Low / nice-to-have
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Environment details, screenshots, related issues, or any other context.
+      placeholder: Optional — leave blank if nothing to add.
+    validations:
+      required: false

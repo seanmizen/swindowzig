@@ -1,0 +1,16 @@
+# Warn-only branch name validation
+# Expected format: TEMPLATE-{number}/{short-description}
+branch=$(git rev-parse --abbrev-ref HEAD)
+pattern='^TEMPLATE-[0-9]+/[a-z0-9][a-z0-9-]*$'
+
+if ! echo "$branch" | grep -qE "$pattern"; then
+  echo ""
+  echo "WARNING: Branch name '$branch' does not follow convention."
+  echo "  Expected format: TEMPLATE-{number}/{short-description}"
+  echo "  Examples: TEMPLATE-42/fix-hover-flicker, TEMPLATE-7/add-avif-support"
+  echo "  (warn-only — push will proceed)"
+  echo ""
+fi
+
+# Exit 0 to allow push regardless of branch name
+exit 0

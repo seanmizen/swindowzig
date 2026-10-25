@@ -1,0 +1,49 @@
+name: Mark Stale Issues and PRs
+
+on:
+  schedule:
+    # Run daily at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    name: Stale issue/PR cleanup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+          # Issues: warn after 21 days, close after 30 days of inactivity
+          days-before-stale: 21
+          days-before-close: 9
+
+          stale-issue-label: stale
+          stale-issue-message: >
+            This issue has been automatically marked as stale because it has not had
+            any activity in the last 21 days. It will be closed in 9 days if no
+            further activity occurs.
+
+          close-issue-message: >
+            This issue was automatically closed because it has been stale for 30 days
+            with no activity.
+
+          # PRs: same schedule
+          stale-pr-label: stale
+          stale-pr-message: >
+            This pull request has been automatically marked as stale because it has
+            not had any activity in the last 21 days. It will be closed in 9 days if
+            no further activity occurs.
+
+          close-pr-message: >
+            This pull request was automatically closed because it has been stale for
+            30 days with no activity.
+
+          # Exempt labels — never stale these
+          exempt-issue-labels: 'P0,in-progress,ready'
+          exempt-pr-labels: 'P0,in-progress,ready'

@@ -1,0 +1,16 @@
+# Maps path globs to labels for actions/labeler
+# Labels must already exist in the repo before they can be applied
+# Add one entry per app, for example:
+#
+# my-app:
+#   - changed-files:
+#       - any-glob-to-any-file: 'apps/my-app/**'
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file: 'docs/**'
+      - any-glob-to-any-file: '*.md'

@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch:*)",
+      "Bash(git merge origin/main)",
+      "Bash(git merge origin/main:*)",
+      "Bash(git merge --no-edit origin/main)",
+      "Bash(git merge --no-edit origin/main:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/lineage.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

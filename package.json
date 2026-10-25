@@ -1,0 +1,31 @@
+{
+  "name": "template-seanorepo",
+  "type": "module",
+  "version": "0.0.1",
+  "description": "empty monorepo with the seanorepo Yarn and Claude Code setup",
+  "license": "MIT",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "utils/*",
+    "projects/*"
+  ],
+  "scripts": {
+    "start:docker": "yarn workspaces foreach -Apt run start:docker",
+    "prod:docker": "yarn workspaces foreach -At run prod:docker",
+    "down": "yarn workspaces foreach -Apt run down",
+    "check": "biome check .",
+    "fix": "biome check --write .",
+    "requirements:check": "node requirements/check.mjs",
+    "requirements:build": "node requirements/check.mjs --write",
+    "format": "biome format --write .",
+    "labels": "bash scripts/labels.sh",
+    "postinstall": "husky"
+  },
+  "packageManager": "yarn@4.18.0+sha512.fcb8716fe7cd0eece141ffc18b92193a9df9204c1ba83189c288835223fc0bbe64af473bab0d5e9927a7daeb5caf2bb07eb2787cc9338ca040ea125f2a1f2f7e",
+  "devDependencies": {
+    "@biomejs/biome": "2.3.8",
+    "@commitlint/cli": "^20.5.0",
+    "husky": "^9.1.7"
+  }
+}
