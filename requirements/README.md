@@ -64,6 +64,7 @@ Prefixes are globally unique. Add a row when you add a file.
 
 | Prefix | File | Scope |
 |---|---|---|
+| `INPUT` | `requirements/input.md` | Keyboard, mouse and wheel input from the platform backends |
 
 ---
 

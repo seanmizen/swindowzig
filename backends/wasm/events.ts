@@ -102,6 +102,63 @@ export function setPointerLock(canvas: HTMLCanvasElement, lock: boolean) {
 const ENGINE_SHORTCUT_KEYCODES = new Set([68, 70, 71, 80, 83, 86]);
 const META_KEYCODES = new Set([91, 92, 93, 224]);
 
+// Key numbers (REQ-INPUT-002):
+// - The page sends the game a KeyboardEvent.keyCode value of a US keyboard.
+//   mapKeyCode in wasm_canvas.zig turns the number into a KeyCode.
+// - Letters and digits follow the layout (keyCode), as before.
+// - The punctuation and navigation keys follow the physical key
+//   (KeyboardEvent.code). The keyCode of a punctuation key changes with the
+//   layout and the browser. The backtick key is 192 on a US layout, 222 or 0
+//   on a French layout. The code is "Backquote" on all of them.
+// - Other keys (Space, Enter, the arrows) have one keyCode on all layouts.
+const PHYSICAL_KEYCODES: Record<string, number> = {
+  Backquote: 192,
+  Minus: 189,
+  Equal: 187,
+  BracketLeft: 219,
+  BracketRight: 221,
+  Backslash: 220,
+  Semicolon: 186,
+  Quote: 222,
+  Comma: 188,
+  Period: 190,
+  Slash: 191,
+  Delete: 46,
+  Home: 36,
+  End: 35,
+  PageUp: 33,
+  PageDown: 34,
+  Insert: 45,
+};
+const PUNCTUATION_KEYCODES = new Set([
+  186, 187, 188, 189, 190, 191, 192, 219, 220, 221, 222,
+]);
+
+/** The key number that the page sends to the game for this event. */
+export function keyNumber(e: Pick<KeyboardEvent, 'code' | 'keyCode'>): number {
+  const legacy = e.keyCode;
+  const letterOrDigit =
+    (legacy >= 65 && legacy <= 90) || (legacy >= 48 && legacy <= 57);
+  if (letterOrDigit) return legacy;
+  const physical = PHYSICAL_KEYCODES[e.code];
+  if (physical !== undefined) return physical;
+  // A punctuation keyCode from a key at another position (for example the
+  // "," of the M key on a French layout) is not that punctuation key.
+  return PUNCTUATION_KEYCODES.has(legacy) ? 0 : legacy;
+}
+
+/**
+ * The deltas of a wheel event for the game: [dx, dy, mode]. The core wheel
+ * event uses the SDL signs: `dy > 0` scrolls up, `dx > 0` scrolls right. A
+ * WheelEvent gives `deltaY > 0` for a scroll down, so dy is -deltaY. The mode
+ * is WheelEvent.deltaMode: 0 pixels, 1 lines, 2 pages.
+ */
+export function wheelDeltas(
+  e: Pick<WheelEvent, 'deltaX' | 'deltaY' | 'deltaMode'>,
+): [number, number, number] {
+  return [e.deltaX, -e.deltaY, e.deltaMode];
+}
+
 /** True when the page takes the key from the browser (preventDefault). */
 export function gameOwnsKey(e: KeyboardEvent): boolean {
   if (/^F\d{1,2}$/.test(e.key)) return false;
@@ -171,6 +228,7 @@ export interface WasmExports {
   ) => void;
   swindowzig_event_mouse_button?: (button: number, down: boolean) => void;
   swindowzig_event_key?: (keycode: number, down: boolean) => void;
+  swindowzig_event_wheel?: (dx: number, dy: number, mode: number) => void;
   swindowzig_text_buffer_ptr?: () => number;
   swindowzig_text_buffer_len?: () => number;
   swindowzig_event_text_input?: (len: number) => void;
@@ -242,6 +300,22 @@ export function attachEventListeners(
     wasmExports.swindowzig_event_mouse_button?.(mouseEvent.button, false);
   });
 
+  // Mouse wheel. The rule of the keys applies: the wheel belongs to the
+  // game, and Ctrl or Cmd with the wheel belongs to the browser (zoom, and
+  // a trackpad pinch). The listener is not passive, so preventDefault can
+  // stop the page scroll.
+  mouseTarget.addEventListener(
+    'wheel',
+    (e: Event) => {
+      const wheelEvent = e as WheelEvent;
+      if (wheelEvent.ctrlKey || wheelEvent.metaKey) return;
+      if (canvasVisible) wheelEvent.preventDefault();
+      const [dx, dy, mode] = wheelDeltas(wheelEvent);
+      wasmExports.swindowzig_event_wheel?.(dx, dy, mode);
+    },
+    { passive: false },
+  );
+
   // Track pointer lock state — when locked, the game has focus and we
   // block browser shortcuts. When unlocked (pause menu), browser defaults work.
   const sendEscape = () => {
@@ -280,7 +354,7 @@ export function attachEventListeners(
     if (textInputActive && isTextKey(e)) return;
     if (gameOwnsKey(e)) e.preventDefault();
     syncModifiers(e);
-    const keycode = e.keyCode || e.which;
+    const keycode = keyNumber(e);
     if (keycode === ESCAPE_KEYCODE && !e.repeat) {
       // A synthetic Escape from a lock exit already went to the game.
       if (performance.now() - lastEscapeMs < ESCAPE_DEDUP_MS) return;
@@ -307,7 +381,7 @@ export function attachEventListeners(
         code === 91
           ? [...META_KEYCODES].some((k) => keysDown.has(k))
           : keysDown.has(code);
-      if (down === held || code === (e.keyCode || e.which)) continue;
+      if (down === held || code === keyNumber(e)) continue;
       if (down) {
         keysDown.add(code);
       } else {
@@ -319,7 +393,7 @@ export function attachEventListeners(
   };
 
   window.addEventListener('keyup', (e) => {
-    const keycode = e.keyCode || e.which;
+    const keycode = keyNumber(e);
     // Release a key the game saw go down, even if it is a text key now.
     if (!keysDown.has(keycode) && textInputActive && isTextKey(e)) return;
     keysDown.delete(keycode);

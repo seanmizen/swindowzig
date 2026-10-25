@@ -95,6 +95,10 @@ jobs:
         # works, and a chunks.wasm of another build does not start.
         run: bun test backends/wasm/worker-pool.test.ts
 
+      - name: Web input tests in Bun
+        # The key numbers and the wheel deltas that events.ts sends.
+        run: bun test backends/wasm/events.test.ts
+
       - name: Native build
         run: zig build native -Dexample=voxel
 

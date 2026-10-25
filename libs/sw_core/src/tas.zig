@@ -155,6 +155,15 @@ pub fn keyFromString(s: []const u8) !Key {
     if (std.mem.eql(u8, s, "Right")) return .Right;
     if (std.mem.eql(u8, s, "Up")) return .Up;
     if (std.mem.eql(u8, s, "Down")) return .Down;
+    // Punctuation and navigation keys: the KeyCode member name.
+    const named = [_]Key{
+        .Grave,     .Minus, .Equal,  .LeftBracket, .RightBracket, .Backslash,
+        .Semicolon, .Quote, .Comma,  .Period,      .Slash,        .Delete,
+        .Home,      .End,   .PageUp, .PageDown,    .Insert,
+    };
+    for (named) |key| {
+        if (std.mem.eql(u8, s, @tagName(key))) return key;
+    }
     return error.InvalidKey;
 }
 
@@ -391,4 +400,11 @@ test "TAS to events conversion" {
     try std.testing.expectEqual(@as(usize, 2), events.items.len);
     try std.testing.expectEqual(@as(u64, 0), events.items[0].tick_id);
     try std.testing.expectEqual(@as(u64, 60), events.items[1].tick_id);
+}
+
+test "keyFromString knows the punctuation and navigation keys" {
+    try std.testing.expectEqual(Key.Grave, try keyFromString("Grave"));
+    try std.testing.expectEqual(Key.Slash, try keyFromString("Slash"));
+    try std.testing.expectEqual(Key.PageDown, try keyFromString("PageDown"));
+    try std.testing.expectError(error.InvalidKey, keyFromString("Unknown"));
 }

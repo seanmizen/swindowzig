@@ -113,7 +113,10 @@ fn pushEvent(payload: core.EventPayload, allocator: std.mem.Allocator) void {
 // Global allocator ref
 var global_allocator: std.mem.Allocator = undefined;
 
-// Map JS keycode to Zig KeyCode
+// Map a key number from backends/wasm/events.ts (keyNumber) to a KeyCode.
+// The numbers are the KeyboardEvent.keyCode values of a US keyboard.
+// events.ts finds the punctuation and navigation keys from
+// KeyboardEvent.code, the physical key (REQ-INPUT-002).
 fn mapKeyCode(js_keycode: u16) core.KeyCode {
     return switch (js_keycode) {
         65 => .A,
@@ -166,6 +169,23 @@ fn mapKeyCode(js_keycode: u16) core.KeyCode {
         18 => .Alt,
         // Cmd (Meta): 91 and 93 in Chrome and Safari, 92 on Windows, 224 in Firefox.
         91, 92, 93, 224 => .Super,
+        192 => .Grave,
+        189 => .Minus,
+        187 => .Equal,
+        219 => .LeftBracket,
+        221 => .RightBracket,
+        220 => .Backslash,
+        186 => .Semicolon,
+        222 => .Quote,
+        188 => .Comma,
+        190 => .Period,
+        191 => .Slash,
+        46 => .Delete,
+        36 => .Home,
+        35 => .End,
+        33 => .PageUp,
+        34 => .PageDown,
+        45 => .Insert,
         else => .Unknown,
     };
 }
@@ -214,6 +234,22 @@ export fn swindowzig_event_mouse_button(button: u8, down: bool) void {
     pushEvent(.{ .pointer_button = .{
         .button = mouse_button,
         .down = down,
+        .mods = current_mods,
+    } }, global_allocator);
+}
+
+/// A wheel event. events.ts gives the WheelEvent deltas with the sign of
+/// the core wheel event: `dy > 0` scrolls up. `mode` is
+/// WheelEvent.deltaMode: 0 pixels, 1 lines, 2 pages.
+export fn swindowzig_event_wheel(dx: f32, dy: f32, mode: u8) void {
+    pushEvent(.{ .wheel = .{
+        .dx = dx,
+        .dy = dy,
+        .mode = switch (mode) {
+            1 => .line,
+            2 => .page,
+            else => .pixel,
+        },
         .mods = current_mods,
     } }, global_allocator);
 }
