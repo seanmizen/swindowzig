@@ -81,7 +81,6 @@ inside the pregen ring.
 | Terrain fill (`generateTerrain` block loop) | **~2.2 ms** | ~4.4 ms (×2 chunks) | ~2% |
 | Skylight BFS (`computeSkylight`) | **~80–100 ms** | ~165 ms (×2 chunks) | ~79% |
 | Greedy mesh gen (`generateMesh`) | **~35–49 ms** | ~38 ms (×1 chunk) | ~18% |
-| GPU sort (`sortByDepth`) | N/A (headless) | — | — |
 | GPU upload (`writeBuffer` ×2) | N/A (headless) | — | — |
 
 Typical pregen-phase single-chunk cost: fill 2.2 ms + sky 82 ms = **84 ms/chunk**.

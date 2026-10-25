@@ -617,14 +617,6 @@ Bun has no real `createBuffer`, so the time of one buffer is not known.
 The on-machine session measures it in a browser. With R = 12, the quad
 buffers hold 4.6 MB for 3.7 MB of quads (framespike.tas, native).
 
-### --depth-stencil=off
-
-The back-to-front sort of each frame needs the quads on the CPU. With the
-depth test off, the upload keeps a CPU copy of the quads
-(`ChunkGPU.sort_mesh`). On the web, that copy comes from JS with
-`jsChunkRead`. This is the only CPU copy of a mesh on main. The flag has
-no web option.
-
 ### Proof (C11)
 
 - `exec_test.zig`: the WorkerPool executor with in-process workers reads
@@ -636,14 +628,12 @@ no web option.
   and at most 64 bytes for each result. Each mesh went to the GPU from the
   held bytes, with the size of its quads, at byte 16 of its buffer, after
   the GPU header of its chunk. The stub WebGPU checks the rules of
-  `writeBuffer`. No chunk keeps a CPU copy, and JS holds no result at the
-  end.
+  `writeBuffer`. JS holds no result at the end.
 - The memory test of `worker-pool.test.ts`: the main wasm memory grows by
   at most 1 MB from R = 4 (49 meshes) to R = 12 (441 meshes), and by at
   most 1 MB over a walk of 24 chunks. A copy of each mesh (about 8 KB)
   adds about 3 MB from R = 4 to R = 12.
-- The native log at exit has `[GPU MESH] uploads ... waiting=0
-  cpu_copies=0`.
+- The native log at exit has `[GPU MESH] uploads ... waiting=0`.
 
 ## Measurements of C5 (2026-10-17, x86_64 Linux container, 4 CPUs)
 

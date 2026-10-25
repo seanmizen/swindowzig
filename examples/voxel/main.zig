@@ -784,7 +784,7 @@ const QuadBufferPool = struct {
 };
 
 /// The GPU side of one chunk mesh. Main keeps no CPU copy of the quads
-/// (C5), except with --depth-stencil=off.
+/// (C5).
 const ChunkGPU = struct {
     quads: ?QuadBuffer = null,
     /// Quads in the buffer now.
@@ -796,14 +796,10 @@ const ChunkGPU = struct {
     /// header of the quad buffer holds it, and vs_chunk tints the chunk
     /// orange for 64 ticks after it when GPU debug is on.
     rebuilt_tick: u32 = 0,
-    /// --depth-stencil=off only: a CPU copy of the quads. The
-    /// back-to-front sort of each frame reads it (sortByDepth).
-    sort_mesh: ?mesher_mod.Mesh = null,
 
-    /// Give the buffer to the pool, and free the CPU copy.
+    /// Give the buffer to the pool.
     fn release(self: *ChunkGPU) void {
         if (self.quads) |qb| state.quad_pool.put(state.allocator, qb);
-        if (self.sort_mesh) |*m| m.deinit();
         self.* = .{};
     }
 };
@@ -814,7 +810,7 @@ const State = struct {
     chunk_gpu: std.HashMap(world_mod.ChunkKey, ChunkGPU, world_mod.ChunkKey.HashContext, std.hash_map.default_max_load_percentage) = undefined, // set by voxelInit
     /// The free GPU quad buffers (C5).
     quad_pool: QuadBufferPool = .{},
-    /// The app allocator, for the pool lists and the depth-off CPU copies.
+    /// The app allocator, for the pool lists.
     allocator: std.mem.Allocator = undefined, // set by voxelInit
     /// Mesh uploads (C5): from bytes in main memory (Inline, ThreadPool),
     /// and from bytes that JS holds (WorkerPool).
@@ -1041,19 +1037,6 @@ const State = struct {
     /// distance in blocks). Values < 1 pull the fog in; values > 1 push it out.
     /// Exposed via --fog=<mult> CLI flag and the Video settings tab.
     fog_distance_mult: f32 = 1.00,
-    /// Whether hardware depth testing is enabled. Parsed from
-    /// --depth-stencil=<on|off>; default on.
-    ///
-    /// When off: no depth texture is allocated, both render pipelines omit the
-    /// depth_stencil descriptor, and the render pass omits the
-    /// depth_stencil_attachment. Geometry is drawn in painter's-algorithm order
-    /// only (back-to-front chunk sort), which is how the engine worked before
-    /// hardware depth support was added.
-    ///
-    /// Primary use: benchmarking regression — run the same TAS with and without
-    /// depth testing to measure the per-frame GPU cost of the depth pass on the
-    /// target hardware.
-    depth_stencil_enabled: bool = true,
 };
 
 // Field defaults apply. With `= undefined`, a field that voxelInit does not
@@ -1123,8 +1106,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.menu_exit_idx = 0;
     state.settings_tab = .video;
     state.fog_distance_mult = 1.00;
-    // Depth-stencil enabled by default; overridden by --depth-stencil=off.
-    state.depth_stencil_enabled = true;
     // Render distance: default from world_mod, overridden by
     // `--render-distance=N` below.
     state.render_distance = world_mod.DEFAULT_RENDER_DISTANCE;
@@ -1422,17 +1403,6 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
         }
-        if (std.mem.startsWith(u8, arg, "--depth-stencil=")) {
-            const val = arg["--depth-stencil=".len..];
-            if (std.mem.eql(u8, val, "on")) {
-                state.depth_stencil_enabled = true;
-            } else if (std.mem.eql(u8, val, "off")) {
-                state.depth_stencil_enabled = false;
-            } else {
-                std.log.err("--depth-stencil: invalid value '{s}'. Accepted: on, off", .{val});
-                fatalExit(1);
-            }
-        }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s}", .{
         @tagName(state.msaa_config.method),
@@ -1449,7 +1419,6 @@ fn voxelInit(ctx: *sw.Context) !void {
         std.log.info("Frustum cull: strategy={s} fov={d:.0}°", .{ state.frustum_strategy.label(), state.frustum_fov_deg });
     }
     std.log.info("Render distance (post-parse): {} chunks", .{state.render_distance});
-    std.log.info("Depth-stencil (post-parse): {s}", .{if (state.depth_stencil_enabled) "on" else "off"});
 
     // Initialize world with the selected preset and CLI-selected render
     // distance (deferred until here so --world= / --render-distance= work
@@ -2908,33 +2877,7 @@ fn voxelRender(ctx: *sw.Context) !void {
         return;
     }
 
-    // With --depth-stencil=off, the draw order is the only occlusion: each
-    // chunk sorts its CPU copy of the quads back to front and writes them
-    // to its buffer, each frame. With depth on, no sort runs, and an
-    // unchanged chunk costs nothing here.
     const cam_fwd = viewForward();
-    if (!state.depth_stencil_enabled) {
-        const t_sort = perfNowNs();
-        var it = state.chunk_gpu.iterator();
-        while (it.next()) |entry| {
-            const cg = entry.value_ptr;
-            const m = &(cg.sort_mesh orelse continue);
-            const qb = cg.quads orelse continue;
-            if (m.quadCount() == 0) continue;
-            const key = entry.key_ptr.*;
-            m.sortByDepth(.{
-                state.camera.position.x,
-                state.camera.position.y,
-                state.camera.position.z,
-            }, cam_fwd, key.cx * chunk_mod.CHUNK_W, key.cz * chunk_mod.CHUNK_W) catch |err| {
-                std.log.err("Sort failed for chunk ({},{}): {}", .{ key.cx, key.cz, err });
-                continue;
-            };
-            g.writeBuffer(qb.buffer, @sizeOf(mesher_mod.PackedQuad), std.mem.sliceAsBytes(m.sorted_quads[0..m.quadCount()]));
-        }
-        const sort_us = @divTrunc(perfNowNs() - t_sort, 1000);
-        if (sort_us > 1000) std.log.info("[SPIKE_RENDER] sort_total={}us", .{sort_us});
-    }
 
     // Update uniforms — front-facing view needs a flipped lookAt direction.
     const view_proj = currentViewProj();
@@ -2993,24 +2936,18 @@ fn voxelRender(ctx: *sw.Context) !void {
     const color_store: gpu_mod.StoreOp =
         if (use_fxaa) .store else if (use_msaa) .discard else .store;
 
-    // Build the optional depth-stencil render-pass attachment. When
-    // --depth-stencil=off, depth_view is null and the attachment is omitted so
-    // the render pass matches the pipelines (which also have no depth_stencil).
     // Hardware depth testing: clear to far-plane (1.0) each frame, discard at end
     // (MSAA depth resolves automatically; non-MSAA depth is transient — no need to store).
     // stencil_read_only=true tells the GPU wrapper to pass undefined stencil ops,
     // which is required for depth24plus (a depth-only format with no stencil component).
-    var depth_view_for_pass: gpu_mod.TextureView = undefined;
-    const depth_attachment: ?gpu_mod.RenderPassDepthStencilAttachment = if (state.depth_view) |dv| blk: {
-        depth_view_for_pass = dv;
-        break :blk .{
-            .view = &depth_view_for_pass,
-            .depth_load_op = .clear,
-            .depth_store_op = .discard,
-            .depth_clear_value = 1.0,
-            .stencil_read_only = true,
-        };
-    } else null;
+    var depth_view_for_pass: gpu_mod.TextureView = state.depth_view.?;
+    const depth_attachment: gpu_mod.RenderPassDepthStencilAttachment = .{
+        .view = &depth_view_for_pass,
+        .depth_load_op = .clear,
+        .depth_store_op = .discard,
+        .depth_clear_value = 1.0,
+        .stencil_read_only = true,
+    };
     const pass = encoder.beginRenderPass(.{
         .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
             .view = color_view,
@@ -3033,10 +2970,9 @@ fn voxelRender(ctx: *sw.Context) !void {
     if (state.frustum_fov_auto) state.frustum_fov_deg = screenDiagonalFovDeg(state.camera.fov, state.camera.aspect);
     const live_frustum: frustum_mod.Frustum = if (state.frozen_frustum) |fz| fz else captureFrustum();
 
-    // Draw order: with depth on, front to back, so the depth test rejects
-    // hidden fragments before they shade. With depth off, back to front
-    // (painter's algorithm at chunk level). The list leaves out the chunks
-    // that the cull strategy rejects.
+    // Draw order: front to back, so the depth test rejects hidden fragments
+    // before they shade. The list leaves out the chunks that the cull
+    // strategy rejects.
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
     var sorted_chunks: std.ArrayList(*world_mod.LoadedChunk) = .empty;
@@ -3060,14 +2996,13 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
     const cam_pos = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
     // Chunk-level sort uses view-space depth of the chunk centroid (dot product with
-    // camera forward), which is the correct painter's-algorithm depth for diagonal views.
+    // camera forward), which is the correct depth for diagonal views.
     // The chunk Y-centre is fixed at CHUNK_H/2 (128) — including Y makes the sort correct
     // when the camera pitch causes Y to dominate the depth ordering (e.g. steep look-down).
-    const ChunkSortCtx = struct { cam: [3]f32, fwd: [3]f32, near_first: bool };
+    const ChunkSortCtx = struct { cam: [3]f32, fwd: [3]f32 };
     std.mem.sort(*world_mod.LoadedChunk, sorted_chunks.items, ChunkSortCtx{
         .cam = cam_pos,
         .fwd = cam_fwd,
-        .near_first = state.depth_stencil_enabled,
     }, struct {
         fn lt(ctx_val: ChunkSortCtx, a: *world_mod.LoadedChunk, b: *world_mod.LoadedChunk) bool {
             const half_xz: f32 = @as(f32, @floatFromInt(chunk_mod.CHUNK_W)) * 0.5;
@@ -3080,7 +3015,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             const bz = b.worldZf() + half_xz - ctx_val.cam[2];
             const da = ax * ctx_val.fwd[0] + ay * ctx_val.fwd[1] + az * ctx_val.fwd[2];
             const db = bx * ctx_val.fwd[0] + by * ctx_val.fwd[1] + bz * ctx_val.fwd[2];
-            return if (ctx_val.near_first) da < db else da > db;
+            return da < db;
         }
     }.lt);
 
@@ -3893,25 +3828,18 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     std.log.info("Loading shader: {} bytes", .{shader_code.len});
     var shader = try g.createShaderModule(.{ .code = shader_code });
 
-    // Create depth texture only when hardware depth testing is enabled.
-    // --depth-stencil=off skips this entirely; both pipelines and the render pass
-    // will then run without a depth attachment (painter's-algorithm sort only).
-    if (state.depth_stencil_enabled) {
-        // sample_count must match the MSAA sample count so the depth attachment
-        // is compatible with the colour target in the render pass.
-        // depth24plus is a required WebGPU format (no stencil component on most backends).
-        const depth_tex = try g.createTexture(.{
-            .size = .{ .width = width, .height = height, .depth_or_array_layers = 1 },
-            .format = .depth24plus,
-            .usage = .{ .render_attachment = true },
-            .sample_count = sample_count,
-        });
-        state.depth_texture = depth_tex;
-        state.depth_view = try depth_tex.createView(.{});
-    } else {
-        state.depth_texture = null;
-        state.depth_view = null;
-    }
+    // Create the depth texture. sample_count must match the MSAA sample count
+    // so the depth attachment is compatible with the colour target in the
+    // render pass. depth24plus is a required WebGPU format (no stencil
+    // component on most backends).
+    const depth_tex = try g.createTexture(.{
+        .size = .{ .width = width, .height = height, .depth_or_array_layers = 1 },
+        .format = .depth24plus,
+        .usage = .{ .render_attachment = true },
+        .sample_count = sample_count,
+    });
+    state.depth_texture = depth_tex;
+    state.depth_view = try depth_tex.createView(.{});
 
     // Create uniform buffer (256 bytes for alignment)
     state.uniform_buffer = try g.createBuffer(.{
@@ -3962,13 +3890,11 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     };
 
     // Create render pipeline (back-face culled — for opaque voxel geometry).
-    // depth_stencil is null when --depth-stencil=off; the pipeline then has no
-    // depth attachment and relies purely on painter's-algorithm chunk ordering.
     // Hardware depth testing. The Metal crash (wgpu-native v0.19.4.1 "bus error at 0x29")
     // was fixed upstream; wgpu-native v22.1.0.5 (current pinned version) no longer crashes.
     // Depth testing eliminates the painter's-algorithm sort-order failures that caused
     // AO shadow faces to bleed through occluding roof geometry (README bug #2).
-    const main_depth_stencil: ?gpu_mod.DepthStencilState = if (state.depth_stencil_enabled) .{
+    const main_depth_stencil: gpu_mod.DepthStencilState = .{
         .format = .depth24plus,
         .depth_write_enabled = true,
         .depth_compare = .less,
@@ -3976,7 +3902,7 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         // does not flag stencil test/write as enabled on a stencil-less format.
         .stencil_read_mask = 0,
         .stencil_write_mask = 0,
-    } else null;
+    };
     state.pipeline = try g.createRenderPipeline(.{
         .layout = &pipeline_layout,
         .vertex = .{
@@ -4038,17 +3964,16 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
 
     // Cylinder pipeline: no face culling + alpha blending so the hitbox is semi-transparent
     // and visible from both inside (first-person) and outside (third-person, F5).
-    // depth_stencil must match the render pass attachment (or be null when
-    // --depth-stencil=off so both pipeline and pass omit the depth attachment).
+    // depth_stencil must match the render pass attachment.
     // depth_write disabled + compare=always so debug overlays render on top of
     // everything without occluding voxel geometry.
-    const cylinder_depth_stencil: ?gpu_mod.DepthStencilState = if (state.depth_stencil_enabled) .{
+    const cylinder_depth_stencil: gpu_mod.DepthStencilState = .{
         .format = .depth24plus,
         .depth_write_enabled = false,
         .depth_compare = .always,
         .stencil_read_mask = 0,
         .stencil_write_mask = 0,
-    } else null;
+    };
     state.cylinder_pipeline = try g.createRenderPipeline(.{
         .layout = &pipeline_layout,
         .vertex = .{
@@ -4127,21 +4052,15 @@ fn logGpuMeshStats() void {
         state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(),
     });
     // C5: main keeps no CPU copy of a mesh after its upload. `waiting` is
-    // the meshes whose bytes wait for the upload, and `cpu_copies` the
-    // copies for the --depth-stencil=off sort.
+    // the meshes whose bytes wait for the upload.
     var waiting: usize = 0;
     var wit = state.world.chunks.valueIterator();
     while (wit.next()) |lc| {
         if (lc.*.upload != null) waiting += 1;
     }
-    var copies: usize = 0;
-    var cit = state.chunk_gpu.valueIterator();
-    while (cit.next()) |cg| {
-        if (cg.sort_mesh != null) copies += 1;
-    }
     const pool = &state.quad_pool;
-    std.log.info("[GPU MESH] uploads local={} held={} dropped={} waiting={} cpu_copies={} quad buffers created={} reused={} destroyed={} free={}", .{
-        state.uploads_local, state.uploads_held, state.uploads_dropped, waiting, copies, pool.created, pool.reused, pool.destroyed, pool.freeCount(),
+    std.log.info("[GPU MESH] uploads local={} held={} dropped={} waiting={} quad buffers created={} reused={} destroyed={} free={}", .{
+        state.uploads_local, state.uploads_held, state.uploads_dropped, waiting, pool.created, pool.reused, pool.destroyed, pool.freeCount(),
     });
 }
 
@@ -4185,13 +4104,10 @@ fn uploadNewMeshes(g: *gpu_mod.GPU) void {
 ///
 /// The header (the chunk origin and the "rebuilt at" tick of the GPU debug
 /// tint) comes from main. A buffer that is too small goes back to the pool
-/// for a larger one. With --depth-stencil=off, main keeps a CPU copy of the
-/// quads for the sort of each frame: the only copy of a mesh on main.
+/// for a larger one.
 fn uploadChunkMesh(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !void {
     const bytes = lc.upload.?;
     const n = lc.mesh.quad_count;
-    if (cg.sort_mesh) |*m| m.deinit();
-    cg.sort_mesh = null;
     if (n == 0) {
         // Nothing to draw. The buffer goes back to the pool.
         if (cg.quads) |qb| state.quad_pool.put(state.allocator, qb);
@@ -4206,16 +4122,6 @@ fn uploadChunkMesh(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !
     };
     if (cg.quads == null) cg.quads = try state.quad_pool.acquire(g, n);
     const buffer = cg.quads.?.buffer;
-
-    if (!state.depth_stencil_enabled) {
-        var m = mesher_mod.Mesh.init(state.allocator);
-        errdefer m.deinit();
-        try m.quads.resize(state.allocator, n);
-        bytes.copyQuads(m.quads.items);
-        m.y_min = lc.mesh.y_min;
-        m.y_max = lc.mesh.y_max;
-        cg.sort_mesh = m;
-    }
 
     cg.rebuilt_tick = state.debug_tick;
     const header = mesher_mod.PackedQuad{ @bitCast(lc.cx * chunk_mod.CHUNK_W), cg.rebuilt_tick, @bitCast(lc.cz * chunk_mod.CHUNK_W), 0 };
@@ -4463,7 +4369,7 @@ fn wasmDebugWorldHash() callconv(.c) u64 {
     return if (v == 0) 1 else v;
 }
 
-// The mesh upload counters for the Bun tests (C5). The tests read 12 u32
+// The mesh upload counters for the Bun tests (C5). The tests read 11 u32
 // values at the returned address:
 //   0:  mesh uploads from bytes in the wasm memory (the Inline executor)
 //   1:  mesh uploads from bytes that JS holds (the WorkerPool executor)
@@ -4472,13 +4378,12 @@ fn wasmDebugWorldHash() callconv(.c) u64 {
 //   4:  quad buffers destroyed
 //   5:  free quad buffers in the pool
 //   6:  chunks whose quad bytes wait for the upload now
-//   7:  chunks with a CPU copy of their quads (--depth-stencil=off only)
-//   8:  WorkerPool: the result bytes that came into the wasm memory: heads
-//   9:  WorkerPool: the result bytes that came into the wasm memory: other
+//   7:  WorkerPool: the result bytes that came into the wasm memory: heads
+//   8:  WorkerPool: the result bytes that came into the wasm memory: other
 //       payloads (blocks, Error text). A mesh payload never comes in.
-//   10: WorkerPool: mesh results that stayed in JS
-//   11: chunks with a mesh on the GPU
-var wasm_gpu_counts: [12]u32 = @splat(0);
+//   9:  WorkerPool: mesh results that stayed in JS
+//   10: chunks with a mesh on the GPU
+var wasm_gpu_counts: [11]u32 = @splat(0);
 
 fn wasmDebugGpuCounts() callconv(.c) [*]const u32 {
     var waiting: u32 = 0;
@@ -4486,11 +4391,9 @@ fn wasmDebugGpuCounts() callconv(.c) [*]const u32 {
     while (it.next()) |lc| {
         if (lc.*.upload != null) waiting += 1;
     }
-    var copies: u32 = 0;
     var on_gpu: u32 = 0;
     var git = state.chunk_gpu.valueIterator();
     while (git.next()) |cg| {
-        if (cg.sort_mesh != null) copies += 1;
         if (cg.quads != null and cg.quad_count > 0) on_gpu += 1;
     }
     const web = if (comptime is_wasm) state.executor == .web else false;
@@ -4503,7 +4406,6 @@ fn wasmDebugGpuCounts() callconv(.c) [*]const u32 {
         @truncate(pool.destroyed),
         @intCast(pool.freeCount()),
         waiting,
-        copies,
         if (web) @truncate(state.executor.web.head_bytes) else 0,
         if (web) @truncate(state.executor.web.payload_bytes) else 0,
         if (web) @truncate(state.executor.web.held_meshes) else 0,

@@ -209,7 +209,6 @@ export interface GpuCounts {
   buffersDestroyed: number;
   buffersFree: number;
   uploadsWaiting: number;
-  cpuCopies: number;
   headBytes: number;
   payloadBytes: number;
   heldMeshes: number;
@@ -510,7 +509,7 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
       const v = new Uint32Array(
         getMemory().buffer,
         wasm.voxel_debug_gpu_counts(),
-        12,
+        11,
       );
       return {
         uploadsLocal: v[0],
@@ -520,11 +519,10 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
         buffersDestroyed: v[4],
         buffersFree: v[5],
         uploadsWaiting: v[6],
-        cpuCopies: v[7],
-        headBytes: v[8],
-        payloadBytes: v[9],
-        heldMeshes: v[10],
-        chunksOnGpu: v[11],
+        headBytes: v[7],
+        payloadBytes: v[8],
+        heldMeshes: v[9],
+        chunksOnGpu: v[10],
       };
     },
     setRenderDistance(r: number) {
@@ -583,9 +581,9 @@ export interface UploadReport {
  * With no pool (`pooled` false): no held upload. With null (a run that
  * changed from the pool to the Inline executor), no check of the kind.
  *
- * In all runs: no write broke a WebGPU rule, no quad bytes wait, no chunk
- * keeps a CPU copy, the quad payload of a mesh never went into the wasm
- * memory, and JS holds no result after the uploads (no leak).
+ * In all runs: no write broke a WebGPU rule, no quad bytes wait, the quad
+ * payload of a mesh never went into the wasm memory, and JS holds no result
+ * after the uploads (no leak).
  */
 export function checkMeshUploads(
   app: HeadlessApp,
@@ -597,8 +595,6 @@ export function checkMeshUploads(
   for (const e of app.gpu.errors.slice(0, 5)) failures.push(`stub GPU: ${e}`);
   if (g.uploadsWaiting !== 0)
     failures.push(`${g.uploadsWaiting} chunks still wait for their upload`);
-  if (g.cpuCopies !== 0)
-    failures.push(`${g.cpuCopies} chunks keep a CPU copy of their quads`);
 
   // The list of writes exists only when the stub records it.
   const last = new Map<number, StubWrite>();

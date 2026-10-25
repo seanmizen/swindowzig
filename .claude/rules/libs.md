@@ -54,10 +54,9 @@ bug and is fixed in the current pinned version (v22.1.0.5).
 The depth texture `sample_count` must match the MSAA sample count of the colour
 attachment — otherwise wgpu-native raises a validation error on render-pass begin.
 
-`sortByDepth()` in `examples/voxel/mesher.zig` is **kept for performance** (reduces
-GPU overdraw, especially on painter's-algorithm-sorted transparent-ish geometry) but
-is no longer required for correctness. Sort key is view-space depth
-(dot product with camera forward) rather than 3D Euclidean distance.
+The depth test is always on. The voxel demo has no software quad sort. It
+draws the chunks front to back (view-space depth of the chunk centre), so the
+depth test rejects hidden fragments before they shade.
 
 ### WebGPU C ABI details
 

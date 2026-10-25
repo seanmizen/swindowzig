@@ -14,8 +14,7 @@
 //!
 //! The main wasm keeps only the counts: the quad count, the y range and the
 //! mesh hash (world.zig: MeshInfo). After the upload, main has no CPU copy
-//! of the mesh. The one exception is `--depth-stencil=off`: its back-to-front
-//! sort needs the quads on the CPU (main.zig).
+//! of the mesh.
 const std = @import("std");
 const protocol = @import("protocol.zig");
 
@@ -60,7 +59,7 @@ pub const MeshBytes = union(enum) {
     }
 
     /// Copy the quads into `out` (its length is `quadBytesLen() / 16`). Only
-    /// the `--depth-stencil=off` sort and the tests use it.
+    /// the tests use it.
     pub fn copyQuads(self: MeshBytes, out: []protocol.PackedQuad) void {
         const dst = std.mem.sliceAsBytes(out);
         std.debug.assert(dst.len == self.quadBytesLen());
