@@ -39,6 +39,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-tools libsdl2-dev
           vulkaninfo --summary | grep -i llvmpipe
 
+      - name: TEMPORARY WebGPU flag probe
+        continue-on-error: true
+        run: |
+          yarn install --immutable
+          yarn playwright install --with-deps chromium
+          yarn node backends/wasm/tests/webgpu-probe.mjs
+
       - name: Install Zig
         # No version: setup-zig reads minimum_zig_version from build.zig.zon.
         uses: mlugg/setup-zig@v2
