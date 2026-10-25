@@ -1,0 +1,31 @@
+# chunk_ao_teleport.tas — Teleport to a far chunk and capture a frame.
+#
+# Purpose: diagnose chunk-boundary AO shadows ("chunk-shadows") at a location
+# where all chunks are freshly generated and no neighbours pre-exist.
+#
+# Usage:
+#   zig build native -Dexample=voxel -Doptimize=ReleaseFast
+#   ./zig-out/bin/voxel --headless \
+#       --tas examples/voxel/tests/chunk_ao_teleport.tas \
+#       --dump-frame=/tmp/ao_teleport.ppm
+#
+# The --dump-frame gate waits for async chunks to fully converge before
+# capturing, so the PPM shows the final meshed state.
+#
+# Inspect the PPM for square-shaped brightness discontinuities at chunk
+# boundaries (16-block intervals from the teleport position).
+
+# Tick 1: capture mouse (required for mouse_move to take effect)
+1 mouse_down left
+2 mouse_up left
+
+# Tick 3: teleport to (150, 80, 150) — far from default spawn (24, 64, 20)
+3 cmd tp 150 80 150
+
+# Tick 5: look slightly down to see ground + chunk grid
+5 mouse_move 0 100
+
+# Hold until tick 700 so async chunks have time to fully converge.
+# (Script duration = highest tick number; --dump-frame waits for TAS
+# to finish AND async pipeline to drain before capturing.)
+700 mouse_move 0 0

@@ -1,0 +1,236 @@
+/// Main app entry point for swindowzig applications.
+const std = @import("std");
+const core = @import("sw_core");
+const platform = @import("sw_platform");
+const gpu_mod = @import("sw_gpu");
+const Context = @import("context.zig").Context;
+
+/// Controls how the main loop advances ticks relative to wall clock time.
+pub const TickTiming = enum {
+    /// Standard fixed-timestep: ticks fire at tick_hz rate based on wall clock.
+    realtime,
+    /// Run as fast as possible: one tick per loop iteration, no sleeping.
+    /// Useful for headless simulation and TAS analysis.
+    unlimited,
+};
+
+/// Configuration for your app (window title, size, tick rate, etc).
+pub const Config = struct {
+    /// Window title (web: page title, native: window title).
+    title: []const u8 = "swindowzig app",
+    /// Initial window/canvas size in pixels.
+    size: struct { w: u32, h: u32 } = .{ .w = 1280, .h = 720 },
+    /// Fixed timestep tick rate in Hz (120 = 8.33ms per tick).
+    tick_hz: u32 = 120,
+    /// When true: no window, no GPU, render callbacks are skipped.
+    /// Useful for deterministic TAS simulation and server-side game logic.
+    headless: bool = false,
+    /// When true (and `headless` is also true): no window, but GPU is still
+    /// initialised against an offscreen bgra8unorm texture sized to `size`.
+    /// Render callbacks fire normally and `captureFrame()` reads the offscreen
+    /// target. This is the headless-offscreen path used by the TAS frame-dump
+    /// regression runner — see `examples/voxel/docs/headless-regressions.md`.
+    /// On its own does nothing; must be combined with `headless = true`.
+    headless_gpu: bool = false,
+    /// The Io instance from main(init: std.process.Init). Callbacks get it as
+    /// ctx.io for file and clock access. The web build has none.
+    io: ?std.Io = null,
+    /// Command-line arguments, from init.minimal.args. Callbacks get them as
+    /// ctx.args. The web build has none.
+    args: []const [:0]const u8 = &.{},
+    /// Tick timing mode. Default .realtime follows wall clock.
+    /// Use .unlimited to run as fast as possible (pairs naturally with headless).
+    tick_timing: TickTiming = .realtime,
+    /// Recording options (not implemented in v0.1).
+    recording: struct { enabled: bool } = .{ .enabled = false },
+    /// Web-specific input options.
+    web_input: struct {
+        /// Prevent browser context menu on right-click (default: true for games).
+        disable_context_menu: bool = true,
+        /// Hide mouse cursor over canvas (default: false, set true to draw custom cursor).
+        hide_cursor: bool = false,
+    } = .{},
+};
+
+/// Main entry point. Call this from your main() function.
+/// Provide a Config and a struct with optional init/tick/frame/render/shutdown callbacks.
+/// Example: sw.run(.{ .title = "My Game" }, struct { pub fn tick(ctx: *sw.Context) !void { ... } });
+pub fn run(config: Config, comptime callbacks: type) !void {
+    const builtin = @import("builtin");
+
+    // Use WASM-specific allocator for freestanding target
+    const is_wasm = switch (builtin.cpu.arch) {
+        .wasm32, .wasm64 => true,
+        else => false,
+    };
+
+    if (comptime is_wasm) {
+        return runWasm(config, callbacks, std.heap.wasm_allocator);
+    } else {
+        var gpa: std.heap.DebugAllocator(.{}) = .init;
+        defer _ = gpa.deinit();
+        return runNative(config, callbacks, gpa.allocator());
+    }
+}
+
+// WASM initialization (called once)
+fn runWasm(config: Config, comptime callbacks: type, allocator: std.mem.Allocator) !void {
+    // This is just exports setup for WASM
+    _ = config;
+    _ = callbacks;
+    _ = allocator;
+    // The actual frame loop is exported from main.zig
+}
+
+// Native loop (for desktop builds)
+fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Allocator) !void {
+    // 1. Create backend (SDL2 for windowed, NullBackend for headless/headless_gpu)
+    var null_impl: platform.null_backend.NullBackend = .{};
+    var backend: platform.Backend = if (config.headless) blk: {
+        std.log.info("Headless mode: no window, headless_gpu={}, tick_timing={s}", .{
+            config.headless_gpu, @tagName(config.tick_timing),
+        });
+        break :blk null_impl.backend();
+    } else blk: {
+        const sdl_backend = try platform.native_sdl.SDL2Backend.create(
+            allocator,
+            config.title,
+            config.size.w,
+            config.size.h,
+        );
+        break :blk sdl_backend;
+    };
+    defer if (!config.headless) backend.deinit();
+
+    try backend.init();
+
+    // 2. Initialize GPU:
+    //   - windowed      → GPU binds to the SDL window's surface
+    //   - headless_gpu  → GPU inits with a null surface and allocates an offscreen
+    //                     bgra8unorm texture sized to config.size
+    //   - headless only → GPU is skipped entirely (isReady() stays false, render early-returns)
+    var gpu_device: gpu_mod.GPU = .{};
+    if (!config.headless) {
+        const window = backend.getWindow();
+        gpu_device.init(window, config.size.w, config.size.h) catch |err| {
+            std.log.warn("GPU initialization failed: {}, running without rendering", .{err});
+        };
+    } else if (config.headless_gpu) {
+        gpu_device.init(null, config.size.w, config.size.h) catch |err| {
+            std.log.warn("Headless GPU initialization failed: {}, running without rendering", .{err});
+        };
+    }
+
+    // 4. Initialize timeline
+    var timeline = core.FixedStepTimeline.init(config.tick_hz);
+
+    // 5. Initialize event bus
+    var event_bus = core.Bus.init(allocator);
+    defer event_bus.deinit();
+
+    // 6. Initialize input snapshot
+    var input_snapshot = core.InputSnapshot.init();
+
+    // 7. Create context
+    var ctx = Context{
+        .alloc = allocator,
+        .timeline = &timeline,
+        .event_bus = &event_bus,
+        .input_snapshot = &input_snapshot,
+        .backend = backend,
+        .gpu_device = &gpu_device,
+        .io = config.io,
+        .args = config.args,
+    };
+
+    // 8. Call user init callback
+    if (@hasDecl(callbacks, "init")) {
+        try callbacks.init(&ctx);
+    }
+
+    // 9. Main loop
+    var running = true;
+    var last_time = backend.getTime();
+
+    while (running) {
+        // Poll events (platform pushes with tick_id=0 = "pending")
+        try backend.pollEvents(&event_bus);
+
+        // Check for shutdown by scanning all pending events directly
+        for (event_bus.events.items) |ev| {
+            if (std.meta.activeTag(ev.payload) == .lifecycle and ev.payload.lifecycle == .shutdown) {
+                running = false;
+                break;
+            }
+        }
+
+        if (!running) break;
+
+        // Update timeline — advance() computes pending ticks without advancing tick_id.
+        // .realtime: dt from wall clock (standard fixed-timestep).
+        // .unlimited: always inject exactly one tick's worth of time → one tick per loop.
+        const dt_ns: u64 = switch (config.tick_timing) {
+            .realtime => blk: {
+                const now = backend.getTime();
+                const dt = now - last_time;
+                last_time = now;
+                break :blk dt;
+            },
+            .unlimited => blk: {
+                null_impl.advanceTime(timeline.tickDuration());
+                break :blk timeline.tickDuration();
+            },
+        };
+
+        const ticks = timeline.advance(dt_ns);
+
+        // Assign pending (tick_id=0) platform events to the first tick of this frame.
+        // This ensures SDL input only fires once (in tick N), not in every catch-up tick.
+        // A frame with 0 ticks keeps its pending events for the next tick.
+        if (ticks > 0) event_bus.assignPendingToTick(timeline.currentTick() + 1);
+
+        // Run tick callbacks — step() advances tick_id by 1 each iteration.
+        // ctx.tickId() is always correct for the current iteration.
+        if (@hasDecl(callbacks, "tick")) {
+            while (timeline.step()) {
+                if (@hasDecl(callbacks, "preTick")) {
+                    try callbacks.preTick(&ctx);
+                }
+                const events_for_tick = event_bus.eventsForTick(timeline.currentTick());
+                input_snapshot.updateFromEvents(events_for_tick);
+                try callbacks.tick(&ctx);
+            }
+        }
+
+        // Frame work: once per loop iteration, after the ticks and before
+        // render. It runs also in pure headless mode, where render does not.
+        if (@hasDecl(callbacks, "frame")) {
+            try callbacks.frame(&ctx);
+        }
+
+        // Render — skipped in pure headless mode (no GPU). Runs in headless_gpu
+        // mode because we initialised the GPU against an offscreen texture.
+        if (!config.headless or config.headless_gpu) {
+            if (@hasDecl(callbacks, "render")) {
+                try callbacks.render(&ctx);
+            }
+        }
+
+        // Check if any tick/render callback requested shutdown (e.g. ctx.requestShutdown())
+        for (event_bus.events.items) |ev| {
+            if (std.meta.activeTag(ev.payload) == .lifecycle and ev.payload.lifecycle == .shutdown) {
+                running = false;
+                break;
+            }
+        }
+
+        // Clear event bus for next frame. A frame with 0 ticks does not clear:
+        // otherwise a lost key-up event leaves the key held.
+        if (ticks > 0 or !@hasDecl(callbacks, "tick")) event_bus.clear();
+    }
+
+    // 10. Call shutdown callback
+    if (@hasDecl(callbacks, "shutdown")) {
+        try callbacks.shutdown(&ctx);
+    }
+}

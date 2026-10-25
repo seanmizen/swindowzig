@@ -309,3 +309,11 @@ Amazon Q
 
 # zig alternate cache dirs
 .zig-cache2/
+
+# swindowzig
+.docs
+# Compiled example binaries in the project root during dev.
+test_sdl
+/voxel
+# The voxel regression goldens are gzipped frames. `*.gz` above ignores them.
+!examples/voxel/assets/goldens/**/*.gz

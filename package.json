@@ -1,24 +1,32 @@
 {
-  "name": "template-seanorepo",
+  "name": "swindowzig",
   "type": "module",
-  "version": "0.0.1",
-  "description": "empty monorepo with the seanorepo Yarn and Claude Code setup",
+  "version": "0.2.0",
+  "description": "A thin WebGPU wrapper in Zig for games: one fixed-tick loop on the web (wasm) and the desktop",
   "license": "MIT",
   "private": true,
-  "workspaces": [
-    "apps/*",
-    "utils/*",
-    "projects/*"
-  ],
   "scripts": {
-    "start:docker": "yarn workspaces foreach -Apt run start:docker",
-    "prod:docker": "yarn workspaces foreach -At run prod:docker",
-    "down": "yarn workspaces foreach -Apt run down",
+    "build:wasm": "zig build web",
+    "build:wasm:voxel": "zig build web -Dexample=voxel -Doptimize=ReleaseFast",
+    "build:js": "bun build backends/wasm/boot.ts backends/wasm/chunk-worker.ts --outdir=zig-out/bin --minify",
+    "build": "yarn build:wasm && yarn build:js",
+    "build:voxel": "yarn build:wasm:voxel && yarn build:js",
+    "dev": "yarn build && bun backends/wasm/dev-server.ts",
+    "dev:voxel": "yarn build:voxel && bun backends/wasm/dev-server.ts --example voxel",
+    "dev:watch": "bun --watch backends/wasm/dev-server.ts",
+    "web:windows": "zig build web -Dexample=windows && bun build backends/wasm/boot.ts --outdir=zig-out/bin && bun backends/wasm/dev-server.ts",
+    "native:windows": "zig build run -Dexample=windows",
+    "native:voxel": "zig build run -Dexample=voxel -Doptimize=ReleaseFast --",
+    "native:justabox": "zig build run -Dexample=justabox",
+    "build:native": "zig build native",
+    "test": "zig build test",
+    "test:web": "bash test-web-build.sh",
+    "test:workers": "bun test backends/wasm/worker-pool.test.ts",
     "check": "biome check .",
     "fix": "biome check --write .",
+    "format": "biome format --write .",
     "requirements:check": "node requirements/check.mjs",
     "requirements:build": "node requirements/check.mjs --write",
-    "format": "biome format --write .",
     "labels": "bash scripts/labels.sh",
     "postinstall": "husky"
   },
@@ -26,6 +34,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.3.8",
     "@commitlint/cli": "^20.5.0",
+    "@types/bun": "^1.3.5",
     "husky": "^9.1.7"
   }
 }

@@ -93,7 +93,7 @@ list when there is more than one entry.
 | Field | Meaning |
 |---|---|
 | **Status** | `proposed` · `active` · `superseded` · `withdrawn` |
-| **Source** | *Who asserted this.* `sean`, or `agent:TEMPLATE-197` for one an agent derived while working a ticket. |
+| **Source** | *Who asserted this.* `sean`, or `agent:SWZ-197` for one an agent derived while working a ticket. |
 | **Origin** | Where it was decided — an issue or PR reference. |
 | **Type** | `functional` (behaviour) · `constraint` (a bound on the solution) · `quality` (a non-functional characteristic, per ISO/IEC 25010) |
 | **Priority** | `P0`–`P3`, the same scale the issue tracker uses. |

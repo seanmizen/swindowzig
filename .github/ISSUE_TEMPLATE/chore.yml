@@ -1,6 +1,6 @@
 name: Chore
 description: Maintenance, refactoring, tooling, or dependency updates
-title: "[TEMPLATE-???] chore: "
+title: "[SWZ-???] chore: "
 labels: ["backlog", "chore"]
 body:
   - type: textarea

@@ -37,8 +37,8 @@ gh issue edit $ARGUMENTS --add-label "in-progress" --remove-label "backlog" --re
 Construct a complete prompt for the worker agent. The prompt MUST include:
 
 1. The full issue title and body (copy it verbatim)
-2. The branch naming instruction: `TEMPLATE-$ARGUMENTS/{short-description-from-title}`
-3. The commit message format: `[TEMPLATE-$ARGUMENTS] {type}: {description}`
+2. The branch naming instruction: `SWZ-$ARGUMENTS/{short-description-from-title}`
+3. The commit message format: `[SWZ-$ARGUMENTS] {type}: {description}`
 4. The WORKFLOW block below (with $ARGUMENTS substituted for the issue number)
 5. The IGNITION PHASE block below (copy it VERBATIM — this is critical for the engine to keep running)
 6. The RULES block below
@@ -51,7 +51,7 @@ YOUR TASK:
 
 WORKFLOW:
 1. You are already in a git worktree. Create and checkout a new branch:
-   git checkout -b TEMPLATE-$ARGUMENTS/{short-desc}
+   git checkout -b SWZ-$ARGUMENTS/{short-desc}
 
 2. Do the work described in the acceptance criteria. Check off each criterion mentally as you complete it.
 
@@ -66,15 +66,15 @@ WORKFLOW:
 
 5. Stage and commit your changes:
    git add {specific files}
-   git commit -m "[TEMPLATE-$ARGUMENTS] {type}: {description}"
+   git commit -m "[SWZ-$ARGUMENTS] {type}: {description}"
    (End the message with the Co-Authored-By line your harness gives you.)
 
 6. Push your branch:
-   git push -u origin TEMPLATE-$ARGUMENTS/{short-desc}
+   git push -u origin SWZ-$ARGUMENTS/{short-desc}
 
 7. Open a PR:
    gh pr create \
-     --title "[TEMPLATE-$ARGUMENTS] {type}: {description}" \
+     --title "[SWZ-$ARGUMENTS] {type}: {description}" \
      --body "Closes #$ARGUMENTS
 
    ## Summary

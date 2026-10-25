@@ -1,0 +1,3 @@
+# Root .gitignore globally ignores *.gz, but the per-backend golden frames
+# MUST be tracked — they ARE the regression baselines. Un-ignore them here.
+!*.ppm.gz

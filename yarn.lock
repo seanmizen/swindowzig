@@ -325,6 +325,24 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/bun@npm:^1.3.5":
+  version: 1.4.4
+  resolution: "@types/bun@npm:1.4.4"
+  dependencies:
+    bun-types: "npm:1.4.4"
+  checksum: 10c0/3b9a54dcae27fc4d31dc8df6ef7448e9c0c5a6b23de3e7f3aa17700548660bb9e4b061c399a66f56fe055879652d151e245cfaa4911f096bd7d4f8ae69baa6cb
+  languageName: node
+  linkType: hard
+
+"@types/node@npm:*":
+  version: 26.6.5
+  resolution: "@types/node@npm:26.6.5"
+  dependencies:
+    undici-types: "npm:~8.9.0"
+  checksum: 10c0/4f791f69466ace7842c09e7bef96cb1ddbb65cf3db916ef7e84f0e2b2a17220b6b816dc7539d01520cadfb17ed7169b8214910900493e0a83be8bc7d124ec20a
+  languageName: node
+  linkType: hard
+
 "ajv@npm:^8.11.0":
   version: 8.20.0
   resolution: "ajv@npm:8.20.0"
@@ -364,6 +382,16 @@ __metadata:
   version: 1.0.0
   resolution: "array-ify@npm:1.0.0"
   checksum: 10c0/75c9c072faac47bd61779c0c595e912fe660d338504ac70d10e39e1b8a4a0c9c87658703d619b9d1b70d324177ae29dc8d07dda0d0a15d005597bc4c5a59c70c
+  languageName: node
+  linkType: hard
+
+"bun-types@npm:1.4.4":
+  version: 1.4.4
+  resolution: "bun-types@npm:1.4.4"
+  dependencies:
+    "@types/node": "npm:*"
+    undici-types: "npm:*"
+  checksum: 10c0/f8d201a731bf50138c05f73e5e9e19187801841a2fab310c7da8f02a17feb832ec37926f03fda345d16a3526cc3c7dfba01284102a3e62e00c5f995aa6b7d91b
   languageName: node
   linkType: hard
 
@@ -765,12 +793,13 @@ __metadata:
   languageName: node
   linkType: hard
 
-"template-seanorepo@workspace:.":
+"swindowzig@workspace:.":
   version: 0.0.0-use.local
-  resolution: "template-seanorepo@workspace:."
+  resolution: "swindowzig@workspace:."
   dependencies:
     "@biomejs/biome": "npm:2.3.8"
     "@commitlint/cli": "npm:^20.5.0"
+    "@types/bun": "npm:^1.3.5"
     husky: "npm:^9.1.7"
   languageName: unknown
   linkType: soft
@@ -779,6 +808,20 @@ __metadata:
   version: 1.3.1
   resolution: "tinyexec@npm:1.3.1"
   checksum: 10c0/c590369cb3fa73cc18a3998caec8a00f9712d91309c881be3ac52b160fb2f80c7b1fbf3591858ab6abab47ad55385b0c86ec19982e32441a01f55298dab9ccd2
+  languageName: node
+  linkType: hard
+
+"undici-types@npm:*":
+  version: 8.12.3
+  resolution: "undici-types@npm:8.12.3"
+  checksum: 10c0/e50cec68758ffd658286f4bbf75fb9c26b6855bee2b36b7335ac394231ddf42250500ecdafbff682b1e65f5112f8e32be1ee719862f89561724aee1da122df3a
+  languageName: node
+  linkType: hard
+
+"undici-types@npm:~8.9.0":
+  version: 8.9.0
+  resolution: "undici-types@npm:8.9.0"
+  checksum: 10c0/51c712c20c087368f62c6fc0f2bc49fa76bfe5dec28ff01584bb677ff29b0622569783c02d43e151143808c48c0503f804093bd2c491b10f2a830138034cb451
   languageName: node
   linkType: hard
 

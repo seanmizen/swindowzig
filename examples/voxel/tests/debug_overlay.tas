@@ -1,0 +1,34 @@
+# debug_overlay.tas — F3-style info panel regression.
+#
+# Purpose: confirm the F3-style debug info panel actually paints to the
+# top-left when Cmd+D ("debug mode") is on, by comparing the top-left
+# corner of two PPM dumps:
+#   * baseline: --debug=off + this TAS  → no debug overlay, no panel
+#   * panel   : --debug=on  + this TAS  → keyboard HUD + chunk borders
+#                                          + F3 panel
+#
+# Same TAS, same camera state. The keyboard HUD lives in the bottom half
+# of the screen and chunk borders are 3D world geometry, so neither
+# affects the top-left 320×320 region we sample. The panel rect alone
+# (translucent black at alpha 0.5) gives ~5–6 brightness delta per channel.
+#
+# We can't toggle Cmd+D from a TAS — the parser doesn't support modifier
+# keys, so the .D event would arrive without the .super/.ctrl bit set
+# and the in-game handler would ignore it. The CLI flag is the way.
+#
+# Usage (from the repo root):
+#   zig build native -Dexample=voxel
+#   ./examples/voxel/tests/debug_overlay.sh
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse so subsequent looks register. ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Hold the camera still for a few ticks so the FPS sampler settles. ---
+4 mouse_move 0 0
+8 mouse_move 0 0
+12 mouse_move 0 0
+20 mouse_move 0 0
+30 mouse_move 0 0
