@@ -1,0 +1,68 @@
+# render_distance_change.tas — change the render distance at runtime (C8).
+#
+# Purpose: the Settings picker changes the desired state of the chunk
+# scheduler. The scheduler evicts the meshes past the new R + 1 and keeps
+# loading.
+#
+# Usage (from utils/swindowzig). `--aa=none` puts Render Distance at row 6
+# of the Video tab:
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --headless --aa=none --world=flatland \
+#     --tas examples/voxel/tests/render_distance_change.tas 2>&1 \
+#     | grep -E 'Render Distance|EVICT|CHUNK_STATS'
+#   Expect "Render Distance -> 4" and "[EVICT] ... mesh(es) evicted".
+#   Add --debug=on --debug-overlay=on --debug-page=pipeline
+#   --dump-frame=/tmp/rd.ppm to see the chunk pipeline page of the debug
+#   overlay (C12) after the scheduler is idle. A TAS key event has no
+#   modifiers, so the TAS cannot press Ctrl+P.
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Open the pause menu, go to Settings ---
+5 keydown Escape
+6 keyup Escape
+10 keydown Down
+11 keyup Down
+15 keydown Enter
+16 keyup Enter
+
+# --- Down 6 times to Render Distance ---
+20 keydown Down
+21 keyup Down
+24 keydown Down
+25 keyup Down
+28 keydown Down
+29 keyup Down
+32 keydown Down
+33 keyup Down
+36 keydown Down
+37 keyup Down
+40 keydown Down
+41 keyup Down
+
+# --- Left 8 times: 12 -> 4 ---
+44 keydown Left
+45 keyup Left
+48 keydown Left
+49 keyup Left
+52 keydown Left
+53 keyup Left
+56 keydown Left
+57 keyup Left
+60 keydown Left
+61 keyup Left
+64 keydown Left
+65 keyup Left
+68 keydown Left
+69 keyup Left
+72 keydown Left
+73 keyup Left
+
+# --- Close the menu (Settings -> main -> game) ---
+80 keydown Escape
+81 keyup Escape
+85 keydown Escape
+86 keyup Escape
+
+# --- Wait. The scheduler evicts and goes idle. ---
+600 mouse_move 0 0

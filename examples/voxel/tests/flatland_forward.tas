@@ -1,0 +1,56 @@
+# flatland_forward.tas — fly straight ahead on flatland and watch chunks generate.
+#
+# Purpose: expose the per-frame spikes caused by chunk mesh generation as the
+# player crosses chunk boundaries on an otherwise empty flat world. Used by
+# examples/voxel/docs/chunk-size-investigation.md — see that file for the
+# baseline numbers and the 16- / 32- / 48-wide chunk comparison.
+#
+# What it does:
+#   1. t=1..2    Click left mouse to capture the mouse (gameplay input gates on this).
+#   2. t=3       Double-tap Space (press 1 of 2) — first tap of the fly-mode toggle.
+#   3. t=5       Double-tap Space (press 2 of 2) — within DOUBLE_TAP_WINDOW = 0.3 s
+#                (36 ticks at 120 Hz), flips player.fly_mode = true. Flying means
+#                no gravity, no ground clipping — purely a constant-velocity
+#                probe of the chunk-generation pipeline.
+#   4. t=7       keydown W — start flying straight ahead (-Z at spawn yaw).
+#   5. t=1207    keyup W — stop after 1200 sim ticks ≈ 10 wall seconds at 120 Hz
+#                sim rate. FLY_SPEED = 10 blocks/s → 100 blocks forward →
+#                ~2.1 chunks crossed at CHUNK_W=48, ~6.3 at CHUNK_W=16.
+#                That is enough to force the mesh radius to walk past the
+#                spawn ring and trigger chunk generation + meshing on the hot
+#                path.
+#   6. t=1400    Hold steady so the last few async mesh-gen passes can
+#                drain and the frame dump captures a stable view.
+#
+# Sean's exact ask (voxel/chunk-size-perf branch): "make a tas run spawn in a
+# flatlands world and fly forwards until chunks generate. it's really slow! I
+# want you to see it be slow." The profile CSV captured under
+# `--profile-csv=<path>` is the "see it be slow" output.
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --headless --world=flatland \
+#     --tas examples/voxel/tests/flatland_forward.tas \
+#     --dump-frame=/tmp/flatland_forward.ppm \
+#     --profile-csv=/tmp/flatland_before.csv
+#
+# Tick numbering is relative to the first post-loading tick (the replayer is
+# gated during world load by the TAS remap in main.zig), so tick 1 is always
+# the first frame of actual gameplay, regardless of how long pregen took.
+
+# --- Capture mouse (gameplay input gates on mouse_captured) ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Double-tap Space to enter fly mode ---
+3 keydown Space
+4 keyup Space
+5 keydown Space
+6 keyup Space
+
+# --- Fly forward for 1200 ticks (-Z at default spawn yaw) ---
+7 keydown W
+1207 keyup W
+
+# --- Hold steady so async mesh work drains before the frame capture ---
+1400 mouse_move 0 0

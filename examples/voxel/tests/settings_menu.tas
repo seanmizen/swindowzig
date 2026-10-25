@@ -1,0 +1,36 @@
+# settings_menu.tas — Visual documentation TAS for the Settings screen.
+#
+# Purpose: opens the pause menu, navigates into Settings, and hops onto the
+# FXAA Quality row so `--dump-frame` captures the method-specific quality
+# sub-row that was added alongside the new AA defaults (AA=fxaa, quality=medium).
+# Because we end on the Settings screen, the dumped PPM shows all six rows
+# (AA Method, FXAA Quality, AO Strategy, Lighting, Render Distance, Back).
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel \
+#     --tas examples/voxel/tests/settings_menu.tas \
+#     --dump-frame=/tmp/settings_menu.ppm
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Open the pause menu via Escape ---
+5 keydown Escape
+6 keyup Escape
+
+# --- Move selection from Resume (idx 0) down to Settings (idx 1) ---
+10 keydown Down
+11 keyup Down
+
+# --- Activate Settings ---
+15 keydown Enter
+16 keyup Enter
+
+# --- Now on Settings screen at AA Method (idx 0). Move down once so the
+#     FXAA Quality sub-row (idx 1 while method=fxaa) is highlighted. ---
+20 keydown Down
+21 keyup Down
+
+# --- Hold steady for a few ticks so the replayer lands on .finished with
+#     a stable UI, then dump-frame fires. ---
+30 keyup Down

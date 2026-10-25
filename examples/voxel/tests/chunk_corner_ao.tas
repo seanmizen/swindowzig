@@ -1,0 +1,60 @@
+# chunk_corner_ao.tas — Regression test for AO / face-culling correctness at
+# chunk corners.
+#
+# Problem fixed: when chunk A loaded after its diagonal neighbour B was already
+# meshed, B's corner vertices (whose AO samples reach into A) were computed
+# while A was missing — `isSolid` returned false for A's blocks, giving those
+# vertices too-bright AO.  `generateChunk` now marks all 8 surrounding chunks
+# dirty (previously only 4 face-adjacent), so B re-meshes once A arrives.
+# Similarly `setBlock` now dirtied neighbours within AO reach (2 cells).
+#
+# This TAS digs a 2×2 pit that straddles the chunk boundary at x=16
+# (chunk 0 / chunk 1 in the X axis).  Both sides of the pit are in different
+# chunks but share a corner, so the wall-face AO at the join is affected by
+# the fix.  The captured frame serves as a regression baseline: if the fix
+# is reverted, the corner vertex brightness will differ.
+#
+# Spawn is at approximately (24, 65, 20) on the default flatland world.
+# The chunk boundary is at world x=16.  We walk left (−X) to reach it.
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --world=flatland --aa=none --render-distance=4 \
+#     --ao=moore --lighting=skylight \
+#     --tas examples/voxel/tests/chunk_corner_ao.tas \
+#     --dump-frame=/tmp/chunk_corner_ao.ppm
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look straight down so we can dig at our feet ---
+3 mouse_move 0 180
+
+# --- Walk left (−X) toward the chunk boundary at x=16 ---
+# Hold A for ~30 ticks to cross from x≈24 to x≈16
+5  key_down a
+35 key_up a
+
+# --- Dig once to open a hole at the boundary ---
+37 mouse_down left
+38 mouse_up left
+
+# --- Walk a little further to straddle the boundary, dig again ---
+40 key_down a
+48 key_up a
+50 mouse_down left
+51 mouse_up left
+
+# --- Step back and look at the pit from an angle so the AO on the pit walls
+#     (including the corner where both chunks meet) is visible ---
+53 key_down s
+60 key_up s
+62 mouse_move 0 -60
+63 mouse_move 4 0
+64 mouse_move 4 0
+65 mouse_move 4 0
+66 mouse_move 4 0
+
+# Hold steady for dump-frame
+75 mouse_move 0 0

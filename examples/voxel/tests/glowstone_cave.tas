@@ -1,0 +1,75 @@
+# glowstone_cave.tas — Phase-3 block-light regression on a dug flatland cave.
+#
+# Purpose: dig a small pit into flat terrain, place a glowstone at the bottom
+# of the pit, and verify that the per-chunk block-light BFS propagates through
+# the surrounding air and brightens the pit interior. Compared against the
+# same TAS run with `--place-block=stone` (no emitter placed), the glowstone
+# run should show a bright yellow-gold core on the pit floor and a softer
+# falloff on the wall faces above it.
+#
+# Companion runner: `tests/glowstone_cave.sh` — reads both PPMs, computes
+# mean brightness inside a bbox centred on the pit (immediate neighbours of
+# the glowstone) and in a distant bbox (roughly 4 cells above the pit rim),
+# and asserts:
+#     near_mean_with_glowstone  >  threshold_bright
+#     far_mean_with_glowstone   <  near_mean_with_glowstone
+#     near_mean_stone_baseline  <  near_mean_with_glowstone
+#
+# Usage (from utils/swindowzig):
+#   zig build native -Dexample=voxel
+#
+#   # Baseline: same TAS with stone placed (no emission) — the pit stays dark.
+#   ./zig-out/bin/voxel --world=flatland --aa=none --place-block=stone \
+#     --tas examples/voxel/tests/glowstone_cave.tas \
+#     --dump-frame=/tmp/glowstone_cave_stone.ppm
+#
+#   # Glowstone: same TAS with glowstone placed — pit interior lights up.
+#   ./zig-out/bin/voxel --world=flatland --aa=none --place-block=glowstone \
+#     --tas examples/voxel/tests/glowstone_cave.tas \
+#     --dump-frame=/tmp/glowstone_cave_glow.ppm
+#
+#   # Automated runner with brightness asserts:
+#   ./examples/voxel/tests/glowstone_cave.sh
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look almost straight down so each subsequent dig chews into the
+#     same (x,z) column. Matches dig_relight.tas so the dig raycast behaves. ---
+3 mouse_move 0 400
+
+# --- Dig three blocks deep: a 1×3×1 vertical shaft. The third dig lands at
+#     roughly y = surface - 2, giving us headroom above the glowstone for the
+#     block-light BFS to climb back out of the hole. ---
+5  mouse_down left
+6  mouse_up left
+9  mouse_down left
+10 mouse_up left
+13 mouse_down left
+14 mouse_up left
+
+# --- Right-click to place `state.place_block` on the face of the dug hole's
+#     floor. The raycast aims at the exposed floor block from directly above,
+#     and the place position lands on top of that block — i.e. inside the pit,
+#     one cell above the floor. For --place-block=glowstone that emits light
+#     into all 6 neighbouring air cells of the pit interior. ---
+17 mouse_down right
+18 mouse_up right
+
+# --- Tilt the camera up so the hole rim and the glowstone's upward faces are
+#     both in frame. This exposes both the bright-near sample region (the
+#     pit interior) and the far sample region (flat ground around the rim).---
+22 mouse_move 0 -150
+
+# --- Slight horizontal pan so the diagonal interior wall shows the block-light
+#     gradient rather than a straight-on head-on shot of a single face. ---
+24 mouse_move 4 0
+25 mouse_move 4 0
+26 mouse_move 4 0
+27 mouse_move 4 0
+
+# --- Hold steady so --dump-frame lands on a deterministic final view. ---
+32 mouse_move 0 0
