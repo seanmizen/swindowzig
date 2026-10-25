@@ -107,6 +107,16 @@ jobs:
           zig build web -Dexample=flat2d
           zig build native -Dexample=flat2d
 
+      - name: Screen-reader mirror in Chromium (flat2d)
+        # Playwright opens flat2d with WebGPU, moves the focus with Tab, and
+        # reads the accessibility tree (REQ-A11Y-001). Chromium uses its own
+        # SwiftShader Vulkan driver. VK_LOADER_DRIVERS_SELECT='*lvp*' hides
+        # that driver and gives no WebGPU adapter, so this step removes it.
+        run: |
+          yarn install --immutable
+          yarn playwright install --with-deps --only-shell chromium
+          env -u VK_LOADER_DRIVERS_SELECT yarn test:a11y
+
       - name: Compare with the goldens
         run: ./examples/voxel/scripts/run_headless_regressions.sh --out "$RUNNER_TEMP/frames"
 

@@ -11,6 +11,10 @@ const exampleArg = (() => {
     : undefined;
 })();
 
+// --no-build: serve zig-out as it is, with no build and no watch. The
+// Playwright test uses it after its own `zig build web`.
+const noBuild = process.argv.includes('--no-build');
+
 // Watch Zig source files and rebuild on change
 let buildInProgress = false;
 let buildQueued = false;
@@ -53,7 +57,7 @@ async function rebuildZig() {
 }
 
 // Watch directories for .zig file changes
-const watchDirs = ['libs', 'examples'];
+const watchDirs = noBuild ? [] : ['libs', 'examples'];
 for (const dir of watchDirs) {
   try {
     watch(dir, { recursive: true }, (_event, filename) => {
@@ -69,8 +73,10 @@ for (const dir of watchDirs) {
 }
 
 // Initial build
-console.log('🚀 Initial Zig build...');
-await rebuildZig();
+if (!noBuild) {
+  console.log('🚀 Initial Zig build...');
+  await rebuildZig();
+}
 
 const server = serve({
   port: 3020,
@@ -99,6 +105,12 @@ const server = serve({
       '/storage': './backends/wasm/storage.ts',
       '/assets.js': './backends/wasm/assets.ts',
       '/assets': './backends/wasm/assets.ts',
+      '/a11y.js': './backends/wasm/a11y.ts',
+      '/a11y': './backends/wasm/a11y.ts',
+      '/net.js': './backends/wasm/net.ts',
+      '/net': './backends/wasm/net.ts',
+      '/held-bytes.js': './backends/wasm/held-bytes.ts',
+      '/held-bytes': './backends/wasm/held-bytes.ts',
       // The chunk worker pool (C9). chunk-worker.ts has no imports, so the
       // worker gets one transpiled file.
       '/worker-pool.js': './backends/wasm/worker-pool.ts',

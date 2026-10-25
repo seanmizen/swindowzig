@@ -124,6 +124,13 @@ depth test rejects hidden fragments before they shade.
   `ctx.stopTextInput()`. The app owns the text (`sw_ui.TextValue`).
 - A string that the app gives to a node must stay valid until the next
   `begin`. `u.print` makes one in a per-frame buffer.
+- Web: `finish` sends the semantic tree to `backends/wasm/a11y.ts` when it
+  changes (`web_mirror.zig`). That file keeps a hidden DOM tree for screen
+  readers, and gives DOM focus to the focused node (REQ-A11Y-001).
+  `yarn test:a11y` (Playwright, Chromium) tests it with flat2d.
+- Web entry: the browser does not call `main`. An app that uses `sw.run`
+  calls `sw.exportWeb(config, Callbacks)` in a `comptime` block, and sets
+  `std_options.logFn` to `sw.webLogFn`. See `examples/flat2d/main.zig`.
 
 ### Known issue
 
@@ -175,6 +182,8 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_text/src/utf8.zig`, `atlas.zig` | UTF-8 decoder (bad bytes give U+FFFD) and the shelf packer for the atlas |
 | `libs/sw_ui/src/ui.zig` | `Ui`: immediate-mode tree (row, column, text, button, list, list item, text field, image), small layout (fixed, fit, fill, padding, gap, alignment), keyboard focus, events, and the semantic tree. No GPU or font code, unit tested |
 | `libs/sw_ui/src/semantic.zig` | `SemanticTree`: plain data (role, name, value, focused, disabled, selected, live, changed, bounds, children) for a backend such as the web screen-reader mirror |
+| `libs/sw_ui/src/web_mirror.zig` | Encodes the semantic tree for the web screen-reader mirror (`backends/wasm/a11y.ts`), and sends it only when it changes |
+| `libs/sw_app/src/web_entry.zig` | `exportWeb`: the `swindowzig_init` and `swindowzig_frame` exports for an app that uses `sw.run`. `webLogFn` for `std.log` on wasm |
 | `libs/sw_ui/src/draw.zig` | Draws the tree with sw_gfx2d and sw_text, with a focus ring. `measurer(&text_renderer)` gives the UI its text size |
 | `libs/sw_assets/src/assets.zig` | `loadBytes(allocator, path_or_url)` returns a `Request`. `request.poll()` gives `.pending`, `.bytes` or `.failed`, and never waits. Native: a thread reads a file in the base directory (`useDirectory`/`useDirectoryPath`), and an `http(s)://` URL fails with `UnsupportedUrl`. Web: `fetch` through `backends/wasm/assets.ts` |
 | `libs/sw_assets/src/png.zig` | `decodePng(allocator, bytes)` gives RGBA8 `Image`. It calls stb_image (`libs/sw_assets/c/`, licence in `THIRD_PARTY_NOTICES.md`) |

@@ -12,6 +12,7 @@
 // pool starts first, before the fetch of app.wasm and before the loading
 // screen (D7).
 
+import { createA11yImports } from './a11y';
 import { createAssetImports } from './assets';
 import { audioImports } from './audio';
 import {
@@ -248,6 +249,8 @@ export function createImports(
     // The chunk worker pool (pipeline/exec_web.zig). The results go into the
     // held-bytes store of the WebGPU bridge (C5).
     chunks: chunkImports(pool, getMemory, gpu.held),
+    // The screen-reader mirror of the sw_ui semantic tree (REQ-A11Y-001).
+    a11y: createA11yImports(getMemory),
   } as WebAssembly.Imports;
 }
 
