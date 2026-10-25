@@ -18,13 +18,15 @@ were already correct.
 
 - Greedy meshing is the only mesher. `generateMesh` writes one 16-byte
   `PackedQuad` per quad to `Mesh.quads`, and the y range to `Mesh.y_min`
-  and `Mesh.y_max`. This is the GPU format. The upload copies the bytes and
-  does not convert them.
+  and `Mesh.y_max`. This is the GPU format. The upload writes the bytes of
+  the worker result to the GPU as they are, and main keeps no copy (C5).
+  Main keeps only `world.MeshInfo`: the quad count, the y range and the
+  mesh hash.
 - A greedy quad spans many blocks. A dig or a place meshes the whole chunk
   again, on the main thread, in the same tick. If the block is at a chunk
   edge, `updateBoundaryNeighbors` also meshes the neighbour chunk.
-- With `--depth-stencil=off`, `sortByDepth` writes the quads back to front
-  into `Mesh.sorted_quads`, and the upload writes that list.
+- The hardware depth test is always on. Main draws the chunks front to
+  back and does not sort the quads.
 - `bench_mesher` (`zig build bench-mesher -Doptimize=ReleaseFast`) hashes
   the packed quads of a fixed world. The quad hash is `4b4f00654f783b36`.
   A mesher change that must not change the output must keep this hash.
@@ -73,7 +75,6 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete. If a TAS is running, waits for the TAS to finish. Then waits for the chunk scheduler to be idle (`Scheduler.isIdle`), so the captured state does not depend on timing. |
 | `--debug-page=<general\|pipeline>` | The first page of the debug overlay. `pipeline` shows the chunk pipeline counters (C12). Cmd+P (Ctrl+P) changes the page at runtime. |
 | `--chunk-workers=N` | Native only. The chunk worker threads of the ThreadPool executor, 0 to 4. **Default: min(CPU count - 1, 4).** 0 runs the chunk jobs on the main thread (the Inline executor). Each worker has its own world copy and a 64 MB cache (C4, C14). The web build uses min(`navigator.hardwareConcurrency` - 1, 4) Web Workers. See `examples/voxel/docs/chunk-pipeline.md`. |
-| `--depth-stencil=<on\|off>` | Enable or disable hardware depth testing (default: `on`). When `off`, no depth texture is allocated, both render pipelines omit the depth_stencil descriptor, and the render pass omits the depth_stencil_attachment. Geometry is ordered by painter's-algorithm chunk sort only. Primary use: benchmarking — compare frame timing with and without the depth pass to isolate the GPU cost. Regression: `tests/depth_stencil_regression.sh`. |
 | `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none`, `sphere`, `cone` and `frustum`. `frustum` is the default: it tests each chunk's box (the y range of its mesh) against the planes of the view-projection matrix. `none` draws every loaded chunk. `sphere` is a cheap radial cutoff at render_distance plus slack. `cone` tests each sphere against a cone along the camera's forward vector, with the FOV set by `--frustum-fov-deg`. No strategy ever culls the camera's own chunk or its 8 horizontal neighbours. `examples/voxel/frustum.zig` has the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
 | `--frustum-fov-deg=<degrees>` | Total fov of the cone strategy in degrees. With no flag, each frame uses the screen-diagonal fov of the camera (about 100° at 60° vertical and 16:9). The test uses each chunk's full-height bounding sphere, so this cone keeps every chunk on screen. Range [0, 360]. Half-angle ≥ 90° always returns true. |
 
@@ -154,14 +155,6 @@ TAS scripts for regression live under `examples/voxel/`:
   — verifies block light did NOT leak beyond the BFS radius or across
   chunk boundaries). Run with `./examples/voxel/tests/glowstone_cave.sh`
   (or `--skip-build` to reuse an existing binary).
-- `tests/depth_stencil_regression.tas` + `tests/depth_stencil_regression.sh` —
-  depth-stencil on/off regression. The runner captures the same scene under both
-  `--depth-stencil=on` (hardware depth test) and `--depth-stencil=off` (painter's
-  sort only), asserts the frames are visually close (< 2% pixel difference), and
-  confirms that sky brightness is roughly equal in both modes (the depth test must
-  not perceptibly change the lit scene). Run with
-  `./examples/voxel/tests/depth_stencil_regression.sh`
-  (or `--skip-build` to reuse an existing binary).
 
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
 block at the top documenting the purpose, usage, and baseline numbers.
@@ -206,6 +199,20 @@ Web Worker pool rules (C9):
   Bun Web Workers. Run it 10 times after a change to the pool, to look
   for races.
 
+Mesh bytes (C5):
+
+- Main never copies the quads of a mesh. JS holds each worker result
+  (`backends/wasm/held-bytes.ts`), and `app.wasm` copies only its first 64
+  bytes. The render writes a mesh to the GPU from the held ArrayBuffer
+  (`gpu.writeBufferHeld`), then releases it. Native executors upload from
+  the reply bytes (`pipeline/mesh_bytes.zig`).
+- Do not read the quads of a mesh on main. Use `LoadedChunk.mesh`
+  (`MeshInfo`). The tests compare meshes by the mesh hash of the worker.
+- A chunk keeps its GPU quad buffer for a new mesh that fits. Evicted
+  buffers go to `QuadBufferPool` (`main.zig`).
+- `checkMeshUploads` (`headless-app.ts`) and the memory test of
+  `worker-pool.test.ts` prove it in CI.
+
 ---
 
 ## Voxel Demo — Lighting
@@ -226,7 +233,7 @@ fades in about 0.5 s.
 - `State.debug_tick` (main.zig) is the debug clock. It advances one step per
   tick. In TAS step mode it advances only on executing ticks, so the tint
   stays between steps.
-- `uploadChunkMeshToGPU` writes the clock value into `ChunkGPU.rebuilt_tick`
+- `uploadChunkMesh` writes the clock value into `ChunkGPU.rebuilt_tick`
   when the mesh is new. The 16-byte header of the quad buffer holds it:
   (origin x, rebuilt tick, origin z, 0).
 - The uniforms hold `debug_tick`: the clock when GPU debug is on, 0 when off.
@@ -361,8 +368,9 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `pipeline/chunk_worker_main.zig` | The exports of `chunks.wasm`, the chunk worker of the web build. `chunks_wasm.zig` is its build root (C9) |
 | `pipeline/worker_world.zig` | The world of a chunk worker: seed, edit log, LRU cache with a memory limit (C4, C14). Builds for wasm32 |
 | `pipeline/protocol.zig` | The chunk protocol: Hello, Edit, Job, Result, Error bytes (P6) |
+| `pipeline/mesh_bytes.zig` | The quad bytes of a mesh result until the GPU upload: in main memory, or held by JS (C5) |
 | `world_gen.zig` | Procedural terrain, `Preset` enum (flatland / hilly), `presetConfig()`, value-noise `sampleHeight` |
-| `mesher.zig` | Greedy quad mesher (writes `PackedQuad`), `sortByDepth` |
+| `mesher.zig` | Greedy quad mesher (writes `PackedQuad`) |
 | `camera.zig` | FPS camera, view/projection matrices |
 | `player.zig` | Movement, gravity, collision |
 | `raycast.zig` | Block-face hit test for place/destroy |

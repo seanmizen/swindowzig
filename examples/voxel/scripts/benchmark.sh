@@ -24,8 +24,8 @@
 #      cd swindowzig
 #      zig build native -Dexample=voxel
 #
-# 2. Run the built-in default benchmark (depth-stencil on vs off, 3 reps each
-#    over the flatland_forward.tas fly-through):
+# 2. Run the built-in default benchmark (FXAA vs no anti-aliasing, 3 reps
+#    each over the flatland_forward.tas fly-through):
 #
 #      ./examples/voxel/scripts/benchmark.sh
 #
@@ -35,8 +35,7 @@
 #        --reps 5 \
 #        --tas examples/voxel/tests/flatland_forward.tas \
 #        --setup "baseline"            "" \
-#        --setup "no-depth"            "--depth-stencil=off" \
-#        --setup "no-depth-no-ao"      "--depth-stencil=off --ao=none" \
+#        --setup "no-ao"               "--ao=none" \
 #        --setup "msaa4"               "--aa=msaa --msaa=4"
 #
 # USAGE
@@ -55,8 +54,8 @@
 #                         Name must not contain spaces or pipe characters.
 #                         Flags are passed directly to the voxel binary and
 #                         may be empty (""). May be given multiple times.
-#                         If no --setup flags are given, the built-in
-#                         depth-stencil on/off comparison is used.
+#                         With no --setup flag, the script compares
+#                         FXAA with no AA.
 #   --outdir <dir>        Directory for raw CSV files (default: /tmp).
 #   --world <preset>      World preset (flatland | hilly, default: flatland).
 #   --help                Print this help and exit.
@@ -68,7 +67,7 @@
 #
 #   SETUP              TAS           REPS  mean_tick_ns  mean_gen_ns  mean_mesh_ns  mean_render_ns
 #   baseline           flatland_fwd  3     8412          1823         2011          4103
-#   no-depth           flatland_fwd  3     7891          1821         2008          3601
+#   no-ao              flatland_fwd  3     7891          1821         2008          3601
 #   ...
 #
 # The mean values are computed over all ticks from all repetitions of a
@@ -79,11 +78,7 @@
 # ----------------------
 # Every voxel CLI flag is a valid setup dimension. Examples:
 #
-#   Depth-stencil on/off (the built-in default):
-#     --setup "depth-on"   "--depth-stencil=on"
-#     --setup "depth-off"  "--depth-stencil=off"
-#
-#   Anti-aliasing comparison:
+#   Anti-aliasing comparison (the built-in default is aa-fxaa and aa-none):
 #     --setup "aa-none"  "--aa=none"
 #     --setup "aa-fxaa"  "--aa=fxaa"
 #     --setup "aa-msaa4" "--aa=msaa --msaa=4"
@@ -91,10 +86,10 @@
 #   Full orthogonal matrix (creates N×M combos):
 #     --tas examples/voxel/tests/flatland_forward.tas \
 #     --tas examples/voxel/framespike.tas              \
-#     --setup "fxaa-depth-on"   "--aa=fxaa --depth-stencil=on"  \
-#     --setup "fxaa-depth-off"  "--aa=fxaa --depth-stencil=off" \
-#     --setup "none-depth-on"   "--aa=none --depth-stencil=on"  \
-#     --setup "none-depth-off"  "--aa=none --depth-stencil=off"
+#     --setup "fxaa-moore"   "--aa=fxaa --ao=moore"  \
+#     --setup "fxaa-no-ao"   "--aa=fxaa --ao=none"   \
+#     --setup "none-moore"   "--aa=none --ao=moore"  \
+#     --setup "none-no-ao"   "--aa=none --ao=none"
 #
 # REQUIREMENTS
 # ------------
@@ -176,8 +171,8 @@ if [[ ${#TAS_PATHS[@]} -eq 0 ]]; then
 fi
 
 if [[ ${#SETUP_NAMES[@]} -eq 0 ]]; then
-  SETUP_NAMES=("depth-on" "depth-off")
-  SETUP_FLAGS=("--depth-stencil=on" "--depth-stencil=off")
+  SETUP_NAMES=("aa-fxaa" "aa-none")
+  SETUP_FLAGS=("--aa=fxaa" "--aa=none")
 fi
 
 # ---------------------------------------------------------------------------

@@ -294,12 +294,12 @@ Vulkan).
 - Lavapipe handles geometry / fragment / compute fine for the kinds of features
   the voxel demo uses (no tessellation, no atomic-int-image-stores, no bindless
   textures). The current shaders are deliberately conservative: simple voxel
-  vert+frag with painter's-algorithm depth (no hardware depth-stencil — see the
-  Metal workaround in `CLAUDE.md`), the FXAA fullscreen pass, and the overlay
-  alpha blend. None of that exercises lavapipe edge cases.
-- The painter's-algorithm workaround is actually a *gift* here: hardware depth
-  testing is the most common source of cross-driver pixel diffs (depth-fighting
-  thresholds, polygon-offset constants). We dodge it entirely.
+  vert+frag with a hardware depth test (`depth24plus`, compare `less`, no
+  polygon offset), the FXAA fullscreen pass, and the overlay alpha blend.
+  None of that exercises lavapipe edge cases.
+- Hardware depth testing is a common source of cross-driver pixel diffs
+  (depth-fighting thresholds, polygon-offset constants). Every golden runs
+  with the depth test on, so CI also tests the depth test of lavapipe.
 
 ### 5. Backend pixel divergence (the unavoidable risk)
 

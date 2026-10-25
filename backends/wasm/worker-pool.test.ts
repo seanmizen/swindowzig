@@ -16,6 +16,13 @@
 //   mismatch     a worker from another build (protocol version, build hash
 //                or build id) does not start, with a clear error. The Inline
 //                executor runs the jobs, so the terrain is correct.
+//   uploads      each run checks the mesh uploads (checkMeshUploads, C5).
+//                With the pool, JS writes no mesh byte into the main wasm
+//                memory: at most the 64-byte head of each result. Each mesh
+//                goes to the GPU from the ArrayBuffer of its worker, with
+//                its size and its GPU header. JS holds nothing at the end.
+//   memory       the main wasm memory does not grow with the meshed
+//                chunks: render distance 4, then 12, then a long walk.
 //
 // Usage (from the repo root, after `zig build web -Dexample=voxel`):
 //   bun test backends/wasm/worker-pool.test.ts
@@ -24,10 +31,13 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
+  checkMeshUploads,
   type HeadlessApp,
   type PipelineCounts,
   type PoolSetup,
   startApp,
+  type UploadReport,
+  yieldToEventLoop,
 } from './headless-app';
 import { defaultPoolSize, MAX_WORKERS, WorkerPool } from './worker-pool';
 
@@ -39,6 +49,9 @@ const CHUNK_W = 16;
 const BLOCK_AIR = 0;
 const BLOCK_STONE = 3;
 const BLOCK_GLOWSTONE = 5;
+/** The memory test: the chunks to walk, and the growth that it allows. */
+const WALK_CHUNKS = 24;
+const MEMORY_GROWTH_LIMIT = 1 << 20;
 
 interface Edit {
   dcx: number;
@@ -88,6 +101,8 @@ interface Outcome {
   /** The pool counters at the end of the run, before the pool stops. */
   pool: { alive: number; restarts: number; error: string | null } | null;
   editsWhileJobsRan: number;
+  /** The check of the mesh uploads at the end of the run (C5). */
+  uploads: UploadReport;
 }
 
 /**
@@ -136,6 +151,13 @@ async function run(
     const pipeline = app.pipeline();
     if (!pipeline)
       throw new Error('app.wasm has no voxel_debug_pipeline_counts');
+    // One more frame uploads the last meshes. A run that changed from the
+    // pool to the Inline executor has uploads of both kinds.
+    await step();
+    const uploads = checkMeshUploads(
+      app,
+      pipeline.fallbacks > 0 ? null : pipeline.executor === 'web',
+    );
     return {
       hash,
       cx: end.cx,
@@ -149,6 +171,7 @@ async function run(
           }
         : null,
       editsWhileJobsRan,
+      uploads,
     };
   } finally {
     app.stop();
@@ -168,6 +191,9 @@ function expectSameState(a: Outcome, b: Outcome): void {
   expect(a.cx).toBe(b.cx);
   expect(a.cz).toBe(b.cz);
   expect(a.hash.toString(16)).toBe(b.hash.toString(16));
+  // Each run must also upload its meshes correctly (C5).
+  expect(a.uploads.failures).toEqual([]);
+  expect(b.uploads.failures).toEqual([]);
 }
 
 /** The acceptance check: no chunk stage ran on the main thread (C9). */
@@ -214,6 +240,9 @@ describe('chunk worker pool (real Bun Web Workers)', () => {
         expectWorkersOnly(o);
         expect(o.editsWhileJobsRan).toBeGreaterThan(5);
         expectSameState(o, ref);
+        // C5: the meshes went to the GPU from the worker ArrayBuffers.
+        expect(o.uploads.heldWrites).toBeGreaterThan(400);
+        expect(o.uploads.headBytesPerResult).toBeLessThanOrEqual(64);
       }
     },
     TIMEOUT_MS,
@@ -373,7 +402,10 @@ describe('chunk worker pool (real Bun Web Workers)', () => {
         const hello = new Uint8Array(16 + 56);
         const view = new DataView(hello.buffer);
         view.setUint32(0, 0x50435856, true); // "VXCP"
-        view.setUint16(4, 1, true); // protocol version
+        // The protocol version of this build.
+        const version = pool.slots[0].handshake?.protocolVersion ?? 0;
+        expect(version).toBeGreaterThan(0);
+        view.setUint16(4, version, true);
         hello[6] = 1; // kind: Hello
         view.setUint32(8, 56, true);
         view.setBigUint64(16, 0x0badn, true); // a build hash of no build
@@ -394,5 +426,88 @@ describe('chunk worker pool (real Bun Web Workers)', () => {
       }
     },
     TIMEOUT_MS,
+  );
+
+  test(
+    'memory: the main wasm memory does not grow with the meshed chunks (C5)',
+    async () => {
+      const app = await startApp({
+        wasm: WASM,
+        pool: { size: 3 },
+        clock: 'sim',
+      });
+      try {
+        let frames = 0;
+        const step = async (n = 1) => {
+          for (let i = 0; i < n; i++) {
+            if (++frames > MAX_FRAMES)
+              throw new Error('the run did not finish');
+            app.frame();
+            await yieldToEventLoop();
+          }
+        };
+        const idle = async () => {
+          while (!app.pipeline()?.idle) await step();
+          await step(); // the last uploads
+        };
+        const mb = (b: number) => (b / 1048576).toFixed(2);
+
+        // Render distance 4 from the start.
+        app.setRenderDistance(4);
+        while (app.counts(0).loading) await step();
+        await idle();
+        const m4 = app.memoryBytes();
+        const meshed4 = app.counts(0).meshedTotal;
+
+        // Render distance 12: about 9 times the meshes.
+        app.setRenderDistance(12);
+        await idle();
+        const m12 = app.memoryBytes();
+        const meshed12 = app.counts(0).meshedTotal;
+
+        // A long walk: the meshes of about 1500 chunks go through main.
+        app.mouse(0, true);
+        await step();
+        app.mouse(0, false);
+        await step();
+        app.key(32, true); // Space twice: fly
+        await step();
+        app.key(32, false);
+        await step();
+        app.key(32, true);
+        await step(180);
+        app.key(32, false);
+        const start = app.counts(0);
+        app.key(87, true); // W
+        while (
+          Math.abs(app.counts(0).cz - start.cz) +
+            Math.abs(app.counts(0).cx - start.cx) <
+          WALK_CHUNKS
+        ) {
+          await step();
+        }
+        app.key(87, false);
+        await idle();
+        const mWalk = app.memoryBytes();
+        const g = app.gpuCounts();
+        console.log(
+          `wasm memory: R=4 ${mb(m4)} MB (${meshed4} meshes), R=12 ${mb(m12)} MB ` +
+            `(${meshed12} meshes), after a walk of ${WALK_CHUNKS} chunks ${mb(mWalk)} MB ` +
+            `(${g.uploadsHeld} uploads, ${g.buffersCreated} quad buffers created, ${g.buffersReused} reused)`,
+        );
+
+        expect(meshed12).toBeGreaterThan(meshed4 * 5);
+        expect(g.uploadsHeld).toBeGreaterThan(meshed12 * 2);
+        // A mesh is about 8 KB (docs/chunk-pipeline.md). A copy of each mesh
+        // would add about 3 MB from R=4 to R=12. The memory can grow a
+        // little for the chunk records and the hash maps.
+        expect(m12 - m4).toBeLessThanOrEqual(MEMORY_GROWTH_LIMIT);
+        expect(mWalk - m12).toBeLessThanOrEqual(MEMORY_GROWTH_LIMIT);
+        expect(checkMeshUploads(app, true).failures).toEqual([]);
+      } finally {
+        app.stop();
+      }
+    },
+    TIMEOUT_MS * 2,
   );
 });

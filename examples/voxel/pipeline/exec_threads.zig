@@ -270,9 +270,9 @@ pub const ThreadPool = struct {
     /// Install one reply. Returns null when the job failed and went back
     /// to the scheduler.
     fn installReply(self: *ThreadPool, sched: *Scheduler, world: *World, r: Reply) !?Installed {
-        defer if (r.bytes) |b| self.allocator.free(b);
         const kv = self.jobs.fetchRemove(r.id) orelse {
             std.log.err("[PIPE] a worker reply has an unknown job id {}", .{r.id});
+            if (r.bytes) |b| self.allocator.free(b);
             return null;
         };
         const job = kv.value;
@@ -282,7 +282,8 @@ pub const ThreadPool = struct {
             return null;
         };
         self.traffic.addResult(job.started.job.stage, bytes.len);
-        var result = exec_inline.resultOf(world.allocator, job.started, bytes) catch |err| switch (err) {
+        // resultOf takes the bytes. A mesh keeps them for the upload (C5).
+        var result = exec_inline.resultOf(world.allocator, job.started, bytes, self.allocator) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => {
                 sched.abandon(job.started);

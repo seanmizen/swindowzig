@@ -216,7 +216,7 @@ same tag name. The release notes give the `zig fetch --save` command.
 - Event recording/replay
 - 3D math (Vec3, Mat4, perspective, lookAt)
 - Indexed drawing with back-face culling
-- Software depth sorting (painter's algorithm — workaround for Metal depth testing bug)
+- Hardware depth testing (`depth24plus`)
 
 ### Not Yet
 - Text rendering
@@ -286,8 +286,8 @@ Current:
 - [ ] **MSAA edge surface bleed-through.** 4× MSAA currently shows unwanted
   colour bleed across block-on-block silhouette edges (neighbouring surface
   colour leaks into the foreground sample). FXAA does not exhibit this.
-  Investigate: sample-shading, depth-resolve interaction with the painter's-
-  algorithm sort order, and whether bgra8unorm MSAA resolve is averaging
+  Investigate: sample-shading, depth-resolve interaction, and whether
+  bgra8unorm MSAA resolve is averaging
   samples from behind the silhouette. Tracked as a defect against `--aa=msaa`;
   see [`docs/antialiasing.md`](docs/antialiasing.md) for context.
 - [ ] **AO shadows lookthrough.** If you're above a voxel looking down

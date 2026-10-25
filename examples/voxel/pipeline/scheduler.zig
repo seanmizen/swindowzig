@@ -36,12 +36,15 @@
 //! Workers own the world (C4 option b). Main keeps the state of each chunk:
 //! its versions, and whether it has light and a mesh. Main keeps the blocks
 //! only for the prefetch radius (C6), and no light. A light result gives a
-//! hash of the light, and a mesh result gives the quads. An edit goes to
-//! the edit log of the World and to `outbox`. The executor sends each edit
-//! to each worker before the jobs that start after it.
+//! hash of the light. A mesh result gives the quad count, the y range, a
+//! hash of the quads and the quad bytes. Main keeps the bytes only until the
+//! GPU upload, and does not copy them (C5). An edit goes to the edit log of
+//! the World and to `outbox`. The executor sends each edit to each worker
+//! before the jobs that start after it.
 const std = @import("std");
 const stages = @import("stages.zig");
 const protocol = @import("protocol.zig");
+const mesh_bytes = @import("mesh_bytes.zig");
 const chunk_mod = @import("../chunk.zig");
 const world_mod = @import("../world.zig");
 
@@ -171,13 +174,18 @@ pub const Output = union(Stage) {
     },
     /// Main keeps no light (C4). The hash tells if the light changed (C3).
     light: struct { hash: u64 },
-    mesh: stages.MeshResult,
+    /// Main gets the counts and the quad bytes, and does not copy the
+    /// bytes (C5). The upload frees them.
+    mesh: struct {
+        info: world_mod.MeshInfo,
+        bytes: mesh_bytes.MeshBytes,
+    },
 
     pub fn deinit(self: *Output, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .generate => |*g| if (g.blocks) |*b| b.deinit(allocator),
             .light => {},
-            .mesh => |*m| m.deinit(allocator),
+            .mesh => |m| m.bytes.release(),
         }
     }
 };
@@ -620,15 +628,11 @@ pub const Scheduler = struct {
             },
             .mesh => |m| {
                 const lc = world.get(st.job.cx, st.job.cz).?;
-                const mesh = &lc.mesh;
-                mesh.quads.deinit(mesh.allocator);
-                mesh.quads = .fromOwnedSlice(m.quads);
-                mesh.y_min = m.y_min;
-                mesh.y_max = m.y_max;
-                mesh.sort_valid = false;
+                // The chunk takes the bytes. It frees the bytes of a mesh
+                // that did not upload yet: the new mesh replaces it.
+                lc.setMesh(m.info, m.bytes);
                 lc.mesh_inputs = st.inputs;
                 lc.mesh_options = st.options;
-                lc.upload_pending = true;
             },
         }
         self.stats.installed[k] += 1;

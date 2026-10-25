@@ -188,8 +188,6 @@ This is what really matters. The peak numbers above are book-keeping.
 The `Mesh` struct keeps the mesh in the GPU format in host RAM:
 
 - `quads: ArrayList(PackedQuad)` — `16` B/quad
-- With `--depth-stencil=off` only: `sort_scratch` (16 B/quad on 64-bit) and
-  `sorted_quads` (16 B/quad), for the back-to-front sort.
 
 Before the mesher made `PackedQuad` directly, the mesh held 4 `VoxelVertex`
 (192 B), 6 indices (24 B), an owner block index (4 B) and a highlight byte
@@ -269,9 +267,8 @@ Implemented in `voxel/mesh-eviction`. Per-tick pass walks every loaded
 chunk; any whose chunk-grid distance² from the player exceeds
 `EVICT_RADIUS_SQ` is downgraded back to `.generated`:
 
-- `Mesh.freeHostBuffers()` releases the quad list and the
-  `sort_scratch`/`sorted_quads` slices back to the allocator (capacity
-  drops to zero, not just `len`).
+- `Mesh.freeHostBuffers()` releases the quad list back to the allocator
+  (capacity drops to zero, not just `len`).
 - The owning `chunk_gpu` entry is removed. Its quad buffer is destroyed
   and its bind group is released (`ChunkGPU.release`).
 - `chunk.blocks` and `chunk.skylight` are intentionally retained — they
@@ -418,9 +415,11 @@ multiple blocks and interior fragments drift by `0.125 × ((a+b) - (c+d))`
 per channel relative to 1×1 quads (one quad per block face). See the block comment on
 `greedyCellEq` for the worked example.
 
-**Painter's-sort cap.** The voxel demo sorts quads in software
-(centroid-distance back-to-front — no hardware depth due to the macOS/Metal
-wgpu-native bug documented in the main CLAUDE.md) and a merged 48×48 grass
+**Painter's-sort cap.** The cap is from the time when the voxel demo
+sorted quads in software (centroid-distance back-to-front — no hardware
+depth due to the macOS/Metal wgpu-native bug documented in the main
+CLAUDE.md). The depth test is now always on, and the software sort is
+removed, so a later change can lift the cap. Then, a merged 48×48 grass
 top has its centroid far from its nearest edge. That causes visible sort
 inversions against smaller overlapping geometry (pit walls, dirt
 exposures, hover outlines). Capping each merge dimension at

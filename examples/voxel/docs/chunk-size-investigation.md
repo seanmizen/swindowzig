@@ -220,7 +220,7 @@ work, not different chunk sizes.
 2. **`Mesher.generateMesh`** — 158 ms per chunk at baseline on flatland,
    dominated by per-face AO / skylight sampling across `CHUNK_W² × CHUNK_H`
    voxels with 6-neighbour checks.
-3. **Render pass `sortByDepth` + `uploadChunkMeshToGPU`** — ~20 ms/frame
+3. **Render pass quad sort (removed later) + `uploadChunkMeshToGPU`** — ~20 ms/frame
    mean, grows roughly linearly with chunk count. Not a spike cause, but a
    steady tax that grows with small-chunk configs.
 

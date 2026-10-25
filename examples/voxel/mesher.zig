@@ -22,8 +22,6 @@ pub const VoxelVertex = extern struct {
     block_light: f32 = 0.0, // offset 44 — block-light brightness 0..1 (0 = no emitter nearby, 1 = adjacent to glowstone)
 };
 
-const SortEntry = struct { idx: usize, dist: f32 };
-
 /// The mesh of one chunk, in the GPU format: one 16-byte PackedQuad per quad,
 /// and the y range of the quads. The upload writes `quads` to the GPU as it
 /// is. The mesher makes the GPU format directly, so a mesh can cross a
@@ -36,14 +34,6 @@ pub const Mesh = struct {
     /// With no quads, y_min is CHUNK_H and y_max is 0.
     y_min: f32 = CHUNK_H,
     y_max: f32 = 0,
-    /// Scratch for sortByDepth. It grows and never shrinks.
-    sort_scratch: []SortEntry = &.{},
-    /// The quads in back-to-front order. sortByDepth writes it. The upload
-    /// reads it when the depth test is off.
-    sorted_quads: []PackedQuad = &.{},
-    /// True when sort_scratch holds the sorted order of the previous frame.
-    /// False after a rebuild: the next sort is a full sort.
-    sort_valid: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Mesh {
         return .{ .allocator = allocator, .quads = .empty };
@@ -51,8 +41,6 @@ pub const Mesh = struct {
 
     pub fn deinit(self: *Mesh) void {
         self.quads.deinit(self.allocator);
-        if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
-        if (self.sorted_quads.len > 0) self.allocator.free(self.sorted_quads);
     }
 
     pub fn quadCount(self: *const Mesh) usize {
@@ -63,7 +51,6 @@ pub const Mesh = struct {
         self.quads.clearRetainingCapacity();
         self.y_min = CHUNK_H;
         self.y_max = 0;
-        self.sort_valid = false; // mesh rebuilt — scratch order is stale
     }
 
     /// Release ALL host-side mesh allocations back to the allocator. Unlike
@@ -78,15 +65,6 @@ pub const Mesh = struct {
         self.quads.clearAndFree(self.allocator);
         self.y_min = CHUNK_H;
         self.y_max = 0;
-        if (self.sort_scratch.len > 0) {
-            self.allocator.free(self.sort_scratch);
-            self.sort_scratch = &.{};
-        }
-        if (self.sorted_quads.len > 0) {
-            self.allocator.free(self.sorted_quads);
-            self.sorted_quads = &.{};
-        }
-        self.sort_valid = false;
     }
 
     /// Append one quad that spans y_lo..y_hi.
@@ -94,76 +72,6 @@ pub const Mesh = struct {
         try self.quads.append(self.allocator, q);
         self.y_min = @min(self.y_min, y_lo);
         self.y_max = @max(self.y_max, y_hi);
-    }
-
-    /// Sort the quads back to front into `sorted_quads`, for rendering with
-    /// the hardware depth test off. The sort key is view-space depth: the dot
-    /// product of (quad centroid - camera) with the camera forward vector.
-    /// That is the Z the GPU projection uses, so faces in front of each other
-    /// along the view direction sort correctly, also when they are to the
-    /// side of the camera axis. (world_ox, world_oz) is the chunk origin.
-    ///
-    /// The scratch buffers stay from frame to frame. After the first sort,
-    /// an insertion sort on the order of the previous frame costs O(n) when
-    /// the camera moves a little.
-    pub fn sortByDepth(self: *Mesh, camera_pos: [3]f32, camera_fwd: [3]f32, world_ox: i32, world_oz: i32) !void {
-        const quad_count = self.quads.items.len;
-        if (quad_count == 0) return;
-
-        // Grow the scratch buffers only when needed (never shrink).
-        if (quad_count > self.sort_scratch.len) {
-            if (self.sort_scratch.len > 0) self.allocator.free(self.sort_scratch);
-            if (self.sorted_quads.len > 0) self.allocator.free(self.sorted_quads);
-            self.sort_scratch = &.{};
-            self.sorted_quads = &.{};
-            self.sort_scratch = try self.allocator.alloc(SortEntry, quad_count);
-            self.sorted_quads = try self.allocator.alloc(PackedQuad, quad_count);
-            self.sort_valid = false; // fresh allocation — scratch must be repopulated
-        }
-
-        const scratch = self.sort_scratch[0..quad_count];
-        const depth = struct {
-            fn of(q: PackedQuad, ox: i32, oz: i32, pos: [3]f32, fwd: [3]f32) f32 {
-                const c = quadCentroid(q, ox, oz);
-                const dx = c[0] - pos[0];
-                const dy = c[1] - pos[1];
-                const dz = c[2] - pos[2];
-                // View-space depth: dot(centroid_delta, camera_forward). Positive = in front.
-                return dx * fwd[0] + dy * fwd[1] + dz * fwd[2];
-            }
-        }.of;
-
-        if (self.sort_valid) {
-            // Scratch holds the sorted order from last frame — update the depths in place.
-            for (scratch) |*entry| {
-                entry.dist = depth(self.quads.items[entry.idx], world_ox, world_oz, camera_pos, camera_fwd);
-            }
-            // Insertion sort: O(n) for nearly-sorted data (camera moved a little)
-            var i: usize = 1;
-            while (i < quad_count) : (i += 1) {
-                const key = scratch[i];
-                var j: usize = i;
-                while (j > 0 and scratch[j - 1].dist < key.dist) : (j -= 1) {
-                    scratch[j] = scratch[j - 1];
-                }
-                scratch[j] = key;
-            }
-        } else {
-            // First frame after a rebuild — populate scratch and use pdqsort.
-            for (0..quad_count) |i| {
-                scratch[i] = .{ .idx = i, .dist = depth(self.quads.items[i], world_ox, world_oz, camera_pos, camera_fwd) };
-            }
-            std.mem.sort(SortEntry, scratch, {}, struct {
-                fn lessThan(_: void, a: SortEntry, b: SortEntry) bool {
-                    return a.dist > b.dist;
-                }
-            }.lessThan);
-            self.sort_valid = true;
-        }
-
-        // `quads` stays in mesher order, so scratch[i].idx stays a stable
-        // quad identifier from frame to frame.
-        for (scratch, 0..) |entry, i| self.sorted_quads[i] = self.quads.items[entry.idx];
     }
 };
 
@@ -1486,9 +1394,9 @@ pub fn generateMesh(
     const vis = try VisibleFaces.compute(mesh.allocator, chunk, getter, world_ox, world_oz);
     defer mesh.allocator.destroy(vis);
 
-    // Merge size cap. The voxel demo uses painter's-algorithm sorting in
-    // software (no hardware depth — see CLAUDE.md §macOS/Metal wgpu bug)
-    // and the sort key is the quad centroid distance. A merged 48×48 quad
+    // Merge size cap. The cap is from the time when the voxel demo used
+    // painter's-algorithm sorting in software, with no hardware depth test,
+    // and the sort key was the quad centroid distance. A merged 48×48 quad
     // has its centroid far from its farthest pixel, which causes visible
     // sort inversions against overlapping smaller geometry (pit walls,
     // hover outlines, etc.). Capping the merge at `MAX_GREEDY_DIM` on each
@@ -1512,10 +1420,9 @@ pub fn generateMesh(
     //   hilly    → ~5300 → ~1700 quads (67.8% / ~3.1× reduction)
     // Hilly falls short of the 5-10× target because the uniform-AO/sky
     // rule that `greedyCellEq` enforces rejects most bumpy terrain — the
-    // bottleneck is the merge rule, not the cap. Once hardware depth
-    // testing comes back (see `sw_gpu/src/gpu.zig` macOS/Metal wgpu TODO)
-    // the cap can be lifted. depth_stencil_regression.sh compares the
-    // depth-off frame with the depth-on frame.
+    // bottleneck is the merge rule, not the cap. The hardware depth test is
+    // now always on, so a later change can lift the cap. That change gives
+    // a new quad hash in bench_mesher and needs new lavapipe goldens.
     const MAX_GREEDY_DIM: i32 = 6;
 
     inline for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
@@ -1703,24 +1610,6 @@ fn packQuad(face: Face, cell: [3]u32, w: u32, h: u32, block_type: u32, ao: [4]f3
     return q;
 }
 
-/// The world-space centroid of a packed quad, for sortByDepth. Each value is
-/// an integer or a half integer, so the result is exact.
-fn quadCentroid(q: PackedQuad, world_ox: i32, world_oz: i32) [3]f32 {
-    const face: u3 = @intCast((q[0] >> 16) & 0x7);
-    const w: f32 = @floatFromInt(((q[0] >> 19) & 0xF) + 1);
-    const h: f32 = @floatFromInt(((q[0] >> 23) & 0xFF) + 1);
-    const fl = face_layouts[face];
-    var c = [3]f32{
-        @floatFromInt(@as(i32, @intCast(q[0] & 0xF)) + world_ox),
-        @floatFromInt((q[0] >> 4) & 0xFF),
-        @floatFromInt(@as(i32, @intCast((q[0] >> 12) & 0xF)) + world_oz),
-    };
-    if (fl.positive) c[fl.normal_axis] += 1;
-    c[fl.i_axis] += w * 0.5;
-    c[fl.j_axis] += h * 0.5;
-    return c;
-}
-
 /// Decode corner `corner` (0..3) of a packed quad. Mirrors vs_chunk.
 pub fn unpackCorner(q: PackedQuad, corner: usize, world_ox: i32, world_oz: i32) VoxelVertex {
     const cell = [3]i32{
@@ -1860,53 +1749,8 @@ test "each packed quad decodes to the face, block and light of its cell" {
                 y_min = @min(y_min, got.pos[1]);
                 y_max = @max(y_max, got.pos[1]);
             }
-            // The centroid is the mean of the 4 corners.
-            var mean = [3]f32{ 0, 0, 0 };
-            for (0..4) |c| {
-                const p = unpackCorner(q, c, ox, oz).pos;
-                for (0..3) |a| mean[a] += p[a];
-            }
-            for (0..3) |a| mean[a] /= 4.0;
-            try std.testing.expectEqual(mean, quadCentroid(q, ox, oz));
         }
         try std.testing.expectEqual(y_min, mesh.y_min);
         try std.testing.expectEqual(y_max, mesh.y_max);
-    }
-}
-
-test "sortByDepth writes every quad once, back to front" {
-    const allocator = std.testing.allocator;
-    var chunk = try testHillChunk(allocator);
-    defer chunk.deinit();
-    const tg = TestGetter{ .chunk = &chunk, .ox = 0, .oz = 0 };
-    var mesh = Mesh.init(allocator);
-    defer mesh.deinit();
-    try generateMesh(&chunk, &mesh, 0, 0, tg.getter(), .moore, .skylight);
-    const cam = [3]f32{ 8, 90, -20 };
-    const fwd = [3]f32{ 0, -0.6, 0.8 };
-    // The second sort uses the insertion sort on the first order.
-    for (0..2) |_| {
-        try mesh.sortByDepth(cam, fwd, 0, 0);
-        const n = mesh.quadCount();
-        var prev: f32 = std.math.inf(f32);
-        for (mesh.sorted_quads[0..n]) |q| {
-            const c = quadCentroid(q, 0, 0);
-            const d = (c[0] - cam[0]) * fwd[0] + (c[1] - cam[1]) * fwd[1] + (c[2] - cam[2]) * fwd[2];
-            try std.testing.expect(d <= prev);
-            prev = d;
-        }
-        const a = try allocator.dupe(PackedQuad, mesh.quads.items);
-        defer allocator.free(a);
-        const b = try allocator.dupe(PackedQuad, mesh.sorted_quads[0..n]);
-        defer allocator.free(b);
-        const lt = struct {
-            fn lt(_: void, x: PackedQuad, y: PackedQuad) bool {
-                for (x, y) |u, v| if (u != v) return u < v;
-                return false;
-            }
-        }.lt;
-        std.mem.sort(PackedQuad, a, {}, lt);
-        std.mem.sort(PackedQuad, b, {}, lt);
-        try std.testing.expectEqualSlices(PackedQuad, a, b);
     }
 }

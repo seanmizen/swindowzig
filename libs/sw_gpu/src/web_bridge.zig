@@ -68,6 +68,18 @@ pub extern "webgpu" fn webgpuWriteBuffer(
     data_size: u64,
 ) void;
 
+/// Write bytes that JS holds (an ArrayBuffer, by handle) to a buffer. The
+/// bytes do not go through the wasm memory. backends/wasm/held-bytes.ts has
+/// the store of the handles.
+pub extern "webgpu" fn webgpuWriteBufferHeld(
+    queue: WebGPUQueue,
+    buffer: WebGPUBuffer,
+    buffer_offset: u64,
+    held: u32,
+    held_offset: u32,
+    data_size: u64,
+) void;
+
 // Texture Operations
 pub extern "webgpu" fn webgpuCreateTexture(
     device: WebGPUDevice,

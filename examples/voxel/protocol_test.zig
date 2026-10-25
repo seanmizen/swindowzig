@@ -151,8 +151,30 @@ test "protocol: Result and Error round trip, with the payload bytes ready for up
     try std.testing.expectEqual(protocol.PAYLOAD_OFFSET + 16 * m.quads.len, mb.len);
     try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(m.quads), mb[protocol.PAYLOAD_OFFSET..]);
     const md = try expectRoundTrip(a, mb);
-    try std.testing.expectEqualDeep(mh, md.msg.result.head);
+    // The encoder adds the hash of the quads (C5).
+    var mh_hashed = mh;
+    mh_hashed.mesh_hash = protocol.meshHash(std.mem.sliceAsBytes(m.quads));
+    try std.testing.expectEqualDeep(mh_hashed, md.msg.result.head);
     try std.testing.expectEqual(m.quads.len, md.msg.result.quadCount());
+
+    // decodeResultHead reads only the first PAYLOAD_OFFSET bytes: main
+    // decodes a mesh Result that JS holds from them (C5).
+    const info = (try protocol.decodeResultHead(mb[0..protocol.PAYLOAD_OFFSET], mb.len)).?;
+    try std.testing.expectEqual(@as(u32, 5), info.id);
+    try std.testing.expectEqualDeep(mh_hashed, info.head);
+    try std.testing.expectEqual(@as(u32, @intCast(m.quads.len)), info.quad_count);
+    try std.testing.expectEqual(mb.len - protocol.PAYLOAD_OFFSET, info.payload_len);
+    // The length must be the length of the header.
+    try std.testing.expectError(error.Truncated, protocol.decodeResultHead(mb[0..protocol.PAYLOAD_OFFSET], mb.len - 16));
+    try std.testing.expectError(error.Truncated, protocol.decodeResultHead(mb[0..20], mb.len));
+    // Another kind gives null. A changed quad gives a hash error in decode.
+    const edit = try protocol.encodeEdit(a, .{ .cx = 0, .cz = 0, .version = 1, .x = 1, .y = 2, .z = 3, .block = .stone });
+    defer a.free(edit);
+    try std.testing.expect(try protocol.decodeResultHead(edit, edit.len) == null);
+    const changed = try a.dupe(u8, mb);
+    defer a.free(changed);
+    changed[protocol.PAYLOAD_OFFSET] ^= 1;
+    try std.testing.expectError(error.BadField, protocol.decode(changed));
 
     // Error, with a text.
     const eb = try protocol.encodeError(a, 6, .{ .code = .stale_input, .stage = .light, .cx = 8, .cz = -8, .text = "versions" });
@@ -187,8 +209,10 @@ test "protocol: the fields are at the documented offsets, little-endian" {
     try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 1.5))), std.mem.readInt(u32, r[32..36], .little));
     try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, r[40..44], .little));
     try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, r[44..48], .little));
-    try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, r[48..52], .little));
-    try std.testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, r[60..64], .little));
+    try std.testing.expectEqual(protocol.meshHash(r[64..80]), std.mem.readInt(u64, r[48..56], .little));
+    try std.testing.expectEqual(@as(u64, 0), std.mem.readInt(u64, r[56..64], .little));
+    try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, r[64..68], .little));
+    try std.testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, r[76..80], .little));
 }
 
 test "protocol: a bad header gives an error" {
@@ -270,7 +294,7 @@ test "protocol: fuzz: random and changed messages never crash the decoder" {
                 buf.items[i] ^= @as(u8, 1) << rand.int(u3);
             },
             // Set a random byte in the header or the fixed body.
-            1 => buf.items[rand.uintLessThan(usize, @min(buf.items.len, 64))] = rand.int(u8),
+            1 => buf.items[rand.uintLessThan(usize, @min(buf.items.len, protocol.PAYLOAD_OFFSET))] = rand.int(u8),
             // Cut the message.
             2 => buf.shrinkRetainingCapacity(rand.uintLessThan(usize, buf.items.len)),
             // Add bytes at the end, and maybe fix the body length.

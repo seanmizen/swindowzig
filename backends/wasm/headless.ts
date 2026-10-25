@@ -11,6 +11,9 @@
 //      missing, or if the chunks around the player have no mesh.
 //   4. With the pool: fail if a chunk job ran on the main thread. Only the
 //      simulation radius can generate chunks inline (C6).
+//   5. Check the mesh uploads (checkMeshUploads, C5). With the pool, JS
+//      writes no mesh byte into the main wasm memory: each mesh goes to the
+//      GPU from the ArrayBuffer of its worker.
 //
 // The test finds bugs in the wasm-only code of main.zig. Example: chunks
 // that do not load past the spawn ring.
@@ -28,6 +31,7 @@
 
 import {
   type ChunkCounts,
+  checkMeshUploads,
   FRAME_MS,
   type HeadlessApp,
   startApp,
@@ -128,6 +132,7 @@ async function main() {
         }
       : null,
     clock: opts.measure ? 'real' : 'sim',
+    recordGpu: !opts.measure,
   });
   const startMs = performance.now() - t0;
   const pool = app.pool;
@@ -269,6 +274,21 @@ async function main() {
       if (p.workerJobs === 0) fail('No chunk job went to a worker');
     }
   }
+
+  // 7. The mesh uploads (C5). One more frame uploads the last meshes.
+  await step();
+  const g = app.gpuCounts();
+  const up = checkMeshUploads(app, pool !== null && pool.aliveCount > 0);
+  console.log(
+    `Uploads: ${g.uploadsHeld} from held bytes, ${g.uploadsLocal} from the wasm memory; ` +
+      `quad buffers: ${g.buffersCreated} created, ${g.buffersReused} reused, ` +
+      `${g.buffersDestroyed} destroyed, ${g.buffersFree} free; ` +
+      `${up.headBytesPerResult.toFixed(0)} bytes into the wasm memory for each result, ` +
+      `${app.held.stats.meshPayloadBytes} mesh bytes; ` +
+      `wasm memory ${(app.memoryBytes() / 1048576).toFixed(2)} MB`,
+  );
+  for (const f of up.failures) console.error(`  ${f}`);
+  if (up.failures.length > 0) fail('The mesh uploads are not correct (C5)');
 
   if (opts.measure) {
     console.log(`Start (pool and app.wasm): ${startMs.toFixed(0)} ms`);

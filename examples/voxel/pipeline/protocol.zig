@@ -12,8 +12,11 @@
 //! - All integers are little-endian. An f32 is its IEEE 754 bits as a u32.
 //! - Each message starts with a header of 16 bytes: a magic number, the
 //!   protocol version, the message kind, the body length and an id.
-//! - A `Result` payload starts at byte 48, so the PackedQuad bytes of a
-//!   mesh are 16-byte aligned in the message, ready for upload (C5).
+//! - A `Result` payload starts at byte 64, so the PackedQuad bytes of a
+//!   mesh are 16-byte aligned in the message, ready for upload (C5). Main
+//!   reads only the first 64 bytes of a mesh Result. The quad count, the y
+//!   range and a hash of the quads are in them. Main gives the quad bytes to
+//!   the GPU and does not copy them (C5).
 //!
 //! Header (16 bytes):
 //!
@@ -42,16 +45,18 @@ pub const SLOTS = stages.SLOTS;
 /// "VXCP" as little-endian bytes.
 pub const MAGIC: u32 = 0x50435856;
 /// Increment this value for each change of the layout.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 pub const HEADER_LEN = 16;
 pub const HELLO_LEN = 56;
 pub const EDIT_LEN = 16;
 pub const JOB_LEN = 88;
-pub const RESULT_HEAD_LEN = 32;
+pub const RESULT_HEAD_LEN = 48;
 pub const ERROR_HEAD_LEN = 16;
 /// The offset of a Result payload in the message.
 pub const PAYLOAD_OFFSET = HEADER_LEN + RESULT_HEAD_LEN;
+/// The offset of the mesh hash of a Result in the message.
+pub const MESH_HASH_OFFSET = HEADER_LEN + 32;
 /// The longest Error text that a message can hold.
 pub const MAX_ERROR_TEXT = 256;
 
@@ -159,7 +164,7 @@ pub const Job = struct {
 
 /// The fixed part of a Result.
 ///
-/// Body (32 bytes, then the payload):
+/// Body (48 bytes, then the payload):
 ///
 ///   0  u8   stage
 ///   1  u8   flags: bit 0 = the payload holds blocks
@@ -170,7 +175,9 @@ pub const Job = struct {
 ///   16 u64  light: the light hash. mesh: y min (f32) at 16, y max (f32) at 20
 ///   24 u32  mesh: the quad count. generate: the payload length. light: 0
 ///   28 u32  job time in µs, or 0
-///   32 ...  payload: mesh: PackedQuad × count. generate: the blocks
+///   32 u64  mesh: meshHash of the payload. generate and light: 0
+///   40 u64  reserved, 0
+///   48 ...  payload: mesh: PackedQuad × count. generate: the blocks
 pub const ResultHead = struct {
     stage: Stage,
     cx: i32,
@@ -180,6 +187,26 @@ pub const ResultHead = struct {
     y_min: f32 = 0,
     y_max: f32 = 0,
     job_us: u32 = 0,
+    /// Mesh: meshHash of the quad bytes. The encoder calculates it.
+    mesh_hash: u64 = 0,
+};
+
+/// The hash of the quad bytes of a mesh. The worker calculates it, so main
+/// can compare meshes without the bytes (C5). Equal quads give an equal hash.
+pub fn meshHash(quad_bytes: []const u8) u64 {
+    return std.hash.Wyhash.hash(0x4D45_5348, quad_bytes);
+}
+
+/// The fixed part of a Result, from the first PAYLOAD_OFFSET bytes of the
+/// message (`decodeResultHead`). It does not include the payload.
+pub const ResultInfo = struct {
+    id: u32,
+    head: ResultHead,
+    has_blocks: bool,
+    /// The payload length that the header gives.
+    payload_len: usize,
+    /// Mesh: the quad count.
+    quad_count: u32,
 };
 
 pub const Payload = union(enum) {
@@ -379,6 +406,10 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
         .blocks => @intCast(payload_len),
     });
     o.int(u32, head.job_us);
+    // The mesh hash goes in after the payload: it is the hash of the
+    // payload bytes.
+    o.int(u64, 0);
+    o.int(u64, 0);
     switch (payload) {
         .none => {},
         .quads => |q| {
@@ -397,6 +428,9 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
             o.zeros(std.mem.alignForward(usize, pb.palette_len, 8) - pb.palette_len);
             for (pb.data) |w| o.int(u64, w);
         },
+    }
+    if (payload == .quads) {
+        std.mem.writeInt(u64, o.buf[MESH_HASH_OFFSET..][0..8], meshHash(o.buf[PAYLOAD_OFFSET..]), .little);
     }
     return finish(o);
 }
@@ -524,37 +558,15 @@ pub fn decode(bytes: []const u8) DecodeError!Decoded {
             break :blk .{ .job = j };
         },
         .result => blk: {
-            if (body_len < RESULT_HEAD_LEN) return error.BadLength;
-            var r: ResultHead = .{ .stage = try b.enumOf(Stage), .cx = 0, .cz = 0 };
-            const flags = b.int(u8);
-            if (flags & ~@as(u8, 1) != 0) return error.BadField;
-            const has_blocks = flags & 1 != 0;
-            if (b.int(u16) != 0) return error.BadField;
-            r.cx = b.int(i32);
-            r.cz = b.int(i32);
-            r.block_ver = b.int(u32);
-            if (r.stage == .mesh) {
-                r.y_min = b.float();
-                r.y_max = b.float();
-            } else {
-                r.light_hash = b.int(u64);
-            }
-            const count = b.int(u32);
-            r.job_us = b.int(u32);
+            const info = try resultInfo(bytes, kind, body_len, id);
+            const r = info.head;
             const payload = bytes[PAYLOAD_OFFSET..];
             switch (r.stage) {
-                .mesh => {
-                    if (has_blocks) return error.BadField;
-                    if (@as(u64, count) * @sizeOf(PackedQuad) != payload.len) return error.BadLength;
-                },
-                .generate => {
-                    if (count != payload.len) return error.BadLength;
-                    if (has_blocks != (count != 0)) return error.BadField;
-                    if (has_blocks) try checkBlocks(payload);
-                },
-                .light => if (has_blocks or count != 0 or payload.len != 0) return error.BadField,
+                .mesh => if (meshHash(payload) != r.mesh_hash) return error.BadField,
+                .generate => if (info.has_blocks) try checkBlocks(payload),
+                .light => {},
             }
-            break :blk .{ .result = .{ .head = r, .payload = payload, .has_blocks = has_blocks } };
+            break :blk .{ .result = .{ .head = r, .payload = payload, .has_blocks = info.has_blocks } };
         },
         .err => blk: {
             if (body_len < ERROR_HEAD_LEN) return error.BadLength;
@@ -570,6 +582,73 @@ pub fn decode(bytes: []const u8) DecodeError!Decoded {
         },
     };
     return .{ .id = id, .msg = msg };
+}
+
+/// Decode the header and the fixed part of a Result, from the first
+/// PAYLOAD_OFFSET bytes of the message (`head`). `len` is the length of the
+/// whole message. It does not read the payload, so main can decode a mesh
+/// Result that JS holds (C5). It checks each field that it reads. Returns
+/// null when the message is not a Result.
+pub fn decodeResultHead(head: []const u8, len: usize) DecodeError!?ResultInfo {
+    if (head.len < HEADER_LEN or len < HEADER_LEN) return error.Truncated;
+    var h: In = .{ .buf = head };
+    if (h.int(u32) != MAGIC) return error.BadMagic;
+    if (h.int(u16) != VERSION) return error.BadVersion;
+    const kind = std.enums.fromInt(Kind, h.int(u8)) orelse return error.BadKind;
+    if (h.int(u8) != 0) return error.BadField;
+    const body_len = h.int(u32);
+    const id = h.int(u32);
+    if (len - HEADER_LEN != body_len) return error.Truncated;
+    if (kind != .result) return null;
+    if (head.len < @min(len, PAYLOAD_OFFSET)) return error.Truncated;
+    return try resultInfo(head, kind, body_len, id);
+}
+
+/// The fixed part of a Result. `bytes` holds at least the first
+/// PAYLOAD_OFFSET bytes when the body is that long. `body_len` is from the
+/// header.
+fn resultInfo(bytes: []const u8, kind: Kind, body_len: u32, id: u32) DecodeError!ResultInfo {
+    std.debug.assert(kind == .result);
+    if (body_len < RESULT_HEAD_LEN or bytes.len < PAYLOAD_OFFSET) return error.BadLength;
+    var b: In = .{ .buf = bytes[HEADER_LEN..PAYLOAD_OFFSET] };
+    var r: ResultHead = .{ .stage = try b.enumOf(Stage), .cx = 0, .cz = 0 };
+    const flags = b.int(u8);
+    if (flags & ~@as(u8, 1) != 0) return error.BadField;
+    const has_blocks = flags & 1 != 0;
+    if (b.int(u16) != 0) return error.BadField;
+    r.cx = b.int(i32);
+    r.cz = b.int(i32);
+    r.block_ver = b.int(u32);
+    if (r.stage == .mesh) {
+        r.y_min = b.float();
+        r.y_max = b.float();
+    } else {
+        r.light_hash = b.int(u64);
+    }
+    const count = b.int(u32);
+    r.job_us = b.int(u32);
+    r.mesh_hash = b.int(u64);
+    if (b.int(u64) != 0) return error.BadField;
+    const payload_len: usize = body_len - RESULT_HEAD_LEN;
+    switch (r.stage) {
+        .mesh => {
+            if (has_blocks) return error.BadField;
+            if (@as(u64, count) * @sizeOf(PackedQuad) != payload_len) return error.BadLength;
+        },
+        .generate => {
+            if (count != payload_len) return error.BadLength;
+            if (has_blocks != (count != 0)) return error.BadField;
+            if (r.mesh_hash != 0) return error.BadField;
+        },
+        .light => if (has_blocks or count != 0 or payload_len != 0 or r.mesh_hash != 0) return error.BadField,
+    }
+    return .{
+        .id = id,
+        .head = r,
+        .has_blocks = has_blocks,
+        .payload_len = payload_len,
+        .quad_count = if (r.stage == .mesh) count else 0,
+    };
 }
 
 /// Check a blocks payload: the palette, the bit width and the length.
