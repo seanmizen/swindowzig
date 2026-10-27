@@ -138,6 +138,9 @@ More rules load only when you touch matching files:
   the voxel CLI flags, world loading, regression tests, anti-aliasing, the
   chunk pipeline, lighting, the GPU debug system, trackpad latency, and the voxel file
   map.
+- `docs/agent-batch-manual.md` is the procedure for a Claude Code cloud
+  session that builds a batch of tickets on one branch, with
+  `scripts/cloud-setup.sh` for the sandbox.
 
 ---
 
