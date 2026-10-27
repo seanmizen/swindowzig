@@ -3,6 +3,24 @@
 **A thin WebGPU wrapper for game development.**
 Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS/Linux).
 
+<!-- progress:start -->
+![engine progress](https://img.shields.io/badge/engine-0.0%25-1D76DB)
+
+**Engine: 0.0% complete** `░░░░░░░░░░░░░░░░░░░░` (0 of 33 issues)
+
+| State | Issues |
+|---|---|
+| done | 0 |
+| in-review | 1 |
+| in-progress | 3 |
+| ready | 7 |
+| backlog | 22 |
+
+A GitHub workflow writes this block from the
+[`engine` issues](https://github.com/seanmizen/swindowzig/issues?q=label%3Aengine).
+Do not edit it. `scripts/progress.mjs` gives the rules.
+<!-- progress:end -->
+
 ---
 
 ## What It Is

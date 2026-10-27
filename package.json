@@ -6,6 +6,7 @@
   "license": "MIT",
   "private": true,
   "scripts": {
+    "progress": "node scripts/progress.mjs",
     "build:wasm": "zig build web",
     "build:wasm:voxel": "zig build web -Dexample=voxel -Doptimize=ReleaseFast",
     "build:js": "bun build backends/wasm/boot.ts backends/wasm/chunk-worker.ts --outdir=zig-out/bin --minify",

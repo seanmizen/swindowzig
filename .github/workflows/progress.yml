@@ -1,0 +1,50 @@
+name: Progress
+
+# Writes the engine percent-complete marker in README.md (scripts/progress.mjs).
+# It runs after a merge to main and after a change to an issue, so the
+# readme on GitHub shows the merged work.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: [README.md]
+  issues:
+    types: [opened, closed, reopened, labeled, unlabeled, deleted]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: read
+
+concurrency:
+  group: progress
+  cancel-in-progress: false
+
+jobs:
+  progress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: Write the marker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/progress.mjs
+
+      - name: Commit a changed readme
+        run: |
+          git diff --quiet README.md && exit 0
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m '[SWZ-57] chore: update the engine progress marker' README.md
+          git pull --rebase origin main
+          git push origin HEAD:main
