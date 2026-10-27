@@ -22,6 +22,7 @@ import {
   setTextInputActive,
   type WasmExports,
 } from './events';
+import { attachFileDrop, createFileImports } from './files';
 import { createNetImports } from './net';
 import { createStorageImports } from './storage';
 import { type GPUBridge, initWebGPU } from './webgpu';
@@ -31,6 +32,9 @@ import {
   type PoolHolder,
   WorkerPool,
 } from './worker-pool';
+
+// A page with its own file input gives the files to the game with this.
+export { offerFiles } from './files';
 
 export interface SwindowzigDebug {
   tick: number;
@@ -90,6 +94,11 @@ export interface LoaderOptions {
   cursorFollowsLock?: boolean;
   /** When true, a click on the canvas requests the pointer lock. */
   lockOnClick?: boolean;
+  /**
+   * When true (the default), a file that the player drops on the page goes
+   * to the game (sw_assets files.poll), and the browser does not open it.
+   */
+  fileDrop?: boolean;
   /** Called one time if the start fails. The default writes to the console. */
   onFailure?: (failure: LoadFailure) => void;
   /** Called immediately before swindowzig_init(). */
@@ -251,6 +260,8 @@ export function createImports(
     chunks: chunkImports(pool, getMemory, gpu.held),
     // The screen-reader mirror of the sw_ui semantic tree (REQ-A11Y-001).
     a11y: createA11yImports(getMemory),
+    // Files from the player and the OPFS cache (sw_assets files and cache).
+    files: createFileImports(getMemory),
   } as WebAssembly.Imports;
 }
 
@@ -266,6 +277,7 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
     canvasSize = 'css',
     cursorFollowsLock = false,
     lockOnClick = false,
+    fileDrop = true,
   } = options;
   const fail = (kind: LoadFailureKind, error?: unknown): void => {
     const message = error === undefined ? '' : errorMessage(error);
@@ -385,6 +397,7 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
   if (hideCursor) canvas.style.cursor = 'none';
 
   attachEventListeners(canvas, exports, { disableContextMenu });
+  if (fileDrop) attachFileDrop(window);
 
   if (lockOnClick) {
     canvas.addEventListener('click', () => {

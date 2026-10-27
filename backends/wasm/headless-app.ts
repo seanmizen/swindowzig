@@ -14,6 +14,7 @@
 //     new handle.
 
 import { createAssetImports } from './assets';
+import { createFileImports } from './files';
 import { HeldBytes } from './held-bytes';
 import { createStorageImports } from './storage';
 import {
@@ -394,6 +395,7 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
       ...createAssetImports(getMemory),
     },
     chunks: chunkImports(holder, getMemory, held),
+    files: createFileImports(getMemory),
     webgpu: gpu.imports(),
   };
 

@@ -103,7 +103,7 @@ swindowzig/
 │   │   └── web_bridge.zig       # WASM JS bindings
 │   ├── sw_math/        # Vec2-4, Mat4, Quat, Aabb, Ray, Plane, perspective(), lookAt(), camera controller
 │   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
-│   ├── sw_assets/      # loadBytes (async, native + fetch) and PNG decode (stb_image)
+│   ├── sw_assets/      # loadBytes, PNG decode, zip reader, player files, OPFS/folder cache
 │   ├── sw_text/        # Text: TTF and bitmap font chain, bidi, atlas, measure, wrap, draw
 │   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix, post chain, sky
 │   ├── sw_ui/          # UI tree: layout, focus, widgets, screen stack, on-screen keyboard, semantic tree, drawing
