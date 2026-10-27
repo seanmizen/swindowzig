@@ -56,6 +56,11 @@
 //! test on and the depth write off (REQ-GPU-022). It sorts the quads from
 //! far to near when the camera moves a set distance (REQ-GPU-023). See
 //! `translucent.zig`.
+//!
+//! Particles: an emitter makes particles with a speed, gravity, drag, a
+//! life and a sprite. A cap drops the oldest particle. The particle pass
+//! draws them as camera-facing quads in one draw call, sorted from far to
+//! near (REQ-GPU-024, REQ-GPU-025). See `particles.zig`.
 
 const atlas_mod = @import("atlas.zig");
 const box_models_mod = @import("box_models.zig");
@@ -65,6 +70,7 @@ const post_mod = @import("post.zig");
 const ring_mod = @import("ring.zig");
 const sky_mod = @import("sky.zig");
 const translucent_mod = @import("translucent.zig");
+const particles_mod = @import("particles.zig");
 const upload_mod = @import("upload.zig");
 const weather_mod = @import("weather.zig");
 
@@ -96,6 +102,9 @@ pub const weather = @import("weather_plan.zig");
 /// The translucent pass with no GPU code: the sort, the states and the
 /// CPU reference of the blend.
 pub const translucent = @import("translucent_plan.zig");
+/// Particles with no GPU code: the state, the emitter, the step and the
+/// quads.
+pub const particle = @import("particle_plan.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasBuilder = atlas_mod.AtlasBuilder;
@@ -176,3 +185,10 @@ pub const TranslucentOptions = translucent_mod.Options;
 pub const TranslucentPassOptions = translucent_mod.PassOptions;
 pub const TranslucentVertex = translucent.Vertex;
 pub const TranslucentQuad = translucent.Quad;
+pub const Particles = particles_mod.Particles;
+pub const ParticleOptions = particles_mod.Options;
+pub const ParticlePassOptions = particles_mod.PassOptions;
+pub const Particle = particle.Particle;
+pub const ParticleSystem = particle.System;
+pub const ParticleEmitter = particle.Emitter;
+pub const ParticleCamera = particle.Camera;

@@ -21,6 +21,11 @@
 // scene, from far to near, with the depth test on and the depth write off
 // (REQ-GPU-022, REQ-GPU-023). The ground hides the third quad.
 //
+// A spark emitter at the right throws particles up. The particle pass
+// draws them as camera-facing quads in one draw call, from far to near
+// (REQ-GPU-024). The check uses two fixed particles in place of the
+// emitter.
+//
 // Keys: Space stops or starts the animation. D turns the first-person
 // depth range on or off. L turns the shadows on or off (REQ-GPU-018). P
 // turns the point light on or off. Left and Right change the time of day.
@@ -32,7 +37,8 @@
 // in the shadow of a figure, the same ground in light, and the ground
 // under the point light. It checks the draw calls and the instance
 // counts. The pixel through the two translucent quads must be the CPU
-// blend of the far quad, then the near quad, over the ground. It exits
+// blend of the far quad, then the near quad, over the ground. The same
+// test is done for two particles, in one draw call. It exits
 // with 0 (pass) or 1 (fail).
 const std = @import("std");
 const sw = @import("sw_app");
@@ -174,6 +180,31 @@ var sky: ?sw_render.Sky = null;
 var lighting: ?sw_render.Lighting = null;
 var models: ?sw_render.BoxModels = null;
 var glass: ?sw_render.Translucent = null;
+var sparks: ?sw_render.Particles = null;
+var spark_system: ?sw_render.ParticleSystem = null;
+var spark_emitter: sw_render.ParticleEmitter = .{
+    .position = .{ 4.5, 0.2, 1.5 },
+    .rate = 60,
+    .speed = .{ 2, 4 },
+    .spread = 0.4,
+    .life = .{ 0.6, 1.2 },
+    .size = 0.08,
+    .color = .{ 1.0, 0.7, 0.2, 1.0 },
+    .seed = 3,
+};
+
+/// The ground point behind the two check particles.
+const spark_ground: [3]f32 = .{ -0.4, 0, 1.0 };
+/// The check particles: red (far) and blue (near), at alpha 0.5, on the
+/// line from the eye to `spark_ground`.
+const spark_at = [2]f32{ 0.55, 0.45 };
+const spark_color = [2][4]f32{ .{ 1, 0, 0, 0.5 }, .{ 0, 0, 1, 0.5 } };
+
+fn sparkAt(t: f32) [3]f32 {
+    var c: [3]f32 = undefined;
+    for (0..3) |i| c[i] = eye[i] + t * (spark_ground[i] - eye[i]);
+    return c;
+}
 var figure: sw_render.BoxModelId = undefined;
 var block: sw_render.BoxModelId = undefined;
 var held: sw_render.BoxModelId = undefined;
@@ -333,6 +364,16 @@ const Callbacks = struct {
         const gl = &glass.?;
         try gl.setQuads(&.{ glassQuad(glass_at[1], glass_color[1]), glassQuad(glass_at[0], glass_color[0]), glassQuad(glass_at[2], glass_color[2]) });
         try gl.addPass(.{ .color = p.hdr, .depth = depth });
+
+        spark_system = try sw_render.ParticleSystem.init(allocator, 256);
+        sparks = try sw_render.Particles.init(allocator, g, .{ .color_format = p.hdr_format, .capacity = 256 });
+        try sparks.?.addPass(.{ .color = p.hdr, .depth = depth });
+        if (check_mode) {
+            // The near particle first, so that only the sort gives the
+            // correct blend.
+            spark_system.?.spawn(.{ .pos = sparkAt(spark_at[1]), .size = 0.15, .color = spark_color[1], .life = 1000 });
+            spark_system.?.spawn(.{ .pos = sparkAt(spark_at[0]), .size = 0.15, .color = spark_color[0], .life = 1000 });
+        }
         std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range. L: shadows. P: point light. Left/Right: time.", .{figure_count});
     }
 
@@ -351,7 +392,13 @@ const Callbacks = struct {
         if (in.keyPressed(.P)) point_light_on = !point_light_on;
         if (in.keyDown(.Left)) time_of_day -= 0.1 / 60.0;
         if (in.keyDown(.Right)) time_of_day += 0.1 / 60.0;
-        if (anim_on) anim_time += 1.0 / 60.0;
+        if (anim_on) {
+            anim_time += 1.0 / 60.0;
+            if (spark_system) |*s| {
+                _ = spark_emitter.emit(s, 1.0 / 60.0);
+                s.step(1.0 / 60.0);
+            }
+        }
     }
 
     pub fn render(ctx: *sw.Context) !void {
@@ -382,6 +429,7 @@ const Callbacks = struct {
         }
         try l.update(f);
         try glass.?.update(eye);
+        try sparks.?.update(&spark_system.?, sw_render.ParticleCamera.fromView(f.view, eye));
         if (try g.execute(f)) {
             if (comptime !builtin.cpu.arch.isWasm()) {
                 if (check_mode) try checkFrame(ctx, f);
@@ -391,9 +439,12 @@ const Callbacks = struct {
     }
 
     pub fn shutdown(ctx: *sw.Context) !void {
-        _ = ctx;
         if (glass) |*gl| gl.deinit();
         glass = null;
+        if (sparks) |*s| s.deinit();
+        sparks = null;
+        if (spark_system) |*s| s.deinit(ctx.allocator());
+        spark_system = null;
         if (models) |*m| m.deinit();
         models = null;
         if (lighting) |*l| l.deinit();
@@ -609,6 +660,7 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
     }
     ok = checkShadows(step, frame, pixels, w, h) and ok;
     ok = checkGlass(step, frame, pixels, w, h) and ok;
+    ok = checkSparks(step, frame, pixels, w, h) and ok;
     return ok;
 }
 
@@ -720,6 +772,35 @@ fn checkGlass(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w:
     }
     if (glass.?.sort_count != 1) {
         std.log.err("models: {s}: the quads sorted {d} times. The camera does not move, so they must sort one time", .{ step.name, glass.?.sort_count });
+        ok = false;
+    }
+    return ok;
+}
+
+/// The pixel through the two check particles: the CPU blend of the far
+/// red particle, then the near blue particle, over the ground. One draw
+/// call draws both (REQ-GPU-024).
+fn checkSparks(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: u32, h: u32) bool {
+    var ok = true;
+    const up: [3]f32 = .{ 0, 1, 0 };
+    const lt = lighting.?;
+    const l = lt.lightDirection();
+    for (front_x) |x| {
+        if (sw_render.lighting.rayHitsBox(spark_ground, l, .{ x - 0.7, 0, -0.3 }, .{ x + 1.8, 2.8, 0.3 })) {
+            std.log.err("models: the spark ground point {any} is behind a figure", .{spark_ground});
+            ok = false;
+        }
+    }
+    const points = sw_render.lighting.pointLights(lt.uniforms(), spark_ground, up);
+    var ground = box_model.shadeLit(.{ 1, 1, 1 }, ground_tint, up, l, models.?.getLight(), 1, points);
+    ground = sw_render.sky.applyFog(frame.sky, ground, distance(spark_ground, eye));
+    const blend = sw_render.translucent.over;
+    const far: [3]f32 = .{ spark_color[0][0], spark_color[0][1], spark_color[0][2] };
+    const near: [3]f32 = .{ spark_color[1][0], spark_color[1][1], spark_color[1][2] };
+    const want = display(blend(blend(ground, far, spark_color[0][3]), near, spark_color[1][3]));
+    ok = expectPixel(step, "ground through two particles", pixels, w, project(frame.view_proj, spark_ground, w, h), want) and ok;
+    if (sparks.?.draw_calls != 1) {
+        std.log.err("models: {s}: the particles used {d} draw calls, not 1", .{ step.name, sparks.?.draw_calls });
         ok = false;
     }
     return ok;

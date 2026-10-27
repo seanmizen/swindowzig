@@ -544,3 +544,48 @@ Textures, samplers and other resources of `sw_gpu`.
     quad first. The pixel through the two quads has the CPU blend of the
     far quad, then the near quad.
 - **Relations:** depends-on REQ-GPU-022
+
+## REQ-GPU-024 — Particles draw as camera-facing quads in one draw call, far to near
+
+- **Status:** active
+- **Source:** agent:SWZ-42
+- **Origin:** #42
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** While a `Particles` of `sw_render` is in a frame graph,
+  the particle pass shall draw each particle of the system as one quad
+  that faces the camera, in one draw call, from the furthest particle to
+  the nearest.
+- **Rationale:** A game can have thousands of particles, so one draw call
+  draws them all. Each particle has straight alpha, so the blend is
+  correct only from far to near. The step (speed, gravity, drag, life)
+  is a pure function, and an emitter takes its random values from its own
+  seed, so a replay gives the same particles.
+- **Verification:**
+  - Test — `libs/sw_render/src/particle_plan.zig` › "particles: gravity,
+    drag and life move a particle (REQ-GPU-024)"
+  - Test — `libs/sw_render/src/particle_plan.zig` › "particles: an emitter
+    makes particles at its rate, in its ranges (REQ-GPU-024)"
+  - Test — `libs/sw_render/src/particle_plan.zig` › "particles: the quads
+    face the camera and go from far to near (REQ-GPU-024)"
+  - Demonstration — `models --check` (native, in CI) gives two particles,
+    near particle first. The pixel through them has the CPU blend of the
+    far particle, then the near particle, and the pass uses one draw call.
+- **Relations:** depends-on REQ-GPU-022
+
+## REQ-GPU-025 — A full particle system drops its oldest particle
+
+- **Status:** active
+- **Source:** agent:SWZ-42
+- **Origin:** #42
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** If a particle system is full when a new particle starts,
+  then the `sw_render` particle system shall put the new particle in the
+  place of its oldest particle.
+- **Rationale:** The system has a fixed size, so it makes no allocation
+  while the game runs. A new particle is more important than an old
+  particle that is near the end of its life.
+- **Verification:** Test — `libs/sw_render/src/particle_plan.zig` ›
+  "particles: the cap drops the oldest particle (REQ-GPU-025)"
+- **Relations:** none

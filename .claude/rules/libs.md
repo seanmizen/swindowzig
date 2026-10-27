@@ -319,6 +319,8 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_render/src/lighting_plan.zig` | The cascade fit and the WGSL include (`include(group)`: `sw_shadow` with a 3 x 3 PCF filter, `sw_point_lights`, `sw_light_dir`). It has the CPU reference of each helper (no GPU code, unit tested) |
 | `libs/sw_render/src/translucent.zig` | `Translucent`: translucent quads after the opaque pass, depth test on, depth write off. `setQuads`, then `update(camera)` each frame sorts them far to near when the camera moved `resort_distance` (REQ-GPU-022, REQ-GPU-023) |
 | `libs/sw_render/src/translucent_plan.zig` | The sort, the sort state, the blend and depth states, the WGSL, and the CPU blend `over` (no GPU code, unit tested) |
+| `libs/sw_render/src/particles.zig` | `Particles`: the particle pass. `update(&system, ParticleCamera.fromView(frame.view, eye))` each frame builds the quads far to near, and the pass draws them in one draw call, with a texture (null: white) (REQ-GPU-024) |
+| `libs/sw_render/src/particle_plan.zig` | `System` (fixed size, the cap drops the oldest, REQ-GPU-025), `Emitter` (rate, speed, spread, life, seed), `step` (gravity, drag, life), `buildQuads`, the WGSL (no GPU code, unit tested) |
 | `libs/sw_gpu/src/fxaa.zig` | The FXAA source and quality presets. `shaderSource` sets the tokens and the bind group. `configureFXAA` and the post chain use it |
 | `libs/sw_net/src/socket.zig` | `Socket`: open, `poll`, send, close, and the reconnect. The same code for web and native. `net_root.zig` is the module root |
 | `libs/sw_net/src/native.zig` | The native transport: connect, TLS for `wss:`, the HTTP upgrade, the frame loop on one network thread |

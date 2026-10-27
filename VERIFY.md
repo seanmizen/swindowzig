@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 5. Skipped: 0. Not started: 10.
+- Done: 6. Skipped: 0. Not started: 9.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -126,3 +126,25 @@ ticket of #102, in the order of the batch.
     before the rain and snow (60).
 - Risks: `Translucent.addPass` keeps a pointer to the `Translucent`, so
   the game must keep it at one address (the same rule as `BoxModels`).
+
+## #42 particle system with billboards
+
+- Status: done
+- Commit: see `git log --grep SWZ-42`
+- Not run here: the interactive emitter of the `models` example (it runs
+  only with a window). `models --check` passed on lavapipe: the pixel
+  through the two check particles is `{179, 86, 210}`, difference 0, in
+  one draw call.
+- Expected changes:
+  - quad hash: no change
+  - goldens: none
+- CI changes needed: none. The `models --check` step runs the new check.
+- Requirements: REQ-GPU-024, REQ-GPU-025
+- Open questions: the pass uses the blend and depth states of the
+  translucent pass (#35). Particles and translucent quads sort apart, so
+  a particle behind a translucent quad can draw over it. The default
+  orders put the particles (58) after the translucent quads (55).
+- Risks: `Particles.update` copies the quads of each particle each frame
+  (36 bytes for each vertex, 6 vertices for each particle). That is
+  216 KB for 1000 particles. A GPU-side billboard (instancing) costs less
+  if a game needs many more particles.

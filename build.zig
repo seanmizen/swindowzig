@@ -417,6 +417,19 @@ pub fn build(b: *std.Build) void {
     render_layout_tests.root_module.addImport("sw_gpu", web_libs.gpu);
     render_layout_tests.root_module.addImport("sw_text", web_libs.text);
     test_step.dependOn(&b.addRunArtifact(render_layout_tests).step);
+    // sw_render particle tests: no GPU code. The sprite rectangle comes
+    // from the atlas layout, so the tests need sw_text and libc too.
+    const render_particle_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_render/src/particle_plan.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    render_particle_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    render_particle_tests.root_module.addImport("sw_text", web_libs.text);
+    test_step.dependOn(&b.addRunArtifact(render_particle_tests).step);
 
     // sw_render frame graph tests: the plan, the uniform ring, the staged
     // uploads, the WGSL prefix, the post chain plan, the sky plan, the box
