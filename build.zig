@@ -106,7 +106,7 @@ pub fn build(b: *std.Build) void {
     // swindowzig_init export).
     example.root_module.addImport("sw_platform", web_libs.platform);
     // The voxel demo: sw_voxel with the demo content (examples/voxel/content.zig).
-    const web_voxel = addVoxel(b, web_libs.gpu, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
+    const web_voxel = addVoxel(b, web_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
     example.root_module.addImport("sw_voxel", web_voxel.voxel);
     example.root_module.addImport("voxel_content", web_voxel.content);
     example.rdynamic = true; // Export symbols for WASM
@@ -182,7 +182,7 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
     native_exe.root_module.addImport("sw_render", native_libs.render);
     native_exe.root_module.addOptions("chunk_build", chunk_build);
-    const native_voxel = addVoxel(b, native_libs.gpu, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
+    const native_voxel = addVoxel(b, native_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
     native_exe.root_module.addImport("sw_voxel", native_voxel.voxel);
     native_exe.root_module.addImport("voxel_content", native_voxel.content);
 
@@ -611,7 +611,7 @@ pub fn build(b: *std.Build) void {
     // They run two times: with the default world height (y 0 to 255), and
     // with a tall world (y -64 to 319) to test the height setting.
     inline for (.{ .{ 0, 256 }, .{ -64, 384 } }) |d| {
-        const voxel_lib_tests = addVoxel(b, web_libs.gpu, .{
+        const voxel_lib_tests = addVoxel(b, web_libs, .{
             .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig"),
             .target = target,
             .optimize = optimize,
@@ -627,7 +627,7 @@ pub fn build(b: *std.Build) void {
     }
     // The demo content (examples/voxel/content.zig): the GenConfig bytes
     // and the world_gen tests.
-    const demo_content_tests = addVoxel(b, web_libs.gpu, .{
+    const demo_content_tests = addVoxel(b, web_libs, .{
         .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig"),
     }, .{
         .root_source_file = b.path("examples/voxel/content.zig"),
@@ -756,13 +756,14 @@ const VoxelModules = struct {
 /// import `sw_voxel` (libs/sw_voxel/src/content.zig gives the contract).
 fn addVoxel(
     b: *std.Build,
-    gpu: *std.Build.Module,
+    libs: Libs,
     voxel_options: std.Build.Module.CreateOptions,
     content_options: std.Build.Module.CreateOptions,
 ) VoxelModules {
     const voxel = b.createModule(voxel_options);
     const content = b.createModule(content_options);
-    voxel.addImport("sw_gpu", gpu);
+    voxel.addImport("sw_gpu", libs.gpu);
+    voxel.addImport("sw_math", libs.math);
     voxel.addImport("sw_voxel_content", content);
     content.addImport("sw_voxel", voxel);
     return .{ .voxel = voxel, .content = content };
@@ -845,6 +846,7 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     // libs/sw_voxel/src/content.zig.
     const voxel = libModule(b, exported, "sw_voxel", "libs/sw_voxel/src/sw_voxel.zig");
     voxel.addImport("sw_gpu", gpu);
+    voxel.addImport("sw_math", math);
     const render = libModule(b, exported, "sw_render", "libs/sw_render/src/render_root.zig");
     render.addImport("sw_gpu", gpu);
     render.addImport("sw_text", text);

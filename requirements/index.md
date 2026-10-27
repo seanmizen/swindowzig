@@ -49,6 +49,8 @@
 | [`REQ-VOXEL-003`](voxel.md#req-voxel-003--the-content-gives-the-opacity-and-the-emission-of-each-block) | The content gives the opacity and the emission of each block | active | functional | P1 | agent:SWZ-32 |
 | [`REQ-VOXEL-004`](voxel.md#req-voxel-004--sky-light-falls-straight-down-without-loss) | Sky light falls straight down without loss | active | functional | P1 | agent:SWZ-32 |
 | [`REQ-VOXEL-005`](voxel.md#req-voxel-005--an-edit-updates-the-light-incrementally) | An edit updates the light incrementally | active | quality | P1 | agent:SWZ-32 |
+| [`REQ-VOXEL-006`](voxel.md#req-voxel-006--a-moving-box-stops-at-the-collision-boxes-of-the-blocks) | A moving box stops at the collision boxes of the blocks | active | functional | P2 | agent:SWZ-51 |
+| [`REQ-VOXEL-007`](voxel.md#req-voxel-007--a-voxel-ray-cast-gives-the-first-block-its-face-and-the-distance) | A voxel ray cast gives the first block, its face and the distance | active | functional | P2 | agent:SWZ-51 |
 
 ## Dependency graph
 
@@ -98,6 +100,8 @@ graph TD
   REQ_VOXEL_003["REQ-VOXEL-003<br/>The content gives the opacity and the emission of each block"]
   REQ_VOXEL_004["REQ-VOXEL-004<br/>Sky light falls straight down without loss"]
   REQ_VOXEL_005["REQ-VOXEL-005<br/>An edit updates the light incrementally"]
+  REQ_VOXEL_006["REQ-VOXEL-006<br/>A moving box stops at the collision boxes of the blocks"]
+  REQ_VOXEL_007["REQ-VOXEL-007<br/>A voxel ray cast gives the first block, its face and the distance"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -116,6 +120,7 @@ graph TD
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
   REQ_VOXEL_004 -->|refines| REQ_VOXEL_003
   REQ_VOXEL_005 -->|depends-on| REQ_VOXEL_003
+  REQ_VOXEL_007 -->|depends-on| REQ_VOXEL_006
 ```
 
 ## Derived reverse links
@@ -130,3 +135,4 @@ graph TD
 - `REQ-GPU-014` — refined-by REQ-GPU-015
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
 - `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005
+- `REQ-VOXEL-006` — required-by REQ-VOXEL-007
