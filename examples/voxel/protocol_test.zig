@@ -10,11 +10,11 @@
 //!   fuzz         random and changed messages never crash the decoder or a
 //!                worker. A message that decodes encodes to the same bytes.
 const std = @import("std");
-const protocol = @import("pipeline/protocol.zig");
-const stages = @import("pipeline/stages.zig");
-const worker_world = @import("pipeline/worker_world.zig");
-const chunk_mod = @import("chunk.zig");
-const world_gen = @import("world_gen.zig");
+const protocol = @import("sw_voxel").protocol;
+const stages = @import("sw_voxel").stages;
+const worker_world = @import("sw_voxel").worker_world;
+const chunk_mod = @import("sw_voxel").chunk;
+const world_gen = @import("voxel_content").world_gen;
 
 const PalettedBlocks = chunk_mod.PalettedBlocks;
 const PackedQuad = protocol.PackedQuad;

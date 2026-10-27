@@ -1,6 +1,6 @@
 const std = @import("std");
 const clock = @import("clock.zig");
-const world_gen = @import("world_gen.zig");
+const content = @import("content.zig");
 
 /// Horizontal (X/Z) edge length of a chunk, in blocks. Compile-time constant;
 /// all chunk-sized allocations, index math, AABB extents, and the mesher's
@@ -15,31 +15,12 @@ const world_gen = @import("world_gen.zig");
 /// `tests/flatland_forward.tas` with `--profile-csv` and the CSV reflects
 /// the new size.
 pub const CHUNK_W = 16;
-pub const CHUNK_H = 256; // Y dimension (matches classic Minecraft build height)
+pub const CHUNK_H = 256; // Y dimension
 
-pub const BlockType = enum(u8) {
-    air = 0,
-    grass = 1,
-    dirt = 2,
-    stone = 3,
-    bedrock = 4,
-    /// Minecraft-style glowstone: solid (blocks propagation, culls faces) but
-    /// emits `MAX_BLOCK_LIGHT` from its own cell. Seeded during
-    /// `computeBlockLight` and propagated outward through adjacent air.
-    glowstone = 5,
-    /// Oak log / tree trunk. Brown block placed during tree generation.
-    /// Solid and opaque — no special light properties.
-    wood = 6,
-    /// Oak leaf block. Dark green, placed in the spherical canopy around tree tops.
-    /// Solid for face-culling purposes (keeps mesh generation simple).
-    leaves = 7,
-    /// Sand block. Used as the surface layer in desert biomes.
-    /// No special physics (falling sand is out of scope for terrain generation).
-    sand = 8,
-    debug_marker = 99,
-};
+/// The block types of the game (`content.zig`). Value 0 is `.air`.
+pub const BlockType = content.Block;
 
-/// Maximum skylight level. Matches Minecraft's 4-bit (0..15) range — we store
+/// Maximum skylight level: a 4-bit (0..15) range. We store
 /// it in a u8 right now because the engine doesn't yet care about packing
 /// multiple light channels. See `examples/voxel/docs/lighting.md` for the
 /// full reasoning.
@@ -59,16 +40,12 @@ pub const MISSING_BLOCK_LIGHT: u8 = 0;
 /// `examples/voxel/docs/lighting.md` § phase 3 for the design.
 pub const MAX_BLOCK_LIGHT: u8 = 15;
 
-/// Emission level for each block type. Non-emissive blocks return 0; the BFS
-/// seed pass writes this value into every emissive cell's `block_light` slot
-/// before any propagation runs. Phase-3 only ships glowstone (level 15);
-/// torches and lava can be added later by extending this switch — no other
-/// code path needs to change.
+/// The emission level of a block, from the content (`content.emission`).
+/// Blocks that give no light return 0. The BFS seed pass writes this value
+/// into the `block_light` slot of each emissive cell before the light
+/// spreads.
 pub fn emissionLevel(block: BlockType) u8 {
-    return switch (block) {
-        .glowstone => MAX_BLOCK_LIGHT,
-        else => 0,
-    };
+    return content.emission(block);
 }
 
 /// Total blocks in a column.
@@ -83,7 +60,7 @@ pub inline fn blockLinearIdx(x: i32, y: i32, z: i32) usize {
         @as(usize, @intCast(z));
 }
 
-/// Minecraft-style palette-compressed block storage for a single chunk.
+/// Palette-compressed block storage for a single chunk.
 ///
 /// A paletted chunk tracks which `BlockType`s actually appear in the column
 /// and stores per-block indices into that palette in a packed `[]u64` bit
@@ -336,51 +313,6 @@ pub const PalettedBlocks = struct {
 /// `generateTerrain` writes into it, then packs it one time.
 pub const DenseBlocks = [BLOCKS_PER_CHUNK]BlockType;
 
-/// Write `block` at (x, y, z) in `dense`. Out-of-chunk coordinates are
-/// ignored, as in `Chunk.setBlock`.
-inline fn putDense(dense: *DenseBlocks, x: i32, y: i32, z: i32, block: BlockType) void {
-    if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) return;
-    dense[blockLinearIdx(x, y, z)] = block;
-}
-
-/// Read (x, y, z) from `dense`. Out-of-chunk coordinates read as `.air`,
-/// as in `Chunk.getBlock`.
-inline fn getDense(dense: *const DenseBlocks, x: i32, y: i32, z: i32) BlockType {
-    if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) return .air;
-    return dense[blockLinearIdx(x, y, z)];
-}
-
-/// How far the tree pass searches past each chunk edge for tree centres:
-/// the maximum trunk height plus the canopy radius.
-const TREE_SEARCH: i32 = 11;
-
-/// The surface height and dominant biome of each column of a chunk and of
-/// the tree search margin around it, as a heightmap. It samples a column on
-/// the first `get` only. Generation reads each column of the chunk in the
-/// fill pass and again in the cave pass, and a tree centre in the margin
-/// in the tree pass. Before this cache, each read sampled the column again.
-const ColumnCache = struct {
-    const SIDE = CHUNK_W + 2 * TREE_SEARCH;
-
-    cx: i32,
-    cz: i32,
-    config: world_gen.WorldGenConfig,
-    known: [SIDE][SIDE]bool = @splat(@splat(false)),
-    samples: [SIDE][SIDE]world_gen.ColumnSample = undefined,
-
-    /// The sample of world column (wx, wz). The column must be in the chunk
-    /// or in the tree search margin.
-    fn get(self: *ColumnCache, wx: i32, wz: i32) world_gen.ColumnSample {
-        const i: usize = @intCast(wx - (self.cx * CHUNK_W - TREE_SEARCH));
-        const k: usize = @intCast(wz - (self.cz * CHUNK_W - TREE_SEARCH));
-        if (!self.known[i][k]) {
-            self.samples[i][k] = world_gen.sampleColumn(wx, wz, self.config);
-            self.known[i][k] = true;
-        }
-        return self.samples[i][k];
-    }
-};
-
 /// A dense light grid, [x][y][z]: what the light passes compute into.
 pub const DenseLight = [CHUNK_W][CHUNK_H][CHUNK_W]u8;
 
@@ -472,8 +404,8 @@ fn seedSkylightFromNeighbours(
 /// Light values of a chunk, stored per 16-high section. A section where
 /// every cell has the same value (open sky above the terrain, or no block
 /// light) has no array, only that value. Most of a chunk is like that:
-/// on hilly terrain 11 of 16 skylight sections, and all block light when
-/// there is no glowstone. Values are the same as a dense grid: store a dense
+/// on hilly demo terrain 11 of 16 skylight sections, and all block light
+/// when there is no emissive block. Values are the same as a dense grid: store a dense
 /// grid, then get gives back each value.
 pub const LightGrid = struct {
     pub const SECTION_H = 16;
@@ -600,16 +532,16 @@ pub const Chunk = struct {
     skylight: LightGrid,
     /// Per-block block-light value, range [0, MAX_BLOCK_LIGHT]. Computed by
     /// `computeBlockLight()` after `generateTerrain()` and again whenever a
-    /// block is placed or removed. Unlike skylight, emissive blocks (e.g.
-    /// glowstone) store their OWN emission level in this slot even though
+    /// block is placed or removed. Unlike skylight, emissive blocks
+    /// store their OWN emission level in this slot even though
     /// they are solid — this is what lets the mesher read a bright value for
-    /// a glowstone's own face without the sample escaping to a dim outward
+    /// an emissive block's own face without the sample escaping to a dim outward
     /// air cell. Non-emissive solids and unlit air stay at 0.
     ///
-    /// Phase-3 scope: per-chunk BFS only. A glowstone placed near a chunk
+    /// Phase-3 scope: per-chunk BFS only. An emissive block placed near a chunk
     /// edge will NOT push light into the neighbour chunk. The seam is small
     /// in practice because block light decays to 0 within 15 cells and
-    /// glowstones are explicitly placed, but it is a documented limitation.
+    /// emissive blocks are explicitly placed, but it is a documented limitation.
     block_light: LightGrid,
 
     pub fn init(allocator: std.mem.Allocator) Chunk {
@@ -952,7 +884,7 @@ pub const Chunk = struct {
     ///     Walk every cell. Air cells and non-emissive solids get 0.
     ///     Emissive blocks (see `emissionLevel`) get their emission level
     ///     stored directly in `block_light[x][y][z]`, even though the cell
-    ///     is solid — this is what makes a glowstone's own face read bright
+    ///     is solid — this is what makes an emissive block's own face read bright
     ///     when the mesher later samples with `max(outward_mean, owner_bl)`.
     ///
     ///   Pass 2 (bucket-sort BFS, levels MAX_BLOCK_LIGHT down to 2):
@@ -960,8 +892,8 @@ pub const Chunk = struct {
     ///     solid OR air) with block_light == L, propagate (L - 1) into any
     ///     AIR neighbour whose current value is strictly lower. Solid
     ///     neighbours (including other emissive blocks) are skipped — light
-    ///     cannot travel through glowstone the same way skylight cannot
-    ///     travel through stone.
+    ///     cannot travel through an emissive block the same way skylight cannot
+    ///     travel through a solid block.
     ///
     /// O(MAX_BLOCK_LIGHT × N). In practice the sweep is dominated by
     /// cells with value 0 that short-circuit on the first check, so this is
@@ -1064,7 +996,7 @@ pub const Chunk = struct {
     ///   - Light originating in a neighbour that was itself seeded from a
     ///     further-away chunk is NOT re-propagated here (we only look at the
     ///     neighbour's already-computed values, not its neighbours).  This is
-    ///     correct for the common case: glowstone is at most CHUNK_W-1 = 15
+    ///     correct for the common case: an emissive block is at most CHUNK_W-1 = 15
     ///     cells from an edge, and MAX_BLOCK_LIGHT = 15, so the light budget
     ///     reaching the far side of the adjacent chunk would already be ≤ 1
     ///     and therefore zero after our one-hop decay.
@@ -1206,33 +1138,22 @@ pub const Chunk = struct {
         try self.block_light.store(self.allocator, &bl);
     }
 
-    /// Generate terrain for this chunk at chunk grid position (cx, cz).
+    /// Generate the blocks of this chunk at chunk grid position (cx, cz)
+    /// with the generator of the content (`content.generate`), then compute
+    /// the skylight and the block light.
     ///
-    /// Layout per column (surface = biome-blended noise-sampled height):
-    ///   Y=0              bedrock
-    ///   Y=1..(surface-4) stone
-    ///   Y=(surface-3)..(surface-1) dirt (3 layers; sand in desert; stone in badlands)
-    ///   Y=surface        grass (plains/forest), sand (desert), stone (badlands)
-    ///
-    /// For the flatland preset (noise_octaves=0), surface is always
-    /// terrain_height_min=63 with grass everywhere — no biomes apply.
-    ///
-    /// The passes write into a dense block buffer (`DenseBlocks`), and the
-    /// buffer goes into the paletted store one time at the end. A write
+    /// The generator writes into a dense block buffer (`DenseBlocks`), and
+    /// the buffer goes into the paletted store one time at the end. A write
     /// through `setBlock` searches the palette and packs bits for each
     /// block, which is slow. The result replaces the old blocks of the chunk.
     ///
-    /// The surface height and the dominant biome of each column come from a
-    /// `ColumnCache`. The fill pass, the cave pass and the tree pass read the
-    /// same column, so the cache samples each column one time only.
-    ///
     /// Returns `!void` because the dense buffer and the paletted store
     /// allocate (out-of-memory is the only realistic failure mode).
-    pub fn generateTerrain(self: *Chunk, cx: i32, cz: i32, config: world_gen.WorldGenConfig) !void {
+    pub fn generateTerrain(self: *Chunk, cx: i32, cz: i32, config: content.GenConfig) !void {
         const t_fill_start = clock.nowNs();
         const dense = try self.allocator.create(DenseBlocks);
         defer self.allocator.destroy(dense);
-        fillTerrain(dense, cx, cz, config);
+        content.generate(dense, cx, cz, config);
         const t_fill_us = @divTrunc(clock.nowNs() - t_fill_start, 1000);
 
         // Pack the dense buffer into the paletted store, one time.
@@ -1245,8 +1166,8 @@ pub const Chunk = struct {
         const t_sky_start = clock.nowNs();
         try self.computeSkylight();
         const t_sky_us = @divTrunc(clock.nowNs() - t_sky_start, 1000);
-        // Block light: now seeds from glowstone emitters scattered during
-        // generation. The BFS propagates their light through nearby air cells.
+        // Block light: seeds from the emissive blocks of the generator. The
+        // BFS spreads their light through nearby air cells.
         try self.computeBlockLight();
 
         std.log.info("[GEN] chunk ({},{}) fill={}us sky={}us total={}us", .{
@@ -1254,163 +1175,6 @@ pub const Chunk = struct {
         });
     }
 };
-
-/// Write the blocks of chunk (cx, cz) into `dense`: the terrain fill, the
-/// glowstone, the caves and the trees. No light. The result depends only on
-/// the arguments (P2), so the `generate` stage (pipeline/stages.zig) and
-/// `Chunk.generateTerrain` give the same blocks.
-pub fn fillTerrain(dense: *DenseBlocks, cx: i32, cz: i32, config: world_gen.WorldGenConfig) void {
-    // The world seed, mixed for the hash functions. Seed 0 keeps the old terrain.
-    const key = config.seedKey();
-    @memset(dense, .air);
-    var columns: ColumnCache = .{ .cx = cx, .cz = cz, .config = config };
-
-    var x: i32 = 0;
-    while (x < CHUNK_W) : (x += 1) {
-        var z: i32 = 0;
-        while (z < CHUNK_W) : (z += 1) {
-            const wx = cx * CHUNK_W + x;
-            const wz = cz * CHUNK_W + z;
-
-            // For hilly terrain, use biome-blended height; flatland is always flat.
-            // The dominant biome selects the surface block. Flatland
-            // (noise_octaves == 0) is always plains, grass-only.
-            const column = columns.get(wx, wz);
-            const surface = column.height;
-            const biome = column.biome;
-
-            putDense(dense, x, 0, z, .bedrock);
-
-            switch (biome) {
-                .plains, .forest => {
-                    // Standard Minecraft layout: stone, 3× dirt, grass cap.
-                    var y: i32 = 1;
-                    while (y < surface - 3) : (y += 1) {
-                        putDense(dense, x, y, z, .stone);
-                    }
-                    y = @max(1, surface - 3);
-                    while (y < surface) : (y += 1) {
-                        putDense(dense, x, y, z, .dirt);
-                    }
-                    if (surface >= 1 and surface < CHUNK_H) {
-                        putDense(dense, x, surface, z, .grass);
-                    }
-                },
-                .badlands => {
-                    // Badlands: stone exposed all the way to the top — no dirt, no grass.
-                    // This gives the rocky/eroded mesa look.
-                    var y: i32 = 1;
-                    while (y <= surface and y < CHUNK_H) : (y += 1) {
-                        putDense(dense, x, y, z, .stone);
-                    }
-                },
-                .desert => {
-                    // Desert: stone base, 3 layers of sand below the surface, sand cap.
-                    var y: i32 = 1;
-                    while (y < surface - 3) : (y += 1) {
-                        putDense(dense, x, y, z, .stone);
-                    }
-                    y = @max(1, surface - 3);
-                    while (y <= surface and y < CHUNK_H) : (y += 1) {
-                        putDense(dense, x, y, z, .sand);
-                    }
-                },
-            }
-
-            // Scatter glowstone in the stone layer below Y=40 with
-            // ~0.2% probability per block. Uses a splitmix-style hash
-            // seeded from (wx, wz, y) for deterministic placement.
-            const glow_ceil: i32 = @min(40, surface - 4);
-            var gy: i32 = 2; // skip bedrock at Y=0, start above
-            while (gy < glow_ceil) : (gy += 1) {
-                const seed = @as(u32, @bitCast(wx)) *% 374761393 +%
-                    @as(u32, @bitCast(wz)) *% 668265263 +%
-                    @as(u32, @bitCast(gy)) *% 2654435761;
-                const h = world_gen.mixSeed((seed ^ (seed >> 16)) *% 0x45d9f3b, key);
-                if ((h & 0x1FF) == 0) { // ~1/512 chance
-                    putDense(dense, x, gy, z, .glowstone);
-                }
-            }
-        }
-    }
-
-    // Cave carver: run after terrain fill so we only carve into solid blocks.
-    // Only active for non-flat terrain (noise_octaves > 0).
-    if (config.noise_octaves > 0) {
-        var cx_idx: i32 = 0;
-        while (cx_idx < CHUNK_W) : (cx_idx += 1) {
-            var cz_idx: i32 = 0;
-            while (cz_idx < CHUNK_W) : (cz_idx += 1) {
-                const wx = cx * CHUNK_W + cx_idx;
-                const wz = cz * CHUNK_W + cz_idx;
-                const surface = columns.get(wx, wz).height;
-                // Carve from Y=4 (above bedrock zone) to surface-5 (preserve topsoil).
-                var wy: i32 = 4;
-                while (wy < surface - 4) : (wy += 1) {
-                    if (world_gen.shouldCarve(wx, wy, wz, key)) {
-                        putDense(dense, cx_idx, wy, cz_idx, .air);
-                    }
-                }
-            }
-        }
-    }
-
-    // Tree planter: place oak trees seeded from world coordinates.
-    // Searches a halo around the chunk so canopy from trees in adjacent
-    // chunks is correctly placed here as well.
-    // Only active for non-flat terrain AND only in forest biome columns.
-    if (config.noise_octaves > 0) {
-        var tree_wx: i32 = cx * CHUNK_W - TREE_SEARCH;
-        while (tree_wx < cx * CHUNK_W + CHUNK_W + TREE_SEARCH) : (tree_wx += 1) {
-            var tree_wz: i32 = cz * CHUNK_W - TREE_SEARCH;
-            while (tree_wz < cz * CHUNK_W + CHUNK_W + TREE_SEARCH) : (tree_wz += 1) {
-                if (!world_gen.isTreeCenter(tree_wx, tree_wz, key)) continue;
-
-                // Trees only spawn in forest biome — check the dominant biome
-                // at the tree's root column before placing it.
-                const tree_column = columns.get(tree_wx, tree_wz);
-                if (tree_column.biome != .forest) continue;
-
-                const tree_surface = tree_column.height;
-                const trunk_h = world_gen.treeHeight(tree_wx, tree_wz, key);
-                const trunk_base = tree_surface + 1;
-                const trunk_top = tree_surface + trunk_h;
-
-                // Place trunk — putDense ignores out-of-chunk coords silently.
-                var ty: i32 = trunk_base;
-                while (ty <= trunk_top) : (ty += 1) {
-                    const lx = tree_wx - cx * CHUNK_W;
-                    const lz = tree_wz - cz * CHUNK_W;
-                    if (getDense(dense, lx, ty, lz) == .air) {
-                        putDense(dense, lx, ty, lz, .wood);
-                    }
-                }
-
-                // Place spherical leaf canopy (radius ~3) around trunk top.
-                const CANOPY_R: i32 = 3;
-                var dy: i32 = -CANOPY_R;
-                while (dy <= CANOPY_R) : (dy += 1) {
-                    var dx: i32 = -CANOPY_R;
-                    while (dx <= CANOPY_R) : (dx += 1) {
-                        var dz: i32 = -CANOPY_R;
-                        while (dz <= CANOPY_R) : (dz += 1) {
-                            if (dx * dx + dy * dy + dz * dz > CANOPY_R * CANOPY_R) continue;
-                            // Don't overwrite trunk column blocks.
-                            if (dx == 0 and dz == 0 and dy <= 0) continue;
-                            const lx = tree_wx + dx - cx * CHUNK_W;
-                            const ly = trunk_top + dy;
-                            const lz = tree_wz + dz - cz * CHUNK_W;
-                            if (ly < 1 or ly >= CHUNK_H) continue;
-                            if (getDense(dense, lx, ly, lz) == .air) {
-                                putDense(dense, lx, ly, lz, .leaves);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// Type-erased block source. Allows player physics, raycasting, and the
 /// mesher to work with either a single Chunk (local coords) or a World
@@ -1439,7 +1203,7 @@ pub const BlockGetter = struct {
 
 test "computeSkylight gives the same values as the bucket-pass reference" {
     const a = std.testing.allocator;
-    const config = world_gen.presetConfig(.hilly);
+    const config: content.GenConfig = .{};
     var prng = std.Random.DefaultPrng.init(0x5eed);
     const r = prng.random();
     var case: usize = 0;
@@ -1456,7 +1220,7 @@ test "computeSkylight gives the same values as the bucket-pass reference" {
                 const x0 = r.intRangeLessThan(i32, 0, CHUNK_W);
                 const y0 = r.intRangeLessThan(i32, 20, 120);
                 const z0 = r.intRangeLessThan(i32, 0, CHUNK_W);
-                const block: BlockType = if (r.boolean()) .air else .stone;
+                const block: BlockType = if (r.boolean()) .air else .solid;
                 var x = x0;
                 while (x < @min(CHUNK_W, x0 + 5)) : (x += 1) {
                     var y = y0;
@@ -1481,7 +1245,7 @@ test "fromDense packs the same blocks as setBlock" {
     const a = std.testing.allocator;
     var prng = std.Random.DefaultPrng.init(0xb10c);
     const r = prng.random();
-    const kinds = [_]BlockType{ .stone, .dirt, .grass, .bedrock, .glowstone, .wood, .leaves, .sand };
+    const kinds = [_]BlockType{ .solid, .b3, .b4, .b5, .emitter, .b6, .b7, .b8 };
     // 0 kinds (all air), then 1 to 8 kinds: every palette width.
     for (0..kinds.len + 1) |n_kinds| {
         const dense = try a.create(DenseBlocks);
@@ -1533,9 +1297,4 @@ test "decode gives the value of get for each cell" {
             try std.testing.expectEqual(table[@backingInt(p.get(idx))], out[idx]);
         }
     }
-}
-
-test {
-    // Run the world_gen tests (the ring offset table).
-    _ = world_gen;
 }

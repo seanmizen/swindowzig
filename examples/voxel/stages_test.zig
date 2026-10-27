@@ -12,11 +12,13 @@
 //!   pure           a stage gives the same bytes from an allocator that
 //!                  fills each allocation with junk.
 const std = @import("std");
-const stages = @import("pipeline/stages.zig");
-const world_mod = @import("world.zig");
-const chunk_mod = @import("chunk.zig");
-const world_gen = @import("world_gen.zig");
-const mesher_mod = @import("mesher.zig");
+/// The demo world of the tests and the tools: the hilly preset.
+const hilly_config = @import("voxel_content").world_gen.presetConfig(.hilly);
+const stages = @import("sw_voxel").stages;
+const world_mod = @import("sw_voxel").world;
+const chunk_mod = @import("sw_voxel").chunk;
+const world_gen = @import("voxel_content").world_gen;
+const mesher_mod = @import("sw_voxel").mesher;
 
 const PalettedBlocks = chunk_mod.PalettedBlocks;
 const LightGrid = chunk_mod.LightGrid;
@@ -218,7 +220,7 @@ const JunkAllocator = struct {
 
 test "stages: generate gives the blocks of World.generateChunk for seed 0" {
     const a = std.testing.allocator;
-    var world = try world_mod.World.init(a, .hilly, 4);
+    var world = try world_mod.World.init(a, hilly_config, 4);
     defer world.deinit();
     var cx: i32 = -2;
     while (cx <= 2) : (cx += 1) {
@@ -287,7 +289,7 @@ fn checkLightAgainstWorld(a: std.mem.Allocator, seed: u64) !struct { usize, usiz
     prng.random().shuffle(usize, shuffled);
 
     for ([_][]const usize{ row, spiral, shuffled }) |order| {
-        var world = try world_mod.World.init(a, .hilly, 4);
+        var world = try world_mod.World.init(a, hilly_config, 4);
         defer world.deinit();
         world.gen_config.seed = seed;
         try loadWorld(&world, half, order);
@@ -334,7 +336,7 @@ test "stages: light gives the light of World.setBlock after edits" {
     const half: i32 = 2;
     var region = try Region.init(a, half);
     defer region.deinit();
-    var world = try world_mod.World.init(a, .hilly, 4);
+    var world = try world_mod.World.init(a, hilly_config, 4);
     defer world.deinit();
     const order = try identityOrder(a, region.blocks.len);
     defer a.free(order);
@@ -374,7 +376,7 @@ test "stages: mesh gives the quads of the greedy mesher through the World getter
     // inner 3×3 chunks read final light across each border.
     const a = std.testing.allocator;
     const half: i32 = 3;
-    var world = try world_mod.World.init(a, .hilly, 4);
+    var world = try world_mod.World.init(a, hilly_config, 4);
     defer world.deinit();
     const n: usize = @intCast((2 * half + 1) * (2 * half + 1));
     const order = try identityOrder(a, n);

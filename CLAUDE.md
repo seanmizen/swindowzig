@@ -104,13 +104,16 @@ swindowzig/
 │   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
 │   ├── sw_assets/      # loadBytes (async, native + fetch) and PNG decode (stb_image)
 │   ├── sw_text/        # TTF text (stb_truetype): atlas, measure, wrap, draw
-│   └── sw_ui/          # UI tree: layout, keyboard focus, semantic tree, drawing
+│   ├── sw_ui/          # UI tree: layout, keyboard focus, semantic tree, drawing
+│   └── sw_voxel/       # Voxel chunks: storage, light, greedy mesher, chunk pipeline
+│       ├── src/                 # Library. content.zig gives the content contract
+│       └── testing/content.zig  # Test content: numbered blocks, no game names
 ├── examples/
 │   ├── justabox/       # Default: single spinning colored box
 │   ├── windows/        # Triangle with mouse drag
 │   ├── flat2d/         # sw_gfx2d + sw_text + sw_ui demo: shapes, text, a keyboard menu
 │   ├── mipmaps/        # GPU mip levels, a texture array, anisotropic sampling. `--check` tests it
-│   └── voxel/          # Voxel chunk demo (16×256×16)
+│   └── voxel/          # Voxel demo on sw_voxel: content.zig, world_gen, renderer
 └── backends/
     └── wasm/           # Web platform boot + dev server
 ```
@@ -124,7 +127,8 @@ More rules load only when you touch matching files:
 - `.claude/rules/libs.md` loads for `libs/**`. It holds the WebGPU C
   ABI lessons, the enum-mismatch fixes, how to add a WebGPU feature, the core
   file map, and the event and context API.
-- `.claude/rules/voxel.md` loads for `examples/voxel/**`. It holds
+- `.claude/rules/voxel.md` loads for `examples/voxel/**` and
+  `libs/sw_voxel/**`. It holds the sw_voxel content contract,
   the voxel CLI flags, world loading, regression tests, anti-aliasing, the
   chunk pipeline, lighting, the GPU debug system, trackpad latency, and the voxel file
   map.
@@ -142,7 +146,8 @@ Zig 0.17 API in this code:
 - `var list: std.ArrayList(T) = .empty;` and pass the allocator per call.
 - Files, clocks, sleep, `Mutex` and `Condition` take a `std.Io`. Native
   `main(init: std.process.Init)` passes `init.io` to `sw.run`, and callbacks
-  get it as `ctx.io` (null on the web). The voxel perf logs use `clock.zig`.
+  get it as `ctx.io` (null on the web). The voxel perf logs use
+  `libs/sw_voxel/src/clock.zig`.
 - No `@cImport`: `build.zig` translates `libs/sw_platform/src/sdl.h` with
   `addTranslateC`. Only the native build gets the `sdl` module.
 - No `**` on arrays: use `@splat(value)`.

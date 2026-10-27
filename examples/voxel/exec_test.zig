@@ -18,16 +18,18 @@
 //!                stops (the Inline fallback). The Bun tests run the same
 //!                executor with real Web Workers.
 const std = @import("std");
-const stages = @import("pipeline/stages.zig");
-const protocol = @import("pipeline/protocol.zig");
-const scheduler_mod = @import("pipeline/scheduler.zig");
-const exec_inline = @import("pipeline/exec_inline.zig");
-const exec_threads = @import("pipeline/exec_threads.zig");
-const exec_web = @import("pipeline/exec_web.zig");
-const worker_world = @import("pipeline/worker_world.zig");
-const world_mod = @import("world.zig");
-const chunk_mod = @import("chunk.zig");
-const world_gen = @import("world_gen.zig");
+/// The demo world of the tests and the tools: the hilly preset.
+const hilly_config = @import("voxel_content").world_gen.presetConfig(.hilly);
+const stages = @import("sw_voxel").stages;
+const protocol = @import("sw_voxel").protocol;
+const scheduler_mod = @import("sw_voxel").scheduler;
+const exec_inline = @import("sw_voxel").exec_inline;
+const exec_threads = @import("sw_voxel").exec_threads;
+const exec_web = @import("sw_voxel").exec_web;
+const worker_world = @import("sw_voxel").worker_world;
+const world_mod = @import("sw_voxel").world;
+const chunk_mod = @import("sw_voxel").chunk;
+const world_gen = @import("voxel_content").world_gen;
 const test_recompute = @import("test_recompute.zig");
 
 const Scheduler = scheduler_mod.Scheduler;
@@ -259,7 +261,7 @@ fn equivalence(a: std.mem.Allocator, seed: u64, workers: usize) !void {
 
     var inl = try exec_inline.Inline.init(a, config, worker_world.DEFAULT_CACHE_LIMIT);
     defer inl.deinit();
-    var r1: Run(exec_inline.Inline) = .{ .world = try World.init(a, .hilly, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &inl };
+    var r1: Run(exec_inline.Inline) = .{ .world = try World.init(a, hilly_config, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &inl };
     defer r1.world.deinit();
     defer r1.sched.deinit();
     r1.world.gen_config = config;
@@ -268,7 +270,7 @@ fn equivalence(a: std.mem.Allocator, seed: u64, workers: usize) !void {
     var pool: exec_threads.ThreadPool = undefined;
     try pool.init(a, std.testing.io, workers, config, 8 << 20);
     defer pool.deinit();
-    var r2: Run(exec_threads.ThreadPool) = .{ .world = try World.init(a, .hilly, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &pool };
+    var r2: Run(exec_threads.ThreadPool) = .{ .world = try World.init(a, hilly_config, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &pool };
     defer r2.world.deinit();
     defer r2.sched.deinit();
     r2.world.gen_config = config;
@@ -306,7 +308,7 @@ test "exec: Inline and ThreadPool give the same bytes, with random edits while j
 
 test "exec: the pool stops with jobs in flight, and starts again for a new world" {
     const a = std.testing.allocator;
-    var world = try World.init(a, .hilly, 1);
+    var world = try World.init(a, hilly_config, 1);
     defer world.deinit();
     var sched = Scheduler.init(a, 1, .moore, .skylight);
     defer sched.deinit();
@@ -322,7 +324,7 @@ test "exec: the pool stops with jobs in flight, and starts again for a new world
 
     // A new world: seed 5. The old results do not matter.
     world.deinit();
-    world = try World.init(a, .hilly, 1);
+    world = try World.init(a, hilly_config, 1);
     world.gen_config.seed = 5;
     sched.deinit();
     sched = Scheduler.init(a, 1, .moore, .skylight);
@@ -605,7 +607,7 @@ fn webEquivalence(a: std.mem.Allocator, seed: u64, workers: usize, fault: WebFau
 
     var inl = try exec_inline.Inline.init(a, config, worker_world.DEFAULT_CACHE_LIMIT);
     defer inl.deinit();
-    var r1: Run(exec_inline.Inline) = .{ .world = try World.init(a, .hilly, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &inl };
+    var r1: Run(exec_inline.Inline) = .{ .world = try World.init(a, hilly_config, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &inl };
     defer r1.world.deinit();
     defer r1.sched.deinit();
     r1.world.gen_config = config;
@@ -614,7 +616,7 @@ fn webEquivalence(a: std.mem.Allocator, seed: u64, workers: usize, fault: WebFau
     defer pool.deinit();
     var web: WebRun = .{ .pool = &pool, .web = try exec_web.Web.init(a, pool.transport(), config, 8 << 20) };
     defer web.deinit();
-    var r2: Run(WebRun) = .{ .world = try World.init(a, .hilly, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &web };
+    var r2: Run(WebRun) = .{ .world = try World.init(a, hilly_config, R), .sched = Scheduler.init(a, R, .moore, .skylight), .exec = &web };
     defer r2.world.deinit();
     defer r2.sched.deinit();
     r2.world.gen_config = config;

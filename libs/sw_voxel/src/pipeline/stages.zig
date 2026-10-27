@@ -22,7 +22,7 @@
 const std = @import("std");
 const chunk_mod = @import("../chunk.zig");
 const mesher_mod = @import("../mesher.zig");
-const world_gen = @import("../world_gen.zig");
+const content = @import("../content.zig");
 
 const BlockType = chunk_mod.BlockType;
 const PalettedBlocks = chunk_mod.PalettedBlocks;
@@ -103,7 +103,7 @@ pub const Inputs = struct {
 pub fn generate(
     allocator: std.mem.Allocator,
     seed: u64,
-    config: world_gen.WorldGenConfig,
+    config: content.GenConfig,
     cx: i32,
     cz: i32,
 ) !PalettedBlocks {
@@ -111,7 +111,7 @@ pub fn generate(
     cfg.seed = seed;
     const dense = try allocator.create(chunk_mod.DenseBlocks);
     defer allocator.destroy(dense);
-    chunk_mod.fillTerrain(dense, cx, cz, cfg);
+    content.generate(dense, cx, cz, cfg);
     return PalettedBlocks.fromDense(allocator, dense);
 }
 
@@ -553,3 +553,26 @@ const HoodGetter = struct {
         };
     }
 };
+
+test "generate gives the blocks of the content generator for each seed" {
+    const a = std.testing.allocator;
+    const config: content.GenConfig = .{};
+    var one = try generate(a, 1, config, 2, -3);
+    defer one.deinit(a);
+    var again = try generate(a, 1, config, 2, -3);
+    defer again.deinit(a);
+    var other = try generate(a, 2, config, 2, -3);
+    defer other.deinit(a);
+    const dense = try a.create(chunk_mod.DenseBlocks);
+    defer a.destroy(dense);
+    var with_seed = config;
+    with_seed.seed = 1;
+    content.generate(dense, 2, -3, with_seed);
+    var differ = false;
+    for (0..chunk_mod.BLOCKS_PER_CHUNK) |i| {
+        try std.testing.expectEqual(dense[i], one.get(i));
+        try std.testing.expectEqual(one.get(i), again.get(i));
+        differ = differ or one.get(i) != other.get(i);
+    }
+    try std.testing.expect(differ);
+}
