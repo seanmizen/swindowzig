@@ -35,6 +35,13 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
   `models.zig` makes the tables at comptime. A block with no model is a
   full cube. For AO, a block with a model is the same as a full cube.
   For light, it has the opacity of its block ID.
+- The content can give the collision boxes of a block ID:
+  `collision(block)` returns a slice of `sw_voxel.collision.CellBox` or
+  null (REQ-VOXEL-006). With null, air has no box and all other blocks are
+  full cubes. `collision.zig` has `moveBox` (one axis at a time, with a
+  step-up), `raycast` (a DDA, REQ-VOXEL-007) and `CameraRayTest` (the
+  wall stop of the `sw_math` camera). The demo player and its ray cast do
+  not use them yet.
 - The content can give tint colours (REQ-VOXEL-009): `tint(block,
   tint_index, x, y, z) [3]u8` (a pure function), and `tintIndex(block,
   face) i8` for the faces of full cubes (comptime). A model quad takes

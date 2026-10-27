@@ -49,6 +49,8 @@
 | [`REQ-VOXEL-003`](voxel.md#req-voxel-003--the-content-gives-the-opacity-and-the-emission-of-each-block) | The content gives the opacity and the emission of each block | active | functional | P1 | agent:SWZ-32 |
 | [`REQ-VOXEL-004`](voxel.md#req-voxel-004--sky-light-falls-straight-down-without-loss) | Sky light falls straight down without loss | active | functional | P1 | agent:SWZ-32 |
 | [`REQ-VOXEL-005`](voxel.md#req-voxel-005--an-edit-updates-the-light-incrementally) | An edit updates the light incrementally | active | quality | P1 | agent:SWZ-32 |
+| [`REQ-VOXEL-006`](voxel.md#req-voxel-006--a-moving-box-stops-at-the-collision-boxes-of-the-blocks) | A moving box stops at the collision boxes of the blocks | active | functional | P2 | agent:SWZ-51 |
+| [`REQ-VOXEL-007`](voxel.md#req-voxel-007--a-voxel-ray-cast-gives-the-first-block-its-face-and-the-distance) | A voxel ray cast gives the first block, its face and the distance | active | functional | P2 | agent:SWZ-51 |
 | [`REQ-VOXEL-008`](voxel.md#req-voxel-008--each-corner-gets-ao-and-smooth-light) | Each corner gets AO and smooth light | active | functional | P2 | agent:SWZ-33 |
 | [`REQ-VOXEL-009`](voxel.md#req-voxel-009--the-content-gives-the-tint-colours) | The content gives the tint colours | active | functional | P2 | agent:SWZ-33 |
 | [`REQ-VOXEL-010`](voxel.md#req-voxel-010--greedy-meshing-merges-only-equal-faces) | Greedy meshing merges only equal faces | active | functional | P2 | agent:SWZ-33 |
@@ -101,6 +103,8 @@ graph TD
   REQ_VOXEL_003["REQ-VOXEL-003<br/>The content gives the opacity and the emission of each block"]
   REQ_VOXEL_004["REQ-VOXEL-004<br/>Sky light falls straight down without loss"]
   REQ_VOXEL_005["REQ-VOXEL-005<br/>An edit updates the light incrementally"]
+  REQ_VOXEL_006["REQ-VOXEL-006<br/>A moving box stops at the collision boxes of the blocks"]
+  REQ_VOXEL_007["REQ-VOXEL-007<br/>A voxel ray cast gives the first block, its face and the distance"]
   REQ_VOXEL_008["REQ-VOXEL-008<br/>Each corner gets AO and smooth light"]
   REQ_VOXEL_009["REQ-VOXEL-009<br/>The content gives the tint colours"]
   REQ_VOXEL_010["REQ-VOXEL-010<br/>Greedy meshing merges only equal faces"]
@@ -122,6 +126,7 @@ graph TD
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
   REQ_VOXEL_004 -->|refines| REQ_VOXEL_003
   REQ_VOXEL_005 -->|depends-on| REQ_VOXEL_003
+  REQ_VOXEL_007 -->|depends-on| REQ_VOXEL_006
   REQ_VOXEL_008 -->|depends-on| REQ_VOXEL_003
   REQ_VOXEL_009 -->|refines| REQ_VOXEL_001
   REQ_VOXEL_010 -->|refines| REQ_VOXEL_008
@@ -140,5 +145,6 @@ graph TD
 - `REQ-GPU-014` — refined-by REQ-GPU-015
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-009
 - `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005, required-by REQ-VOXEL-008
+- `REQ-VOXEL-006` — required-by REQ-VOXEL-007
 - `REQ-VOXEL-008` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-009` — refined-by REQ-VOXEL-010

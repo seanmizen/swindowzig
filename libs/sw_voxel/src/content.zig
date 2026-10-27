@@ -59,6 +59,19 @@
 //!       slab or a plant a low opacity, so that the face of a full cube
 //!       next to it gets light.
 //!
+//! The content module can declare the collision boxes of its blocks
+//! (REQ-VOXEL-006). With no declaration, `air` has no box and every other
+//! block is a full cube:
+//!
+//!   pub fn collision(block: Block) ?[]const sw_voxel.collision.CellBox
+//!       The collision boxes of `block` in block units, or null for the
+//!       default. Each box must be in the cell: [0, 1] on each axis. An
+//!       empty slice gives a block with no collision, for example a plant.
+//!       `air` must give null or an empty slice. sw_voxel calls it at
+//!       comptime for each block type, so the result must be
+//!       comptime-known. The collision boxes are separate from the model.
+//!       The moving boxes and the ray cast of `collision.zig` use them.
+//!
 //! The content module can declare tint colours (REQ-VOXEL-009). With no
 //! declaration, no quad has a tint:
 //!
@@ -86,6 +99,7 @@
 const std = @import("std");
 const c = @import("sw_voxel_content");
 const model_mod = @import("model.zig");
+const collision_mod = @import("collision.zig");
 
 pub const Block = c.Block;
 pub const GenConfig = c.GenConfig;
@@ -115,6 +129,12 @@ pub inline fn opacity(block: Block) u8 {
 /// the mesher uses the tables of `models.zig`.
 pub fn model(comptime block: Block) ?*const model_mod.BakedModel {
     return if (@hasDecl(c, "model")) c.model(block) else null;
+}
+
+/// The collision boxes of `block`, or null for the default (REQ-VOXEL-006).
+/// Comptime only: `collision.zig` makes a table.
+pub fn collision(comptime block: Block) ?[]const collision_mod.CellBox {
+    return if (@hasDecl(c, "collision")) c.collision(block) else null;
 }
 
 /// True when the content gives tint colours (REQ-VOXEL-009).

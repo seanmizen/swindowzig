@@ -108,6 +108,11 @@ declare -a RUNS=(
 # chunks do not depend on timing (docs/chunk-pipeline.md).
 COMMON_ARGS="--debug=off"
 
+# Each run has a time limit. A run takes about 20 s on the CI runner, so a
+# run that takes more time than this is a hang. coreutils `timeout` stops
+# it with exit code 124, and the script shows TIMEOUT and the log end.
+RUN_TIMEOUT="${RUN_TIMEOUT:-120}"
+
 PASS=0; FAIL=0; MISS=0
 
 # Pretty-print header
@@ -115,8 +120,13 @@ printf "\n== headless voxel regressions — backend: %s ==\n\n" "$BACKEND"
 printf "%-28s %-9s %s\n" "TEST" "STATUS" "NOTES"
 printf "%-28s %-9s %s\n" "----" "------" "-----"
 
+TOTAL=${#RUNS[@]}
+INDEX=0
 for entry in "${RUNS[@]}"; do
     IFS='|' read -r name tas_path args max_diff_pct max_channel_delta <<< "$entry"
+    INDEX=$((INDEX + 1))
+    # Show the run before it starts, so the CI log shows where a hang stopped.
+    echo "[${INDEX}/${TOTAL}] ${name}: running (time limit ${RUN_TIMEOUT} s)"
     out_ppm="${TMP_DIR}/${name}.ppm"
     out_log="${TMP_DIR}/${name}.log"
     golden_gz="${GOLDENS_DIR}/${name}.ppm.gz"
@@ -125,7 +135,7 @@ for entry in "${RUNS[@]}"; do
     if [[ $UPDATE -eq 1 ]]; then
         # Regenerate the golden for this backend.
         # shellcheck disable=SC2086
-        if ! "$BIN" --headless --tas "$tas_path" --dump-frame="$out_ppm" $COMMON_ARGS $args > "$out_log" 2>&1; then
+        if ! timeout "$RUN_TIMEOUT" "$BIN" --headless --tas "$tas_path" --dump-frame="$out_ppm" $COMMON_ARGS $args > "$out_log" 2>&1; then
             printf "%-28s %-9s %s\n" "$name" "ERROR" "capture crashed — see $out_log"
             tail -n 15 "$out_log" | sed 's/^/    /'
             FAIL=$((FAIL + 1))
@@ -155,7 +165,7 @@ for entry in "${RUNS[@]}"; do
     # Compare mode.
     set +e
     # shellcheck disable=SC2086
-    "$BIN" --headless \
+    timeout "$RUN_TIMEOUT" "$BIN" --headless \
         --tas "$tas_path" \
         --dump-frame="$out_ppm" \
         --compare-golden="$golden_plain" \
@@ -173,6 +183,11 @@ for entry in "${RUNS[@]}"; do
         1)
             stats=$(grep -E "differing px|max Δ|mean Δ" "$out_log" | tr '\n' ' ' | sed 's/  */ /g')
             printf "%-28s %-9s %s\n" "$name" "FAIL" "$stats"
+            FAIL=$((FAIL + 1))
+            ;;
+        124)
+            printf "%-28s %-9s %s\n" "$name" "TIMEOUT" "voxel ran more than ${RUN_TIMEOUT} s — see $out_log"
+            tail -n 15 "$out_log" | sed 's/^/    /'
             FAIL=$((FAIL + 1))
             ;;
         *)
