@@ -226,7 +226,13 @@ pub const InputSnapshot = struct {
     mouse: MouseState = .{},
     wheel: WheelState = .{},
     keyboard: KeyboardState = .{},
+    /// The modifiers of this tick. When a key goes down in this tick, they
+    /// are the modifiers of that key press (the last one). So a short
+    /// Shift+Tab, with each key up in the same tick, keeps its Shift
+    /// (REQ-INPUT-007).
     mods: Modifiers = .{},
+    /// The modifiers after the last event. The next tick starts from them.
+    live_mods: Modifiers = .{},
     text: TextBuffer = .{},
     /// Text in composition now, or empty. Replaced by each `text_composition`
     /// event, and not cleared per tick: it stays until the composition ends.
@@ -246,6 +252,8 @@ pub const InputSnapshot = struct {
     /// Update snapshot from events for a tick (called internally by swindowzig).
     pub fn updateFromEvents(self: *InputSnapshot, events: []const Event) void {
         // Clear per-frame state
+        self.mods = self.live_mods;
+        var press_mods: ?Modifiers = null;
         self.keyboard.pressed = .empty;
         self.keyboard.released = .empty;
         self.mouse.pressed = .empty;
@@ -298,6 +306,7 @@ pub const InputSnapshot = struct {
                         if (k.down) {
                             if (!self.keyboard.down.isSet(code)) {
                                 self.keyboard.pressed.set(code);
+                                press_mods = k.mods;
                             }
                             self.keyboard.down.set(code);
                         } else {
@@ -365,11 +374,15 @@ pub const InputSnapshot = struct {
                 else => {},
             }
         }
+        self.live_mods = self.mods;
+        if (press_mods) |m| self.mods = m;
     }
 
-    /// Is this key currently held down?
+    /// Is this key held down in this tick? A key that goes down and up in
+    /// the same tick is down for that tick, so a short press is not lost
+    /// (REQ-INPUT-007).
     pub fn keyDown(self: *const InputSnapshot, key: KeyCode) bool {
-        return self.keyboard.isKeyDown(key);
+        return self.keyboard.isKeyDown(key) or self.keyboard.isKeyPressed(key);
     }
 
     /// Was this key just pressed this tick? (goes from up to down)
@@ -430,6 +443,34 @@ test "InputSnapshot key events" {
     try std.testing.expect(snapshot.keyDown(.Space));
     try std.testing.expect(snapshot.keyPressed(.Space));
     try std.testing.expect(!snapshot.keyReleased(.Space));
+}
+
+fn keyEvent(key: KeyCode, down: bool, mods: Modifiers) Event {
+    return Event.init(0, 0, 0, .{ .key = .{ .keycode = key, .scancode = 0, .down = down, .repeat = false, .mods = mods } });
+}
+
+test "InputSnapshot keeps a key press shorter than one tick (REQ-INPUT-007)" {
+    var snapshot = InputSnapshot.init();
+    // Shift+Tab: all four events arrive in one tick.
+    snapshot.updateFromEvents(&.{
+        keyEvent(.Shift, true, .{ .shift = true }),
+        keyEvent(.Tab, true, .{ .shift = true }),
+        keyEvent(.Tab, false, .{ .shift = true }),
+        keyEvent(.Shift, false, .{}),
+    });
+    try std.testing.expect(snapshot.keyPressed(.Tab));
+    try std.testing.expect(snapshot.keyDown(.Tab));
+    try std.testing.expect(snapshot.keyReleased(.Tab));
+    try std.testing.expect(snapshot.mods.shift);
+    // The next tick has no event: the key is up, and Shift is up.
+    snapshot.updateFromEvents(&.{});
+    try std.testing.expect(!snapshot.keyDown(.Tab));
+    try std.testing.expect(!snapshot.keyPressed(.Tab));
+    try std.testing.expect(!snapshot.mods.shift);
+    // A tick with no key press has the modifiers of its last event.
+    snapshot.updateFromEvents(&.{keyEvent(.Alt, true, .{ .alt = true })});
+    snapshot.updateFromEvents(&.{keyEvent(.Alt, false, .{})});
+    try std.testing.expect(!snapshot.mods.alt);
 }
 
 test "InputSnapshot mouse events" {

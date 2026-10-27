@@ -5,10 +5,33 @@
 
 import { expect, type Page, test } from '@playwright/test';
 
+/**
+ * Wait for `n` animation frames. The loader runs one game frame in each
+ * animation frame, so the game gets the events from before the wait.
+ */
+async function frames(page: Page, n = 3): Promise<void> {
+  await page.evaluate(
+    (count) =>
+      new Promise<void>((resolve) => {
+        let left = count;
+        const step = () => {
+          left -= 1;
+          if (left <= 0) resolve();
+          else requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      }),
+    n,
+  );
+}
+
 async function press(page: Page, key: string): Promise<void> {
-  // A delay between the key down and the key up, so that the game sees the
-  // key in a tick.
-  await page.keyboard.press(key, { delay: 50 });
+  // The game keeps a press that is shorter than one tick (REQ-INPUT-007).
+  // Two presses of one key in one tick are one press, so the test waits
+  // for game frames after each press. SwiftShader draws a few frames each
+  // second, and a fixed delay is not sufficient.
+  await page.keyboard.press(key);
+  await frames(page);
 }
 
 /** Open flat2d, and wait for its UI. Returns the page errors. */
@@ -48,6 +71,7 @@ test('the text field copies to the system clipboard and pastes from it', async (
   // The focus starts on the first list item. Tab three times to the field.
   for (let i = 0; i < 3; i++) await press(page, 'Tab');
   await page.keyboard.type('hello', { delay: 30 });
+  await frames(page);
   await expect(field).toHaveValue('hello');
 
   // Copy: the system clipboard gets the text (REQ-PLATFORM-002).
@@ -133,5 +157,36 @@ test('the canvas follows the device pixel ratio', async ({ page }) => {
     mobile: false,
   });
   await expect.poll(async () => (await size()).width).toBe(before.css * 2);
+  expect(errors).toEqual([]);
+});
+
+test('flat2d draws frames on a working canvas', async ({ page }) => {
+  // Count the canvas textures that the page gets: one for each frame. In
+  // the headless shell with no GL for the compositor, WebGPU stops on the
+  // first frame, and the count stays at 1 or 0.
+  await page.addInitScript(() => {
+    const hooks = window as unknown as { swCanvasFrames: number };
+    hooks.swCanvasFrames = 0;
+    let current: GPUTexture | null = null;
+    const get = GPUCanvasContext.prototype.getCurrentTexture;
+    GPUCanvasContext.prototype.getCurrentTexture = function () {
+      const t = get.call(this);
+      if (t !== current) hooks.swCanvasFrames++;
+      current = t;
+      return t;
+    };
+  });
+  const gpuErrors: string[] = [];
+  page.on('console', (m) => {
+    if (m.type() === 'error' && /webgpu|GPU/i.test(m.text()))
+      gpuErrors.push(m.text());
+  });
+  const errors = await openFlat2d(page);
+  const count = () =>
+    page.evaluate(
+      () => (window as unknown as { swCanvasFrames: number }).swCanvasFrames,
+    );
+  await expect.poll(count, { timeout: 15_000 }).toBeGreaterThan(5);
+  expect(gpuErrors).toEqual([]);
   expect(errors).toEqual([]);
 });

@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 11. Skipped: 3. Not started: 1.
+- Done: 12. Skipped: 3. Not started: 0.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -14,7 +14,8 @@ ticket of #102, in the order of the batch.
     test (under `xvfb-run`) and the lavapipe golden comparison
     (`run_headless_regressions.sh`) ran here. Their results are in each
     entry.
-  - The browser tests (`yarn test:browser`) did not run.
+  - The browser tests ran only for #92, with a local Playwright config (see
+    that entry).
   - `apps/action` and `apps/voxel.seanmizen.com` in seanorepo use the copy
     of swindowzig in `utils/swindowzig`. The batch did not build them.
 
@@ -388,3 +389,50 @@ ticket of #102, in the order of the batch.
 - Requirements: REQ-GPU-012 (a second test)
 - Open questions: none.
 - Risks: none.
+
+## #92 the flat2d browser tests lose key presses
+
+- Status: done
+- Commit: see `git log --grep SWZ-92`
+- What changed:
+  - Cause: a slow frame puts each event of the frame in one tick. A short
+    Shift+Tab or Alt+M then has the modifier up after the key, and the
+    snapshot gave the modifiers of the last event: no Shift, no Alt. Also,
+    two presses of one key in one tick are one press.
+  - `InputSnapshot` gives the modifiers of the last key press of the tick,
+    and `keyDown` is true for a key that went down and up in the tick. The
+    next tick starts from the modifiers after the last event.
+  - The flat2d project of `playwright.config.ts` uses the SwiftShader
+    arguments of the canvas test.
+  - The `press` helper of `a11y.pw.ts` and `platform.pw.ts` waits for 3
+    animation frames after each press, not a fixed 50 ms.
+  - New test: "flat2d draws frames on a working canvas" counts the canvas
+    textures, and fails on a WebGPU console error.
+- What ran (Chromium headless shell 1243, SwiftShader):
+  - Before the fix, with the SwiftShader arguments: "a browser with no
+    pointer lock does not stop the game" failed (Alt+M lost).
+  - With the input fix only: 2 of 10 runs failed (the 3 Tabs before the
+    text field).
+  - With the input fix and the frame waits: 10 of 10 runs passed, 7 tests
+    each. The canvas test of justabox passed.
+  - `zig build test` and the voxel gate passed. Goldens 10 passed.
+- Not run here:
+  - CI. The cloud sandbox has Playwright 1.64.1 and the browsers of an
+    earlier version, so the runs here used a local config that names the
+    browser path. The local config is not in the commit.
+  - In this sandbox, the headless shell draws flat2d also without the
+    SwiftShader arguments (238 frames in 4 s). So the new canvas test did
+    not fail here without the arguments. On CI, it must show the stop on
+    the first frame.
+- Expected changes:
+  - quad hash: no change
+  - goldens: none
+- CI changes needed: to show "10 times in sequence", run
+  `yarn test:browser --project flat2d --repeat-each=10` one time in CI.
+  The workflow is not changed.
+- Requirements: REQ-INPUT-007
+- Open questions: should `keyPressed` count the presses of one key in one
+  tick? A game that reads a count (for example a fast double tap) needs it.
+- Risks: `keyDown` changes for a press shorter than one tick. Before, the
+  game saw no key down. Now it sees the key down for one tick. A replay of
+  an old recording with such a press can play differently.
