@@ -26,6 +26,10 @@ pub const core_types = struct {
     pub const FixedStepTimeline = core.FixedStepTimeline;
     pub const Bus = core.Bus;
     pub const InputSnapshot = core.InputSnapshot;
+    pub const ActionMap = core.ActionMap;
+    pub const Binding = core.Binding;
+    pub const BindingCapture = core.BindingCapture;
+    pub const MouseSettings = core.MouseSettings;
 };
 
 /// Platform backend types (internal use).

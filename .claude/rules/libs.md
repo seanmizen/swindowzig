@@ -170,6 +170,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_core/src/event.zig` | `Event` union — all input/system event variants |
 | `libs/sw_core/src/bus.zig` | Event bus: push/subscribe per tick |
 | `libs/sw_core/src/input.zig` | Keyboard/mouse snapshot, edge detection |
+| `libs/sw_core/src/action.zig` | `ActionMap(Action)`: game actions with default bindings (keys, mouse buttons, modifiers), rebinding, `BindingCapture` for a rebind menu, `MouseSettings` (sensitivity, invert). `update(ctx.input())` once per tick (REQ-INPUT-003). A new input kind is a new `Source` member |
 | `libs/sw_core/src/record.zig` | Record events to a TAS file |
 | `libs/sw_core/src/replay.zig` | Replay events from a TAS file |
 | `libs/sw_core/src/tas.zig` | TAS file format (parse/write) |
@@ -181,6 +182,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_gpu/src/mipmap.zig` | `MipmapGenerator`: makes mip levels with render passes, native and web (REQ-GPU-001, REQ-GPU-002) |
 | `libs/sw_platform/src/native_sdl.zig` | SDL2 window + event pump (native path). `initStorage` opens the per-user save directory |
 | `libs/sw_platform/src/storage.zig` | Local key-value saves: `storageGet`/`storageSet`/`storageDelete`. Keys `[a-z0-9_-]`, 64 max. Native: files. Web: localStorage via `backends/wasm/storage.ts` |
+| `libs/sw_platform/src/input_settings.zig` | `save`/`load` an `ActionMap` (bindings and mouse settings) through storage. Text that it cannot read keeps the defaults (REQ-INPUT-004) |
 | `libs/sw_math/src/mat4.zig` | 4×4 matrix: `perspective()`, `lookAt()`, multiply |
 | `libs/sw_math/src/vec3.zig` | Vec3 ops. `vec2.zig` and `vec4.zig` have the same ops. `Mat4.mulVec4` multiplies a Vec4 |
 | `libs/sw_math/src/quat.zig` | `Quat`: `fromAxisAngle`, `mul`, `rotate`, `slerp`, `toMat4` (same rotation direction as `Mat4.rotationX/Y/Z`) |
