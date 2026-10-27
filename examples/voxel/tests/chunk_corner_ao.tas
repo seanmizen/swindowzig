@@ -33,23 +33,23 @@
 
 # --- Walk left (−X) toward the chunk boundary at x=16 ---
 # Hold A for ~30 ticks to cross from x≈24 to x≈16
-5  key_down a
-35 key_up a
+5  keydown A
+35 keyup A
 
 # --- Dig once to open a hole at the boundary ---
 37 mouse_down left
 38 mouse_up left
 
 # --- Walk a little further to straddle the boundary, dig again ---
-40 key_down a
-48 key_up a
+40 keydown A
+48 keyup A
 50 mouse_down left
 51 mouse_up left
 
 # --- Step back and look at the pit from an angle so the AO on the pit walls
 #     (including the corner where both chunks meet) is visible ---
-53 key_down s
-60 key_up s
+53 keydown S
+60 keyup S
 62 mouse_move 0 -60
 63 mouse_move 4 0
 64 mouse_move 4 0
