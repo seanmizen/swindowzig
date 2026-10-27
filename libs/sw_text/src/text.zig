@@ -2,10 +2,17 @@
 //! time a string uses them (at one size), and a string is a run of textured
 //! quads. Coordinates are logical pixels with the origin at the top left, as in
 //! sw_gfx2d.
+//!
+//! A renderer has a chain of faces (TrueType or bitmap fonts). Each code point
+//! draws with the first face that has a glyph for it. The Unicode
+//! bidirectional algorithm (`bidi.zig`) puts each line in visual order before
+//! the renderer draws it.
 
 const std = @import("std");
 const gfx = @import("sw_gfx2d");
 const atlas = @import("atlas.zig");
+const bidi = @import("bidi.zig");
+const face_mod = @import("face.zig");
 const font_mod = @import("font.zig");
 const layout = @import("layout.zig");
 const utf8 = @import("utf8.zig");
@@ -18,6 +25,10 @@ pub const Style = struct {
     /// pixels.
     size: f32 = 16,
     color: gfx.Color = gfx.Color.white,
+    /// The base direction of each paragraph. `auto` takes it from the first
+    /// strong letter. The text is always drawn from `x` to the right: the
+    /// direction changes the order of mixed text, not the alignment.
+    direction: bidi.Direction = .auto,
 };
 
 /// Width and height of the atlas textures. A glyph larger than this is not
@@ -32,6 +43,7 @@ const border = 1;
 const size_steps_per_pixel = 4;
 
 const Key = struct {
+    face: u32,
     glyph: u32,
     size: u32,
 };
@@ -60,7 +72,8 @@ const Page = struct {
 
 pub const TextRenderer = struct {
     alloc: std.mem.Allocator,
-    font: font_mod.Font,
+    /// The font chain. The first face gives the line height and the baseline.
+    faces: std.ArrayList(face_mod.Face) = .empty,
     /// Device pixels for each logical pixel. Set it each frame with
     /// `setDpiScale`, from `ctx.window().dpi_scale`.
     dpi_scale: f32 = 1,
@@ -70,7 +83,45 @@ pub const TextRenderer = struct {
     /// Read the font. The bytes of the .ttf file must stay valid until
     /// `deinit`. No glyph is drawn yet: glyphs are added as strings use them.
     pub fn init(alloc: std.mem.Allocator, font_bytes: []const u8) !TextRenderer {
-        return .{ .alloc = alloc, .font = try font_mod.Font.init(alloc, font_bytes) };
+        return initFace(alloc, .{ .truetype = try font_mod.Font.init(alloc, font_bytes) });
+    }
+
+    /// Use a bitmap font (a glyph sheet and a width table) as the first face.
+    /// Draw and measure as with a TrueType font.
+    pub fn initBitmap(alloc: std.mem.Allocator, desc: face_mod.BitmapFont.Desc) !TextRenderer {
+        return initFace(alloc, .{ .bitmap = try face_mod.BitmapFont.init(alloc, desc) });
+    }
+
+    /// Use `face` as the first face. The renderer owns it from now on.
+    pub fn initFace(alloc: std.mem.Allocator, face: face_mod.Face) !TextRenderer {
+        var self: TextRenderer = .{ .alloc = alloc };
+        var f = face;
+        self.faces.append(alloc, f) catch |err| {
+            f.deinit();
+            return err;
+        };
+        return self;
+    }
+
+    /// Add a TrueType font to the end of the chain: it draws the code points
+    /// that the faces before it do not have. The bytes must stay valid until
+    /// `deinit`.
+    pub fn addFont(self: *TextRenderer, font_bytes: []const u8) !void {
+        try self.addFace(.{ .truetype = try font_mod.Font.init(self.alloc, font_bytes) });
+    }
+
+    /// Add a bitmap font to the end of the chain.
+    pub fn addBitmapFont(self: *TextRenderer, desc: face_mod.BitmapFont.Desc) !void {
+        try self.addFace(.{ .bitmap = try face_mod.BitmapFont.init(self.alloc, desc) });
+    }
+
+    /// Add a face to the end of the chain. The renderer owns it from now on.
+    pub fn addFace(self: *TextRenderer, face: face_mod.Face) !void {
+        var f = face;
+        self.faces.append(self.alloc, f) catch |err| {
+            f.deinit();
+            return err;
+        };
     }
 
     /// Free the CPU memory. The atlas textures belong to the `gfx.Renderer`
@@ -79,7 +130,8 @@ pub const TextRenderer = struct {
         for (self.pages.items) |page| self.alloc.free(page.pixels);
         self.pages.deinit(self.alloc);
         self.glyphs.deinit(self.alloc);
-        self.font.deinit();
+        for (self.faces.items) |*f| f.deinit();
+        self.faces.deinit(self.alloc);
     }
 
     pub fn setDpiScale(self: *TextRenderer, dpi_scale: f32) void {
@@ -91,8 +143,8 @@ pub const TextRenderer = struct {
         return self.glyphs.count();
     }
 
-    fn metrics(self: *const TextRenderer, size: f32) font_mod.Metrics {
-        return .{ .font = &self.font, .size = size };
+    fn metrics(self: *const TextRenderer, size: f32) face_mod.ChainMetrics {
+        return .{ .faces = self.faces.items, .size = size };
     }
 
     /// The distance between two baselines at `size`.
@@ -118,7 +170,13 @@ pub const TextRenderer = struct {
         var line_y = y;
         var lines = std.mem.splitScalar(u8, text, '\n');
         while (lines.next()) |line| {
-            try self.drawLine(r, line, x, line_y, style);
+            if (style.direction != .rtl and bidi.isLeftToRight(line)) {
+                try self.drawLogical(r, line, x, line_y, style);
+            } else {
+                var visual = try bidi.visual(self.alloc, line, style.direction);
+                defer visual.deinit(self.alloc);
+                try self.drawCodepoints(r, visual.codepoints, x, line_y, style);
+            }
             line_y += m.lineHeight();
         }
         try self.upload(r);
@@ -139,10 +197,23 @@ pub const TextRenderer = struct {
         const m = self.metrics(style.size);
         const lines = try layout.wrap(self.alloc, m, text, max_width);
         defer self.alloc.free(lines);
+        // Resolve the levels of each whole paragraph, then reorder each
+        // wrapped line on its own (UAX #9 section 3.4).
+        var paragraphs: ?bidi.Paragraphs = null;
+        if (style.direction == .rtl or !bidi.isLeftToRight(text)) {
+            paragraphs = try bidi.Paragraphs.init(self.alloc, text, style.direction);
+        }
+        defer if (paragraphs) |*p| p.deinit();
         var line_y = y;
         var width: f32 = 0;
         for (lines) |line| {
-            try self.drawLine(r, text[line.start..line.end], x, line_y, style);
+            if (paragraphs) |*p| {
+                var visual = try p.line(self.alloc, line.start, line.end);
+                defer visual.deinit(self.alloc);
+                try self.drawCodepoints(r, visual.codepoints, x, line_y, style);
+            } else {
+                try self.drawLogical(r, text[line.start..line.end], x, line_y, style);
+            }
             line_y += m.lineHeight();
             width = @max(width, line.width);
         }
@@ -150,61 +221,80 @@ pub const TextRenderer = struct {
         return .{ .w = width, .h = m.lineHeight() * @as(f32, @floatFromInt(lines.len)) };
     }
 
-    fn drawLine(self: *TextRenderer, r: *gfx.Renderer, line: []const u8, x: f32, y: f32, style: Style) !void {
-        const m = self.metrics(style.size);
-        const v = self.font.vmetrics(style.size);
-        const dpi = self.dpi_scale;
-        const baseline = y + v.ascent;
-        const device_size = style.size * dpi;
-        var pen = x;
-
+    /// Draw UTF-8 text that is already in visual order.
+    fn drawLogical(self: *TextRenderer, r: *gfx.Renderer, line: []const u8, x: f32, y: f32, style: Style) !void {
+        var pen = Pen.init(self, x, y, style);
         var it = utf8.Iterator.init(line);
-        while (it.next()) |item| {
-            const cp = item.codepoint;
-            const advance = m.advance(cp);
-            defer pen += advance;
-            if (cp <= ' ' or (cp >= 0x7F and cp < 0xA0)) continue;
+        while (it.next()) |item| try self.drawCodepoint(r, &pen, item.codepoint, style);
+    }
 
-            const glyph_index = self.font.glyphIndex(cp);
-            if (glyph_index == 0) {
-                // The font has no glyph: draw a box, so the gap is visible.
-                const box_h = v.ascent * 0.8;
-                try r.strokeRect(.{
-                    .x = pen + advance * 0.1,
-                    .y = baseline - box_h,
-                    .w = advance * 0.8,
-                    .h = box_h,
-                }, @max(1, style.size / 16), style.color);
-                continue;
-            }
+    /// Draw code points from left to right.
+    fn drawCodepoints(self: *TextRenderer, r: *gfx.Renderer, codepoints: []const u21, x: f32, y: f32, style: Style) !void {
+        var pen = Pen.init(self, x, y, style);
+        for (codepoints) |cp| try self.drawCodepoint(r, &pen, cp, style);
+    }
 
-            const g = (try self.glyphFor(r, glyph_index, device_size)) orelse continue;
-            if (g.w == 0 or g.h == 0) continue;
-            const page = self.pages.items[g.page];
-            // Put the glyph on whole device pixels, so it stays sharp.
-            const left = @round(pen * dpi) + @as(f32, @floatFromInt(g.x_off));
-            const top = @round(baseline * dpi) + @as(f32, @floatFromInt(g.y_off));
-            const w: f32 = @floatFromInt(g.w);
-            const h: f32 = @floatFromInt(g.h);
-            try r.drawTexture(
-                page.texture,
-                .{ .x = left / dpi, .y = top / dpi, .w = w / dpi, .h = h / dpi },
-                .{ .x = @floatFromInt(g.x), .y = @floatFromInt(g.y), .w = w, .h = h },
-                style.color,
-            );
+    const Pen = struct {
+        x: f32,
+        baseline: f32,
+        ascent: f32,
+
+        fn init(self: *const TextRenderer, x: f32, y: f32, style: Style) Pen {
+            const ascent = if (self.faces.items.len > 0) self.faces.items[0].vmetrics(style.size).ascent else style.size;
+            return .{ .x = x, .baseline = y + ascent, .ascent = ascent };
         }
+    };
+
+    fn drawCodepoint(self: *TextRenderer, r: *gfx.Renderer, pen: *Pen, cp: u21, style: Style) !void {
+        const m = self.metrics(style.size);
+        const dpi = self.dpi_scale;
+        if (cp <= ' ' or (cp >= 0x7F and cp < 0xA0)) {
+            pen.x += m.advance(cp);
+            return;
+        }
+
+        const hit = m.find(cp) orelse {
+            const advance = m.advance(cp);
+            defer pen.x += advance;
+            if (bidi.isFormat(cp)) return;
+            // No face has a glyph: draw a box, so the gap is visible.
+            const box_h = pen.ascent * 0.8;
+            try r.strokeRect(.{
+                .x = pen.x + advance * 0.1,
+                .y = pen.baseline - box_h,
+                .w = advance * 0.8,
+                .h = box_h,
+            }, @max(1, style.size / 16), style.color);
+            return;
+        };
+
+        defer pen.x += self.faces.items[hit.face].advance(hit.glyph, style.size);
+        const g = (try self.glyphFor(r, hit, style.size * dpi)) orelse return;
+        if (g.w == 0 or g.h == 0) return;
+        const page = self.pages.items[g.page];
+        // Put the glyph on whole device pixels, so it stays sharp.
+        const left = @round(pen.x * dpi) + @as(f32, @floatFromInt(g.x_off));
+        const top = @round(pen.baseline * dpi) + @as(f32, @floatFromInt(g.y_off));
+        const w: f32 = @floatFromInt(g.w);
+        const h: f32 = @floatFromInt(g.h);
+        try r.drawTexture(
+            page.texture,
+            .{ .x = left / dpi, .y = top / dpi, .w = w / dpi, .h = h / dpi },
+            .{ .x = @floatFromInt(g.x), .y = @floatFromInt(g.y), .w = w, .h = h },
+            style.color,
+        );
     }
 
     /// The atlas entry for a glyph at a size, drawn into the atlas on first
     /// use. Null if the glyph does not fit in a page.
-    fn glyphFor(self: *TextRenderer, r: *gfx.Renderer, glyph_index: u32, device_size: f32) !?Glyph {
+    fn glyphFor(self: *TextRenderer, r: *gfx.Renderer, hit: face_mod.Hit, device_size: f32) !?Glyph {
         const steps: f32 = @round(device_size * size_steps_per_pixel);
-        const key: Key = .{ .glyph = glyph_index, .size = @intFromFloat(@max(steps, 1)) };
+        const key: Key = .{ .face = hit.face, .glyph = hit.glyph, .size = @intFromFloat(@max(steps, 1)) };
         if (self.glyphs.get(key)) |g| return g;
 
         const px = @as(f32, @floatFromInt(key.size)) / size_steps_per_pixel;
-        const scale = self.font.scale(px);
-        const box = self.font.bitmapBox(glyph_index, scale);
+        const face = &self.faces.items[hit.face];
+        const box = face.bitmapBox(hit.glyph, px);
         var g: Glyph = .{
             .page = 0,
             .x = 0,
@@ -218,7 +308,7 @@ pub const TextRenderer = struct {
             const coverage = try self.alloc.alloc(u8, @as(usize, g.w) * g.h);
             defer self.alloc.free(coverage);
             @memset(coverage, 0);
-            self.font.render(glyph_index, scale, box, coverage);
+            face.render(hit.glyph, px, box, coverage);
 
             const spot = (try self.reserve(r, g.w + 2 * border, g.h + 2 * border)) orelse return null;
             g.page = spot.page;
@@ -278,3 +368,61 @@ pub const TextRenderer = struct {
         }
     }
 };
+
+const testing = std.testing;
+
+// Lato, from examples/flat2d/assets (SIL Open Font License). build.zig adds
+// it as the "test_font" import.
+const test_font_bytes = @embedFile("test_font");
+
+/// A 2x1 sheet of 4x4 cells, all set: 'A' and U+4E2D.
+fn testBitmapDesc(pixels: []const u8) face_mod.BitmapFont.Desc {
+    return .{
+        .sheet = .{ .pixels = pixels, .width = 8, .height = 4, .format = .alpha8 },
+        .cell_width = 4,
+        .cell_height = 4,
+        .codepoints = &.{ 'A', 0x4E2D },
+        .widths = &.{ 3, 4 },
+    };
+}
+
+test "a bitmap font measures with the same API as a TrueType font" {
+    const px: [32]u8 = @splat(255);
+    var t = try TextRenderer.initBitmap(testing.allocator, testBitmapDesc(&px));
+    defer t.deinit();
+    // Size 8 is a scale of 2: 'A' is 6 wide and U+4E2D is 8 wide.
+    const size = t.measure("AA\u{4E2D}", 8);
+    try testing.expectEqual(@as(f32, 20), size.w);
+    try testing.expectEqual(@as(f32, 8), size.h);
+    try testing.expectEqual(@as(f32, 8), t.lineHeight(8));
+    // The sheet has no space: it is as wide as the missing box (0.6 em).
+    const wrapped = try t.measureWrapped("A A A", 8, 17);
+    try testing.expectEqual(@as(f32, 16), wrapped.h);
+}
+
+test "a fallback face measures the code points the first face lacks" {
+    const px: [32]u8 = @splat(255);
+    var t = try TextRenderer.init(testing.allocator, test_font_bytes);
+    defer t.deinit();
+    const before = t.measure("\u{4E2D}", 16).w;
+    try t.addBitmapFont(testBitmapDesc(&px));
+    try testing.expectEqual(@as(usize, 2), t.faces.items.len);
+    // Lato has no U+4E2D: the bitmap face gives its width (4 at scale 4).
+    try testing.expectEqual(@as(f32, 16), t.measure("\u{4E2D}", 16).w);
+    try testing.expect(before != 16);
+    // Lato still draws 'A', and the line height is Lato's.
+    var lato = try font_mod.Font.init(testing.allocator, test_font_bytes);
+    defer lato.deinit();
+    try testing.expectApproxEqAbs(lato.advance(lato.glyphIndex('A'), 16), t.measure("A", 16).w, 0.001);
+    const m: font_mod.Metrics = .{ .font = &lato, .size = 16 };
+    try testing.expectApproxEqAbs(m.lineHeight(), t.lineHeight(16), 0.001);
+}
+
+test "a second TrueType font can be added to the chain" {
+    var t = try TextRenderer.init(testing.allocator, test_font_bytes);
+    defer t.deinit();
+    try t.addFont(test_font_bytes);
+    try testing.expectEqual(@as(usize, 2), t.faces.items.len);
+    try testing.expectError(error.InvalidFont, t.addFont(""));
+    try testing.expectEqual(@as(usize, 2), t.faces.items.len);
+}

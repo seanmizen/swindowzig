@@ -238,10 +238,12 @@ pub fn build(b: *std.Build) void {
         // sw_gfx2d: the batching and the projection maths have no GPU code.
         "libs/sw_gfx2d/src/batch.zig",
         "libs/sw_gfx2d/src/projection.zig",
-        // sw_text: UTF-8, measuring and wrapping, and the atlas packer.
+        // sw_text: UTF-8, measuring and wrapping, the atlas packer and the
+        // bidirectional algorithm.
         "libs/sw_text/src/utf8.zig",
         "libs/sw_text/src/layout.zig",
         "libs/sw_text/src/atlas.zig",
+        "libs/sw_text/src/bidi.zig",
         // sw_ui: the tree, layout, focus and semantic tree have no GPU or font
         // code. draw.zig is built with the examples.
         "libs/sw_ui/src/ui.zig",
@@ -279,19 +281,29 @@ pub fn build(b: *std.Build) void {
     }
 
     // sw_text font tests: they read a real font through stb_truetype (C).
-    const font_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("libs/sw_text/src/font.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    addStbTruetype(b, font_tests.root_module);
-    font_tests.root_module.addAnonymousImport("test_font", .{
-        .root_source_file = b.path("examples/flat2d/assets/Lato-Regular.ttf"),
-    });
-    test_step.dependOn(&b.addRunArtifact(font_tests).step);
+    // text.zig also needs sw_gfx2d, but its tests use no GPU.
+    const font_test_files = [_][]const u8{
+        "libs/sw_text/src/font.zig",
+        "libs/sw_text/src/bitmap_font.zig",
+        "libs/sw_text/src/face.zig",
+        "libs/sw_text/src/text.zig",
+    };
+    inline for (font_test_files) |file| {
+        const font_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        addStbTruetype(b, font_tests.root_module);
+        font_tests.root_module.addAnonymousImport("test_font", .{
+            .root_source_file = b.path("examples/flat2d/assets/Lato-Regular.ttf"),
+        });
+        font_tests.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
+        test_step.dependOn(&b.addRunArtifact(font_tests).step);
+    }
 
     // Mesher benchmark (no GPU): zig build bench-mesher -Doptimize=ReleaseFast
     const bench_mesher = b.addExecutable(.{

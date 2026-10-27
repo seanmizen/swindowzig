@@ -176,8 +176,10 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_gfx2d/src/batch.zig` | 2D shapes to vertices, indices and draw calls (no GPU code, unit tested) |
 | `libs/sw_gfx2d/src/projection.zig` | Pixel projection, origin top left, and `dpi_scale` maths |
 | `libs/sw_gfx2d/src/renderer.zig` | `Renderer`: pipeline, buffers, textures, `updateTexture`, `flush` into a render pass |
-| `libs/sw_text/src/text.zig` | `TextRenderer`: glyph atlas pages filled on first use, `draw`, `drawWrapped`, `measure` |
+| `libs/sw_text/src/text.zig` | `TextRenderer`: glyph atlas pages filled on first use, `draw`, `drawWrapped`, `measure`. A font chain (`addFont`, `addBitmapFont`, `initBitmap`). Each line goes through `bidi` before it is drawn |
 | `libs/sw_text/src/font.zig` | TTF reader over stb_truetype (`stb_impl.c`). stb allocates through function pointers that this file sets, so it builds for WASM |
+| `libs/sw_text/src/bitmap_font.zig`, `face.zig` | `BitmapFont`: a glyph sheet in equal cells and a width table. `Face` is a TTF or a bitmap font. `ChainMetrics` finds the first face that has a code point |
+| `libs/sw_text/src/bidi.zig` | The Unicode bidirectional algorithm (UAX #9): levels, line reordering, mirroring. It passes all of `BidiTest.txt` and `BidiCharacterTest.txt`. Data in `bidi_tables.zig`, made by `libs/sw_text/tools/gen_bidi_tables.py`. No Arabic shaping |
 | `libs/sw_text/src/layout.zig` | Measuring and wrapping for any metrics type (no font, no GPU, unit tested) |
 | `libs/sw_text/src/utf8.zig`, `atlas.zig` | UTF-8 decoder (bad bytes give U+FFFD) and the shelf packer for the atlas |
 | `libs/sw_ui/src/ui.zig` | `Ui`: immediate-mode tree (row, column, text, button, list, list item, text field, image), small layout (fixed, fit, fill, padding, gap, alignment), keyboard focus, events, and the semantic tree. No GPU or font code, unit tested |
