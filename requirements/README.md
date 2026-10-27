@@ -68,6 +68,7 @@ Prefixes are globally unique. Add a row when you add a file.
 | `AUDIO` | `requirements/audio.md` | Sound output from `sw_audio`: the waveform API, samples, streams, the mixer and 3D sound |
 | `GPU` | `requirements/gpu.md` | Textures, samplers and other resources of `sw_gpu` |
 | `INPUT` | `requirements/input.md` | Keyboard, mouse and wheel input from the platform backends |
+| `VOXEL` | `requirements/voxel.md` | Chunk storage, meshing and the chunk pipeline of `sw_voxel` |
 
 ---
 

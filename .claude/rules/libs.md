@@ -201,7 +201,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_ui/src/web_mirror.zig` | Encodes the semantic tree for the web screen-reader mirror (`backends/wasm/a11y.ts`), and sends it only when it changes |
 | `libs/sw_app/src/web_entry.zig` | `exportWeb`: the `swindowzig_init` and `swindowzig_frame` exports for an app that uses `sw.run`. `webLogFn` for `std.log` on wasm |
 | `libs/sw_ui/src/draw.zig` | Draws the tree with sw_gfx2d and sw_text, with a focus ring. `measurer(&text_renderer)` gives the UI its text size |
-| `libs/sw_voxel/src/sw_voxel.zig` | Voxel chunks: storage, light, greedy mesher, World, frustum, chunk pipeline. The game gives the module `sw_voxel_content` (`content.zig` has the contract). `.claude/rules/voxel.md` has the file map |
+| `libs/sw_voxel/src/sw_voxel.zig` | Voxel chunks: storage, light, greedy mesher and model mesher, World, frustum, chunk pipeline. The game gives the module `sw_voxel_content` (`content.zig` has the contract). `.claude/rules/voxel.md` has the file map |
 | `libs/sw_assets/src/assets.zig` | `loadBytes(allocator, path_or_url)` returns a `Request`. `request.poll()` gives `.pending`, `.bytes` or `.failed`, and never waits. Native: a thread reads a file in the base directory (`useDirectory`/`useDirectoryPath`), and an `http(s)://` URL fails with `UnsupportedUrl`. Web: `fetch` through `backends/wasm/assets.ts` |
 | `libs/sw_assets/src/png.zig` | `decodePng(allocator, bytes)` gives RGBA8 `Image`. It calls stb_image (`libs/sw_assets/c/`, licence in `THIRD_PARTY_NOTICES.md`) |
 | `libs/sw_gfx2d` `Renderer.createTextureFromPng` | Decode PNG bytes and upload them as a texture |

@@ -1,5 +1,8 @@
 const std = @import("std");
 const chunk_mod = @import("chunk.zig");
+const model_mod = @import("model.zig");
+const section_mod = @import("section.zig");
+const models = @import("models.zig");
 const gpu_mod = @import("sw_gpu");
 const Chunk = chunk_mod.Chunk;
 const BlockType = chunk_mod.BlockType;
@@ -24,7 +27,8 @@ pub const VoxelVertex = extern struct {
 };
 
 /// The mesh of one chunk, in the GPU format: one 16-byte PackedQuad per quad,
-/// and the y range of the quads. The upload writes `quads` to the GPU as it
+/// and the y range of the quads. The greedy quads come first, then the model
+/// quad records (see "Model quad records" below). The upload writes `quads` to the GPU as it
 /// is. The mesher makes the GPU format directly, so a mesh can cross a
 /// thread or worker boundary with no conversion.
 pub const Mesh = struct {
@@ -86,7 +90,7 @@ const BlockPos = struct { x: i32, y: i32, z: i32 };
 // Face data
 // ---------------------------------------------------------------------------
 
-const Face = enum { px, nx, py, ny, pz, nz };
+const Face = model_mod.Face;
 
 const face_normals = [_][3]f32{
     .{ 1, 0, 0 }, // +X
@@ -106,9 +110,11 @@ const face_offsets = [_][3]i32{
     .{ 0, 0, -1 }, // -Z
 };
 
-/// Fast face-render check. For neighbours within this chunk's bounds (~92% of cases),
-/// uses direct array access. Only falls back to the world getter for out-of-bounds
-/// neighbours (chunk boundaries), enabling correct cross-chunk face culling.
+/// Fast face-render check: true when the neighbour in the face direction is
+/// not a full cube (air or a block with a model). For neighbours within this
+/// chunk's bounds (~92% of cases), uses direct array access. Only falls back
+/// to the world getter for out-of-bounds neighbours (chunk boundaries),
+/// enabling correct cross-chunk face culling.
 fn shouldRenderFace(chunk: *const Chunk, getter: BlockGetter, lx: i32, ly: i32, lz: i32, world_ox: i32, world_oz: i32, face: Face) bool {
     const offset = face_offsets[@backingInt(face)];
     const nx = lx + offset[0];
@@ -117,10 +123,10 @@ fn shouldRenderFace(chunk: *const Chunk, getter: BlockGetter, lx: i32, ly: i32, 
     // Fast path: neighbour is within this chunk (paletted bounds-free read,
     // no HashMap). resolveBlockRaw skips the bounds check we just did.
     if (nx >= 0 and nx < CHUNK_W and ny >= 0 and ny < CHUNK_H and nz >= 0 and nz < CHUNK_W) {
-        return chunk.resolveBlockRaw(nx, ny, nz) == .air;
+        return !models.isCube(chunk.resolveBlockRaw(nx, ny, nz));
     }
     // Slow path: neighbour in adjacent chunk — world HashMap lookup
-    return getter.getBlock(world_ox + nx, ny + MIN_Y, world_oz + nz) == .air;
+    return !models.isCube(getter.getBlock(world_ox + nx, ny + MIN_Y, world_oz + nz));
 }
 
 // ---------------------------------------------------------------------------
@@ -1233,11 +1239,11 @@ const RowBits = struct {
 };
 
 /// Every visible face of a chunk, as bit masks: for each face direction and
-/// column (x, z), bit y is set when the block at (x, y, z) is not air and its
-/// neighbour in the face direction is air. Inside the chunk the masks come
+/// column (x, z), bit y is set when the block at (x, y, z) is a full cube and
+/// its neighbour in the face direction is not (air or a block with a model). Inside the chunk the masks come
 /// from the solid masks of the column and its neighbour column (or the column
 /// shifted by one for the y faces). At the chunk edge, the neighbour is in
-/// another chunk: shouldRenderFace asks the getter, for solid blocks only.
+/// another chunk: shouldRenderFace asks the getter, for full cubes only.
 /// The result is the same as shouldRenderFace for every block, so the greedy
 /// pass computes cells only where a face is visible.
 const VisibleFaces = struct {
@@ -1255,7 +1261,7 @@ const VisibleFaces = struct {
     fn compute(allocator: std.mem.Allocator, chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32) !*VisibleFaces {
         const self = try allocator.create(VisibleFaces);
         var solid: [CHUNK_W][CHUNK_W]Col = undefined;
-        chunk.solidColumns(&solid);
+        chunk.cubeColumns(&solid);
 
         for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
             const s = solid[x][z];
@@ -1390,8 +1396,11 @@ const VisibleFaces = struct {
 /// masks). The per-call allocation is acceptable because the AO and sky samples
 /// cost much more.
 ///
-/// This is the only mesher. The quads go into `mesh.quads` as PackedQuad,
-/// and `mesh.y_min` / `mesh.y_max` get the y range of the quads.
+/// The greedy quads go into `mesh.quads` as PackedQuad, and `mesh.y_min` /
+/// `mesh.y_max` get the y range of the quads. Then the model mesher adds a
+/// record for each visible quad of each block with a model (REQ-VOXEL-001).
+/// With no model block in the chunk, it adds nothing, so a chunk of full
+/// cubes gives the same bytes as before the model mesher.
 pub fn generateMesh(
     chunk: *const Chunk,
     mesh: *Mesh,
@@ -1540,7 +1549,107 @@ pub fn generateMesh(
             }
         }
     }
+    try generateModelQuads(chunk, mesh, world_ox, world_oz, getter, lighting_mode);
     std.log.info("[MESH greedy: {} quads]", .{mesh.quadCount()});
+}
+
+// ---------------------------------------------------------------------------
+// Model meshing (REQ-VOXEL-001)
+// ---------------------------------------------------------------------------
+
+/// True when the neighbour of local cell (lx, ly, lz) in direction `face` is
+/// a full cube, so it hides a quad with that cull face (REQ-VOXEL-002).
+fn neighbourIsCube(chunk: *const Chunk, getter: BlockGetter, lx: i32, ly: i32, lz: i32, world_ox: i32, world_oz: i32, face: Face) bool {
+    return !shouldRenderFace(chunk, getter, lx, ly, lz, world_ox, world_oz, face);
+}
+
+/// Add a model quad record for each visible quad of each block with a
+/// model. It reads only the cell of the block and its 6 neighbours, so the
+/// mesh stage stays in its bounded neighbourhood.
+fn generateModelQuads(
+    chunk: *const Chunk,
+    mesh: *Mesh,
+    world_ox: i32,
+    world_oz: i32,
+    getter: BlockGetter,
+    lighting_mode: LightingMode,
+) !void {
+    if (!models.any) return;
+    for (&chunk.blocks.sections, 0..) |*sec, s| {
+        // Skip a section with no model block in its palette.
+        const has = for (sec.palette()) |b| {
+            if (models.hasModel(b)) break true;
+        } else false;
+        if (!has) continue;
+        const y0: i32 = @intCast(s * section_mod.SIZE);
+        var x: i32 = 0;
+        while (x < CHUNK_W) : (x += 1) {
+            var y: i32 = y0;
+            while (y < y0 + section_mod.SIZE) : (y += 1) {
+                var z: i32 = 0;
+                while (z < CHUNK_W) : (z += 1) {
+                    const block = chunk.resolveBlockRaw(x, y, z);
+                    if (!models.hasModel(block)) continue;
+                    try emitModelBlock(chunk, mesh, world_ox, world_oz, getter, lighting_mode, x, y, z, block);
+                }
+            }
+        }
+    }
+}
+
+fn emitModelBlock(
+    chunk: *const Chunk,
+    mesh: *Mesh,
+    world_ox: i32,
+    world_oz: i32,
+    getter: BlockGetter,
+    lighting_mode: LightingMode,
+    lx: i32,
+    ly: i32,
+    lz: i32,
+    block: BlockType,
+) !void {
+    const r = models.range(block);
+    const wx = world_ox + lx;
+    const wz = world_oz + lz;
+    for (r.first..@as(usize, r.first) + r.count) |qi| {
+        const q = models.quads[qi];
+        if (q.cull_face) |cf| {
+            if (neighbourIsCube(chunk, getter, lx, ly, lz, world_ox, world_oz, cf)) continue;
+        }
+        // The light of the neighbour cell in the light direction of the
+        // quad, the same for the 4 corners. A block with a model stops
+        // light, so its own cell is dark. The block light also takes the
+        // emission of the block itself, as on a greedy face.
+        const off = face_offsets[@backingInt(q.face)];
+        const sky: f32, const bl: f32 = switch (lighting_mode) {
+            .none => .{ 1.0, 0.0 },
+            .skylight => .{
+                @as(f32, @floatFromInt(skylightSample(chunk, getter, world_ox, world_oz, wx + off[0], ly + off[1], wz + off[2]))) /
+                    @as(f32, @floatFromInt(chunk_mod.MAX_SKYLIGHT)),
+                @as(f32, @floatFromInt(@max(
+                    blockLightSample(chunk, getter, world_ox, world_oz, wx + off[0], ly + off[1], wz + off[2]),
+                    blockLightSample(chunk, getter, world_ox, world_oz, wx, ly, wz),
+                ))) / @as(f32, @floatFromInt(chunk_mod.MAX_BLOCK_LIGHT)),
+            },
+        };
+        const rec = packModelQuad(
+            .{ @intCast(lx), @intCast(ly), @intCast(lz) },
+            @intCast(qi),
+            @backingInt(block),
+            @splat(1.0),
+            @splat(sky),
+            @splat(bl),
+        );
+        var y_lo: f32 = q.pos[0][1];
+        var y_hi: f32 = q.pos[0][1];
+        for (q.pos[1..]) |p| {
+            y_lo = @min(y_lo, p[1]);
+            y_hi = @max(y_hi, p[1]);
+        }
+        const base: f32 = @floatFromInt(MIN_Y + ly);
+        try mesh.addQuad(rec, base + y_lo, base + y_hi);
+    }
 }
 
 // ============================================================================
@@ -1562,6 +1671,18 @@ pub fn generateMesh(
 //   column of 256 cells or less. Bits 24-31: 0.
 // ao = field / 42, sky = field / 60, block light = field / 60. Every value the
 // mesher makes is one of these ratios, so the decode gives the same f32.
+//
+// Model quad records (REQ-VOXEL-001). A record of a model quad is also 16
+// bytes in the same stream, after the greedy quads. Bit 31 of word 3 is 1 in
+// a model record and 0 in a greedy quad. A model record has the layout of a
+// greedy quad, but word 0 bits 16-31 hold the index of the quad in
+// `models.gpu_table` in place of the face, W and H:
+//   word 0: cell x (4) | cell y bits 0-7 (8) | cell z (4) | model quad index (16)
+//   words 1-3: the 12 light fields, as above
+//   word 3, bits 12-19: block type. Bits 20-23: cell y bits 8-11. Bit 31: 1.
+// The shader reads the corners, the texture coordinates, the face, the tint
+// index and the shade flag of the quad from the table. A world of full cubes
+// has no model records, so its bytes do not change.
 
 pub const PackedQuad = [4]u32;
 
@@ -1634,19 +1755,69 @@ fn packQuad(face: Face, cell: [3]u32, w: u32, h: u32, block_type: u32, ao: [4]f3
     return q;
 }
 
+/// Bit 31 of word 3: set in a model quad record.
+pub const MODEL_RECORD_BIT: u32 = 1 << 31;
+
+/// True when `q` is a model quad record, not a greedy quad.
+pub fn isModelRecord(q: PackedQuad) bool {
+    return q[3] & MODEL_RECORD_BIT != 0;
+}
+
+/// The index in `models.quads` (and `models.gpu_table`) of a model record.
+pub fn modelQuadIndex(q: PackedQuad) u16 {
+    return @intCast(q[0] >> 16);
+}
+
+/// Pack one model quad record. `cell` is the local block of the model, and
+/// the light values are per corner of the baked quad.
+fn packModelQuad(cell: [3]u32, quad_index: u16, block_type: u32, ao: [4]f32, sky: [4]f32, bl: [4]f32) PackedQuad {
+    // The light fields, the block type and the high y bits are in the same
+    // place as in a greedy quad.
+    var q = packQuad(.px, cell, 1, 1, block_type, ao, sky, bl);
+    q[0] = (q[0] & 0xFFFF) | (@as(u32, quad_index) << 16);
+    q[3] |= MODEL_RECORD_BIT;
+    return q;
+}
+
 /// The local y of the cell of a packed quad.
 pub fn cellY(q: PackedQuad) u32 {
     return ((q[0] >> 4) & 0xFF) | (((q[3] >> 20) & 0xF) << 8);
 }
 
-/// Decode corner `corner` (0..3) of a packed quad, in world coordinates.
-/// Mirrors vs_chunk.
+/// Decode corner `corner` (0..3) of a packed quad or a model quad record,
+/// in world coordinates. Mirrors vs_chunk.
 pub fn unpackCorner(q: PackedQuad, corner: usize, world_ox: i32, world_oz: i32) VoxelVertex {
     const cell = [3]i32{
         @intCast(q[0] & 0xF),
         @intCast(cellY(q)),
         @intCast((q[0] >> 12) & 0xF),
     };
+    const field = struct {
+        fn get(qq: PackedQuad, i: usize) u32 {
+            return (qq[1 + i / 5] >> @intCast(6 * (i % 5))) & 0x3F;
+        }
+    }.get;
+    if (models.any and isModelRecord(q)) {
+        const mq = models.quads[modelQuadIndex(q)];
+        const p = mq.pos;
+        const e1 = [3]f32{ p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2] };
+        const e2 = [3]f32{ p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2] };
+        const n = [3]f32{ e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+        const len = @sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        return .{
+            .pos = .{
+                @as(f32, @floatFromInt(cell[0] + world_ox)) + p[corner][0],
+                @as(f32, @floatFromInt(cell[1] + MIN_Y)) + p[corner][1],
+                @as(f32, @floatFromInt(cell[2] + world_oz)) + p[corner][2],
+            },
+            .normal = .{ n[0] / len, n[1] / len, n[2] / len },
+            .block_type = (q[3] >> 12) & 0xFF,
+            .uv = mq.uv[corner],
+            .ao = @as(f32, @floatFromInt(field(q, corner))) / AO_STEPS,
+            .skylight = @as(f32, @floatFromInt(field(q, 4 + corner))) / LIGHT_STEPS,
+            .block_light = @as(f32, @floatFromInt(field(q, 8 + corner))) / LIGHT_STEPS,
+        };
+    }
     const face: u3 = @intCast((q[0] >> 16) & 0x7);
     const w: f32 = @floatFromInt(((q[0] >> 19) & 0xF) + 1);
     const h: f32 = @floatFromInt(((q[0] >> 23) & 0xFF) + 1);
@@ -1659,11 +1830,6 @@ pub fn unpackCorner(q: PackedQuad, corner: usize, world_ox: i32, world_oz: i32) 
     if (fl.positive) pos[fl.normal_axis] += 1;
     pos[fl.i_axis] += @as(f32, @floatFromInt(fl.pos[corner][0])) * w;
     pos[fl.j_axis] += @as(f32, @floatFromInt(fl.pos[corner][1])) * h;
-    const field = struct {
-        fn get(qq: PackedQuad, i: usize) u32 {
-            return (qq[1 + i / 5] >> @intCast(6 * (i % 5))) & 0x3F;
-        }
-    }.get;
     return .{
         .pos = pos,
         .normal = face_normals[face],
@@ -1801,4 +1967,186 @@ test "faces at the bottom and the top of the column" {
     try std.testing.expectEqual(@as(usize, 6), high);
     try std.testing.expectEqual(@as(f32, MIN_Y), mesh.y_min);
     try std.testing.expectEqual(@as(f32, MIN_Y + CHUNK_H), mesh.y_max);
+}
+
+/// Count the greedy quads and the model records of a mesh.
+fn countRecords(mesh: *const Mesh) struct { greedy: usize, model: usize } {
+    var greedy: usize = 0;
+    var model: usize = 0;
+    for (mesh.quads.items) |q| {
+        if (isModelRecord(q)) model += 1 else greedy += 1;
+    }
+    return .{ .greedy = greedy, .model = model };
+}
+
+/// Mesh `chunk` at the origin with the test getter (air outside).
+fn meshAlone(chunk: *Chunk, mesh: *Mesh) !void {
+    try chunk.computeSkylight();
+    try chunk.computeBlockLight();
+    const tg = TestGetter{ .chunk = chunk, .ox = 0, .oz = 0 };
+    try generateMesh(chunk, mesh, 0, 0, tg.getter(), .classic, .skylight);
+}
+
+test "a chunk of full cubes has no model records (REQ-VOXEL-001)" {
+    const allocator = std.testing.allocator;
+    var chunk = try testHillChunk(allocator);
+    defer chunk.deinit();
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try meshAlone(&chunk, &mesh);
+    try std.testing.expect(mesh.quadCount() > 0);
+    try std.testing.expectEqual(@as(usize, 0), countRecords(&mesh).model);
+}
+
+test "a block with a model gets model records and no greedy faces (REQ-VOXEL-001)" {
+    const allocator = std.testing.allocator;
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
+    // b19 is the half block of the test content: 6 quads.
+    try chunk.setBlock(5, 70, 6, .b19);
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try meshAlone(&chunk, &mesh);
+    const n = countRecords(&mesh);
+    try std.testing.expectEqual(@as(usize, 0), n.greedy);
+    try std.testing.expectEqual(@as(usize, 6), n.model);
+    try std.testing.expectEqual(@as(f32, MIN_Y + 70), mesh.y_min);
+    try std.testing.expectEqual(@as(f32, MIN_Y + 70.5), mesh.y_max);
+
+    // Each record decodes to the corners and the texture coordinates of
+    // its baked quad, moved to the cell, with the light of the neighbour
+    // in the light direction: open sky here.
+    const r = models.range(.b19);
+    for (mesh.quads.items) |q| {
+        const qi = modelQuadIndex(q);
+        try std.testing.expect(qi >= r.first and qi < r.first + r.count);
+        const baked = models.quads[qi];
+        for (0..4) |c| {
+            const v = unpackCorner(q, c, 0, 0);
+            try std.testing.expectEqual(@as(u32, @backingInt(BlockType.b19)), v.block_type);
+            try std.testing.expectEqual(5 + baked.pos[c][0], v.pos[0]);
+            try std.testing.expectEqual(@as(f32, MIN_Y + 70) + baked.pos[c][1], v.pos[1]);
+            try std.testing.expectEqual(6 + baked.pos[c][2], v.pos[2]);
+            try std.testing.expectEqual(baked.uv[c], v.uv);
+            try std.testing.expectEqual(face_normals[@backingInt(baked.face)], v.normal);
+            try std.testing.expectEqual(@as(f32, 1.0), v.ao);
+            // The half block stops light, so the cell under it gets the
+            // sky light from the side: one level less.
+            const sky: f32 = if (baked.face == .ny) 14.0 / 15.0 else 1.0;
+            try std.testing.expectEqual(sky, v.skylight);
+            try std.testing.expectEqual(@as(f32, 0.0), v.block_light);
+        }
+    }
+}
+
+test "a quad with a cull face is not drawn next to a full cube (REQ-VOXEL-002)" {
+    const allocator = std.testing.allocator;
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
+    try chunk.setBlock(5, 70, 6, .b19);
+    // A full cube below hides the bottom quad (cull face -Y). The top quad
+    // is inside the cell, so the full cube above does not hide it.
+    try chunk.setBlock(5, 69, 6, .solid);
+    try chunk.setBlock(5, 71, 6, .solid);
+    // A block with a model does not hide a quad: b20 at +X.
+    try chunk.setBlock(6, 70, 6, .b20);
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try meshAlone(&chunk, &mesh);
+
+    var half_faces = std.EnumSet(Face){};
+    var plane_quads: usize = 0;
+    for (mesh.quads.items) |q| {
+        if (!isModelRecord(q)) continue;
+        const baked = models.quads[modelQuadIndex(q)];
+        const block: BlockType = @fromBackingInt(@as(u8, @intCast((q[3] >> 12) & 0xFF)));
+        switch (block) {
+            .b19 => half_faces.insert(baked.face),
+            .b20 => plane_quads += 1,
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expect(!half_faces.contains(.ny));
+    try std.testing.expectEqual(@as(usize, 5), half_faces.count());
+    // The quads of b20 have no cull face.
+    try std.testing.expectEqual(@as(usize, 2), plane_quads);
+
+    // The full cubes show the faces that touch the half block: 6 faces
+    // each, because no full cube touches them.
+    var cube_faces: usize = 0;
+    for (mesh.quads.items) |q| {
+        if (!isModelRecord(q)) cube_faces += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 12), cube_faces);
+}
+
+test "the model records take the light of the neighbour in the light direction" {
+    const allocator = std.testing.allocator;
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
+    // A half block in a closed box of full cubes, with an emitter at +X: the
+    // quads read no sky light, and the +X quad is hidden by the emitter.
+    for (0..3) |dx| for (0..3) |dy| for (0..3) |dz| {
+        try chunk.setBlock(@intCast(4 + dx), @intCast(69 + dy), @intCast(5 + dz), .solid);
+    };
+    try chunk.setBlock(5, 70, 6, .b20);
+    try chunk.setBlock(5, 71, 6, .air);
+    try chunk.setBlock(5, 72, 6, .emitter);
+    try chunk.setBlock(5, 73, 6, .solid);
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try meshAlone(&chunk, &mesh);
+    var seen: usize = 0;
+    for (mesh.quads.items) |q| {
+        if (!isModelRecord(q)) continue;
+        seen += 1;
+        // The light direction of b20 is +Y: the air cell under the emitter.
+        const v = unpackCorner(q, 0, 0, 0);
+        try std.testing.expectEqual(@as(f32, 0.0), v.skylight);
+        const want: f32 = @as(f32, @floatFromInt(chunk_mod.MAX_BLOCK_LIGHT - 1)) / @as(f32, @floatFromInt(chunk_mod.MAX_BLOCK_LIGHT));
+        try std.testing.expectEqual(want, v.block_light);
+    }
+    try std.testing.expectEqual(@as(usize, 2), seen);
+
+    // With lighting off, the sky light is full and the block light is 0.
+    const tg = TestGetter{ .chunk = &chunk, .ox = 0, .oz = 0 };
+    try generateMesh(&chunk, &mesh, 0, 0, tg.getter(), .none, .none);
+    for (mesh.quads.items) |q| {
+        if (!isModelRecord(q)) continue;
+        const v = unpackCorner(q, 0, 0, 0);
+        try std.testing.expectEqual(@as(f32, 1.0), v.skylight);
+        try std.testing.expectEqual(@as(f32, 0.0), v.block_light);
+    }
+}
+
+test "a model record keeps a cell y above 255 and the quad index" {
+    for ([_]u32{ 0, 255, 256, 4095 }) |y| {
+        for ([_]u16{ 0, 1, 0xFFFF }) |qi| {
+            const q = packModelQuad(.{ 15, y, 3 }, qi, 7, @splat(1), @splat(0.5), @splat(0));
+            try std.testing.expect(isModelRecord(q));
+            try std.testing.expectEqual(y, cellY(q));
+            try std.testing.expectEqual(qi, modelQuadIndex(q));
+            try std.testing.expectEqual(@as(u32, 15), q[0] & 0xF);
+            try std.testing.expectEqual(@as(u32, 3), (q[0] >> 12) & 0xF);
+            try std.testing.expectEqual(@as(u32, 7), (q[3] >> 12) & 0xFF);
+        }
+    }
+    // A greedy quad never has the model record bit.
+    try std.testing.expect(!isModelRecord(packQuad(.nz, .{ 15, 4095, 15 }, 16, 256, 255, @splat(1), @splat(1), @splat(1))));
+}
+
+test "a box face has the corners and the winding of a greedy quad" {
+    const cube = model_mod.box(.{ 0, 0, 0 }, .{ 1, 1, 1 }, @splat(model_mod.BoxFace{}));
+    for (cube, 0..) |bq, f| {
+        const face: Face = @fromBackingInt(@as(u3, @intCast(f)));
+        try std.testing.expectEqual(face, bq.face);
+        const q = packQuad(face, .{ 0, 0, 0 }, 1, 1, 1, @splat(1), @splat(1), @splat(0));
+        for (0..4) |c| {
+            const v = unpackCorner(q, c, 0, 0);
+            try std.testing.expectEqual(bq.pos[c][0], v.pos[0]);
+            try std.testing.expectEqual(bq.pos[c][1] + MIN_Y, v.pos[1]);
+            try std.testing.expectEqual(bq.pos[c][2], v.pos[2]);
+            try std.testing.expectEqual(bq.uv[c], v.uv);
+        }
+    }
 }

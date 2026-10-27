@@ -15,8 +15,8 @@
 //!
 //!   pub const Block = enum(u8) { air = 0, ... };
 //!       The block types. `air` (value 0) is the empty cell: it gives no
-//!       light, stops no light, and has no faces. All other blocks are
-//!       solid cubes.
+//!       light, stops no light, and has no faces. All other blocks stop
+//!       light. A block with no model is a full cube.
 //!   pub fn emission(block: Block) u8
 //!       The block light that `block` gives, 0 to `chunk.MAX_BLOCK_LIGHT`.
 //!   pub const GenConfig = struct { seed: u64, ... };
@@ -32,6 +32,16 @@
 //!       main must make the same blocks. The y index of `dense` starts at
 //!       0 for the world y `min_y`.
 //!
+//! The content module can declare the models of its blocks
+//! (REQ-VOXEL-001). With no declaration, every block is a full cube:
+//!
+//!   pub fn model(block: Block) ?*const sw_voxel.model.BakedModel
+//!       The baked model of `block`, or null for a full cube. sw_voxel
+//!       calls it at comptime for each block type, so the result must be
+//!       comptime-known. The model mesher meshes a block with a model, and
+//!       the greedy mesher meshes the full cubes. For light and ambient
+//!       occlusion, a block with a model is the same as a full cube.
+//!
 //! The content module can declare the height of the world. With no
 //! declaration, the world is y 0 to 255:
 //!
@@ -42,6 +52,7 @@
 //!       Default 256. The world is y `min_y` to `min_y + height - 1`.
 const std = @import("std");
 const c = @import("sw_voxel_content");
+const model_mod = @import("model.zig");
 
 pub const Block = c.Block;
 pub const GenConfig = c.GenConfig;
@@ -58,6 +69,12 @@ pub const height: u32 = if (@hasDecl(c, "height")) c.height else 256;
 /// The block light that `block` gives.
 pub inline fn emission(block: Block) u8 {
     return c.emission(block);
+}
+
+/// The baked model of `block`, or null for a full cube. Comptime only:
+/// the mesher uses the tables of `models.zig`.
+pub fn model(comptime block: Block) ?*const model_mod.BakedModel {
+    return if (@hasDecl(c, "model")) c.model(block) else null;
 }
 
 comptime {

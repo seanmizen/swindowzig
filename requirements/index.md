@@ -23,6 +23,8 @@
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
 | [`REQ-INPUT-004`](input.md#req-input-004--saved-input-settings-load-in-a-newer-version) | Saved input settings load in a newer version | active | functional | P2 | agent:SWZ-49 |
+| [`REQ-VOXEL-001`](voxel.md#req-voxel-001--a-block-with-a-baked-model-gets-the-model-mesher) | A block with a baked model gets the model mesher | active | functional | P1 | agent:SWZ-31 |
+| [`REQ-VOXEL-002`](voxel.md#req-voxel-002--a-full-cube-hides-a-model-quad-with-a-cull-face) | A full cube hides a model quad with a cull face | active | functional | P1 | agent:SWZ-31 |
 
 ## Dependency graph
 
@@ -46,12 +48,15 @@ graph TD
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
   REQ_INPUT_004["REQ-INPUT-004<br/>Saved input settings load in a newer version"]
+  REQ_VOXEL_001["REQ-VOXEL-001<br/>A block with a baked model gets the model mesher"]
+  REQ_VOXEL_002["REQ-VOXEL-002<br/>A full cube hides a model quad with a cull face"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_005 -->|refines| REQ_A11Y_001
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
+  REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
 ```
 
 ## Derived reverse links
@@ -59,3 +64,4 @@ graph TD
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
+- `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
