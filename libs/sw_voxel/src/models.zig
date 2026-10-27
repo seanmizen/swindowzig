@@ -96,7 +96,7 @@ pub inline fn range(block: Block) Range {
 }
 
 /// True when one or more faces of a full cube have a tint index
-/// (REQ-VOXEL-007).
+/// (REQ-VOXEL-009).
 pub const any_cube_tint: bool = blk: {
     @setEvalBranchQuota(100_000);
     for (block_values) |v| {

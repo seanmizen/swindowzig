@@ -520,7 +520,7 @@ pub const MeshResult = struct {
 };
 
 /// The greedy mesh of the middle chunk of `hood`, with smooth light. The
-/// quads are relative to the chunk origin. The tint colours (REQ-VOXEL-007)
+/// quads are relative to the chunk origin. The tint colours (REQ-VOXEL-009)
 /// use chunk (0, 0): a content with tints uses `meshWith` and gives the
 /// chunk coordinates.
 pub fn mesh(
@@ -537,7 +537,7 @@ pub const MeshOptions = mesher_mod.MeshOptions;
 
 /// The mesh of chunk (cx, cz), the middle chunk of `hood`, with `options`.
 /// The quads are relative to the chunk origin. The chunk coordinates give
-/// the world position of the tint colours (REQ-VOXEL-007), so the stage
+/// the world position of the tint colours (REQ-VOXEL-009), so the stage
 /// stays a pure function of its inputs. `options.origin` is ignored.
 pub fn meshWith(
     allocator: std.mem.Allocator,

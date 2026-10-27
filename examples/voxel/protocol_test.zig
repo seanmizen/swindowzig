@@ -100,7 +100,7 @@ test "protocol: Hello, Edit and Job round trip" {
     defer a.free(gb);
     try std.testing.expectEqualDeep(gen, (try expectRoundTrip(a, gb)).msg.job);
 
-    // Smooth light off is bit 1 of the flags (REQ-VOXEL-006).
+    // Smooth light off is bit 1 of the flags (REQ-VOXEL-008).
     const flat: protocol.Job = .{ .stage = .mesh, .cx = 3, .cz = -4, .ao = .none, .lighting = .skylight, .smooth_light = false };
     const fb = try protocol.encodeJob(a, 2, flat);
     defer a.free(fb);

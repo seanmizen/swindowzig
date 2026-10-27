@@ -39,7 +39,7 @@ struct VertexOutput {
     // 1: fs_main applies the directional shade. 0: no shade (the shade flag
     // of a baked model quad).
     @location(10) @interpolate(flat) shade: u32,
-    // The tint colour of the quad (sw_voxel REQ-VOXEL-007): fs_main
+    // The tint colour of the quad (sw_voxel REQ-VOXEL-009): fs_main
     // multiplies the base colour by it. White for a quad with no tint.
     @location(11) @interpolate(flat) tint: vec3<f32>,
 };

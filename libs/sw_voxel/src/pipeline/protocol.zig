@@ -153,7 +153,7 @@ pub const Job = struct {
     /// Generate: the Result also holds the blocks, for the simulation
     /// radius of main (C6).
     want_blocks: bool = false,
-    /// Mesh: false gives flat light (REQ-VOXEL-006).
+    /// Mesh: false gives flat light (REQ-VOXEL-008).
     smooth_light: bool = true,
     blocks: [SLOTS]Version = @splat(0),
     light: [SLOTS]Version = @splat(0),

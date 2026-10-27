@@ -81,7 +81,7 @@ pub fn model(block: Block) ?*const model_mod.BakedModel {
     };
 }
 
-/// The tint index of each face of a full cube (sw_voxel REQ-VOXEL-007):
+/// The tint index of each face of a full cube (sw_voxel REQ-VOXEL-009):
 /// the top of grass and each face of leaves have tint 0. voxel.wgsl draws
 /// these faces white, so the tint gives their colour.
 pub fn tintIndex(block: Block, face: model_mod.Face) i8 {

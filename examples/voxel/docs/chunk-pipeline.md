@@ -154,7 +154,7 @@ Job, 88 bytes
   1  u8    AO strategy
   2  u8    lighting mode
   3  u8    flags: bit 0 = send the blocks back, bit 1 = flat light
-           (smooth light off, REQ-VOXEL-006)
+           (smooth light off, REQ-VOXEL-008)
   4  i32   cx
   8  i32   cz
   12 u32   0

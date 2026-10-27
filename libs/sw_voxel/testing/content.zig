@@ -65,7 +65,7 @@ pub fn model(block: Block) ?*const model_mod.BakedModel {
     };
 }
 
-/// The tint colours of the tests (REQ-VOXEL-007). The generator places
+/// The tint colours of the tests (REQ-VOXEL-009). The generator places
 /// none of b5, b6 and b20, so the terrain has no tint.
 ///   b5: a colour for each cell (x, z), so a chunk layer has 256 colours.
 ///   b6: one colour.

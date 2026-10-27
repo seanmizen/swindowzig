@@ -924,7 +924,7 @@ const State = struct {
     lighting_mode: gpu_mod.LightingMode = .skylight,
     /// Smooth light, parsed from --smooth-light=<on|off>. Off gives flat
     /// light: each face takes the light of the cell in front of it
-    /// (sw_voxel REQ-VOXEL-006). Default: on.
+    /// (sw_voxel REQ-VOXEL-008). Default: on.
     smooth_light: bool = true,
     /// Block type emitted by right-click placement. Parsed from
     /// `--place-block=<stone|glowstone>`; default stone preserves prior

@@ -59,7 +59,7 @@
 //!       slab or a plant a low opacity, so that the face of a full cube
 //!       next to it gets light.
 //!
-//! The content module can declare tint colours (REQ-VOXEL-007). With no
+//! The content module can declare tint colours (REQ-VOXEL-009). With no
 //! declaration, no quad has a tint:
 //!
 //!   pub fn tint(block: Block, tint_index: u8, x: i32, y: i32, z: i32) [3]u8
@@ -117,7 +117,7 @@ pub fn model(comptime block: Block) ?*const model_mod.BakedModel {
     return if (@hasDecl(c, "model")) c.model(block) else null;
 }
 
-/// True when the content gives tint colours (REQ-VOXEL-007).
+/// True when the content gives tint colours (REQ-VOXEL-009).
 pub const has_tint: bool = @hasDecl(c, "tint");
 
 /// The tint colour of a quad with tint index `tint_index` of `block` in

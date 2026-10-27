@@ -490,7 +490,7 @@ incremental light equals the light stage after random edits.
 The current mesher code is the reference. This section gives the rules
 in short.
 
-- Smooth light (REQ-VOXEL-006): each corner of a face gets the mean light
+- Smooth light (REQ-VOXEL-008): each corner of a face gets the mean light
   of the 4 cells that touch the corner on the outward side of the face.
   `mesher.computeFaceLight` reads the 9 cells of the outward slab once,
   with `Chunk.lightAt` values (`BlockGetter.lightAt` out of the chunk).
@@ -504,8 +504,8 @@ in short.
   the AO and the light of the full face, mixed at the position of each
   corner. A quad off the cell grid (the top of a half block, a plane
   through the cell) gets flat light and AO 1.
-- Tints (REQ-VOXEL-007): the content gives `tint` and `tintIndex`. The
+- Tints (REQ-VOXEL-009): the content gives `tint` and `tintIndex`. The
   demo tints grass tops and leaves in 8 steps, and voxel.wgsl draws them
   white times the tint.
-- Greedy merges (REQ-VOXEL-008): two faces merge only when their AO,
+- Greedy merges (REQ-VOXEL-010): two faces merge only when their AO,
   light and tint are equal, and the same on the 4 corners.

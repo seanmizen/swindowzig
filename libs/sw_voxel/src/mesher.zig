@@ -748,7 +748,7 @@ fn computeFaceAOPropagated(chunk: *const Chunk, getter: BlockGetter, world_ox: i
 }
 
 // ---------------------------------------------------------------------------
-// Light sampling (REQ-VOXEL-006)
+// Light sampling (REQ-VOXEL-008)
 // ---------------------------------------------------------------------------
 
 /// The light of the cell at (wx, wy, wz): x and z in the coordinates of the
@@ -854,7 +854,7 @@ fn faceLight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: 
 }
 
 // ---------------------------------------------------------------------------
-// Tints (REQ-VOXEL-007)
+// Tints (REQ-VOXEL-009)
 // ---------------------------------------------------------------------------
 
 /// The tint colour of a quad with no tint.
@@ -925,7 +925,7 @@ const TintPalette = struct {
 /// to decide whether two adjacent cells may merge: block type, per-vertex AO,
 /// per-vertex skylight, per-vertex block-light and the tint colour. Two cells
 /// merge iff every f32 byte in the lighting tuples is bit-identical AND the
-/// block types and the tints match (REQ-VOXEL-008).
+/// block types and the tints match (REQ-VOXEL-010).
 const GreedyCell = struct {
     present: bool = false,
     block_type: BlockType = .air,
@@ -950,7 +950,7 @@ fn greedyUniform4(v: [4]f32) bool {
 }
 
 /// Decide whether two adjacent face cells may merge into the same greedy
-/// rectangle (REQ-VOXEL-008). This rule is STRICTER than the classic
+/// rectangle (REQ-VOXEL-010). This rule is STRICTER than the classic
 /// "matching corners" greedy rule: we only merge cells whose AO and light
 /// are *uniform* (all four corners equal) AND whose uniform constants and
 /// tint match the candidate cell. This is the only rule that guarantees
@@ -1277,7 +1277,7 @@ const VisibleFaces = struct {
 /// record for each visible quad of each block with a model (REQ-VOXEL-001).
 /// With no model block in the chunk, it adds nothing, so a chunk of full
 /// cubes gives the same bytes as before the model mesher. When a quad has
-/// a tint, the mesh starts with the tint records (REQ-VOXEL-007).
+/// a tint, the mesh starts with the tint records (REQ-VOXEL-009).
 ///
 /// This is `generateMeshWith` with smooth light on and the tint position
 /// from `world_ox` and `world_oz`.
@@ -1303,10 +1303,10 @@ pub const MeshOptions = struct {
     lighting: LightingMode = .skylight,
     /// True: smooth light, the mean light of the 4 cells at each corner.
     /// False: flat light, the light of the cell in front of each face on
-    /// all 4 corners (REQ-VOXEL-006).
+    /// all 4 corners (REQ-VOXEL-008).
     smooth_light: bool = true,
     /// The world x and z of local cell (0, 0) of the chunk, for the tint
-    /// colours (REQ-VOXEL-007). Null: `world_ox` and `world_oz`. Give it
+    /// colours (REQ-VOXEL-009). Null: `world_ox` and `world_oz`. Give it
     /// when the getter uses other coordinates, as the mesh stage does
     /// (`pipeline/stages.zig`).
     origin: ?[2]i32 = null,
@@ -1550,7 +1550,7 @@ fn faceValueAt(face: Face, v: [4]f32, ij: [2]f32) f32 {
 }
 
 /// The AO and the light of each corner of model quad `qi` of the block at
-/// local (lx, ly, lz) (REQ-VOXEL-006).
+/// local (lx, ly, lz) (REQ-VOXEL-008).
 ///
 /// A quad on the cell grid (its corners on the side of the cell in its
 /// light direction, `model_grid`) gets the AO and the light of the full
@@ -1664,7 +1664,7 @@ fn emitModelBlock(
 // index and the shade flag of the quad from the table. A world of full cubes
 // has no model records, so its bytes do not change.
 //
-// Tint records (REQ-VOXEL-007). A quad with a tint holds a tint slot, 1 to
+// Tint records (REQ-VOXEL-009). A quad with a tint holds a tint slot, 1 to
 // MAX_TINT_SLOTS, in word 3 bits 24-30. The colours of the slots are in tint
 // records at the start of the stream, before the greedy quads. The record at
 // index k holds the colours of slots 4k + 1 to 4k + 4, one per word:
@@ -2192,7 +2192,7 @@ test "a box face has the corners and the winding of a greedy quad" {
 }
 
 // ---------------------------------------------------------------------------
-// AO, smooth light and tint tests (REQ-VOXEL-006, REQ-VOXEL-007, REQ-VOXEL-008)
+// AO, smooth light and tint tests (REQ-VOXEL-008, REQ-VOXEL-009, REQ-VOXEL-010)
 // ---------------------------------------------------------------------------
 
 /// The quads of `mesh` with no tint records.
@@ -2215,7 +2215,7 @@ fn meshWith(chunk: *Chunk, mesh: *Mesh, options: MeshOptions) !void {
     try generateMeshWith(chunk, mesh, 0, 0, tg.getter(), options);
 }
 
-test "a corner gets its AO from its 3 neighbour blocks: 0 to 3 occluders (REQ-VOXEL-006)" {
+test "a corner gets its AO from its 3 neighbour blocks: 0 to 3 occluders (REQ-VOXEL-008)" {
     // The rule: (3 - occluders) / 3, and 0 when both sides are solid.
     try std.testing.expectEqual(@as(f32, 1.0), aoValue(false, false, false));
     try std.testing.expectEqual(@as(f32, 2.0 / 3.0), aoValue(true, false, false));
@@ -2260,7 +2260,7 @@ test "a corner gets its AO from its 3 neighbour blocks: 0 to 3 occluders (REQ-VO
     }
 }
 
-test "smooth light is the mean light of the 4 cells at each corner (REQ-VOXEL-006)" {
+test "smooth light is the mean light of the 4 cells at each corner (REQ-VOXEL-008)" {
     const allocator = std.testing.allocator;
     var chunk = try testHillChunk(allocator);
     defer chunk.deinit();
@@ -2295,7 +2295,7 @@ test "smooth light is the mean light of the 4 cells at each corner (REQ-VOXEL-00
     try std.testing.expect(checked > 100);
 }
 
-test "smooth light off gives each face the light of the cell in front of it (REQ-VOXEL-006)" {
+test "smooth light off gives each face the light of the cell in front of it (REQ-VOXEL-008)" {
     const allocator = std.testing.allocator;
     var chunk = try testHillChunk(allocator);
     defer chunk.deinit();
@@ -2318,7 +2318,7 @@ test "smooth light off gives each face the light of the cell in front of it (REQ
     }
 }
 
-test "greedy faces with different AO, light or tint do not merge (REQ-VOXEL-008)" {
+test "greedy faces with different AO, light or tint do not merge (REQ-VOXEL-010)" {
     const base: GreedyCell = .{ .present = true, .block_type = .solid, .ao = @splat(1), .sky = @splat(1), .bl = @splat(0) };
     try std.testing.expect(greedyCellEq(base, base));
     var other = base;
@@ -2363,7 +2363,7 @@ test "greedy faces with different AO, light or tint do not merge (REQ-VOXEL-008)
     }
 }
 
-test "quads with a tint index get the tint colour of the content (REQ-VOXEL-007)" {
+test "quads with a tint index get the tint colour of the content (REQ-VOXEL-009)" {
     const allocator = std.testing.allocator;
     var chunk = Chunk.init(allocator);
     defer chunk.deinit();
@@ -2471,7 +2471,7 @@ test "the tint palette keeps 126 colours, then gives the nearest one" {
     try std.testing.expectEqual(@as(u32, MAX_TINT_SLOTS), p.slot(0xFF));
 }
 
-test "a model quad on the cell grid gets AO and smooth light, a quad off the grid gets flat light (REQ-VOXEL-006)" {
+test "a model quad on the cell grid gets AO and smooth light, a quad off the grid gets flat light (REQ-VOXEL-008)" {
     const allocator = std.testing.allocator;
     var chunk = Chunk.init(allocator);
     defer chunk.deinit();

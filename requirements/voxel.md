@@ -109,7 +109,7 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
     cached light on an edit (REQ-VOXEL-005)"
 - **Relations:** depends-on REQ-VOXEL-003
 
-## REQ-VOXEL-006 — Each corner gets AO and smooth light
+## REQ-VOXEL-008 — Each corner gets AO and smooth light
 
 - **Status:** active
 - **Source:** agent:SWZ-33
@@ -129,17 +129,17 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   corner samples do not touch it.
 - **Verification:**
   - Test — `libs/sw_voxel/src/mesher.zig` › "a corner gets its AO from its
-    3 neighbour blocks: 0 to 3 occluders (REQ-VOXEL-006)"
+    3 neighbour blocks: 0 to 3 occluders (REQ-VOXEL-008)"
   - Test — `libs/sw_voxel/src/mesher.zig` › "smooth light is the mean light
-    of the 4 cells at each corner (REQ-VOXEL-006)"
+    of the 4 cells at each corner (REQ-VOXEL-008)"
   - Test — `libs/sw_voxel/src/mesher.zig` › "smooth light off gives each
-    face the light of the cell in front of it (REQ-VOXEL-006)"
+    face the light of the cell in front of it (REQ-VOXEL-008)"
   - Test — `libs/sw_voxel/src/mesher.zig` › "a model quad on the cell grid
     gets AO and smooth light, a quad off the grid gets flat light
-    (REQ-VOXEL-006)"
+    (REQ-VOXEL-008)"
 - **Relations:** depends-on REQ-VOXEL-003
 
-## REQ-VOXEL-007 — The content gives the tint colours
+## REQ-VOXEL-009 — The content gives the tint colours
 
 - **Status:** active
 - **Source:** agent:SWZ-33
@@ -156,13 +156,13 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   no tint keeps its bytes.
 - **Verification:**
   - Test — `libs/sw_voxel/src/mesher.zig` › "quads with a tint index get
-    the tint colour of the content (REQ-VOXEL-007)"
+    the tint colour of the content (REQ-VOXEL-009)"
   - Test — `examples/voxel/stages_test.zig` › "stages: mesh gives the
     quads of the greedy mesher through the World getter" (the demo tints
     grass tops and leaves, so the stage must give the tints of World)
 - **Relations:** refines REQ-VOXEL-001
 
-## REQ-VOXEL-008 — Greedy meshing merges only equal faces
+## REQ-VOXEL-010 — Greedy meshing merges only equal faces
 
 - **Status:** active
 - **Source:** agent:SWZ-33
@@ -176,8 +176,8 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   corners. If it merged faces with other values, the AO, the light or the
   colour would be wrong, and seams would show between the quads.
 - **Verification:** Test — `libs/sw_voxel/src/mesher.zig` › "greedy faces
-  with different AO, light or tint do not merge (REQ-VOXEL-008)"
+  with different AO, light or tint do not merge (REQ-VOXEL-010)"
 - **Relations:**
-  - refines REQ-VOXEL-006
-  - refines REQ-VOXEL-007
+  - refines REQ-VOXEL-008
+  - refines REQ-VOXEL-009
 
