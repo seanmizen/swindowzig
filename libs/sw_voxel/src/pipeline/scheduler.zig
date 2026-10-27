@@ -444,24 +444,25 @@ pub const Scheduler = struct {
     /// a mesh reads stages.BORDER cells. For such a result, the recorded
     /// version moves to the new version.
     pub fn editBlock(self: *Scheduler, world: *World, wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) !bool {
-        if (wy < 0 or wy >= chunk_mod.CHUNK_H) return false;
+        const ly = wy - chunk_mod.MIN_Y;
+        if (ly < 0 or ly >= chunk_mod.CHUNK_H) return false;
         const lc = world.getChunkAtBlock(wx, wz) orelse return false;
         if (!lc.has_blocks) return false;
         const lx = wx - lc.worldX();
         const lz = wz - lc.worldZ();
-        if (lc.chunk.getBlock(lx, wy, lz) == block) return true;
+        if (lc.chunk.getBlock(lx, ly, lz) == block) return true;
         const edit: protocol.Edit = .{
             .cx = lc.cx,
             .cz = lc.cz,
             .version = lc.block_ver + 1,
             .x = @intCast(lx),
-            .y = @intCast(wy),
+            .y = @intCast(ly),
             .z = @intCast(lz),
             .block = block,
         };
         try self.outbox.ensureUnusedCapacity(self.allocator, 1);
         try world.logEdit(edit);
-        try lc.chunk.setBlock(lx, wy, lz, block);
+        try lc.chunk.setBlock(lx, ly, lz, block);
         self.outbox.appendAssumeCapacity(edit);
         const old = lc.block_ver;
         lc.block_ver += 1;

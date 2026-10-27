@@ -54,8 +54,8 @@ test "exec: the worker cache stays within its limit, and an evicted chunk keeps 
     const a = std.testing.allocator;
     var w: worker_world.WorkerWorld = .init(a);
     defer w.deinit();
-    // About 12 hilly chunks (blocks and light) fit in 1 MB.
-    const limit: u64 = 1 << 20;
+    // About 15 hilly chunks (blocks in sections, and light) fit in 256 KB.
+    const limit: u64 = 1 << 18;
     const hello = try ask(a, &w, try protocol.encodeHello(a, .{ .cache_limit = limit, .config = hilly(0) }));
     a.free(hello.reply);
 

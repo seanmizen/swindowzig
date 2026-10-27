@@ -20,6 +20,12 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
   as the module `sw_voxel_content`: `Block` (an `enum(u8)` with `air = 0`),
   `emission`, `GenConfig` (with `seed: u64`), `generate`, and the
   `GenConfig` bytes of the Hello message.
+- The content can declare the world height: `min_y` and `height`
+  (multiples of 16, default 0 and 256). Chunk, PalettedBlocks, LightGrid
+  and the mesh cells use local y (0 to `CHUNK_H - 1`). World, BlockGetter,
+  the scheduler edits and the mesh y range use world y (`local + MIN_Y`).
+  The unit tests of the library run two times: y 0 to 255, and y -64 to
+  319.
 - `build.zig` wires it with `addVoxel`. The demo gives
   `examples/voxel/content.zig`. The unit tests of the library give
   `libs/sw_voxel/testing/content.zig`, with numbered blocks.
@@ -370,7 +376,9 @@ press edge, no existing `.tas` script needs updating.
 
 ### Voxel example (`examples/voxel/`)
 
-Chunk dimensions: **CHUNK_W = 16** (X/Z), **CHUNK_H = 256** (Y). Was 48 on
+Chunk dimensions: **CHUNK_W = 16** (X/Z), **CHUNK_H = content.height**
+(Y, 256 in the demo). A column is CHUNK_H / 16 paletted sections of
+16 × 16 × 16 cells (`section.zig`). CHUNK_W was 48 on
 main prior to April 2026. Flipped on `voxel/chunk-size-perf` — see
 [`docs/chunk-size-investigation.md`](examples/voxel/docs/chunk-size-investigation.md)
 for the experiment and "why MC's 16×16 is the right default" writeup.
@@ -402,7 +410,8 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 |------|---------|
 | `sw_voxel.zig` | The module root. It names each file below |
 | `content.zig` | The content contract: what the game module `sw_voxel_content` must declare |
-| `chunk.zig` | `Chunk`: paletted blocks, skylight, block light, `setBlock`/`getBlock`, `generateTerrain` (calls `content.generate`) |
+| `section.zig` | `Section`: 16 × 16 × 16 cells, a palette and indices of 0, 1, 2, 4 or 8 bits. One block type has no index array |
+| `chunk.zig` | `Chunk`: `PalettedBlocks` (a column of sections), skylight, block light, `setBlock`/`getBlock`, `generateTerrain` (calls `content.generate`). `CHUNK_H` and `MIN_Y` come from the content |
 | `world.zig` | Multi-chunk world, chunk map, chunk versions, `World.init(allocator, gen_config, render_distance)` |
 | `mesher.zig` | Greedy quad mesher (writes `PackedQuad`), `cornerBits` for a shader |
 | `frustum.zig` | Chunk cull strategies: none, sphere, cone, frustum |
