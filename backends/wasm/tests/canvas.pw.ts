@@ -39,9 +39,8 @@ interface Hooks {
 /**
  * Count the canvas frames, and read the canvas texture of a frame. The read
  * occurs after the submit of the frame, in the same task, before the browser
- * shows the frame. So the test reads what the frame graph wrote, and not the
- * screenshot of the compositor. The Linux headless shell gives a black
- * screenshot of a WebGPU canvas.
+ * shows the frame. So the test reads what the frame graph wrote, and not a
+ * screenshot of the compositor.
  *
  * There are two reads. The first copies the canvas texture to a buffer on
  * the GPU. The second draws the canvas into a 2D canvas. The test uses the

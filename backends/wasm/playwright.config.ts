@@ -13,31 +13,35 @@ import { defineConfig } from '@playwright/test';
 const flat2dPort = 3020;
 const canvasPort = 3021;
 
-// The headless shell of Chromium on macOS has no GPU. Its SwiftShader
-// adapter cannot give a canvas texture. A WebGPU canvas then stays black on
-// each page, also on a page with no swindowzig code. On macOS, use the full
-// Chromium (new headless mode) with Metal. On Linux (CI), the headless shell
-// uses the SwiftShader Vulkan driver.
-const channel = process.platform === 'darwin' ? 'chromium' : undefined;
-
 export default defineConfig({
   testDir: './tests',
   testMatch: '*.pw.ts',
   timeout: 60_000,
   retries: process.env.CI ? 1 : 0,
+  // One browser at a time. SwiftShader draws each page on the CPU, and
+  // pages in parallel make the frames slow. Then the key presses of the
+  // flat2d tests can arrive late.
+  workers: 1,
   reporter: process.env.CI ? 'list' : 'line',
   use: {
     browserName: 'chromium',
-    channel,
     launchOptions: {
       // WebGPU in headless Chromium. On Linux (CI) it uses the SwiftShader
       // Vulkan driver of Chromium. Do not set VK_LOADER_DRIVERS_SELECT for
       // the browser: a filter such as '*lvp*' hides SwiftShader, and then
       // Chromium has no WebGPU adapter.
+      //
+      // --use-angle=swiftshader gives the headless shell a GL for the
+      // compositor. Without it, the shell gives no valid canvas texture to
+      // a WebGPU page, on Linux and on macOS. WebGPU then stops on the first
+      // frame ("A valid external Instance reference no longer exists"). The
+      // canvas stays black, also for a page with no swindowzig code.
       args: [
         '--enable-unsafe-webgpu',
         '--enable-features=Vulkan',
         '--ignore-gpu-blocklist',
+        '--use-angle=swiftshader',
+        '--enable-unsafe-swiftshader',
       ],
     },
   },
