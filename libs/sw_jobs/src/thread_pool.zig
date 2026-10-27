@@ -351,14 +351,22 @@ test "jobs: no reply, a failure, and a broadcast (REQ-JOBS-001)" {
     try f.send(0, 2, "fail");
     try f.pool.broadcast(3, "b");
     try f.waitFor(4);
-    try testing.expectEqual(@as(u32, 2), f.replies.items[0].id);
-    try testing.expectEqual(@as(?[]u8, null), f.replies.items[0].bytes);
+    // Workers 1 and 2 can answer the broadcast before worker 0 runs the
+    // failure. Worker 0 answers in the order of its messages.
+    var failed = false;
     var seen: [3]bool = @splat(false);
-    for (f.replies.items[1..]) |r| {
+    for (f.replies.items) |r| {
+        if (r.id == 2) {
+            try testing.expectEqual(@as(usize, 0), r.worker);
+            try testing.expectEqual(@as(?[]u8, null), r.bytes);
+            try testing.expect(!seen[0]);
+            failed = true;
+            continue;
+        }
         try testing.expectEqual(@as(u32, 3), r.id);
         seen[r.worker] = true;
     }
-    try testing.expect(seen[0] and seen[1] and seen[2]);
+    try testing.expect(failed and seen[0] and seen[1] and seen[2]);
 }
 
 test "jobs: cancel removes the messages that wait, not the message that runs (REQ-JOBS-001)" {
