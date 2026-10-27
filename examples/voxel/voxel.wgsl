@@ -39,13 +39,16 @@ struct VertexOutput {
     // 1: fs_main applies the directional shade. 0: no shade (the shade flag
     // of a baked model quad).
     @location(10) @interpolate(flat) shade: u32,
+    // The tint colour of the quad (sw_voxel REQ-VOXEL-007): fs_main
+    // multiplies the base colour by it. White for a quad with no tint.
+    @location(11) @interpolate(flat) tint: vec3<f32>,
 };
 
 // Block type colors
 fn getBlockColor(block_type: u32) -> vec3<f32> {
     switch block_type {
-        case 1u: { // Grass (green top, dirt sides handled in vertex shader)
-            return vec3<f32>(0.4, 0.8, 0.2);
+        case 1u: { // Grass: white top (the tint of the content gives the green), dirt sides in shadeVertex
+            return vec3<f32>(1.0, 1.0, 1.0);
         }
         case 2u: { // Dirt
             return vec3<f32>(0.6, 0.4, 0.2);
@@ -62,8 +65,8 @@ fn getBlockColor(block_type: u32) -> vec3<f32> {
         case 6u: { // Wood / oak log — warm brown bark colour.
             return vec3<f32>(0.45, 0.30, 0.12);
         }
-        case 7u: { // Leaves — dark forest green.
-            return vec3<f32>(0.18, 0.50, 0.12);
+        case 7u: { // Leaves: white, the tint of the content gives the green.
+            return vec3<f32>(1.0, 1.0, 1.0);
         }
         case 8u: { // Sand — warm sandy yellow.
             return vec3<f32>(0.85, 0.78, 0.48);
@@ -117,6 +120,11 @@ struct ChunkQuads {
 @group(2) @binding(0) var<storage, read> model_quads: array<vec4<u32>>;
 // Bit 31 of q.w is set in a model quad record (mesher.MODEL_RECORD_BIT).
 const MODEL_RECORD_BIT: u32 = 0x80000000u;
+// Bits 24-30 of q.w: the tint slot of a quad (0 = no tint). The value
+// TINT_RECORD_SLOT marks a tint record: the colours of the slots, at the
+// start of the quads (mesher.zig, "Tint records").
+const TINT_SLOT_SHIFT: u32 = 24u;
+const TINT_RECORD_SLOT: u32 = 0x7Fu;
 
 // Faces are numbered px, nx, py, ny, pz, nz (0..5). The normal axis is
 // face / 2 and the face is positive when face is even. The in-plane axes are
@@ -160,10 +168,31 @@ fn lightField(q: vec4<u32>, i: u32) -> u32 {
     return (word >> (6u * (i % 5u))) & 0x3Fu;
 }
 
+// The tint colour of a quad: the colour of its slot in the tint records,
+// or white with no tint. mesher.quadTint is the same decode in Zig.
+fn tintOf(q: vec4<u32>) -> vec3<f32> {
+    let slot = (q.w >> TINT_SLOT_SHIFT) & 0x7Fu;
+    if (slot == 0u) {
+        return vec3<f32>(1.0);
+    }
+    let k = slot - 1u;
+    let rec = chunk.quads[k / 4u];
+    let i = k % 4u;
+    let word = select(select(rec.w, rec.z, i == 2u), select(rec.y, rec.x, i == 0u), i < 2u);
+    return vec3<f32>(f32(word & 0xFFu), f32((word >> 8u) & 0xFFu), f32((word >> 16u) & 0xFFu)) / 255.0;
+}
+
 @vertex
 fn vs_chunk(@builtin(vertex_index) vi: u32) -> VertexOutput {
     let q = chunk.quads[vi / 6u];
     let corner = (TRI_CORNERS >> ((vi % 6u) * 2u)) & 3u;
+    if (((q.w >> TINT_SLOT_SHIFT) & 0x7Fu) == TINT_RECORD_SLOT) {
+        // A tint record: no triangle. The 6 vertices are at one point out
+        // of the clip volume.
+        var none: VertexOutput;
+        none.clip_position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+        return none;
+    }
     if ((q.w & MODEL_RECORD_BIT) != 0u) {
         return modelVertex(q, corner);
     }
@@ -190,6 +219,7 @@ fn vs_chunk(@builtin(vertex_index) vi: u32) -> VertexOutput {
     in.block_light = f32(lightField(q, 8u + corner)) / 60.0;
     var out = shadeVertex(in);
     out.highlight = rebuildTint(u32(chunk.origin.y));
+    out.tint = tintOf(q);
     return out;
 }
 
@@ -224,6 +254,7 @@ fn modelVertex(q: vec4<u32>, corner: u32) -> VertexOutput {
     var out = shadeVertex(in);
     out.shade = (info >> 3u) & 1u;
     out.highlight = rebuildTint(u32(chunk.origin.y));
+    out.tint = tintOf(q);
     return out;
 }
 
@@ -257,6 +288,7 @@ fn shadeVertex(in: VertexInput) -> VertexOutput {
     out.block_light = in.block_light;
     out.block_type = block_type;
     out.shade = 1u;
+    out.tint = vec3<f32>(1.0);
     return out;
 }
 
@@ -294,22 +326,6 @@ fn rotateTexel(t: vec2<u32>, r: u32) -> vec2<u32> {
         case 3u: { return vec2<u32>(t.y, 15u - t.x); }
         default: { return t; }
     }
-}
-
-// Smooth 2D value noise in [0, 1], one lattice point per `cell` blocks.
-// The colour tint of grass and leaves uses it, so the tint changes slowly
-// over tens of blocks.
-fn valueNoise(p: vec2<f32>, cell: f32) -> f32 {
-    let q = p / cell;
-    let i = floor(q);
-    let f = q - i;
-    let u = f * f * (3.0 - 2.0 * f);
-    let c = vec2<u32>(vec2<i32>(i));
-    let a = texelHash(c, 0x5EEDu);
-    let b = texelHash(c + vec2<u32>(1u, 0u), 0x5EEDu);
-    let d = texelHash(c + vec2<u32>(0u, 1u), 0x5EEDu);
-    let e = texelHash(c + vec2<u32>(1u, 1u), 0x5EEDu);
-    return mix(mix(a, b, u.x), mix(d, e, u.x), u.y);
 }
 
 // How much to fade a hashed texel pattern toward its mean (0.5), from the
@@ -434,13 +450,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // though the sky channel is near zero there.
     let world_light = max(sky_brightness, block_brightness);
 
-    // Grass tops and leaves: a slow colour tint over tens of blocks, from
-    // dry yellow-green to deep green. It is constant on each block.
-    var color = in.color;
-    if (is_grass_top || in.block_type == 7u) {
-        let lush = valueNoise(vec2<f32>(block_pos.xz) + 0.5, 24.0);
-        color *= mix(vec3<f32>(1.22, 0.98, 0.80), vec3<f32>(0.82, 1.02, 1.12), lush);
-    }
+    // The tint of the quad: grass tops and leaves get their green from the
+    // tint function of content.zig, which changes slowly over tens of
+    // blocks.
+    let color = in.color * in.tint;
 
     // GPU debug: mix in orange tint for freshly rebuilt chunks
     let base = color * brightness * texel_brightness * ao_brightness * world_light;

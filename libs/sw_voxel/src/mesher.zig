@@ -3,10 +3,12 @@ const chunk_mod = @import("chunk.zig");
 const model_mod = @import("model.zig");
 const section_mod = @import("section.zig");
 const models = @import("models.zig");
+const content = @import("content.zig");
 const gpu_mod = @import("sw_gpu");
 const Chunk = chunk_mod.Chunk;
 const BlockType = chunk_mod.BlockType;
 const BlockGetter = chunk_mod.BlockGetter;
+const CellLight = chunk_mod.CellLight;
 const CHUNK_W = chunk_mod.CHUNK_W;
 const CHUNK_H = chunk_mod.CHUNK_H;
 const MIN_Y = chunk_mod.MIN_Y;
@@ -746,301 +748,174 @@ fn computeFaceAOPropagated(chunk: *const Chunk, getter: BlockGetter, world_ox: i
 }
 
 // ---------------------------------------------------------------------------
-// Skylight sampling
+// Light sampling (REQ-VOXEL-006)
 // ---------------------------------------------------------------------------
 
-/// Read the skylight value at world (wx, wy, wz).
-/// Fast path: if (wx, wy, wz) is inside the chunk being meshed, read its
-/// skylight grid directly. Slow path: query the world via the getter so the
-/// sample crosses chunk boundaries cleanly. Phase 1 has no cross-chunk light
-/// propagation, but each chunk independently flood-fills its own air, so
-/// adjacent chunks have correct skylight for cells that don't depend on a
-/// neighbour's light path. The visible artifact is limited to caves whose
-/// brightest light source is on the OTHER side of a chunk seam.
-fn skylightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32) u8 {
+/// The light of the cell at (wx, wy, wz): x and z in the coordinates of the
+/// getter, y local. A cell in the chunk reads the chunk directly. A cell
+/// out of the chunk reads the getter, so the sample crosses the chunk edge.
+fn lightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32) CellLight {
     const lx = wx - world_ox;
     const lz = wz - world_oz;
     if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
-        return chunk.skylight.get(@intCast(lx), @intCast(wy), @intCast(lz));
+        // The cell is in the chunk: the grids with no second bounds check
+        // (the values of Chunk.lightAt).
+        const x: u32 = @intCast(lx);
+        const y: u32 = @intCast(wy);
+        const z: u32 = @intCast(lz);
+        return .{ .sky = chunk.skylight.get(x, y, z), .block = chunk.block_light.get(x, y, z) };
     }
-    return getter.getSkylight(wx, wy + MIN_Y, wz);
+    return getter.lightAt(wx, wy + MIN_Y, wz);
 }
 
-/// Per-vertex skylight brightness for a face.
-///
-/// For each of the 4 vertices, average the skylight of the 4 air cells
-/// adjacent to the vertex on the outward side of the face. This is
-/// structurally identical to how `computeFaceAOClassic` averages 3
-/// neighbours per vertex; here we average 4 to get a smooth analog gradient
-/// (skylight is a continuous 0..15 quantity, unlike AO which is 0/1 per
-/// neighbour). Solid cells contribute 0, which gives natural darkening when
-/// a vertex sits in a corner against a wall — exactly the look we want.
-///
-/// Returned values are in [0, 1] (skylight / MAX_SKYLIGHT).
-///
-/// When the lighting mode is `.none` the caller passes a baseline of 1.0 for
-/// every vertex by NOT calling this function — it's only invoked when
-/// `lighting_mode == .skylight`.
-fn computeFaceSkylight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
-    const max_f: f32 = @floatFromInt(chunk_mod.MAX_SKYLIGHT);
-    const inv4: f32 = 1.0 / 4.0;
-    return switch (face) {
-        .px => blk: {
-            // +X face at x = wx + 1. Outward column samples the slab wx+1.
-            // For each vertex (varying y, z), average the 4 cells in the
-            // 2×2 outward neighbourhood at that vertex's y/z corner.
-            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
-            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
-            const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
-            const a011 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz);
-            const a021 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
-            const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
-            const a022 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
-            // Corner order matches the .px entry of face_layouts: (y, z) → (0,0)(1,0)(1,1)(0,1).
-            const v0: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
-            const v1: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
-            const v2: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
-            const v3: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .nx => blk: {
-            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
-            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
-            const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
-            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
-            const a011 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz);
-            const a021 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
-            const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const a012 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
-            const a022 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            // Corner order matches the .nx entry of face_layouts: (y, z) → (0,1)(1,1)(1,0)(0,0).
-            const v0: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
-            const v1: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
-            const v2: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
-            const v3: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .py => blk: {
-            // +Y face at y = wy + 1. Outward slab is wy + 1.
-            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
-            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
-            const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
-            const a101 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz);
-            const a201 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
-            const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
-            const a202 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
-            // Corner order matches the .py entry of face_layouts: (x, z) → (0,0)(0,1)(1,1)(1,0).
-            const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
-            const v1: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
-            const v2: f32 = @floatFromInt(@as(u32, a101) + a201 + a102 + a202);
-            const v3: f32 = @floatFromInt(@as(u32, a100) + a200 + a101 + a201);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .ny => blk: {
-            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
-            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
-            const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
-            const a001 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
-            const a101 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz);
-            const a201 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
-            const a002 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const a102 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
-            const a202 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            // Corner order matches the .ny entry of face_layouts: (x, z) → (0,1)(0,0)(1,0)(1,1).
-            const v0: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
-            const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
-            const v2: f32 = @floatFromInt(@as(u32, a100) + a200 + a101 + a201);
-            const v3: f32 = @floatFromInt(@as(u32, a101) + a201 + a102 + a202);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .pz => blk: {
-            // +Z face at z = wz + 1. Outward slab is wz + 1.
-            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
-            const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
-            const a110 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy, wz + 1);
-            const a210 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
-            const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
-            const a220 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
-            // Corner order matches the .pz entry of face_layouts: (x, y) → (0,0)(1,0)(1,1)(0,1).
-            const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
-            const v1: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
-            const v2: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
-            const v3: f32 = @floatFromInt(@as(u32, a010) + a110 + a020 + a120);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .nz => blk: {
-            const a000 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
-            const a100 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
-            const a200 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
-            const a010 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
-            const a110 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy, wz - 1);
-            const a210 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
-            const a020 = skylightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
-            const a120 = skylightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
-            const a220 = skylightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            // Corner order matches the .nz entry of face_layouts: (x, y) → (1,0)(0,0)(0,1)(1,1).
-            const v0: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
-            const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
-            const v2: f32 = @floatFromInt(@as(u32, a010) + a110 + a020 + a120);
-            const v3: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-    };
-}
+/// The sky light and the block light of the 4 corners of a face, 0 to 1,
+/// in the corner order of face_layouts.
+const FaceLight = struct {
+    sky: [4]f32,
+    bl: [4]f32,
 
-// ---------------------------------------------------------------------------
-// Block-light sampling (phase 3)
-// ---------------------------------------------------------------------------
+    /// Full sky light and no block light: the light with lighting off.
+    const off: FaceLight = .{ .sky = @splat(1.0), .bl = @splat(0.0) };
+};
 
-/// Read the block-light value at world (wx, wy, wz). Fast path reads the
-/// owning chunk's grid directly; out-of-chunk samples fall through to the
-/// world getter (which in phase 3 always returns 0 across chunk boundaries
-/// because cross-chunk block-light propagation is deliberately out of scope).
-fn blockLightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32) u8 {
-    const lx = wx - world_ox;
-    const lz = wz - world_oz;
-    if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
-        return chunk.block_light.get(@intCast(lx), @intCast(wy), @intCast(lz));
-    }
-    return getter.getBlockLight(wx, wy + MIN_Y, wz);
-}
-
-/// Per-vertex block-light brightness for a face.
+/// Smooth light of a face: for each corner, the mean light of the 4 cells
+/// that touch the corner on the outward side of the face (the face plane
+/// slab one cell out). A solid cell has light 0, so a corner against a wall
+/// gets darker. The light of the 9 cells comes from the light engine
+/// (`lightAt`).
 ///
-/// Shape mirrors `computeFaceSkylight`: for each of the 4 vertices, average
-/// the block-light of the 4 air cells in the 2×2 outward neighbourhood at
-/// that vertex corner.
-///
-/// CRITICAL DIFFERENCE from skylight: a face belonging to an emissive block
-/// (an emissive block) must render at the emitter's own level, not at the
-/// slightly-dimmer value one BFS hop away in the outward air. This function
-/// folds the face-owner's own block-light into the final value via `max`:
+/// The block light of a corner is also at least the block light of the
+/// cell that owns the face. A face of an emitter then shows the light of
+/// the emitter, not the light one step out:
 ///
 ///     block_light[i] = max(outward_mean[i], owner_level)
-///
-/// The owner_level comes from `blockLightSample(wx, wy, wz)` — the cell the
-/// face belongs to. For non-emissive solids this is 0 (no effect); for a
-/// emissive cell it is `MAX_BLOCK_LIGHT` and the face lights up fully.
-fn computeFaceBlockLight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
-    const max_f: f32 = @floatFromInt(chunk_mod.MAX_BLOCK_LIGHT);
-    const inv4: f32 = 1.0 / 4.0;
-    const owner_u8 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy, wz);
-    const owner_f: f32 = @floatFromInt(owner_u8);
-    const owner_norm = owner_f / max_f;
-
-    const raw: [4]f32 = switch (face) {
-        .px => blk: {
-            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
-            const a010 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
-            const a020 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            const a001 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
-            const a011 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz);
-            const a021 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
-            const a002 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            const a012 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
-            const a022 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
-            const v0: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
-            const v1: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
-            const v2: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
-            const v3: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .nx => blk: {
-            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
-            const a010 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
-            const a020 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
-            const a001 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
-            const a011 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz);
-            const a021 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
-            const a002 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const a012 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
-            const a022 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            const v0: f32 = @floatFromInt(@as(u32, a001) + a011 + a002 + a012);
-            const v1: f32 = @floatFromInt(@as(u32, a011) + a021 + a012 + a022);
-            const v2: f32 = @floatFromInt(@as(u32, a010) + a020 + a011 + a021);
-            const v3: f32 = @floatFromInt(@as(u32, a000) + a010 + a001 + a011);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .py => blk: {
-            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
-            const a100 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
-            const a200 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            const a001 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz);
-            const a101 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz);
-            const a201 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz);
-            const a002 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            const a102 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
-            const a202 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
-            const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
-            const v1: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
-            const v2: f32 = @floatFromInt(@as(u32, a101) + a201 + a102 + a202);
-            const v3: f32 = @floatFromInt(@as(u32, a100) + a200 + a101 + a201);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .ny => blk: {
-            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
-            const a100 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
-            const a200 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
-            const a001 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz);
-            const a101 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz);
-            const a201 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz);
-            const a002 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const a102 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
-            const a202 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            const v0: f32 = @floatFromInt(@as(u32, a001) + a101 + a002 + a102);
-            const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a001 + a101);
-            const v2: f32 = @floatFromInt(@as(u32, a100) + a200 + a101 + a201);
-            const v3: f32 = @floatFromInt(@as(u32, a101) + a201 + a102 + a202);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .pz => blk: {
-            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz + 1);
-            const a100 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz + 1);
-            const a200 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz + 1);
-            const a010 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz + 1);
-            const a110 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy, wz + 1);
-            const a210 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz + 1);
-            const a020 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz + 1);
-            const a120 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz + 1);
-            const a220 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz + 1);
-            const v0: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
-            const v1: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
-            const v2: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
-            const v3: f32 = @floatFromInt(@as(u32, a010) + a110 + a020 + a120);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-        .nz => blk: {
-            const a000 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy - 1, wz - 1);
-            const a100 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy - 1, wz - 1);
-            const a200 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy - 1, wz - 1);
-            const a010 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy, wz - 1);
-            const a110 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy, wz - 1);
-            const a210 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy, wz - 1);
-            const a020 = blockLightSample(chunk, getter, world_ox, world_oz, wx - 1, wy + 1, wz - 1);
-            const a120 = blockLightSample(chunk, getter, world_ox, world_oz, wx, wy + 1, wz - 1);
-            const a220 = blockLightSample(chunk, getter, world_ox, world_oz, wx + 1, wy + 1, wz - 1);
-            const v0: f32 = @floatFromInt(@as(u32, a100) + a200 + a110 + a210);
-            const v1: f32 = @floatFromInt(@as(u32, a000) + a100 + a010 + a110);
-            const v2: f32 = @floatFromInt(@as(u32, a010) + a110 + a020 + a120);
-            const v3: f32 = @floatFromInt(@as(u32, a110) + a210 + a120 + a220);
-            break :blk .{ v0 * inv4 / max_f, v1 * inv4 / max_f, v2 * inv4 / max_f, v3 * inv4 / max_f };
-        },
-    };
-
-    return .{
-        @max(raw[0], owner_norm),
-        @max(raw[1], owner_norm),
-        @max(raw[2], owner_norm),
-        @max(raw[3], owner_norm),
+fn computeFaceLight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) FaceLight {
+    return switch (face) {
+        inline else => |f| computeFaceLightOf(f, chunk, getter, world_ox, world_oz, wx, wy, wz),
     };
 }
+
+/// computeFaceLight for a face that is known at compile time, so that the
+/// sample offsets are constants.
+fn computeFaceLightOf(comptime face: Face, chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32) FaceLight {
+    const fl = comptime face_layouts[@backingInt(face)];
+    const off = comptime face_offsets[@backingInt(face)];
+    // The 3 × 3 cells of the outward slab, by step -1, 0, 1 along i and j.
+    var sky: [3][3]u32 = undefined;
+    var blk: [3][3]u32 = undefined;
+    inline for (0..3) |di| inline for (0..3) |dj| {
+        var p = [3]i32{ wx + off[0], wy + off[1], wz + off[2] };
+        p[fl.i_axis] += @as(i32, @intCast(di)) - 1;
+        p[fl.j_axis] += @as(i32, @intCast(dj)) - 1;
+        const l = lightSample(chunk, getter, world_ox, world_oz, p[0], p[1], p[2]);
+        sky[di][dj] = l.sky;
+        blk[di][dj] = l.block;
+    };
+    const owner = lightSample(chunk, getter, world_ox, world_oz, wx, wy, wz).block;
+    const sky_max: f32 = @floatFromInt(chunk_mod.MAX_SKYLIGHT);
+    const bl_max: f32 = @floatFromInt(chunk_mod.MAX_BLOCK_LIGHT);
+    const owner_norm = @as(f32, @floatFromInt(owner)) / bl_max;
+    const inv4: f32 = 1.0 / 4.0;
+    var out: FaceLight = undefined;
+    inline for (0..4) |c| {
+        // A corner at step s along an axis touches the cells at steps
+        // s - 1 and s, which are indices s and s + 1.
+        const si: usize = fl.pos[c][0];
+        const sj: usize = fl.pos[c][1];
+        const s_sum = sky[si][sj] + sky[si + 1][sj] + sky[si][sj + 1] + sky[si + 1][sj + 1];
+        const b_sum = blk[si][sj] + blk[si + 1][sj] + blk[si][sj + 1] + blk[si + 1][sj + 1];
+        out.sky[c] = @as(f32, @floatFromInt(s_sum)) * inv4 / sky_max;
+        out.bl[c] = @max(@as(f32, @floatFromInt(b_sum)) * inv4 / bl_max, owner_norm);
+    }
+    return out;
+}
+
+/// Flat light of a face (smooth light off): the light of the cell in front
+/// of the face, the same for the 4 corners. The block light is at least
+/// the block light of the owner cell, as for smooth light.
+fn computeFlatLight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) FaceLight {
+    const off = face_offsets[@backingInt(face)];
+    const front = lightSample(chunk, getter, world_ox, world_oz, wx + off[0], wy + off[1], wz + off[2]);
+    const owner = lightSample(chunk, getter, world_ox, world_oz, wx, wy, wz).block;
+    const sky = @as(f32, @floatFromInt(front.sky)) / @as(f32, @floatFromInt(chunk_mod.MAX_SKYLIGHT));
+    const bl = @as(f32, @floatFromInt(@max(front.block, owner))) / @as(f32, @floatFromInt(chunk_mod.MAX_BLOCK_LIGHT));
+    return .{ .sky = @splat(sky), .bl = @splat(bl) };
+}
+
+/// The light of a face with the mesh options: off, flat or smooth.
+fn faceLight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face, options: MeshOptions) FaceLight {
+    return switch (options.lighting) {
+        .none => FaceLight.off,
+        .skylight => if (options.smooth_light)
+            computeFaceLight(chunk, getter, world_ox, world_oz, wx, wy, wz, face)
+        else
+            computeFlatLight(chunk, getter, world_ox, world_oz, wx, wy, wz, face),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Tints (REQ-VOXEL-007)
+// ---------------------------------------------------------------------------
+
+/// The tint colour of a quad with no tint.
+const NO_TINT: u32 = 0xFFFF_FFFF;
+
+/// The tint colour of a quad with tint index `tint_index` of `block` at the
+/// world cell (x, y, z), as red | green << 8 | blue << 16, or NO_TINT.
+fn tintColor(block: BlockType, tint_index: i8, x: i32, y: i32, z: i32) u32 {
+    if (!content.has_tint or tint_index < 0) return NO_TINT;
+    const rgb = content.tint(block, @intCast(tint_index), x, y, z);
+    return @as(u32, rgb[0]) | (@as(u32, rgb[1]) << 8) | (@as(u32, rgb[2]) << 16);
+}
+
+/// The tint colours of one mesh. A quad holds a slot of the palette (1 to
+/// MAX_TINT_SLOTS, 0 is no tint), and the mesh starts with tint records
+/// that hold the colours (see "Tint records" below). When the palette is
+/// full, a new colour gets the slot of the nearest colour in the palette.
+const TintPalette = struct {
+    colors: [MAX_TINT_SLOTS]u32 = undefined,
+    len: usize = 0,
+
+    /// The slot of `rgb`: 0 for NO_TINT, else 1 to MAX_TINT_SLOTS.
+    fn slot(self: *TintPalette, rgb: u32) u32 {
+        if (rgb == NO_TINT) return 0;
+        for (self.colors[0..self.len], 0..) |c, i| {
+            if (c == rgb) return @intCast(i + 1);
+        }
+        if (self.len < MAX_TINT_SLOTS) {
+            self.colors[self.len] = rgb;
+            self.len += 1;
+            return @intCast(self.len);
+        }
+        // Full: the nearest colour, the lowest slot on a tie.
+        var best: usize = 0;
+        var best_d: u32 = std.math.maxInt(u32);
+        for (self.colors, 0..) |c, i| {
+            var d: u32 = 0;
+            inline for (0..3) |k| {
+                const a: i32 = @intCast((c >> (8 * k)) & 0xFF);
+                const b: i32 = @intCast((rgb >> (8 * k)) & 0xFF);
+                d += @intCast((a - b) * (a - b));
+            }
+            if (d < best_d) {
+                best_d = d;
+                best = i;
+            }
+        }
+        return @intCast(best + 1);
+    }
+
+    /// Put the tint records at the start of the quads of `mesh`. The
+    /// record of slots 4k + 1 to 4k + 4 is at index k.
+    fn writeRecords(self: *const TintPalette, mesh: *Mesh) !void {
+        if (self.len == 0) return;
+        const n = (self.len + 3) / 4;
+        var records: [(MAX_TINT_SLOTS + 3) / 4]PackedQuad = @splat(.{ 0, 0, 0, 0 });
+        for (self.colors[0..self.len], 0..) |c, i| records[i / 4][i % 4] = c;
+        for (records[0..n]) |*r| r[3] |= TINT_RECORD_SLOT << TINT_SLOT_SHIFT;
+        try mesh.quads.insertSlice(mesh.allocator, 0, records[0..n]);
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Greedy meshing
@@ -1048,8 +923,9 @@ fn computeFaceBlockLight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32
 
 /// A single face candidate in a 2D greedy-merge plane. Holds everything needed
 /// to decide whether two adjacent cells may merge: block type, per-vertex AO,
-/// per-vertex skylight, per-vertex block-light. Two cells merge iff every f32
-/// byte in the lighting tuples is bit-identical AND the block types match.
+/// per-vertex skylight, per-vertex block-light and the tint colour. Two cells
+/// merge iff every f32 byte in the lighting tuples is bit-identical AND the
+/// block types and the tints match (REQ-VOXEL-008).
 const GreedyCell = struct {
     present: bool = false,
     block_type: BlockType = .air,
@@ -1060,6 +936,8 @@ const GreedyCell = struct {
     /// air). Omitting this from the merge key was the P0 bug: all greedy quads
     /// defaulted to block_light=0 even near an emissive block.
     bl: [4]f32 = .{ 0, 0, 0, 0 },
+    /// The tint colour (`tintColor`), or NO_TINT.
+    tint: u32 = NO_TINT,
 };
 
 /// True iff all four corner values in `v` are bit-identical. Used to detect
@@ -1072,12 +950,13 @@ fn greedyUniform4(v: [4]f32) bool {
 }
 
 /// Decide whether two adjacent face cells may merge into the same greedy
-/// rectangle. This rule is STRICTER than the classic "matching corners"
-/// greedy rule: we only merge cells whose AO and skylight are *uniform*
-/// (all four corners equal) AND whose uniform constants match the candidate
-/// cell. This is the only rule that guarantees bilinear interpolation over
-/// a merged w × h quad reproduces the piecewise-bilinear result of 1×1
-/// quads (one quad per block face) at every interior fragment.
+/// rectangle (REQ-VOXEL-008). This rule is STRICTER than the classic
+/// "matching corners" greedy rule: we only merge cells whose AO and light
+/// are *uniform* (all four corners equal) AND whose uniform constants and
+/// tint match the candidate cell. This is the only rule that guarantees
+/// bilinear interpolation over a merged w × h quad reproduces the
+/// piecewise-bilinear result of 1×1 quads (one quad per block face) at
+/// every interior fragment, so merged quads show no seams.
 ///
 /// Why the weaker rule fails: consider two adjacent cells that each have AO
 /// quadruple [a, a, b, b] at corners (0,0)(0,1)(1,1)(1,0). 1×1 quads are two
@@ -1090,6 +969,7 @@ fn greedyUniform4(v: [4]f32) bool {
 fn greedyCellEq(a: GreedyCell, b: GreedyCell) bool {
     if (!a.present or !b.present) return false;
     if (a.block_type != b.block_type) return false;
+    if (a.tint != b.tint) return false;
     if (!greedyUniform4(a.ao) or !greedyUniform4(b.ao)) return false;
     if (!greedyUniform4(a.sky) or !greedyUniform4(b.sky)) return false;
     if (!greedyUniform4(a.bl) or !greedyUniform4(b.bl)) return false;
@@ -1113,26 +993,20 @@ fn computeGreedyCell(
     lz: i32,
     face: Face,
     block: BlockType,
-    ao_strategy: AOStrategy,
-    lighting_mode: LightingMode,
+    options: MeshOptions,
 ) GreedyCell {
     const wx = world_ox + lx;
     const wz = world_oz + lz;
-    const ao = computeFaceAOForStrategy(chunk, getter, world_ox, world_oz, wx, ly, wz, face, ao_strategy);
-    const sky: [4]f32 = switch (lighting_mode) {
-        .none => .{ 1.0, 1.0, 1.0, 1.0 },
-        .skylight => computeFaceSkylight(chunk, getter, world_ox, world_oz, wx, ly, wz, face),
-    };
-    const bl: [4]f32 = switch (lighting_mode) {
-        .none => .{ 0.0, 0.0, 0.0, 0.0 },
-        .skylight => computeFaceBlockLight(chunk, getter, world_ox, world_oz, wx, ly, wz, face),
-    };
+    const ao = computeFaceAOForStrategy(chunk, getter, world_ox, world_oz, wx, ly, wz, face, options.ao);
+    const light = faceLight(chunk, getter, world_ox, world_oz, wx, ly, wz, face, options);
+    const origin = options.originOr(world_ox, world_oz);
     return .{
         .present = true,
         .block_type = block,
         .ao = ao,
-        .sky = sky,
-        .bl = bl,
+        .sky = light.sky,
+        .bl = light.bl,
+        .tint = tintColor(block, models.cubeTintIndex(block, face), origin[0] + lx, MIN_Y + ly, origin[1] + lz),
     };
 }
 
@@ -1142,6 +1016,7 @@ fn computeGreedyCell(
 /// that cell (greedyCellEq merges only cells with the same values).
 fn emitGreedyQuad(
     mesh: *Mesh,
+    palette: *TintPalette,
     face: Face,
     d: i32,
     ia: i32,
@@ -1155,7 +1030,7 @@ fn emitGreedyQuad(
     std.debug.assert(w > 0 and h > 0);
 
     const corner = greedyIJToLocalBlock(face, d, ia, ja);
-    const q = packQuad(
+    var q = packQuad(
         face,
         .{ @intCast(corner.x), @intCast(corner.y), @intCast(corner.z) },
         @intCast(w),
@@ -1165,6 +1040,7 @@ fn emitGreedyQuad(
         cell.sky,
         cell.bl,
     );
+    q[3] |= palette.slot(cell.tint) << TINT_SLOT_SHIFT;
     // The world y range: a y face is one plane, the other faces span h
     // blocks of y.
     const y_lo: f32, const y_hi: f32 = switch (face) {
@@ -1382,8 +1258,8 @@ const VisibleFaces = struct {
 
 /// Greedy-merged mesh generation. For each of the 6 face directions, slices
 /// the chunk into planes, builds a per-cell `GreedyCell` signature grid, then
-/// walks the grid growing rectangles of bit-identical (block_type, ao, sky)
-/// cells. One merged quad is emitted per rectangle.
+/// walks the grid growing rectangles of bit-identical (block_type, ao, sky,
+/// block light, tint) cells. One merged quad is emitted per rectangle.
 ///
 /// Cost per chunk: VisibleFaces makes the visible faces as bit masks, one
 /// 256-bit column per face direction. Slices with no visible face are
@@ -1400,7 +1276,11 @@ const VisibleFaces = struct {
 /// `mesh.y_max` get the y range of the quads. Then the model mesher adds a
 /// record for each visible quad of each block with a model (REQ-VOXEL-001).
 /// With no model block in the chunk, it adds nothing, so a chunk of full
-/// cubes gives the same bytes as before the model mesher.
+/// cubes gives the same bytes as before the model mesher. When a quad has
+/// a tint, the mesh starts with the tint records (REQ-VOXEL-007).
+///
+/// This is `generateMeshWith` with smooth light on and the tint position
+/// from `world_ox` and `world_oz`.
 pub fn generateMesh(
     chunk: *const Chunk,
     mesh: *Mesh,
@@ -1410,7 +1290,44 @@ pub fn generateMesh(
     ao_strategy: AOStrategy,
     lighting_mode: LightingMode,
 ) !void {
+    return generateMeshWith(chunk, mesh, world_ox, world_oz, getter, .{ .ao = ao_strategy, .lighting = lighting_mode });
+}
+
+/// The options of the mesher.
+pub const MeshOptions = struct {
+    /// The ambient occlusion of each corner. `.none` turns AO off: each
+    /// corner gets AO 1.
+    ao: AOStrategy = .classic,
+    /// `.none`: full sky light and no block light on each corner.
+    /// `.skylight`: the light of the light engine.
+    lighting: LightingMode = .skylight,
+    /// True: smooth light, the mean light of the 4 cells at each corner.
+    /// False: flat light, the light of the cell in front of each face on
+    /// all 4 corners (REQ-VOXEL-006).
+    smooth_light: bool = true,
+    /// The world x and z of local cell (0, 0) of the chunk, for the tint
+    /// colours (REQ-VOXEL-007). Null: `world_ox` and `world_oz`. Give it
+    /// when the getter uses other coordinates, as the mesh stage does
+    /// (`pipeline/stages.zig`).
+    origin: ?[2]i32 = null,
+
+    fn originOr(self: MeshOptions, world_ox: i32, world_oz: i32) [2]i32 {
+        return self.origin orelse .{ world_ox, world_oz };
+    }
+};
+
+/// Mesh a chunk with `options`. `world_ox` and `world_oz` are the x and z
+/// of local cell (0, 0) in the coordinates of `getter`.
+pub fn generateMeshWith(
+    chunk: *const Chunk,
+    mesh: *Mesh,
+    world_ox: i32,
+    world_oz: i32,
+    getter: BlockGetter,
+    options: MeshOptions,
+) !void {
     mesh.clear();
+    var palette: TintPalette = .{};
 
     // Max plane dim = CHUNK_W × CHUNK_H (applies to all X/Z sliced faces).
     const max_i: usize = @intCast(CHUNK_W);
@@ -1490,8 +1407,7 @@ pub fn generateMesh(
                         bp.z,
                         face,
                         chunk.resolveBlockRaw(bp.x, bp.y, bp.z),
-                        ao_strategy,
-                        lighting_mode,
+                        options,
                     );
                 }
             }
@@ -1544,12 +1460,13 @@ pub fn generateMesh(
                         }
                     }
 
-                    try emitGreedyQuad(mesh, face, d, ia, ja, w, h, seed);
+                    try emitGreedyQuad(mesh, &palette, face, d, ia, ja, w, h, seed);
                 }
             }
         }
     }
-    try generateModelQuads(chunk, mesh, world_ox, world_oz, getter, lighting_mode);
+    try generateModelQuads(chunk, mesh, world_ox, world_oz, getter, options, &palette);
+    try palette.writeRecords(mesh);
     std.log.info("[MESH greedy: {} quads]", .{mesh.quadCount()});
 }
 
@@ -1564,15 +1481,17 @@ fn neighbourIsCube(chunk: *const Chunk, getter: BlockGetter, lx: i32, ly: i32, l
 }
 
 /// Add a model quad record for each visible quad of each block with a
-/// model. It reads only the cell of the block and its 6 neighbours, so the
-/// mesh stage stays in its bounded neighbourhood.
+/// model. It reads the cell of the block, its 6 neighbours and the cells
+/// of the AO and light samples of a face, so the mesh stage stays in its
+/// bounded neighbourhood.
 fn generateModelQuads(
     chunk: *const Chunk,
     mesh: *Mesh,
     world_ox: i32,
     world_oz: i32,
     getter: BlockGetter,
-    lighting_mode: LightingMode,
+    options: MeshOptions,
+    palette: *TintPalette,
 ) !void {
     if (!models.any) return;
     for (&chunk.blocks.sections, 0..) |*sec, s| {
@@ -1590,11 +1509,81 @@ fn generateModelQuads(
                 while (z < CHUNK_W) : (z += 1) {
                     const block = chunk.resolveBlockRaw(x, y, z);
                     if (!models.hasModel(block)) continue;
-                    try emitModelBlock(chunk, mesh, world_ox, world_oz, getter, lighting_mode, x, y, z, block);
+                    try emitModelBlock(chunk, mesh, world_ox, world_oz, getter, options, palette, x, y, z, block);
                 }
             }
         }
     }
+}
+
+/// The in-plane position (i, j) of each corner of a model quad that lies
+/// on the side of its cell in its light direction, by index in
+/// `models.quads`. Null for a quad that is not on the cell grid. i and j
+/// are the in-plane axes of the face (face_layouts), 0 to 1.
+const model_grid: [models.quads.len]?[4][2]f32 = blk: {
+    @setEvalBranchQuota(100_000);
+    var out: [models.quads.len]?[4][2]f32 = undefined;
+    for (models.quads, 0..) |q, qi| {
+        const fl = face_layouts[@backingInt(q.face)];
+        const plane: f32 = if (fl.positive) 1.0 else 0.0;
+        var on_grid = true;
+        var ij: [4][2]f32 = undefined;
+        for (q.pos, 0..) |p, c| {
+            if (@abs(p[fl.normal_axis] - plane) > 1.0e-4) on_grid = false;
+            ij[c] = .{ std.math.clamp(p[fl.i_axis], 0.0, 1.0), std.math.clamp(p[fl.j_axis], 0.0, 1.0) };
+        }
+        out[qi] = if (on_grid) ij else null;
+    }
+    break :blk out;
+};
+
+/// The value at in-plane position (i, j) of a face with corner values `v`
+/// (in the corner order of face_layouts): the bilinear mix of the 4 corners.
+fn faceValueAt(face: Face, v: [4]f32, ij: [2]f32) f32 {
+    const fl = face_layouts[@backingInt(face)];
+    // at[si][sj]: the value of the corner at step (si, sj).
+    var at: [2][2]f32 = undefined;
+    for (0..4) |c| at[fl.pos[c][0]][fl.pos[c][1]] = v[c];
+    const i = ij[0];
+    const j = ij[1];
+    return (1 - i) * (1 - j) * at[0][0] + i * (1 - j) * at[1][0] + (1 - i) * j * at[0][1] + i * j * at[1][1];
+}
+
+/// The AO and the light of each corner of model quad `qi` of the block at
+/// local (lx, ly, lz) (REQ-VOXEL-006).
+///
+/// A quad on the cell grid (its corners on the side of the cell in its
+/// light direction, `model_grid`) gets the AO and the light of the full
+/// face of the cell, mixed at the position of each corner. A full-size quad
+/// then gets the values of a greedy face. A part of a face (for example
+/// the side of a half block) gets the values at its corners.
+///
+/// A quad that is not on the grid (for example the top of a half block, or
+/// a plane through the cell) gets flat light: the light of the neighbour
+/// cell in its light direction on all 4 corners, and AO 1. Its corners do
+/// not touch the cells that the corner samples read, so these samples do
+/// not apply to it.
+fn modelQuadShade(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, options: MeshOptions, qi: usize, lx: i32, ly: i32, lz: i32) struct { ao: [4]f32, light: FaceLight } {
+    const q = models.quads[qi];
+    const wx = world_ox + lx;
+    const wz = world_oz + lz;
+    const grid = model_grid[qi] orelse {
+        const light: FaceLight = switch (options.lighting) {
+            .none => FaceLight.off,
+            .skylight => computeFlatLight(chunk, getter, world_ox, world_oz, wx, ly, wz, q.face),
+        };
+        return .{ .ao = @splat(1.0), .light = light };
+    };
+    const ao_face = computeFaceAOForStrategy(chunk, getter, world_ox, world_oz, wx, ly, wz, q.face, options.ao);
+    const light_face = faceLight(chunk, getter, world_ox, world_oz, wx, ly, wz, q.face, options);
+    var ao: [4]f32 = undefined;
+    var light: FaceLight = undefined;
+    for (0..4) |c| {
+        ao[c] = faceValueAt(q.face, ao_face, grid[c]);
+        light.sky[c] = faceValueAt(q.face, light_face.sky, grid[c]);
+        light.bl[c] = faceValueAt(q.face, light_face.bl, grid[c]);
+    }
+    return .{ .ao = ao, .light = light };
 }
 
 fn emitModelBlock(
@@ -1603,44 +1592,31 @@ fn emitModelBlock(
     world_ox: i32,
     world_oz: i32,
     getter: BlockGetter,
-    lighting_mode: LightingMode,
+    options: MeshOptions,
+    palette: *TintPalette,
     lx: i32,
     ly: i32,
     lz: i32,
     block: BlockType,
 ) !void {
     const r = models.range(block);
-    const wx = world_ox + lx;
-    const wz = world_oz + lz;
+    const origin = options.originOr(world_ox, world_oz);
     for (r.first..@as(usize, r.first) + r.count) |qi| {
         const q = models.quads[qi];
         if (q.cull_face) |cf| {
             if (neighbourIsCube(chunk, getter, lx, ly, lz, world_ox, world_oz, cf)) continue;
         }
-        // The light of the neighbour cell in the light direction of the
-        // quad, the same for the 4 corners. A block with a model stops
-        // light, so its own cell is dark. The block light also takes the
-        // emission of the block itself, as on a greedy face.
-        const off = face_offsets[@backingInt(q.face)];
-        const sky: f32, const bl: f32 = switch (lighting_mode) {
-            .none => .{ 1.0, 0.0 },
-            .skylight => .{
-                @as(f32, @floatFromInt(skylightSample(chunk, getter, world_ox, world_oz, wx + off[0], ly + off[1], wz + off[2]))) /
-                    @as(f32, @floatFromInt(chunk_mod.MAX_SKYLIGHT)),
-                @as(f32, @floatFromInt(@max(
-                    blockLightSample(chunk, getter, world_ox, world_oz, wx + off[0], ly + off[1], wz + off[2]),
-                    blockLightSample(chunk, getter, world_ox, world_oz, wx, ly, wz),
-                ))) / @as(f32, @floatFromInt(chunk_mod.MAX_BLOCK_LIGHT)),
-            },
-        };
-        const rec = packModelQuad(
+        const shade = modelQuadShade(chunk, getter, world_ox, world_oz, options, qi, lx, ly, lz);
+        var rec = packModelQuad(
             .{ @intCast(lx), @intCast(ly), @intCast(lz) },
             @intCast(qi),
             @backingInt(block),
-            @splat(1.0),
-            @splat(sky),
-            @splat(bl),
+            shade.ao,
+            shade.light.sky,
+            shade.light.bl,
         );
+        const tint = tintColor(block, q.tint_index, origin[0] + lx, MIN_Y + ly, origin[1] + lz);
+        rec[3] |= palette.slot(tint) << TINT_SLOT_SHIFT;
         var y_lo: f32 = q.pos[0][1];
         var y_hi: f32 = q.pos[0][1];
         for (q.pos[1..]) |p| {
@@ -1668,9 +1644,12 @@ fn emitModelBlock(
 //   words 1-3: 12 six-bit light fields, 5 + 5 + 2 per word, in this order:
 //              ao0..3, sky0..3, bl0..3
 //   word 3, bits 12-19: block type. Bits 20-23: cell y bits 8-11, 0 in a
-//   column of 256 cells or less. Bits 24-31: 0.
-// ao = field / 42, sky = field / 60, block light = field / 60. Every value the
-// mesher makes is one of these ratios, so the decode gives the same f32.
+//   column of 256 cells or less. Bits 24-30: tint slot (0 = no tint).
+//   Bit 31: 0.
+// ao = field / 42, sky = field / 60, block light = field / 60. Every value of
+// a greedy face is one of these ratios, so the decode gives the same f32. A
+// model quad on a part of a face mixes the corner values, and the field
+// holds the nearest ratio.
 //
 // Model quad records (REQ-VOXEL-001). A record of a model quad is also 16
 // bytes in the same stream, after the greedy quads. Bit 31 of word 3 is 1 in
@@ -1679,12 +1658,48 @@ fn emitModelBlock(
 // `models.gpu_table` in place of the face, W and H:
 //   word 0: cell x (4) | cell y bits 0-7 (8) | cell z (4) | model quad index (16)
 //   words 1-3: the 12 light fields, as above
-//   word 3, bits 12-19: block type. Bits 20-23: cell y bits 8-11. Bit 31: 1.
+//   word 3, bits 12-19: block type. Bits 20-23: cell y bits 8-11. Bits
+//   24-30: tint slot. Bit 31: 1.
 // The shader reads the corners, the texture coordinates, the face, the tint
 // index and the shade flag of the quad from the table. A world of full cubes
 // has no model records, so its bytes do not change.
+//
+// Tint records (REQ-VOXEL-007). A quad with a tint holds a tint slot, 1 to
+// MAX_TINT_SLOTS, in word 3 bits 24-30. The colours of the slots are in tint
+// records at the start of the stream, before the greedy quads. The record at
+// index k holds the colours of slots 4k + 1 to 4k + 4, one per word:
+//   word n, bits 0-23: red | green << 8 | blue << 16 of slot 4k + n + 1
+//   word 3, bits 24-30: TINT_RECORD_SLOT (127). Other bits: 0.
+// The shader draws no triangle for a tint record. A mesh with no tint has no
+// tint records, and each tint slot is 0, so its bytes do not change.
 
 pub const PackedQuad = [4]u32;
+
+/// The bit of the tint slot in word 3 of a quad.
+pub const TINT_SLOT_SHIFT: u5 = 24;
+/// The tint slots of one mesh: 1 to 126.
+pub const MAX_TINT_SLOTS: usize = 126;
+/// The tint slot value that marks a tint record.
+pub const TINT_RECORD_SLOT: u32 = 0x7F;
+
+/// The tint slot of a quad: 0 for no tint, else 1 to MAX_TINT_SLOTS.
+pub fn tintSlot(q: PackedQuad) u32 {
+    return (q[3] >> TINT_SLOT_SHIFT) & 0x7F;
+}
+
+/// True when `q` is a tint record, not a quad.
+pub fn isTintRecord(q: PackedQuad) bool {
+    return tintSlot(q) == TINT_RECORD_SLOT;
+}
+
+/// The tint colour of quad `q` of `quads` (a mesh), as red, green, blue,
+/// or null for a quad with no tint. Mirrors tintOf in voxel.wgsl.
+pub fn quadTint(quads: []const PackedQuad, q: PackedQuad) ?[3]u8 {
+    const s = tintSlot(q);
+    if (s == 0 or s == TINT_RECORD_SLOT) return null;
+    const word = quads[(s - 1) / 4][(s - 1) % 4];
+    return .{ @truncate(word), @truncate(word >> 8), @truncate(word >> 16) };
+}
 
 pub const AO_STEPS: f32 = 42.0;
 pub const LIGHT_STEPS: f32 = 60.0;
@@ -1913,7 +1928,7 @@ test "each packed quad decodes to the face, block and light of its cell" {
             const block = chunk.getBlock(lx, ly, lz);
             try std.testing.expect(block != .air);
             try std.testing.expect(shouldRenderFace(&chunk, tg.getter(), lx, ly, lz, ox, oz, face));
-            const want = computeGreedyCell(&chunk, tg.getter(), ox, oz, lx, ly, lz, face, block, ao, .skylight);
+            const want = computeGreedyCell(&chunk, tg.getter(), ox, oz, lx, ly, lz, face, block, .{ .ao = ao, .lighting = .skylight });
             for (0..4) |c| {
                 const got = unpackCorner(q, c, ox, oz);
                 try std.testing.expectEqual(@as(u32, @backingInt(block)), got.block_type);
@@ -2073,7 +2088,7 @@ test "a quad with a cull face is not drawn next to a full cube (REQ-VOXEL-002)" 
     // The full cubes show the faces that touch the half block: 6 faces
     // each, because no full cube touches them.
     var cube_faces: usize = 0;
-    for (mesh.quads.items) |q| {
+    for (quadsOnly(&mesh)) |q| {
         if (!isModelRecord(q)) cube_faces += 1;
     }
     try std.testing.expectEqual(@as(usize, 12), cube_faces);
@@ -2173,5 +2188,360 @@ test "a box face has the corners and the winding of a greedy quad" {
             try std.testing.expectEqual(bq.pos[c][2], v.pos[2]);
             try std.testing.expectEqual(bq.uv[c], v.uv);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AO, smooth light and tint tests (REQ-VOXEL-006, REQ-VOXEL-007, REQ-VOXEL-008)
+// ---------------------------------------------------------------------------
+
+/// The quads of `mesh` with no tint records.
+fn quadsOnly(mesh: *const Mesh) []const PackedQuad {
+    var n: usize = 0;
+    while (n < mesh.quads.items.len and isTintRecord(mesh.quads.items[n])) n += 1;
+    return mesh.quads.items[n..];
+}
+
+/// The face of a greedy quad.
+fn quadFace(q: PackedQuad) Face {
+    return @fromBackingInt(@as(u3, @intCast((q[0] >> 16) & 0x7)));
+}
+
+/// Mesh `chunk` at the origin with `options` and the test getter.
+fn meshWith(chunk: *Chunk, mesh: *Mesh, options: MeshOptions) !void {
+    try chunk.computeSkylight();
+    try chunk.computeBlockLight();
+    const tg = TestGetter{ .chunk = chunk, .ox = 0, .oz = 0 };
+    try generateMeshWith(chunk, mesh, 0, 0, tg.getter(), options);
+}
+
+test "a corner gets its AO from its 3 neighbour blocks: 0 to 3 occluders (REQ-VOXEL-006)" {
+    // The rule: (3 - occluders) / 3, and 0 when both sides are solid.
+    try std.testing.expectEqual(@as(f32, 1.0), aoValue(false, false, false));
+    try std.testing.expectEqual(@as(f32, 2.0 / 3.0), aoValue(true, false, false));
+    try std.testing.expectEqual(@as(f32, 2.0 / 3.0), aoValue(false, true, false));
+    try std.testing.expectEqual(@as(f32, 2.0 / 3.0), aoValue(false, false, true));
+    try std.testing.expectEqual(@as(f32, 1.0 / 3.0), aoValue(true, false, true));
+    try std.testing.expectEqual(@as(f32, 0.0), aoValue(true, true, false));
+    try std.testing.expectEqual(@as(f32, 0.0), aoValue(true, true, true));
+
+    // The same rule in a mesh: one block, and 0 to 3 occluders around
+    // corner 0 of its top face. Corner 0 of +Y is at step (0, 0): the
+    // occluders are at -X, -Z and -X-Z in the layer above.
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { cells: []const [3]i32, ao: f32 }{
+        .{ .cells = &.{}, .ao = 1.0 },
+        .{ .cells = &.{.{ 4, 71, 5 }}, .ao = 2.0 / 3.0 },
+        .{ .cells = &.{.{ 4, 71, 4 }}, .ao = 2.0 / 3.0 },
+        .{ .cells = &.{ .{ 4, 71, 5 }, .{ 4, 71, 4 } }, .ao = 1.0 / 3.0 },
+        .{ .cells = &.{ .{ 4, 71, 5 }, .{ 5, 71, 4 } }, .ao = 0.0 },
+        .{ .cells = &.{ .{ 4, 71, 5 }, .{ 5, 71, 4 }, .{ 4, 71, 4 } }, .ao = 0.0 },
+    };
+    for (cases) |case| {
+        var chunk = Chunk.init(allocator);
+        defer chunk.deinit();
+        try chunk.setBlock(5, 70, 5, .solid);
+        for (case.cells) |c| try chunk.setBlock(c[0], c[1], c[2], .solid);
+        var mesh = Mesh.init(allocator);
+        defer mesh.deinit();
+        try meshWith(&chunk, &mesh, .{ .ao = .classic });
+        var seen = false;
+        for (quadsOnly(&mesh)) |q| {
+            if (quadFace(q) != .py or cellY(q) != 70 or (q[0] & 0xF) != 5) continue;
+            seen = true;
+            try std.testing.expectEqual(case.ao, unpackCorner(q, 0, 0, 0).ao);
+        }
+        try std.testing.expect(seen);
+        // AO off: every corner is 1.
+        try meshWith(&chunk, &mesh, .{ .ao = .none });
+        for (quadsOnly(&mesh)) |q| {
+            for (0..4) |c| try std.testing.expectEqual(@as(f32, 1.0), unpackCorner(q, c, 0, 0).ao);
+        }
+    }
+}
+
+test "smooth light is the mean light of the 4 cells at each corner (REQ-VOXEL-006)" {
+    const allocator = std.testing.allocator;
+    var chunk = try testHillChunk(allocator);
+    defer chunk.deinit();
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try meshWith(&chunk, &mesh, .{ .ao = .classic });
+    const tg = TestGetter{ .chunk = &chunk, .ox = 0, .oz = 0 };
+    const getter = tg.getter();
+    var checked: usize = 0;
+    for (quadsOnly(&mesh)) |q| {
+        const face = quadFace(q);
+        const fl = face_layouts[@backingInt(face)];
+        for (0..4) |c| {
+            const v = unpackCorner(q, c, 0, 0);
+            // The 4 cells that touch the corner on the outward side.
+            var p: [3]i32 = undefined;
+            for (0..3) |a| p[a] = @intFromFloat(v.pos[a]);
+            p[1] -= MIN_Y;
+            if (!fl.positive) p[fl.normal_axis] -= 1;
+            var sum: u32 = 0;
+            for ([_]i32{ -1, 0 }) |di| for ([_]i32{ -1, 0 }) |dj| {
+                var cell = p;
+                cell[fl.i_axis] += di;
+                cell[fl.j_axis] += dj;
+                sum += lightSample(&chunk, getter, 0, 0, cell[0], cell[1], cell[2]).sky;
+            };
+            const want = @as(f32, @floatFromInt(sum)) / 4.0 / @as(f32, @floatFromInt(chunk_mod.MAX_SKYLIGHT));
+            try std.testing.expectApproxEqAbs(want, v.skylight, 0.5 / LIGHT_STEPS);
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked > 100);
+}
+
+test "smooth light off gives each face the light of the cell in front of it (REQ-VOXEL-006)" {
+    const allocator = std.testing.allocator;
+    var chunk = try testHillChunk(allocator);
+    defer chunk.deinit();
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try meshWith(&chunk, &mesh, .{ .ao = .none, .smooth_light = false });
+    for (quadsOnly(&mesh)) |q| {
+        const face = quadFace(q);
+        const off = face_offsets[@backingInt(face)];
+        const lx: i32 = @intCast(q[0] & 0xF);
+        const ly: i32 = @intCast(cellY(q));
+        const lz: i32 = @intCast((q[0] >> 12) & 0xF);
+        const tg = TestGetter{ .chunk = &chunk, .ox = 0, .oz = 0 };
+        const want = lightSample(&chunk, tg.getter(), 0, 0, lx + off[0], ly + off[1], lz + off[2]);
+        for (0..4) |c| {
+            const v = unpackCorner(q, c, 0, 0);
+            try std.testing.expectEqual(@as(f32, @floatFromInt(want.sky)) / @as(f32, @floatFromInt(chunk_mod.MAX_SKYLIGHT)), v.skylight);
+            try std.testing.expectEqual(unpackCorner(q, 0, 0, 0).block_light, v.block_light);
+        }
+    }
+}
+
+test "greedy faces with different AO, light or tint do not merge (REQ-VOXEL-008)" {
+    const base: GreedyCell = .{ .present = true, .block_type = .solid, .ao = @splat(1), .sky = @splat(1), .bl = @splat(0) };
+    try std.testing.expect(greedyCellEq(base, base));
+    var other = base;
+    other.ao = @splat(2.0 / 3.0);
+    try std.testing.expect(!greedyCellEq(base, other));
+    other = base;
+    other.sky = @splat(0.5);
+    try std.testing.expect(!greedyCellEq(base, other));
+    other = base;
+    other.bl = @splat(0.5);
+    try std.testing.expect(!greedyCellEq(base, other));
+    other = base;
+    other.tint = 0x102030;
+    try std.testing.expect(!greedyCellEq(base, other));
+    // A cell with a gradient does not merge, also with itself.
+    other = base;
+    other.ao = .{ 1, 1, 2.0 / 3.0, 2.0 / 3.0 };
+    try std.testing.expect(!greedyCellEq(other, other));
+
+    // In a mesh: a row of 4 blocks has one top quad. An occluder next to
+    // the first block changes its AO, so the row splits.
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |occluder| {
+        var chunk = Chunk.init(allocator);
+        defer chunk.deinit();
+        for (2..6) |x| try chunk.setBlock(@intCast(x), 70, 5, .solid);
+        if (occluder) try chunk.setBlock(1, 71, 5, .solid);
+        var mesh = Mesh.init(allocator);
+        defer mesh.deinit();
+        try meshWith(&chunk, &mesh, .{ .ao = .classic });
+        var tops: usize = 0;
+        for (quadsOnly(&mesh)) |q| {
+            if (quadFace(q) != .py or cellY(q) != 70 or (q[0] & 0xF) < 2) continue;
+            tops += 1;
+            // A merged quad has the same AO on its 4 corners.
+            const merged = (q[0] >> 19) & 0xF != 0 or (q[0] >> 23) & 0xFF != 0;
+            if (!merged) continue;
+            const a0 = unpackCorner(q, 0, 0, 0).ao;
+            for (1..4) |c| try std.testing.expectEqual(a0, unpackCorner(q, c, 0, 0).ao);
+        }
+        if (occluder) try std.testing.expect(tops > 1) else try std.testing.expectEqual(@as(usize, 1), tops);
+    }
+}
+
+test "quads with a tint index get the tint colour of the content (REQ-VOXEL-007)" {
+    const allocator = std.testing.allocator;
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
+    // A layer of b6 (one colour on each face) and a layer of b5 (one
+    // colour for each cell on the top face only).
+    for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
+        try chunk.setBlock(@intCast(x), 60, @intCast(z), .b6);
+        try chunk.setBlock(@intCast(x), 80, @intCast(z), .b5);
+    };
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    const ox: i32 = 16 * 3;
+    const oz: i32 = -16;
+    try chunk.computeSkylight();
+    try chunk.computeBlockLight();
+    const tg = TestGetter{ .chunk = &chunk, .ox = ox, .oz = oz };
+    try generateMeshWith(&chunk, &mesh, ox, oz, tg.getter(), .{});
+
+    // The tint records come first: 126 slots in 32 records.
+    var records: usize = 0;
+    while (isTintRecord(mesh.quads.items[records])) records += 1;
+    try std.testing.expectEqual((MAX_TINT_SLOTS + 3) / 4, records);
+    const all = mesh.quads.items;
+    var b5_exact: usize = 0;
+    var b5_tops: usize = 0;
+    var b6_quads: usize = 0;
+    for (all[records..]) |q| {
+        try std.testing.expect(!isTintRecord(q));
+        const block: BlockType = @fromBackingInt(@as(u8, @intCast((q[3] >> 12) & 0xFF)));
+        const lx: i32 = @intCast(q[0] & 0xF);
+        const ly: i32 = @intCast(cellY(q));
+        const lz: i32 = @intCast((q[0] >> 12) & 0xF);
+        const got = quadTint(all, q);
+        switch (block) {
+            .b6 => {
+                b6_quads += 1;
+                try std.testing.expectEqual(@as(?[3]u8, .{ 40, 180, 60 }), got);
+            },
+            .b5 => {
+                if (quadFace(q) != .py) {
+                    try std.testing.expectEqual(@as(?[3]u8, null), got);
+                    continue;
+                }
+                // A tinted face does not merge with a face of another colour.
+                try std.testing.expectEqual(@as(u32, 0), (q[0] >> 19) & 0xF);
+                try std.testing.expectEqual(@as(u32, 0), (q[0] >> 23) & 0xFF);
+                b5_tops += 1;
+                const want = sw_content_tint(.b5, 0, ox + lx, MIN_Y + ly, oz + lz);
+                // The palette is full after 126 colours: then the quad gets
+                // the nearest colour of the palette.
+                if (std.mem.eql(u8, &want, &got.?)) b5_exact += 1;
+            },
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, CHUNK_W * CHUNK_W), b5_tops);
+    try std.testing.expect(b5_exact >= MAX_TINT_SLOTS - 1);
+    try std.testing.expect(b5_exact < b5_tops);
+    try std.testing.expect(b6_quads > 0);
+
+    // A model quad gets the tint of its tint index: the b20 plane. A full
+    // cube with no tint index has tint slot 0.
+    var small = Chunk.init(allocator);
+    defer small.deinit();
+    try small.setBlock(3, 90, 3, .b20);
+    try small.setBlock(6, 70, 3, .solid);
+    try meshWith(&small, &mesh, .{});
+    try std.testing.expect(isTintRecord(mesh.quads.items[0]));
+    var b20_quads: usize = 0;
+    for (quadsOnly(&mesh)) |q| {
+        if (!isModelRecord(q)) {
+            try std.testing.expectEqual(@as(u32, 0), tintSlot(q));
+            continue;
+        }
+        b20_quads += 1;
+        try std.testing.expectEqual(@as(?[3]u8, sw_content_tint(.b20, 0, 3, MIN_Y + 90, 3)), quadTint(mesh.quads.items, q));
+    }
+    try std.testing.expectEqual(@as(usize, 2), b20_quads);
+
+    // A mesh with no tint has no tint records and the same bytes.
+    var plain = Chunk.init(allocator);
+    defer plain.deinit();
+    try plain.setBlock(3, 70, 3, .solid);
+    try meshWith(&plain, &mesh, .{});
+    for (mesh.quads.items) |q| {
+        try std.testing.expectEqual(@as(u32, 0), tintSlot(q));
+    }
+}
+
+/// The tint colour of the test content.
+fn sw_content_tint(block: BlockType, index: u8, x: i32, y: i32, z: i32) [3]u8 {
+    return content.tint(block, index, x, y, z);
+}
+
+test "the tint palette keeps 126 colours, then gives the nearest one" {
+    var p: TintPalette = .{};
+    try std.testing.expectEqual(@as(u32, 0), p.slot(NO_TINT));
+    for (0..MAX_TINT_SLOTS) |i| {
+        const rgb: u32 = @intCast(i * 2);
+        try std.testing.expectEqual(@as(u32, @intCast(i + 1)), p.slot(rgb));
+        try std.testing.expectEqual(@as(u32, @intCast(i + 1)), p.slot(rgb));
+    }
+    // Full: 7 is nearest to 6 and 8 (slots 4 and 5): the lowest slot wins.
+    try std.testing.expectEqual(@as(u32, 4), p.slot(7));
+    try std.testing.expectEqual(@as(u32, MAX_TINT_SLOTS), p.slot(0xFF));
+}
+
+test "a model quad on the cell grid gets AO and smooth light, a quad off the grid gets flat light (REQ-VOXEL-006)" {
+    const allocator = std.testing.allocator;
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
+    // A half block (b19) on a floor, with a wall block at -X. The floor
+    // hides the bottom quad of the half block.
+    for (3..8) |x| for (3..8) |z| try chunk.setBlock(@intCast(x), 69, @intCast(z), .solid);
+    try chunk.setBlock(5, 70, 5, .b19);
+    try chunk.setBlock(4, 70, 6, .solid);
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try meshWith(&chunk, &mesh, .{ .ao = .classic });
+    const tg = TestGetter{ .chunk = &chunk, .ox = 0, .oz = 0 };
+    var faces = std.EnumSet(Face){};
+    for (quadsOnly(&mesh)) |q| {
+        if (!isModelRecord(q)) continue;
+        const baked = models.quads[modelQuadIndex(q)];
+        faces.insert(baked.face);
+        const full_ao = computeFaceAOClassic(&chunk, tg.getter(), 0, 0, 5, 70, 5, baked.face);
+        const full_light = computeFaceLight(&chunk, tg.getter(), 0, 0, 5, 70, 5, baked.face);
+        switch (baked.face) {
+            .py => {
+                // The top is inside the cell: off the grid. Flat light from
+                // the cell above, and AO 1.
+                const above = chunk.lightAt(5, 71, 5);
+                for (0..4) |c| {
+                    const v = unpackCorner(q, c, 0, 0);
+                    try std.testing.expectEqual(@as(f32, 1.0), v.ao);
+                    try std.testing.expectEqual(@as(f32, @floatFromInt(above.sky)) / 15.0, v.skylight);
+                }
+            },
+            else => {
+                // A side: on the grid, from y 0 to 0.5. The bottom corners
+                // have the values of the full face, the top corners the
+                // mean of the bottom and the top of the full face.
+                const fl = face_layouts[@backingInt(baked.face)];
+                for (0..4) |c| {
+                    const v = unpackCorner(q, c, 0, 0);
+                    const i = baked.pos[c][fl.i_axis];
+                    const j = baked.pos[c][fl.j_axis];
+                    const want_ao = faceValueAt(baked.face, full_ao, .{ i, j });
+                    const want_sky = faceValueAt(baked.face, full_light.sky, .{ i, j });
+                    try std.testing.expectApproxEqAbs(want_ao, v.ao, 0.5 / AO_STEPS);
+                    try std.testing.expectApproxEqAbs(want_sky, v.skylight, 0.5 / LIGHT_STEPS);
+                }
+            },
+        }
+    }
+    // The bottom is hidden by the floor (cull face -Y).
+    try std.testing.expect(!faces.contains(.ny));
+    try std.testing.expectEqual(@as(usize, 5), faces.count());
+
+    // The -X side touches the wall corner at +Z: its AO is less than 1 at
+    // the bottom corner on that side.
+    var darker = false;
+    for (quadsOnly(&mesh)) |q| {
+        if (!isModelRecord(q) or models.quads[modelQuadIndex(q)].face != .nx) continue;
+        for (0..4) |c| darker = darker or unpackCorner(q, c, 0, 0).ao < 1.0;
+    }
+    try std.testing.expect(darker);
+}
+
+test "faceValueAt gives the corner values at the corners and their mean in the middle" {
+    for (0..6) |f| {
+        const face: Face = @fromBackingInt(@as(u3, @intCast(f)));
+        const fl = face_layouts[f];
+        const v = [4]f32{ 0.1, 0.2, 0.4, 0.8 };
+        for (0..4) |c| {
+            const ij = [2]f32{ @floatFromInt(fl.pos[c][0]), @floatFromInt(fl.pos[c][1]) };
+            try std.testing.expectEqual(v[c], faceValueAt(face, v, ij));
+        }
+        try std.testing.expectApproxEqAbs(@as(f32, 0.375), faceValueAt(face, v, .{ 0.5, 0.5 }), 1e-6);
     }
 }

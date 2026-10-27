@@ -94,3 +94,31 @@ pub fn isCube(block: Block) bool {
 pub inline fn range(block: Block) Range {
     return tables.ranges[@backingInt(block)];
 }
+
+/// True when one or more faces of a full cube have a tint index
+/// (REQ-VOXEL-007).
+pub const any_cube_tint: bool = blk: {
+    @setEvalBranchQuota(100_000);
+    for (block_values) |v| {
+        for (0..6) |f| {
+            if (content.tintIndex(@fromBackingInt(v), @fromBackingInt(@as(u3, @intCast(f)))) >= 0) break :blk true;
+        }
+    }
+    break :blk false;
+};
+
+/// The tint index of each face of each full cube, -1 for no tint.
+const cube_tint_table: [256][6]i8 = blk: {
+    @setEvalBranchQuota(100_000);
+    var t: [256][6]i8 = @splat(@splat(-1));
+    for (block_values) |v| {
+        for (0..6) |f| t[v][f] = content.tintIndex(@fromBackingInt(v), @fromBackingInt(@as(u3, @intCast(f))));
+    }
+    break :blk t;
+};
+
+/// The tint index of face `face` of the full cube `block`, or -1.
+pub inline fn cubeTintIndex(block: Block, face: model.Face) i8 {
+    if (!any_cube_tint) return -1;
+    return cube_tint_table[@backingInt(block)][@backingInt(face)];
+}

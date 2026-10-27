@@ -267,7 +267,11 @@ pub const WorkerWorld = struct {
                 }
                 var hood: stages.Neighbourhood = undefined;
                 for (lights, 0..) |e, s| hood[s] = .{ .blocks = &e.blocks, .light = &e.light.? };
-                var m = try stages.mesh(self.allocator, &hood, job.ao, job.lighting);
+                var m = try stages.meshWith(self.allocator, &hood, job.cx, job.cz, .{
+                    .ao = job.ao,
+                    .lighting = job.lighting,
+                    .smooth_light = job.smooth_light,
+                });
                 defer m.deinit(self.allocator);
                 head.y_min = m.y_min;
                 head.y_max = m.y_max;

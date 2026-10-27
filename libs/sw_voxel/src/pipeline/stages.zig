@@ -519,13 +519,32 @@ pub const MeshResult = struct {
     }
 };
 
-/// The greedy mesh of the middle chunk of `hood`. The quads are relative to
-/// the chunk origin, so the chunk coordinates are not an input.
+/// The greedy mesh of the middle chunk of `hood`, with smooth light. The
+/// quads are relative to the chunk origin. The tint colours (REQ-VOXEL-007)
+/// use chunk (0, 0): a content with tints uses `meshWith` and gives the
+/// chunk coordinates.
 pub fn mesh(
     allocator: std.mem.Allocator,
     hood: *const Neighbourhood,
     ao: AOStrategy,
     lighting: LightingMode,
+) !MeshResult {
+    return meshWith(allocator, hood, 0, 0, .{ .ao = ao, .lighting = lighting });
+}
+
+/// The mesher options of the mesh stage.
+pub const MeshOptions = mesher_mod.MeshOptions;
+
+/// The mesh of chunk (cx, cz), the middle chunk of `hood`, with `options`.
+/// The quads are relative to the chunk origin. The chunk coordinates give
+/// the world position of the tint colours (REQ-VOXEL-007), so the stage
+/// stays a pure function of its inputs. `options.origin` is ignored.
+pub fn meshWith(
+    allocator: std.mem.Allocator,
+    hood: *const Neighbourhood,
+    cx: i32,
+    cz: i32,
+    options: MeshOptions,
 ) !MeshResult {
     const center = hood[CENTER];
     // A read-only Chunk value over the inputs. It owns nothing.
@@ -538,7 +557,9 @@ pub fn mesh(
     const getter: HoodGetter = .{ .view = &view, .hood = hood };
     var m = mesher_mod.Mesh.init(allocator);
     defer m.deinit();
-    try mesher_mod.generateMesh(&view, &m, 0, 0, getter.asBlockGetter(), ao, lighting);
+    var opts = options;
+    opts.origin = .{ cx * CHUNK_W, cz * CHUNK_W };
+    try mesher_mod.generateMeshWith(&view, &m, 0, 0, getter.asBlockGetter(), opts);
     return .{
         .quads = try m.quads.toOwnedSlice(allocator),
         .y_min = m.y_min,

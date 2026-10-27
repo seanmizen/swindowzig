@@ -161,6 +161,14 @@ pub const Started = struct {
             .light = self.inputs.light,
         };
     }
+
+    /// The protocol message of the job, with all the mesh options of
+    /// `sched` (also smooth light, REQ-VOXEL-006).
+    pub fn messageFor(self: Started, sched: *const Scheduler) protocol.Job {
+        var job = self.message(sched.ao, sched.lighting);
+        job.smooth_light = sched.smooth_light;
+        return job;
+    }
 };
 
 /// The output of a stage, from a worker. The caller of `install` gives it
@@ -262,8 +270,10 @@ pub const Scheduler = struct {
     render_distance: i32,
     ao: stages.AOStrategy,
     lighting: stages.LightingMode,
-    /// The mesh options. It changes with `ao` or `lighting`, and a mesh with
-    /// other options is stale.
+    /// False: flat light in place of smooth light (REQ-VOXEL-006).
+    smooth_light: bool = true,
+    /// The mesh options. It changes with `ao`, `lighting` or
+    /// `smooth_light`, and a mesh with other options is stale.
     options: u32 = 1,
     /// The player chunk.
     center_cx: i32 = 0,
@@ -327,6 +337,15 @@ pub const Scheduler = struct {
         if (ao == self.ao and lighting == self.lighting) return;
         self.ao = ao;
         self.lighting = lighting;
+        self.options += 1;
+        self.dirty = true;
+    }
+
+    /// Turn smooth light on or off (REQ-VOXEL-006). Off gives flat light:
+    /// the light of the cell in front of each face. Each mesh becomes stale.
+    pub fn setSmoothLight(self: *Scheduler, on: bool) void {
+        if (on == self.smooth_light) return;
+        self.smooth_light = on;
         self.options += 1;
         self.dirty = true;
     }

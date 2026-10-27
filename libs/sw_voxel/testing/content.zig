@@ -65,6 +65,28 @@ pub fn model(block: Block) ?*const model_mod.BakedModel {
     };
 }
 
+/// The tint colours of the tests (REQ-VOXEL-007). The generator places
+/// none of b5, b6 and b20, so the terrain has no tint.
+///   b5: a colour for each cell (x, z), so a chunk layer has 256 colours.
+///   b6: one colour.
+///   b20: a colour from the tint index and y.
+pub fn tint(block: Block, tint_index: u8, x: i32, y: i32, z: i32) [3]u8 {
+    return switch (block) {
+        .b5 => .{ @intCast(@mod(x, 16) * 16), @intCast(@mod(z, 16) * 16), 200 },
+        .b6 => .{ 40, 180, 60 },
+        else => .{ tint_index *% 50, @intCast(@mod(y, 256)), 7 },
+    };
+}
+
+/// The top face of b5 and each face of b6 have tint index 0.
+pub fn tintIndex(block: Block, face: model_mod.Face) i8 {
+    return switch (block) {
+        .b5 => if (face == .py) 0 else -1,
+        .b6 => 0,
+        else => -1,
+    };
+}
+
 /// `emitter` gives full light. b18 gives less light, and lets light
 /// through. The generator does not place b18.
 pub fn emission(block: Block) u8 {

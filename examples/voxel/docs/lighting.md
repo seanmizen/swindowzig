@@ -484,3 +484,28 @@ workers use it. A worker updates its cached light only when the light of
 all 3×3 chunks is current. Else it drops the light, and the next light job
 lights the 44-cell window again. Tests in `light.zig` check that the
 incremental light equals the light stage after random edits.
+
+## Smooth light, AO of model quads and tints
+
+The current mesher code is the reference. This section gives the rules
+in short.
+
+- Smooth light (REQ-VOXEL-006): each corner of a face gets the mean light
+  of the 4 cells that touch the corner on the outward side of the face.
+  `mesher.computeFaceLight` reads the 9 cells of the outward slab once,
+  with `Chunk.lightAt` values (`BlockGetter.lightAt` out of the chunk).
+  The block light of a corner is at least the block light of the owner
+  cell.
+- Flat light: `MeshOptions.smooth_light = false`, the
+  `--smooth-light=off` flag of the demo, or
+  `Scheduler.setSmoothLight(false)`. Each face gets the light of the cell
+  in front of it on its 4 corners. `MeshOptions.ao = .none` turns AO off.
+- Model quads: a quad on the side of its cell in its light direction gets
+  the AO and the light of the full face, mixed at the position of each
+  corner. A quad off the cell grid (the top of a half block, a plane
+  through the cell) gets flat light and AO 1.
+- Tints (REQ-VOXEL-007): the content gives `tint` and `tintIndex`. The
+  demo tints grass tops and leaves in 8 steps, and voxel.wgsl draws them
+  white times the tint.
+- Greedy merges (REQ-VOXEL-008): two faces merge only when their AO,
+  light and tint are equal, and the same on the 4 corners.

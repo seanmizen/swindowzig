@@ -29,3 +29,11 @@ test "shader: voxel.wgsl model record bit matches the mesher (REQ-VOXEL-001)" {
     const src = @embedFile("voxel.wgsl");
     try std.testing.expectEqual(mesher.MODEL_RECORD_BIT, try wgslHexConst(src, "MODEL_RECORD_BIT"));
 }
+
+test "shader: voxel.wgsl tint slot constants match the mesher (REQ-VOXEL-007)" {
+    const src = @embedFile("voxel.wgsl");
+    try std.testing.expectEqual(mesher.TINT_RECORD_SLOT, try wgslHexConst(src, "TINT_RECORD_SLOT"));
+    var buf: [64]u8 = undefined;
+    const line = try std.fmt.bufPrint(&buf, "const TINT_SLOT_SHIFT: u32 = {d}u;", .{mesher.TINT_SLOT_SHIFT});
+    try std.testing.expect(std.mem.indexOf(u8, src, line) != null);
+}

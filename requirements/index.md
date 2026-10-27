@@ -45,6 +45,9 @@
 | [`REQ-VOXEL-003`](voxel.md#req-voxel-003--the-content-gives-the-opacity-and-the-emission-of-each-block) | The content gives the opacity and the emission of each block | active | functional | P1 | agent:SWZ-32 |
 | [`REQ-VOXEL-004`](voxel.md#req-voxel-004--sky-light-falls-straight-down-without-loss) | Sky light falls straight down without loss | active | functional | P1 | agent:SWZ-32 |
 | [`REQ-VOXEL-005`](voxel.md#req-voxel-005--an-edit-updates-the-light-incrementally) | An edit updates the light incrementally | active | quality | P1 | agent:SWZ-32 |
+| [`REQ-VOXEL-006`](voxel.md#req-voxel-006--each-corner-gets-ao-and-smooth-light) | Each corner gets AO and smooth light | active | functional | P2 | agent:SWZ-33 |
+| [`REQ-VOXEL-007`](voxel.md#req-voxel-007--the-content-gives-the-tint-colours) | The content gives the tint colours | active | functional | P2 | agent:SWZ-33 |
+| [`REQ-VOXEL-008`](voxel.md#req-voxel-008--greedy-meshing-merges-only-equal-faces) | Greedy meshing merges only equal faces | active | functional | P2 | agent:SWZ-33 |
 
 ## Dependency graph
 
@@ -90,6 +93,9 @@ graph TD
   REQ_VOXEL_003["REQ-VOXEL-003<br/>The content gives the opacity and the emission of each block"]
   REQ_VOXEL_004["REQ-VOXEL-004<br/>Sky light falls straight down without loss"]
   REQ_VOXEL_005["REQ-VOXEL-005<br/>An edit updates the light incrementally"]
+  REQ_VOXEL_006["REQ-VOXEL-006<br/>Each corner gets AO and smooth light"]
+  REQ_VOXEL_007["REQ-VOXEL-007<br/>The content gives the tint colours"]
+  REQ_VOXEL_008["REQ-VOXEL-008<br/>Greedy meshing merges only equal faces"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -104,6 +110,10 @@ graph TD
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
   REQ_VOXEL_004 -->|refines| REQ_VOXEL_003
   REQ_VOXEL_005 -->|depends-on| REQ_VOXEL_003
+  REQ_VOXEL_006 -->|depends-on| REQ_VOXEL_003
+  REQ_VOXEL_007 -->|refines| REQ_VOXEL_001
+  REQ_VOXEL_008 -->|refines| REQ_VOXEL_006
+  REQ_VOXEL_008 -->|refines| REQ_VOXEL_007
 ```
 
 ## Derived reverse links
@@ -114,5 +124,7 @@ graph TD
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009
 - `REQ-GPU-008` — refined-by REQ-GPU-010
 - `REQ-GPU-010` — refined-by REQ-GPU-011
-- `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
-- `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005
+- `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-007
+- `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005, required-by REQ-VOXEL-006
+- `REQ-VOXEL-006` — refined-by REQ-VOXEL-008
+- `REQ-VOXEL-007` — refined-by REQ-VOXEL-008

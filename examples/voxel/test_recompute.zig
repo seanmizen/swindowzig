@@ -70,7 +70,7 @@ pub const Recompute = struct {
             const dcx, const dcz = stages.offsetOf(s);
             hood[s] = .{ .blocks = try self.blocksOf(cx + dcx, cz + dcz), .light = try self.lightOf(cx + dcx, cz + dcz) };
         }
-        return stages.mesh(self.a, &hood, ao, lighting);
+        return stages.meshWith(self.a, &hood, cx, cz, .{ .ao = ao, .lighting = lighting });
     }
 };
 
