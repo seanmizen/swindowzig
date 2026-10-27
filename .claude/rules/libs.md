@@ -188,3 +188,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_assets/src/assets.zig` | `loadBytes(allocator, path_or_url)` returns a `Request`. `request.poll()` gives `.pending`, `.bytes` or `.failed`, and never waits. Native: a thread reads a file in the base directory (`useDirectory`/`useDirectoryPath`), and an `http(s)://` URL fails with `UnsupportedUrl`. Web: `fetch` through `backends/wasm/assets.ts` |
 | `libs/sw_assets/src/png.zig` | `decodePng(allocator, bytes)` gives RGBA8 `Image`. It calls stb_image (`libs/sw_assets/c/`, licence in `THIRD_PARTY_NOTICES.md`) |
 | `libs/sw_gfx2d` `Renderer.createTextureFromPng` | Decode PNG bytes and upload them as a texture |
+| `libs/sw_audio/src/audio.zig` | `Audio`: the waveform API (REQ-AUDIO-001), and `playSample`, `playStream`, voice and group volumes, `setListener`. `decode` reads WAV or Ogg Vorbis. One output for each program |
+| `libs/sw_audio/src/mixer.zig` | `Mixer`: 64 voices, 8 volume groups, pan and distance loss from the listener, a limiter. No platform code, unit tested |
+| `libs/sw_audio/src/vorbis.zig`, `wav.zig` | Ogg Vorbis (stb_vorbis in `c/`, one memory buffer, no libc) and WAV decoding. `Stream` decodes a 4096-frame window at a time (REQ-AUDIO-002) |
+| `libs/sw_audio/src/native_sdl.zig`, `web.zig` | Backends. Native: the SDL audio thread calls `Mixer.mix`. The main thread changes the mixer between `SDL_LockAudioDevice` and unlock. Web: `backends/wasm/audio.ts` calls the `sw_audio_mix` export from a timer, and plays each block on the audio clock |

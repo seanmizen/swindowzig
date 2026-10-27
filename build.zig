@@ -245,6 +245,9 @@ pub fn build(b: *std.Build) void {
         // sw_ui: the tree, layout, focus and semantic tree have no GPU or font
         // code. draw.zig is built with the examples.
         "libs/sw_ui/src/ui.zig",
+        // sw_audio: the sample type and the WAV decoder.
+        "libs/sw_audio/src/sample.zig",
+        "libs/sw_audio/src/wav.zig",
     };
 
     // sw_assets: byte loading and PNG decoding. The PNG decoder is C
@@ -292,6 +295,58 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("examples/flat2d/assets/Lato-Regular.ttf"),
     });
     test_step.dependOn(&b.addRunArtifact(font_tests).step);
+
+    // sw_audio tests: the Ogg Vorbis decoder (stb_vorbis, C), the stream and
+    // the mixer. testdata/tone.ogg is the "test_ogg" import.
+    const audio_test_files = [_][]const u8{
+        "libs/sw_audio/src/vorbis.zig",
+        "libs/sw_audio/src/mixer.zig",
+    };
+    inline for (audio_test_files) |file| {
+        const unit_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        addAudioC(b, unit_tests.root_module);
+        unit_tests.root_module.addAnonymousImport("test_ogg", .{ .root_source_file = b.path("libs/sw_audio/testdata/tone.ogg") });
+        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    }
+    // The Audio API with the SDL2 backend. SDL_AUDIODRIVER=dummy: the SDL
+    // audio thread runs the mixer, and no sound goes to a speaker.
+    const audio_api_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_audio/src/audio.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+        .filters = &.{ "waveform API", "decode:", "Audio:" },
+    });
+    addAudioC(b, audio_api_tests.root_module);
+    audio_api_tests.root_module.addImport("sdl", sdl_c.createModule());
+    audio_api_tests.root_module.addAnonymousImport("test_ogg", .{ .root_source_file = b.path("libs/sw_audio/testdata/tone.ogg") });
+    audio_api_tests.root_module.linkSystemLibrary("SDL2", .{});
+    const run_audio_api_tests = b.addRunArtifact(audio_api_tests);
+    run_audio_api_tests.setEnvironmentVariable("SDL_AUDIODRIVER", "dummy");
+    test_step.dependOn(&run_audio_api_tests.step);
+    // The web build of sw_audio (the Web Audio backend and stb_vorbis with no
+    // C library) must compile and link for wasm32-freestanding.
+    const audio_wasm = b.addExecutable(.{
+        .name = "audio_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_audio/src/wasm_check.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    audio_wasm.root_module.addImport("sw_audio", web_libs.audio);
+    audio_wasm.entry = .disabled;
+    audio_wasm.rdynamic = true;
+    test_step.dependOn(&audio_wasm.step);
 
     // Mesher benchmark (no GPU): zig build bench-mesher -Doptimize=ReleaseFast
     const bench_mesher = b.addExecutable(.{
@@ -557,6 +612,8 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     if (sdl) |m| platform.addImport("sdl", m);
     const gpu = libModule(b, exported, "sw_gpu", "libs/sw_gpu/src/gpu_root.zig");
     const audio = libModule(b, exported, "sw_audio", "libs/sw_audio/src/audio_root.zig");
+    addAudioC(b, audio);
+    if (sdl) |m| audio.addImport("sdl", m);
     const math = libModule(b, exported, "sw_math", "libs/sw_math/src/math_root.zig");
     const assets = libModule(b, exported, "sw_assets", "libs/sw_assets/src/assets_root.zig");
     addAssetsC(b, assets);
@@ -576,6 +633,17 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
     return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .text = text, .ui = ui, .app = app };
+}
+
+/// Compile stb_vorbis (libs/sw_audio/c) into `module`. The file needs no C
+/// library, so it builds for freestanding wasm too.
+fn addAudioC(b: *std.Build, module: *std.Build.Module) void {
+    module.addCSourceFile(.{
+        .file = b.path("libs/sw_audio/c/sw_vorbis.c"),
+        // STB_VORBIS_NO_CRT gives `malloc(s)` as an int 0. With a memory
+        // buffer, the decoder never calls it.
+        .flags = &.{ "-std=c99", "-fno-sanitize=undefined", "-Wno-int-conversion", "-Wno-tautological-compare" },
+    });
 }
 
 /// Compile stb_truetype (with the C API that font.zig declares) into a module.

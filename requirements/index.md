@@ -10,6 +10,8 @@
 | [`REQ-A11Y-003`](a11y.md#req-a11y-003--a-live-region-is-an-aria-live-element) | A live region is an aria-live element | active | functional | P1 | sean |
 | [`REQ-A11Y-004`](a11y.md#req-a11y-004--the-mirror-is-visually-hidden) | The mirror is visually hidden | active | constraint | P1 | sean |
 | [`REQ-A11Y-005`](a11y.md#req-a11y-005--an-unchanged-tree-is-not-sent-to-js) | An unchanged tree is not sent to JS | active | quality | P1 | sean |
+| [`REQ-AUDIO-001`](audio.md#req-audio-001--the-waveform-api-does-not-change) | The waveform API does not change | active | constraint | P1 | agent:SWZ-48 |
+| [`REQ-AUDIO-002`](audio.md#req-audio-002--a-stream-does-not-decode-all-of-its-data) | A stream does not decode all of its data | active | quality | P1 | agent:SWZ-48 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 
@@ -22,6 +24,8 @@ graph TD
   REQ_A11Y_003["REQ-A11Y-003<br/>A live region is an aria-live element"]
   REQ_A11Y_004["REQ-A11Y-004<br/>The mirror is visually hidden"]
   REQ_A11Y_005["REQ-A11Y-005<br/>An unchanged tree is not sent to JS"]
+  REQ_AUDIO_001["REQ-AUDIO-001<br/>The waveform API does not change"]
+  REQ_AUDIO_002["REQ-AUDIO-002<br/>A stream does not decode all of its data"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
