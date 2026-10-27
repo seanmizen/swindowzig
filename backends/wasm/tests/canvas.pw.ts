@@ -12,6 +12,13 @@ import { expect, type Page, test } from '@playwright/test';
 /** The time that the test watches the example, in milliseconds. */
 const watchMs = 10_000;
 
+/**
+ * The time between the two reads, in milliseconds. The box turns one time
+ * in about 10.5 s, so a read 10 s later can show almost the same box. A
+ * quarter turn is about 2.6 s.
+ */
+const turnMs = 2_500;
+
 /** The number of canvas samples that the test compares. */
 const gridW = 64;
 const gridH = 36;
@@ -244,9 +251,11 @@ test('justabox draws the spinning box on the canvas', async ({ page }) => {
   const handlesBefore = await gpuHandles(page);
   const first = await readCanvas(page);
   describe('first', first);
-  await page.waitForTimeout(watchMs);
+  await page.waitForTimeout(turnMs);
   const second = await readCanvas(page);
   describe('second', second);
+  // Watch for WebGPU errors and kept handles for the remaining time.
+  await page.waitForTimeout(watchMs - turnMs);
   const handlesAfter = await gpuHandles(page);
   framesNow = await frames();
 
@@ -266,7 +275,7 @@ test('justabox draws the spinning box on the canvas', async ({ page }) => {
   // canvas.
   expect(
     changedCells(first, second),
-    `the canvas did not change in ${watchMs} ms.${dump()}`,
+    `the canvas did not change in ${turnMs} ms.${dump()}`,
   ).toBeGreaterThan(5);
 
   // Each frame gets a canvas texture, a command encoder, passes and a
