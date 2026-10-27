@@ -37,6 +37,7 @@ const stages = @import("stages.zig");
 
 const BlockType = chunk_mod.BlockType;
 const PalettedBlocks = chunk_mod.PalettedBlocks;
+const Section = chunk_mod.Section;
 pub const PackedQuad = mesher_mod.PackedQuad;
 pub const Stage = stages.Stage;
 pub const Version = stages.Version;
@@ -45,7 +46,7 @@ pub const SLOTS = stages.SLOTS;
 /// "VXCP" as little-endian bytes.
 pub const MAGIC: u32 = 0x50435856;
 /// Increment this value for each change of the layout.
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 
 pub const HEADER_LEN = 16;
 pub const HELLO_LEN = 24 + content.GEN_CONFIG_LEN;
@@ -65,15 +66,15 @@ pub const MAX_ERROR_TEXT = 256;
 /// version and the sizes that the stages use.
 pub const BUILD_HASH: u64 = blk: {
     var h = std.hash.Wyhash.init(0);
-    const parts = [_]u64{ VERSION, chunk_mod.CHUNK_W, chunk_mod.CHUNK_H, @sizeOf(PackedQuad), SLOTS, std.enums.values(BlockType).len };
+    const parts = [_]u64{ VERSION, chunk_mod.CHUNK_W, chunk_mod.CHUNK_H, @bitCast(@as(i64, chunk_mod.MIN_Y)), @sizeOf(PackedQuad), SLOTS, std.enums.values(BlockType).len };
     for (parts) |p| h.update(std.mem.asBytes(&p));
     break :blk h.final();
 };
 
 comptime {
     std.debug.assert(PAYLOAD_OFFSET % 16 == 0);
-    // Edit stores the local cell in u8 fields.
-    std.debug.assert(chunk_mod.CHUNK_W <= 256 and chunk_mod.CHUNK_H <= 256);
+    // Edit stores local x and z in 4 bits each, and local y in a u16.
+    std.debug.assert(chunk_mod.CHUNK_W == 16 and chunk_mod.CHUNK_H <= 65536);
     std.debug.assert(@sizeOf(PackedQuad) == 16);
 }
 
@@ -114,16 +115,16 @@ pub const Hello = struct {
 ///   0  i32  cx
 ///   4  i32  cz
 ///   8  u32  block version after the edit
-///   12 u8   x (local, 0..15)
-///   13 u8   y (0..255)
-///   14 u8   z (local, 0..15)
+///   12 u16  y (local, 0..CHUNK_H - 1)
+///   14 u8   x | z << 4 (local, 0..15 each)
 ///   15 u8   block type
 pub const Edit = struct {
     cx: i32,
     cz: i32,
     version: Version,
+    /// The local cell. y is local: world y is y + chunk.MIN_Y.
     x: u8,
-    y: u8,
+    y: u16,
     z: u8,
     block: BlockType,
 };
@@ -345,9 +346,8 @@ pub fn encodeEdit(allocator: std.mem.Allocator, edit: Edit) ![]u8 {
     o.int(i32, edit.cx);
     o.int(i32, edit.cz);
     o.int(u32, edit.version);
-    o.int(u8, edit.x);
-    o.int(u8, edit.y);
-    o.int(u8, edit.z);
+    o.int(u16, edit.y);
+    o.int(u8, edit.x | (edit.z << 4));
     o.int(u8, @backingInt(edit.block));
     return finish(o);
 }
@@ -367,8 +367,29 @@ pub fn encodeJob(allocator: std.mem.Allocator, id: u32, job: Job) ![]u8 {
 }
 
 /// The length of the blocks payload of `pb`.
+///
+/// Blocks payload: an 8-byte head, then each section from local y 0 up.
+///
+///   0  u16  section count: chunk.SECTION_COUNT
+///   2  u16  0
+///   4  u32  0
+///
+/// Section (8-byte aligned):
+///
+///   0  u8   index bits: 0, 1, 2, 4 or 8 (Section.bitsFor of the length)
+///   1  u8   0
+///   2  u16  palette length, 1 to 256
+///   4  ...  the palette (one byte for each block type), then 0 bytes to
+///           the next 8-byte boundary
+///   ...     the index words: u64 × Section.indexWords(bits)
 pub fn blocksLen(pb: *const PalettedBlocks) usize {
-    return 8 + std.mem.alignForward(usize, pb.palette_len, 8) + pb.data.len * 8;
+    var n: usize = 8;
+    for (&pb.sections) |*sec| n += sectionLen(sec.bits, sec.len);
+    return n;
+}
+
+fn sectionLen(bits: u8, palette_len: usize) usize {
+    return std.mem.alignForward(usize, 4 + palette_len, 8) + Section.indexWords(bits) * 8;
 }
 
 pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, payload: Payload) ![]u8 {
@@ -411,13 +432,17 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
             }
         },
         .blocks => |pb| {
-            o.int(u16, pb.palette_len);
-            o.int(u8, pb.bits_per_entry);
-            o.int(u8, 0);
-            o.int(u32, @intCast(pb.data.len));
-            for (pb.palette[0..pb.palette_len]) |b| o.int(u8, @backingInt(b));
-            o.zeros(std.mem.alignForward(usize, pb.palette_len, 8) - pb.palette_len);
-            for (pb.data) |w| o.int(u64, w);
+            o.int(u16, chunk_mod.SECTION_COUNT);
+            o.int(u16, 0);
+            o.int(u32, 0);
+            for (&pb.sections) |*sec| {
+                o.int(u8, sec.bits);
+                o.int(u8, 0);
+                o.int(u16, sec.len);
+                for (sec.palette()) |b| o.int(u8, @backingInt(b));
+                o.zeros(std.mem.alignForward(usize, 4 + sec.len, 8) - 4 - sec.len);
+                for (sec.indices()) |w| o.int(u64, w);
+            }
         },
     }
     if (payload == .quads) {
@@ -507,16 +532,21 @@ pub fn decode(bytes: []const u8) DecodeError!Decoded {
         },
         .edit => blk: {
             if (body_len != EDIT_LEN) return error.BadLength;
+            const cx = b.int(i32);
+            const cz = b.int(i32);
+            const version = b.int(u32);
+            const y = b.int(u16);
+            const xz = b.int(u8);
             const e: Edit = .{
-                .cx = b.int(i32),
-                .cz = b.int(i32),
-                .version = b.int(u32),
-                .x = b.int(u8),
-                .y = b.int(u8),
-                .z = b.int(u8),
+                .cx = cx,
+                .cz = cz,
+                .version = version,
+                .x = xz & 0xF,
+                .y = y,
+                .z = xz >> 4,
                 .block = try b.enumOf(BlockType),
             };
-            if (e.x >= chunk_mod.CHUNK_W or e.z >= chunk_mod.CHUNK_W) return error.BadField;
+            if (e.y >= chunk_mod.CHUNK_H) return error.BadField;
             break :blk .{ .edit = e };
         },
         .job => blk: {
@@ -632,44 +662,61 @@ fn resultInfo(bytes: []const u8, kind: Kind, body_len: u32, id: u32) DecodeError
     };
 }
 
-/// Check a blocks payload: the palette, the bit width and the length.
+/// Check a blocks payload: the section count, and for each section the
+/// palette, the bit width and the length.
 fn checkBlocks(p: []const u8) DecodeError!void {
     if (p.len < 8) return error.BadLength;
     var in: In = .{ .buf = p };
-    const palette_len = in.int(u16);
-    const bits = in.int(u8);
-    if (in.int(u8) != 0) return error.BadField;
-    const words = in.int(u32);
-    if (palette_len < 1 or palette_len > 256) return error.BadField;
-    if (bits != PalettedBlocks.minBitsFor(palette_len)) return error.BadField;
-    const want_words: usize = if (bits == 0) 0 else PalettedBlocks.wordCountFor(bits);
-    if (words != want_words) return error.BadField;
-    const pal_padded = std.mem.alignForward(usize, palette_len, 8);
-    if (p.len != 8 + pal_padded + @as(usize, words) * 8) return error.BadLength;
-    for (p[8..][0..palette_len]) |b| {
-        if (std.enums.fromInt(BlockType, b) == null) return error.BadField;
+    if (in.int(u16) != chunk_mod.SECTION_COUNT) return error.BadField;
+    if (in.int(u16) != 0 or in.int(u32) != 0) return error.BadField;
+    for (0..chunk_mod.SECTION_COUNT) |_| {
+        const start = in.pos;
+        if (p.len - start < 4) return error.BadLength;
+        const bits = in.int(u8);
+        if (in.int(u8) != 0) return error.BadField;
+        const palette_len = in.int(u16);
+        if (palette_len < 1 or palette_len > 256) return error.BadField;
+        if (bits != Section.bitsFor(palette_len)) return error.BadField;
+        const len = sectionLen(bits, palette_len);
+        if (p.len - start < len) return error.BadLength;
+        for (p[start + 4 ..][0..palette_len]) |b| {
+            if (std.enums.fromInt(BlockType, b) == null) return error.BadField;
+        }
+        const pal_end = start + 4 + palette_len;
+        for (p[pal_end .. start + std.mem.alignForward(usize, 4 + palette_len, 8)]) |b| {
+            if (b != 0) return error.BadField;
+        }
+        in.pos = start + len;
     }
-    for (p[8 + palette_len ..][0 .. pal_padded - palette_len]) |b| {
-        if (b != 0) return error.BadField;
-    }
+    if (in.pos != p.len) return error.BadLength;
 }
 
 /// The blocks of a generate Result. The caller owns them.
 pub fn decodeBlocks(allocator: std.mem.Allocator, r: Result) !PalettedBlocks {
     std.debug.assert(r.has_blocks);
     const p = r.payload;
-    var in: In = .{ .buf = p };
     var out: PalettedBlocks = .{};
-    out.palette_len = in.int(u16);
-    out.bits_per_entry = in.int(u8);
-    _ = in.int(u8);
-    const words = in.int(u32);
-    for (p[8..][0..out.palette_len], 0..) |b, i| out.palette[i] = @fromBackingInt(b);
-    if (words == 0) return out;
-    const data = try allocator.alloc(u64, words);
-    var w: In = .{ .buf = p, .pos = 8 + std.mem.alignForward(usize, out.palette_len, 8) };
-    for (data) |*d| d.* = w.int(u64);
-    out.data = data;
+    errdefer out.deinit(allocator);
+    var pos: usize = 8;
+    for (&out.sections) |*sec| {
+        var in: In = .{ .buf = p, .pos = pos };
+        const bits = in.int(u8);
+        _ = in.int(u8);
+        const palette_len = in.int(u16);
+        const pal = p[pos + 4 ..][0..palette_len];
+        pos += sectionLen(bits, palette_len);
+        if (bits == 0) {
+            sec.* = Section.uniform(@fromBackingInt(pal[0]));
+            continue;
+        }
+        const buf = try allocator.alloc(u64, Section.indexWords(bits) + Section.paletteWords(bits));
+        @memset(buf, 0);
+        sec.* = .{ .bits = bits, .len = palette_len, .buf = buf };
+        var w: In = .{ .buf = p, .pos = pos - Section.indexWords(bits) * 8 };
+        for (buf[0..Section.indexWords(bits)]) |*d| d.* = w.int(u64);
+        const slots = std.mem.sliceAsBytes(buf[Section.indexWords(bits)..]);
+        @memcpy(slots[0..palette_len], pal);
+    }
     return out;
 }
 

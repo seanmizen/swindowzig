@@ -94,7 +94,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 // with no vertex or index buffer makes the 2 triangles of each quad.
 struct ChunkQuads {
     // x and z: the chunk origin in world blocks. y: the debug tick of the
-    // last rebuild of the mesh (ChunkGPU.rebuilt_tick in main.zig).
+    // last rebuild of the mesh (ChunkGPU.rebuilt_tick in main.zig). w: the
+    // world y of local y 0 (chunk.MIN_Y).
     origin: vec4<i32>,
     quads: array<vec4<u32>>,
 };
@@ -158,7 +159,7 @@ fn vs_chunk(@builtin(vertex_index) vi: u32) -> VertexOutput {
 
     let cell = vec3<f32>(
         f32(i32(q.x & 0xFu) + chunk.origin.x),
-        f32((q.x >> 4u) & 0xFFu),
+        f32(i32(((q.x >> 4u) & 0xFFu) | (((q.w >> 20u) & 0xFu) << 8u)) + chunk.origin.w),
         f32(i32((q.x >> 12u) & 0xFu) + chunk.origin.z),
     );
     let p = cornerStep(FACE_POS_A, FACE_POS_B, face, corner);

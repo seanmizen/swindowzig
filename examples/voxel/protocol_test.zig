@@ -236,7 +236,7 @@ test "protocol: a bad header gives an error" {
     b[6] = @backingInt(protocol.Kind.job);
     try std.testing.expectError(error.BadLength, protocol.decode(&b));
     @memcpy(&b, good);
-    b[16 + 12] = 16; // x past the chunk
+    std.mem.writeInt(u16, b[16 + 12 ..][0..2], chunk_mod.CHUNK_H, .little); // y past the chunk
     try std.testing.expectError(error.BadField, protocol.decode(&b));
     @memcpy(&b, good);
     b[16 + 15] = 200; // no such block

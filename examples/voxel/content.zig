@@ -12,6 +12,10 @@ const CHUNK_H = chunk.CHUNK_H;
 const DenseBlocks = chunk.DenseBlocks;
 const blockLinearIdx = chunk.blockLinearIdx;
 
+/// The world height of the demo: y 0 to 255, 16 sections of 16 cells.
+pub const min_y: i32 = 0;
+pub const height: u32 = 256;
+
 /// The block types of the demo. The value is the block id in the chunk
 /// storage, in the protocol and in the packed quads. voxel.wgsl gives each
 /// id its colour.

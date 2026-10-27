@@ -155,7 +155,7 @@ pub const WorkerWorld = struct {
         gop.value_ptr.version = e.version;
         self.stats.edits += 1;
         if (self.cache.get(key)) |entry| {
-            try entry.blocks.set(self.allocator, chunk_mod.blockLinearIdx(e.x, e.y, e.z), e.block);
+            try entry.blocks.setAt(self.allocator, e.x, e.y, e.z, e.block);
             self.dropLight(entry);
             self.recount(entry);
         }
@@ -232,7 +232,7 @@ pub const WorkerWorld = struct {
         var blocks = try stages.generate(self.allocator, config.seed, config, cx, cz);
         errdefer blocks.deinit(self.allocator);
         if (self.log.getPtr(key)) |l| {
-            for (l.edits.items) |e| try blocks.set(self.allocator, chunk_mod.blockLinearIdx(e.x, e.y, e.z), e.block);
+            for (l.edits.items) |e| try blocks.setAt(self.allocator, e.x, e.y, e.z, e.block);
         }
         const entry = try self.allocator.create(Entry);
         errdefer self.allocator.destroy(entry);

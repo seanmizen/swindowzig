@@ -1,8 +1,17 @@
 //! The content of the sw_voxel unit tests. It has no game names: the block
 //! types have numbers, and the generator makes noise hills with holes,
 //! floating slabs and emissive blocks. Only the test build imports it.
+//!
+//! The build runs the unit tests two times, with two world heights from the
+//! module `sw_voxel_test_dims`: the default (y 0 to 255), and a tall world
+//! (y -64 to 319). The generator works in local y, so both worlds have the
+//! same terrain above local y 0.
 const std = @import("std");
 const sw_voxel = @import("sw_voxel");
+const dims = @import("sw_voxel_test_dims");
+
+pub const min_y: i32 = dims.min_y;
+pub const height: u32 = dims.height;
 
 const chunk = sw_voxel.chunk;
 const CHUNK_W = chunk.CHUNK_W;
@@ -18,6 +27,19 @@ pub const Block = enum(u8) {
     b6 = 6,
     b7 = 7,
     b8 = 8,
+    // More numbered blocks, so that a section palette can need 8 bits.
+    b9 = 9,
+    b10 = 10,
+    b11 = 11,
+    b12 = 12,
+    b13 = 13,
+    b14 = 14,
+    b15 = 15,
+    b16 = 16,
+    b17 = 17,
+    b18 = 18,
+    b19 = 19,
+    b20 = 20,
 };
 
 /// Only `emitter` gives light.

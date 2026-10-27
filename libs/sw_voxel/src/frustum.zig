@@ -200,8 +200,8 @@ fn boxOutside(planes: [5][4]f32, lo: [3]f32, hi: [3]f32) bool {
 /// Returns true if the chunk at chunk-grid coordinates (cx, cz) should be
 /// drawn under the given strategy. Cheap and branch-light: the camera-chunk
 /// short-circuit handles the common case in two integer compares.
-/// `y_min`/`y_max`: the y range of the chunk's mesh (only the frustum
-/// strategy uses it).
+/// `y_min`/`y_max`: the world y range of the chunk's mesh (only the
+/// frustum strategy uses it).
 pub fn keepChunk(strategy: Strategy, frustum: Frustum, cx: i32, cz: i32, y_min: f32, y_max: f32) bool {
     // --- Safety net: never cull the camera chunk or its 8 horizontal
     // neighbours. See the file header for the rationale.
@@ -218,10 +218,10 @@ pub fn keepChunk(strategy: Strategy, frustum: Frustum, cx: i32, cz: i32, y_min: 
         return !boxOutside(frustum.planes, .{ x0, y_min, z0 }, .{ x0 + w, y_max, z0 + w });
     }
 
-    // World-space chunk centre. Y is fixed at half the column height.
+    // World-space chunk centre. Y is fixed at the middle of the column.
     const cwx: f32 = @as(f32, @floatFromInt(cx * CHUNK_W)) + half_w_f;
     const cwz: f32 = @as(f32, @floatFromInt(cz * CHUNK_W)) + half_w_f;
-    const cwy: f32 = half_h_f;
+    const cwy: f32 = @as(f32, @floatFromInt(chunk_mod.MIN_Y)) + half_h_f;
 
     const dx = cwx - frustum.eye[0];
     const dy = cwy - frustum.eye[1];
@@ -297,10 +297,11 @@ test "camera 3x3 neighbourhood always survives a narrow cone facing away" {
 
 test "narrow cone looking +x culls a far chunk directly behind" {
     const f = Frustum.capture(.{ 0.0, 64.0, 0.0 }, .{ 1.0, 0.0, 0.0 }, 30.0, 4);
-    // 10 chunks in the -x direction is well outside RENDER_DISTANCE so it
+    // 20 chunks in the -x direction is well outside RENDER_DISTANCE so it
     // also fails the sphere cutoff — but the cone test should reject it
-    // independently before we get there.
-    try std.testing.expect(!keepChunk(.cone, f, -10, 0, 0, CHUNK_H));
+    // independently before we get there. The camera is outside the
+    // bounding sphere of the chunk also for a tall column.
+    try std.testing.expect(!keepChunk(.cone, f, -20, 0, 0, CHUNK_H));
 }
 
 test "looking straight down keeps the column we are above" {
