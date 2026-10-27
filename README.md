@@ -3,6 +3,24 @@
 **A thin WebGPU wrapper for game development.**
 Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS/Linux).
 
+<!-- progress:start -->
+![engine progress](https://img.shields.io/badge/engine-2.9%25-1D76DB)
+
+**Engine: 2.9% complete** `█░░░░░░░░░░░░░░░░░░░` (1 of 34 issues)
+
+| State | Issues |
+|---|---|
+| done | 1 |
+| in-review | 2 |
+| in-progress | 2 |
+| ready | 8 |
+| backlog | 21 |
+
+A GitHub workflow writes this block from the
+[`engine` issues](https://github.com/seanmizen/swindowzig/issues?q=label%3Aengine).
+Do not edit it. `scripts/progress.mjs` gives the rules.
+<!-- progress:end -->
+
 ---
 
 ## What It Is
@@ -105,6 +123,7 @@ zig build run                      # justabox (default) — spinning colored box
 zig build run -Dexample=voxel     # voxel chunk demo
 zig build run -Dexample=windows   # triangle with mouse drag
 zig build run -Dexample=flat2d    # 2D renderer: rectangles, outline, textured quad
+zig build run -Dexample=mipmaps   # GPU mip levels, texture array, anisotropy (Space: sampler)
 ```
 
 ### Voxel Demo — CLI Flags

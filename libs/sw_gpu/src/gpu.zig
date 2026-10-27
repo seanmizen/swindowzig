@@ -37,6 +37,8 @@ pub const TextureDescriptor = types.TextureDescriptor;
 pub const SamplerDescriptor = types.SamplerDescriptor;
 pub const ShaderModuleDescriptor = types.ShaderModuleDescriptor;
 pub const BindGroupLayoutDescriptor = types.BindGroupLayoutDescriptor;
+pub const TextureRegion = types.TextureRegion;
+pub const TextureViewDescriptor = types.TextureViewDescriptor;
 
 // Note: RenderPipelineDescriptor, ComputePipelineDescriptor, RenderPassDescriptor,
 // BindGroupDescriptor, and PipelineLayoutDescriptor are defined later in this file
@@ -71,6 +73,39 @@ fn toNativeCompareFunction(cf: types.CompareFunction) native.WGPUCompareFunction
         .not_equal => .not_equal,
         .greater_equal => .greater_equal,
         .always => .always,
+    };
+}
+
+/// Map types.AddressMode to WGPUAddressMode. The Zig enum starts with
+/// clamp_to_edge=0, but WGPUAddressMode starts with repeat=0.
+fn toNativeAddressMode(mode: types.AddressMode) native.WGPUAddressMode {
+    return switch (mode) {
+        .clamp_to_edge => .clamp_to_edge,
+        .repeat => .repeat,
+        .mirror_repeat => .mirror_repeat,
+    };
+}
+
+fn toNativeFilterMode(mode: types.FilterMode) native.WGPUFilterMode {
+    return switch (mode) {
+        .nearest => .nearest,
+        .linear => .linear,
+    };
+}
+
+/// The view dimension number of WGPUTextureViewDimension and of webgpu.ts
+/// (createTextureView): 0 is "the default of the texture", then 1d=1 up to
+/// 3d=6. types.TextureViewDimension starts at 1d=0, so a raw @backingInt
+/// gives the wrong dimension.
+fn viewDimensionCode(dimension: ?types.TextureViewDimension) u32 {
+    const d = dimension orelse return 0;
+    return switch (d) {
+        .@"1d" => 1,
+        .@"2d" => 2,
+        .@"2d-array" => 3,
+        .cube => 4,
+        .cube_array => 5,
+        .@"3d" => 6,
     };
 }
 
@@ -704,9 +739,16 @@ pub const GPU = struct {
         }
     }
 
-    /// Create a sampler for texture sampling
+    /// Create a sampler for texture sampling.
+    ///
+    /// `max_anisotropy` above 1 gives anisotropic filtering. The GPU clamps
+    /// the value to the most that it supports. WebGPU requires linear
+    /// `mag_filter`, `min_filter` and `mipmap_filter` for anisotropy, so a
+    /// sampler with a nearest filter and `max_anisotropy` above 1 gives
+    /// `error.AnisotropyNeedsLinearFilters`.
     pub fn createSampler(self: *GPU, desc: SamplerDescriptor) !Sampler {
         if (!self.isReady()) return error.GPUNotReady;
+        try desc.validate();
 
         if (comptime is_wasm) {
             // webgpu.ts numbers the address modes and compare functions in
@@ -722,22 +764,27 @@ pub const GPU = struct {
                 desc.lod_min_clamp,
                 desc.lod_max_clamp,
                 if (desc.compare) |c| webCompare(c) else 0,
+                desc.max_anisotropy,
             );
             return Sampler{ .handle = handle };
         } else {
-            const c_desc = native.WGPUSamplerDescriptor{
-                .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
-                .address_mode_u = @fromBackingInt(@intCast(@backingInt(desc.address_mode_u))),
-                .address_mode_v = @fromBackingInt(@intCast(@backingInt(desc.address_mode_v))),
-                .address_mode_w = @fromBackingInt(@intCast(@backingInt(desc.address_mode_w))),
-                .mag_filter = @fromBackingInt(@intCast(@backingInt(desc.mag_filter))),
-                .min_filter = @fromBackingInt(@intCast(@backingInt(desc.min_filter))),
-                .mipmap_filter = @fromBackingInt(@intCast(@backingInt(desc.mipmap_filter))),
-                .lod_min_clamp = desc.lod_min_clamp,
-                .lod_max_clamp = desc.lod_max_clamp,
-                .compare = if (desc.compare) |c| @fromBackingInt(@intCast(@backingInt(c))) else .undefined,
-                .max_anisotropy = desc.max_anisotropy,
+            // Named maps only: WGPUAddressMode starts with repeat=0, and
+            // WGPUCompareFunction has undefined=0 and another order.
+            var c_desc = std.mem.zeroes(native.WGPUSamplerDescriptor);
+            c_desc.label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null;
+            c_desc.address_mode_u = toNativeAddressMode(desc.address_mode_u);
+            c_desc.address_mode_v = toNativeAddressMode(desc.address_mode_v);
+            c_desc.address_mode_w = toNativeAddressMode(desc.address_mode_w);
+            c_desc.mag_filter = toNativeFilterMode(desc.mag_filter);
+            c_desc.min_filter = toNativeFilterMode(desc.min_filter);
+            c_desc.mipmap_filter = switch (desc.mipmap_filter) {
+                .nearest => .nearest,
+                .linear => .linear,
             };
+            c_desc.lod_min_clamp = desc.lod_min_clamp;
+            c_desc.lod_max_clamp = desc.lod_max_clamp;
+            c_desc.compare = if (desc.compare) |c| toNativeCompareFunction(c) else .undefined;
+            c_desc.max_anisotropy = desc.max_anisotropy;
             const handle = native.wgpuDeviceCreateSampler(self.device, &c_desc);
             return Sampler{ .handle = handle orelse return error.SamplerCreationFailed };
         }
@@ -1532,7 +1579,7 @@ pub const GPU = struct {
         }
     }
 
-    /// Write data to a texture
+    /// Write data to mip level 0 of a texture, from origin (0, 0, 0).
     pub fn writeTexture(
         self: *GPU,
         texture: Texture,
@@ -1541,40 +1588,48 @@ pub const GPU = struct {
         rows_per_image: u32,
         size: Extent3D,
     ) void {
+        self.writeTextureRegion(texture, data, .{
+            .size = size,
+            .bytes_per_row = bytes_per_row,
+            .rows_per_image = rows_per_image,
+        });
+    }
+
+    /// Write data to one region of a texture: a mip level, an origin and a
+    /// size. For a 2D texture array, `origin.z` is the first array layer and
+    /// `size.depth_or_array_layers` is the number of layers.
+    pub fn writeTextureRegion(self: *GPU, texture: Texture, data: []const u8, region: TextureRegion) void {
         if (!self.isReady()) return;
 
         if (comptime is_wasm) {
             web.webgpuWriteTexture(
                 self.queue,
                 texture.handle,
-                0, // mip level
-                0,
-                0,
-                0, // origin
-                size.width,
-                size.height,
-                size.depth_or_array_layers,
+                region.mip_level,
+                region.origin.x,
+                region.origin.y,
+                region.origin.z,
+                region.size.width,
+                region.size.height,
+                region.size.depth_or_array_layers,
                 data.ptr,
                 data.len,
-                bytes_per_row,
-                rows_per_image,
+                region.bytes_per_row,
+                region.rows_per_image,
             );
         } else {
-            const copy_texture = native.WGPUImageCopyTexture{
-                .texture = texture.handle,
-                .mip_level = 0,
-                .origin = .{},
-                .aspect = .all,
-            };
-            const data_layout = native.WGPUTextureDataLayout{
-                .offset = 0,
-                .bytes_per_row = bytes_per_row,
-                .rows_per_image = rows_per_image,
-            };
+            var copy_texture = std.mem.zeroes(native.WGPUImageCopyTexture);
+            copy_texture.texture = texture.handle;
+            copy_texture.mip_level = region.mip_level;
+            copy_texture.origin = .{ .x = region.origin.x, .y = region.origin.y, .z = region.origin.z };
+            copy_texture.aspect = .all;
+            var data_layout = std.mem.zeroes(native.WGPUTextureDataLayout);
+            data_layout.bytes_per_row = region.bytes_per_row;
+            data_layout.rows_per_image = region.rows_per_image;
             const write_size = native.WGPUExtent3D{
-                .width = size.width,
-                .height = size.height,
-                .depth_or_array_layers = size.depth_or_array_layers,
+                .width = region.size.width,
+                .height = region.size.height,
+                .depth_or_array_layers = region.size.depth_or_array_layers,
             };
             native.wgpuQueueWriteTexture(
                 self.queue,
@@ -1585,6 +1640,82 @@ pub const GPU = struct {
                 &write_size,
             );
         }
+    }
+
+    /// Native only: copy one mip level of one array layer of a texture to
+    /// the CPU, and wait for the copy. The texture needs `copy_src` usage
+    /// and a format with 4 bytes for each texel. The caller owns the result
+    /// (`width * height * 4` bytes, rows top to bottom, no row padding).
+    /// `width` and `height` are the size of that mip level. Use this for
+    /// tests and tools, not for each frame.
+    pub fn readTexture(
+        self: *GPU,
+        allocator: std.mem.Allocator,
+        texture: Texture,
+        mip_level: u32,
+        array_layer: u32,
+        width: u32,
+        height: u32,
+    ) ![]u8 {
+        if (comptime is_wasm) return error.NotSupportedOnWasm;
+        if (!self.isReady()) return error.GPUNotReady;
+
+        const bpp: u32 = 4;
+        // wgpu requires bytes_per_row to be a multiple of 256.
+        const bytes_per_row = (width * bpp + 255) & ~@as(u32, 255);
+        const buf_size: u64 = @as(u64, bytes_per_row) * height;
+
+        var buf_desc = std.mem.zeroes(native.WGPUBufferDescriptor);
+        buf_desc.size = buf_size;
+        buf_desc.usage = native.WGPUBufferUsage_CopyDst | native.WGPUBufferUsage_MapRead;
+        const staging_buf = native.wgpuDeviceCreateBuffer(self.device, &buf_desc) orelse return error.BufferCreationFailed;
+        defer native.wgpuBufferDestroy(staging_buf);
+
+        const enc = native.wgpuDeviceCreateCommandEncoder(self.device, null) orelse return error.EncoderCreationFailed;
+        var src = std.mem.zeroes(native.WGPUImageCopyTexture);
+        src.texture = texture.handle;
+        src.mip_level = mip_level;
+        src.origin = .{ .x = 0, .y = 0, .z = array_layer };
+        src.aspect = .all;
+        var dst = std.mem.zeroes(native.WGPUImageCopyBuffer);
+        dst.buffer = staging_buf;
+        dst.layout.bytes_per_row = bytes_per_row;
+        dst.layout.rows_per_image = height;
+        const extent = native.WGPUExtent3D{ .width = width, .height = height, .depth_or_array_layers = 1 };
+        native.wgpuCommandEncoderCopyTextureToBuffer(enc, &src, &dst, &extent);
+        const cmd = native.wgpuCommandEncoderFinish(enc, null) orelse return error.FinishFailed;
+        native.wgpuQueueSubmit(self.queue, 1, @ptrCast(&cmd));
+        native.wgpuCommandBufferRelease(cmd);
+        native.wgpuCommandEncoderRelease(enc);
+
+        const MapState = struct { done: bool = false };
+        var map_state = MapState{};
+        native.wgpuBufferMapAsync(
+            staging_buf,
+            native.WGPUMapMode_Read,
+            0,
+            buf_size,
+            struct {
+                fn cb(status: u32, ud: ?*anyopaque) callconv(.c) void {
+                    _ = status;
+                    @as(*MapState, @ptrCast(@alignCast(ud))).done = true;
+                }
+            }.cb,
+            &map_state,
+        );
+        while (!map_state.done) _ = native.wgpuDevicePoll(self.device, 1, null);
+
+        const out = try allocator.alloc(u8, width * height * bpp);
+        const ptr: [*]const u8 = @ptrCast(native.wgpuBufferGetMappedRange(staging_buf, 0, buf_size) orelse {
+            allocator.free(out);
+            return error.MapFailed;
+        });
+        for (0..height) |y| {
+            const src_row = ptr[y * bytes_per_row ..][0 .. width * bpp];
+            @memcpy(out[y * width * bpp ..][0 .. width * bpp], src_row);
+        }
+        native.wgpuBufferUnmap(staging_buf);
+        return out;
     }
 };
 
@@ -1636,7 +1767,7 @@ pub const Texture = struct {
             const handle = web.webgpuCreateTextureView(
                 self.handle,
                 if (desc.format) |f| @backingInt(f) else 0,
-                if (desc.dimension) |d| @backingInt(d) else 0,
+                viewDimensionCode(desc.dimension),
                 @backingInt(desc.aspect),
                 desc.base_mip_level,
                 desc.mip_level_count orelse 0xFFFFFFFF,
@@ -1649,7 +1780,7 @@ pub const Texture = struct {
                 .next_in_chain = null,
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
                 .format = if (desc.format) |f| @fromBackingInt(@intCast(@backingInt(f))) else .undefined,
-                .dimension = if (desc.dimension) |d| @fromBackingInt(@intCast(@backingInt(d))) else .undefined,
+                .dimension = @fromBackingInt(viewDimensionCode(desc.dimension)),
                 .base_mip_level = desc.base_mip_level,
                 .mip_level_count = desc.mip_level_count orelse 0xFFFFFFFF,
                 .base_array_layer = desc.base_array_layer,
