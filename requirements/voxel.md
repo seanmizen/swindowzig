@@ -162,3 +162,66 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   - Test — `libs/sw_voxel/src/collision.zig` › "the camera adapter stops
     the third-person eye at a wall of blocks (REQ-VOXEL-007)"
 - **Relations:** depends-on REQ-VOXEL-006
+
+## REQ-VOXEL-011 — A saved region gives the same blocks when it loads
+
+- **Status:** active
+- **Source:** agent:SWZ-52
+- **Origin:** #52
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a game saves chunks to a region file and loads the
+  file again, the `sw_voxel` region files shall give the same block in
+  each cell of each saved chunk, on native and on the web.
+- **Rationale:** A game must keep the edits of the player after it stops.
+  The file stores the palette and the packed indices of each section as
+  they are, so a load gives the sections of the save. The file has no
+  light. The light stage computes the light again from the blocks, so the
+  light always agrees with the blocks. The save and the load use the
+  storage of `sw_assets.cache`: a folder on native and OPFS on the web.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/region.zig` › "a generated world gives the
+    same blocks after a save and a load (REQ-VOXEL-011)"
+  - Test — `libs/sw_voxel/src/region.zig` › "an empty and a full section,
+    and each index width (REQ-VOXEL-011)"
+  - Test — `libs/sw_voxel/testing/region_store_test.zig` › "a world saves
+    to a cache folder and loads with the same blocks (REQ-VOXEL-011)"
+  - Test — `backends/wasm/files.test.ts` › "a save and a load give the
+    same blocks"
+- **Relations:** none
+
+## REQ-VOXEL-012 — A later format reads the region files of version 1
+
+- **Status:** active
+- **Source:** agent:SWZ-52
+- **Origin:** #52
+- **Type:** constraint
+- **Priority:** P2
+- **Statement:** The `sw_voxel` region decoder shall read each region file
+  of format version 1 to the current format version.
+- **Rationale:** The saves of the players must stay readable after an
+  engine update. Each file has a format version number, and the decoder
+  reads each version that it knows. A committed version 1 file for each
+  test world height stops a change that cannot read it.
+- **Verification:** Test — `libs/sw_voxel/src/region.zig` › "a version 1
+  file stays readable (REQ-VOXEL-012)"
+- **Relations:** depends-on REQ-VOXEL-011
+
+## REQ-VOXEL-013 — A damaged chunk in a region file fails alone
+
+- **Status:** active
+- **Source:** agent:SWZ-52
+- **Origin:** #52
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** If the bytes of one chunk in a region file are damaged
+  or missing, then the `sw_voxel` region files shall fail the load of that
+  chunk and load the other chunks of the region.
+- **Rationale:** One bad write or one bad disk sector must not lose a full
+  region of a save. Each chunk is compressed on its own, with a CRC-32 and
+  a zlib checksum. The game can generate a failed chunk again. A damaged
+  header or offset table fails the full file, because it gives no safe
+  chunk offsets.
+- **Verification:** Test — `libs/sw_voxel/src/region.zig` › "a damaged
+  chunk fails alone (REQ-VOXEL-013)"
+- **Relations:** depends-on REQ-VOXEL-011

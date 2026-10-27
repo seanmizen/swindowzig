@@ -108,7 +108,7 @@ swindowzig/
 │   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix, post chain, sky, box models, shadows, point lights
 │   ├── sw_net/         # WebSocket client: browser WebSocket (web), RFC 6455 on std.Io with TLS (native)
 │   ├── sw_ui/          # UI tree: layout, focus, widgets, screen stack, on-screen keyboard, semantic tree, drawing
-│   └── sw_voxel/       # Voxel chunks: storage, light, greedy and model mesher, chunk pipeline, collision
+│   └── sw_voxel/       # Voxel chunks: storage, light, greedy and model mesher, chunk pipeline, collision, region files
 │       ├── src/                 # Library. content.zig gives the content contract
 │       └── testing/content.zig  # Test content: numbered blocks, no game names
 ├── examples/

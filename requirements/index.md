@@ -54,6 +54,9 @@
 | [`REQ-VOXEL-005`](voxel.md#req-voxel-005--an-edit-updates-the-light-incrementally) | An edit updates the light incrementally | active | quality | P1 | agent:SWZ-32 |
 | [`REQ-VOXEL-006`](voxel.md#req-voxel-006--a-moving-box-stops-at-the-collision-boxes-of-the-blocks) | A moving box stops at the collision boxes of the blocks | active | functional | P2 | agent:SWZ-51 |
 | [`REQ-VOXEL-007`](voxel.md#req-voxel-007--a-voxel-ray-cast-gives-the-first-block-its-face-and-the-distance) | A voxel ray cast gives the first block, its face and the distance | active | functional | P2 | agent:SWZ-51 |
+| [`REQ-VOXEL-011`](voxel.md#req-voxel-011--a-saved-region-gives-the-same-blocks-when-it-loads) | A saved region gives the same blocks when it loads | active | functional | P2 | agent:SWZ-52 |
+| [`REQ-VOXEL-012`](voxel.md#req-voxel-012--a-later-format-reads-the-region-files-of-version-1) | A later format reads the region files of version 1 | active | constraint | P2 | agent:SWZ-52 |
+| [`REQ-VOXEL-013`](voxel.md#req-voxel-013--a-damaged-chunk-in-a-region-file-fails-alone) | A damaged chunk in a region file fails alone | active | functional | P2 | agent:SWZ-52 |
 
 ## Dependency graph
 
@@ -108,6 +111,9 @@ graph TD
   REQ_VOXEL_005["REQ-VOXEL-005<br/>An edit updates the light incrementally"]
   REQ_VOXEL_006["REQ-VOXEL-006<br/>A moving box stops at the collision boxes of the blocks"]
   REQ_VOXEL_007["REQ-VOXEL-007<br/>A voxel ray cast gives the first block, its face and the distance"]
+  REQ_VOXEL_011["REQ-VOXEL-011<br/>A saved region gives the same blocks when it loads"]
+  REQ_VOXEL_012["REQ-VOXEL-012<br/>A later format reads the region files of version 1"]
+  REQ_VOXEL_013["REQ-VOXEL-013<br/>A damaged chunk in a region file fails alone"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -131,6 +137,8 @@ graph TD
   REQ_VOXEL_004 -->|refines| REQ_VOXEL_003
   REQ_VOXEL_005 -->|depends-on| REQ_VOXEL_003
   REQ_VOXEL_007 -->|depends-on| REQ_VOXEL_006
+  REQ_VOXEL_012 -->|depends-on| REQ_VOXEL_011
+  REQ_VOXEL_013 -->|depends-on| REQ_VOXEL_011
 ```
 
 ## Derived reverse links
@@ -147,3 +155,4 @@ graph TD
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
 - `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005
 - `REQ-VOXEL-006` — required-by REQ-VOXEL-007
+- `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
