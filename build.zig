@@ -416,13 +416,15 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(render_layout_tests).step);
 
     // sw_render frame graph tests: the plan, the uniform ring, the staged
-    // uploads, the WGSL prefix and the post chain plan. No GPU code runs.
+    // uploads, the WGSL prefix, the post chain plan and the sky plan. No GPU
+    // code runs.
     const render_graph_test_files = [_][]const u8{
         "libs/sw_render/src/plan.zig",
         "libs/sw_render/src/ring.zig",
         "libs/sw_render/src/upload.zig",
         "libs/sw_render/src/wgsl.zig",
         "libs/sw_render/src/post_plan.zig",
+        "libs/sw_render/src/sky_plan.zig",
     };
     inline for (render_graph_test_files) |file| {
         const unit_tests = b.addTest(.{

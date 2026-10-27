@@ -151,6 +151,17 @@ jobs:
           zig build native -Dexample=justabox
           ./zig-out/bin/justabox --check
 
+      - name: Sky, fog and the time of day (sky --check)
+        # The sky pass and a fogged scene draw into the HDR target. The
+        # example reads the screen back at noon, at sunrise, at midnight
+        # and with the cube map, and compares the sky and the ground with
+        # the CPU reference after the tonemap (REQ-GPU-010, REQ-GPU-011).
+        # The web build must compile too.
+        run: |
+          zig build web -Dexample=sky
+          zig build native -Dexample=sky
+          ./zig-out/bin/sky --check
+
       - name: Screen-reader mirror in Chromium (flat2d)
         # Playwright opens flat2d with WebGPU, moves the focus with Tab, and
         # reads the accessibility tree (REQ-A11Y-001). Chromium uses its own
