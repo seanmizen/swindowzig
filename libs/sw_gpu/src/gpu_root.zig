@@ -8,6 +8,10 @@ const mipmap_mod = @import("mipmap.zig");
 pub const mip_chain = @import("mip_chain.zig");
 pub const TileSize = mip_chain.TileSize;
 
+/// The FXAA shader source and its quality presets, with no GPU code. The
+/// post chain of sw_render runs FXAA from this source.
+pub const fxaa = @import("fxaa.zig");
+
 /// Mip level generation on the GPU, native and web.
 pub const MipmapGenerator = mipmap_mod.MipmapGenerator;
 pub const MipmapTarget = mipmap_mod.MipmapTarget;

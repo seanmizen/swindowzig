@@ -8,6 +8,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types.zig");
+const fxaa = @import("fxaa.zig");
 
 const is_wasm = switch (builtin.cpu.arch) {
     .wasm32, .wasm64 => true,
@@ -366,42 +367,16 @@ pub const GPU = struct {
             .bind_group_layouts = &[_]*BindGroupLayout{&bg_layout},
         });
 
-        // FXAA shader module — substitute the three quality-tier placeholders
-        // in the embedded WGSL source. The substituted buffer lives on the
-        // stack for the duration of this function; createShaderModule copies
-        // it out before we return.
-        //
-        // Preset values roughly match FXAA 3.11 reference presets 12/25/39:
-        //   low    — 4 search steps, 0.5 subpix cap, 0.166 edge threshold
-        //   medium — 12 search steps, 0.75 subpix cap, 0.125 edge threshold (prior behaviour)
-        //   high   — 32 search steps, 0.85 subpix cap, 0.063 edge threshold
-        const search_steps: []const u8 = switch (quality) {
-            .low => "4",
-            .medium => "12",
-            .high => "32",
-        };
-        const subpix_cap: []const u8 = switch (quality) {
-            .low => "0.5",
-            .medium => "0.75",
-            .high => "0.85",
-        };
-        const edge_threshold: []const u8 = switch (quality) {
-            .low => "0.166",
-            .medium => "0.125",
-            .high => "0.063",
-        };
-
-        const fxaa_wgsl_src = @embedFile("fxaa.wgsl");
-        // Stack buffer: the shader is ~7 KB today; 16 KB gives ample headroom
-        // for three tokens that each grow the source by at most ~4 bytes.
-        var substituted_buf: [16 * 1024]u8 = undefined;
-        const substituted = try substituteFxaaTokens(
-            fxaa_wgsl_src,
-            substituted_buf[0..],
-            search_steps,
-            subpix_cap,
-            edge_threshold,
-        );
+        // FXAA shader module. `fxaa.shaderSource` replaces the quality-tier
+        // placeholders and puts the scene texture at group 0. The buffer
+        // lives on the stack for this function: createShaderModule copies
+        // it before we return.
+        const preset = fxaa.preset(quality);
+        const search_steps = preset.search_steps;
+        const subpix_cap = preset.subpix_cap;
+        const edge_threshold = preset.edge_threshold;
+        var substituted_buf: [fxaa.max_source_len]u8 = undefined;
+        const substituted = try fxaa.shaderSource(&substituted_buf, quality, 0);
 
         var fxaa_shader = try self.createShaderModule(.{
             .label = "fxaa_shader",
@@ -434,50 +409,6 @@ pub const GPU = struct {
         std.log.info("sw_gpu: configureFXAA → {}×{} bgra8unorm offscreen target (quality={s}, search_steps={s}, subpix_cap={s}, edge_threshold={s})", .{
             tex_w, tex_h, @tagName(quality), search_steps, subpix_cap, edge_threshold,
         });
-    }
-
-    /// Substitute the three `__FXAA_*__` placeholder tokens in `src` into
-    /// `dest`, returning a slice of `dest` containing the substituted source.
-    /// Linear time in `src.len`. Returns `error.FxaaSourceBufferTooSmall` if
-    /// `dest` cannot hold the substituted result.
-    fn substituteFxaaTokens(
-        src: []const u8,
-        dest: []u8,
-        search_steps: []const u8,
-        subpix_cap: []const u8,
-        edge_threshold: []const u8,
-    ) ![]const u8 {
-        const Repl = struct {
-            needle: []const u8,
-            replacement: []const u8,
-        };
-        const repls = [_]Repl{
-            .{ .needle = "__FXAA_SEARCH_STEPS__", .replacement = search_steps },
-            .{ .needle = "__FXAA_SUBPIX_CAP__", .replacement = subpix_cap },
-            .{ .needle = "__FXAA_EDGE_THRESHOLD__", .replacement = edge_threshold },
-        };
-
-        var write: usize = 0;
-        var read: usize = 0;
-        outer: while (read < src.len) {
-            // Try each replacement at the current cursor.
-            for (repls) |r| {
-                if (read + r.needle.len <= src.len and
-                    std.mem.eql(u8, src[read .. read + r.needle.len], r.needle))
-                {
-                    if (write + r.replacement.len > dest.len) return error.FxaaSourceBufferTooSmall;
-                    @memcpy(dest[write .. write + r.replacement.len], r.replacement);
-                    write += r.replacement.len;
-                    read += r.needle.len;
-                    continue :outer;
-                }
-            }
-            if (write + 1 > dest.len) return error.FxaaSourceBufferTooSmall;
-            dest[write] = src[read];
-            write += 1;
-            read += 1;
-        }
-        return dest[0..write];
     }
 
     /// Record an FXAA post-process pass into `encoder`.
@@ -728,7 +659,7 @@ pub const GPU = struct {
                     .height = desc.size.height,
                     .depth_or_array_layers = desc.size.depth_or_array_layers,
                 },
-                .format = @fromBackingInt(@intCast(@backingInt(desc.format))),
+                .format = toNativeTextureFormat(desc.format),
                 .mip_level_count = desc.mip_level_count,
                 .sample_count = desc.sample_count,
                 .view_format_count = 0,
@@ -1004,7 +935,7 @@ pub const GPU = struct {
 
                 for (fragment.targets, 0..) |target, i| {
                     targets[i] = std.mem.zeroes(native.WGPUColorTargetState);
-                    targets[i].format = @fromBackingInt(@intCast(@backingInt(target.format)));
+                    targets[i].format = toNativeTextureFormat(target.format);
                     targets[i].write_mask = target.write_mask;
                     if (target.blend) |blend| {
                         wgpu_blend_states_storage[i] = .{
@@ -1039,7 +970,7 @@ pub const GPU = struct {
             if (desc.depth_stencil) |depth_stencil| {
                 // Zero-initialize depth stencil state to avoid undefined padding (CRITICAL!)
                 depth_stencil_state_storage = std.mem.zeroes(native.WGPUDepthStencilState);
-                depth_stencil_state_storage.format = @fromBackingInt(@intCast(@backingInt(depth_stencil.format)));
+                depth_stencil_state_storage.format = toNativeTextureFormat(depth_stencil.format);
                 depth_stencil_state_storage.depth_write_enabled = if (depth_stencil.depth_write_enabled) @as(u32, 1) else 0;
                 depth_stencil_state_storage.depth_compare = toNativeCompareFunction(depth_stencil.depth_compare);
 
@@ -1212,7 +1143,7 @@ pub const GPU = struct {
                         .read_only => .read_only,
                         .read_write => .read_write,
                     };
-                    native_entries[i].storage_texture.format = @fromBackingInt(@intCast(@backingInt(st.format)));
+                    native_entries[i].storage_texture.format = toNativeTextureFormat(st.format);
                     native_entries[i].storage_texture.view_dimension = switch (st.view_dimension) {
                         .@"1d" => .@"1d",
                         .@"2d" => .@"2d",
@@ -1747,6 +1678,13 @@ fn webCompare(c: types.CompareFunction) u32 {
     };
 }
 
+/// The native `WGPUTextureFormat` of `format`. The numbers of
+/// `types.TextureFormat` differ from webgpu.h for some formats (for
+/// example `rgba16float`), so do not use a raw `@intFromEnum`.
+fn toNativeTextureFormat(format: types.TextureFormat) native.WGPUTextureFormat {
+    return @fromBackingInt(types.nativeTextureFormat(format));
+}
+
 pub const Buffer = struct {
     handle: if (is_wasm) web.WebGPUBuffer else native.WGPUBuffer,
 
@@ -1779,7 +1717,7 @@ pub const Texture = struct {
             const c_desc = native.WGPUTextureViewDescriptor{
                 .next_in_chain = null,
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
-                .format = if (desc.format) |f| @fromBackingInt(@intCast(@backingInt(f))) else .undefined,
+                .format = if (desc.format) |f| toNativeTextureFormat(f) else .undefined,
                 .dimension = @fromBackingInt(viewDimensionCode(desc.dimension)),
                 .base_mip_level = desc.base_mip_level,
                 .mip_level_count = desc.mip_level_count orelse 0xFFFFFFFF,

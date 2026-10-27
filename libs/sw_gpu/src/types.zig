@@ -679,6 +679,81 @@ pub fn bytesPerPixel(format: TextureFormat) u32 {
     };
 }
 
+/// The value of `format` in `WGPUTextureFormat` of the wgpu-native
+/// `webgpu.h`. `TextureFormat` gives the numbers that the web bridge uses
+/// (`backends/wasm/webgpu.ts`), and from `rgb10a2unorm` on they are not
+/// the `webgpu.h` numbers. The native calls must use this function, not
+/// `@intFromEnum`.
+pub fn nativeTextureFormat(format: TextureFormat) u32 {
+    return switch (format) {
+        .r8unorm => 0x01,
+        .r8snorm => 0x02,
+        .r8uint => 0x03,
+        .r8sint => 0x04,
+        .r16uint => 0x05,
+        .r16sint => 0x06,
+        .r16float => 0x07,
+        .rg8unorm => 0x08,
+        .rg8snorm => 0x09,
+        .rg8uint => 0x0A,
+        .rg8sint => 0x0B,
+        .r32float => 0x0C,
+        .r32uint => 0x0D,
+        .r32sint => 0x0E,
+        .rg16uint => 0x0F,
+        .rg16sint => 0x10,
+        .rg16float => 0x11,
+        .rgba8unorm => 0x12,
+        .rgba8unorm_srgb => 0x13,
+        .rgba8snorm => 0x14,
+        .rgba8uint => 0x15,
+        .rgba8sint => 0x16,
+        .bgra8unorm => 0x17,
+        .bgra8unorm_srgb => 0x18,
+        .rgb10a2unorm => 0x1A,
+        .rg32float => 0x1D,
+        .rg32uint => 0x1E,
+        .rg32sint => 0x1F,
+        .rgba16uint => 0x20,
+        .rgba16sint => 0x21,
+        .rgba16float => 0x22,
+        .rgba32float => 0x23,
+        .rgba32uint => 0x24,
+        .rgba32sint => 0x25,
+        .depth16unorm => 0x27,
+        .depth24plus => 0x28,
+        .depth24plus_stencil8 => 0x29,
+        .depth32float => 0x2A,
+        .depth32float_stencil8 => 0x2B,
+        .bc1_rgba_unorm => 0x2C,
+        .bc1_rgba_unorm_srgb => 0x2D,
+        .bc4_r_unorm => 0x32,
+        .bc4_r_snorm => 0x33,
+        .bc5_rg_unorm => 0x34,
+        .bc5_rg_snorm => 0x35,
+    };
+}
+
+test "texture format: the native numbers are the webgpu.h numbers" {
+    // The formats that the engine uses, from `WGPUTextureFormat` in webgpu.h.
+    try std.testing.expectEqual(@as(u32, 0x12), nativeTextureFormat(.rgba8unorm));
+    try std.testing.expectEqual(@as(u32, 0x17), nativeTextureFormat(.bgra8unorm));
+    try std.testing.expectEqual(@as(u32, 0x22), nativeTextureFormat(.rgba16float));
+    try std.testing.expectEqual(@as(u32, 0x23), nativeTextureFormat(.rgba32float));
+    try std.testing.expectEqual(@as(u32, 0x0C), nativeTextureFormat(.r32float));
+    try std.testing.expectEqual(@as(u32, 0x28), nativeTextureFormat(.depth24plus));
+    // Each format has its own native number.
+    const fields = @typeInfo(TextureFormat).@"enum".field_names;
+    var seen: [fields.len]u32 = undefined;
+    inline for (fields, 0..) |name, i| {
+        const n = nativeTextureFormat(@field(TextureFormat, name));
+        for (seen[0..i]) |prev| try std.testing.expect(prev != n);
+        seen[i] = n;
+    }
+    // The web bridge keeps the `TextureFormat` numbers.
+    try std.testing.expectEqual(@as(u32, 0x1F), @backingInt(TextureFormat.rgba16float));
+}
+
 test "sampler: the defaults are valid" {
     try (SamplerDescriptor{}).validate();
 }

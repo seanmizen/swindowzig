@@ -35,6 +35,14 @@ with "Texture binding N expects dimension = D1, but given a view with dimension 
 `createBindGroupLayout` now uses explicit switch maps for both `.texture.view_dimension`
 and `.storage_texture.view_dimension`. Do not use raw `@intFromEnum` for these.
 
+### TextureFormat enum mismatch (fixed in gpu.zig — toNativeTextureFormat)
+`types.TextureFormat` keeps the numbers that the web bridge uses
+(`TEXTURE_FORMAT_MAP` in `backends/wasm/webgpu.ts`). From `rgb10a2unorm` on,
+they are not the `webgpu.h` numbers: `.rgba16float` is 0x1F, and 0x1F in
+`webgpu.h` is `RG32Sint`. Every native call uses `toNativeTextureFormat()`
+(the table is `types.nativeTextureFormat`). Do not use raw `@intFromEnum`
+for a texture format.
+
 ### CompareFunction enum mismatch (fixed in gpu.zig — createRenderPipeline)
 `types.CompareFunction` starts at 0 (`never=0, less=1, …, always=7`), but native
 `WGPUCompareFunction` has `undefined=0, never=1, less=2, …, always=8`. Additionally,
@@ -228,3 +236,6 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_render/src/plan.zig` | Frame graph rules: target sizes, pass order, attachment checks (no GPU code, unit tested) |
 | `libs/sw_render/src/ring.zig`, `upload.zig` | `UniformRing` (per-draw uniforms at dynamic offsets, one write per frame) and `Uploads` (staged buffer writes, merged). No new buffer each frame (REQ-GPU-006) |
 | `libs/sw_render/src/wgsl.zig` | The shared WGSL prefix (`sw_frame` at group 0) and `FrameUniforms` (REQ-GPU-007) |
+| `libs/sw_render/src/post.zig` | `PostChain`: the `rgba16float` scene target (`hdr`), then HDR effects, the tonemap, LDR effects and FXAA as frame graph passes. The last enabled link writes the screen (REQ-GPU-008, REQ-GPU-009) |
+| `libs/sw_render/src/post_plan.zig` | Post chain rules: the route of the links, the tonemap curves (CPU reference), the effect WGSL (`post.shader`). No GPU code, unit tested |
+| `libs/sw_gpu/src/fxaa.zig` | The FXAA source and quality presets. `shaderSource` sets the tokens and the bind group. `configureFXAA` and the post chain use it |
