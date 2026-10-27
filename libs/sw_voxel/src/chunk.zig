@@ -2,6 +2,7 @@ const std = @import("std");
 const clock = @import("clock.zig");
 const content = @import("content.zig");
 const models = @import("models.zig");
+const light = @import("light.zig");
 const section_mod = @import("section.zig");
 pub const Section = section_mod.Section;
 
@@ -65,8 +66,12 @@ pub const MAX_BLOCK_LIGHT: u8 = 15;
 /// into the `block_light` slot of each emissive cell before the light
 /// spreads.
 pub fn emissionLevel(block: BlockType) u8 {
-    return content.emission(block);
+    return light.emission(block);
 }
+
+/// The light of one cell: sky light and block light, 0 to 15 each
+/// (`light.zig`).
+pub const CellLight = light.CellLight;
 
 /// Total blocks in a column.
 pub const BLOCKS_PER_CHUNK: usize = CHUNK_W * CHUNK_H * CHUNK_W;
@@ -189,48 +194,96 @@ pub const DenseBlocks = [BLOCKS_PER_CHUNK]BlockType;
 pub const DenseLight = [CHUNK_W][CHUNK_H][CHUNK_W]u8;
 
 /// True when bit y of column (x, z) of `cols` is set (see `solidColumns`).
-inline fn isSolid(cols: *const [CHUNK_W][CHUNK_W]Col, x: usize, y: usize, z: usize) bool {
+inline fn isSet(cols: *const [CHUNK_W][CHUNK_W]Col, x: usize, y: usize, z: usize) bool {
     return (cols[x][z][y >> 6] >> @intCast(y & 63)) & 1 != 0;
 }
 
-/// Pass 3 of `Chunk.computeSkylightWithNeighbors`: seed our edge cells from
-/// the neighbours (order -X, +X, -Z, +Z), then spread. The seeds have mixed
-/// levels, so the queue is not in level order. A cell can go in the queue
-/// again when its light increases, and a bit set keeps each cell in the
-/// queue at most once, so a ring of one entry per cell is enough.
-fn seedSkylightFromNeighbours(
-    sky: *DenseLight,
-    solid: *const [CHUNK_W][CHUNK_W]Col,
-    queue: *[BLOCKS_PER_CHUNK]CellId,
-    nbs: [4]?*const Chunk,
-) void {
-    const N = BLOCKS_PER_CHUNK;
-    const Ring = struct {
-        queue: *[N]CellId,
-        in_queue: [N / 64]u64 = @splat(0),
-        head: usize = 0,
-        count: usize = 0,
+/// The loss of light into each cell of a chunk: max(1, opacity) of its
+/// block (light.zig). With `light.ordered`, each opacity is 0 or 15, so the
+/// bit columns of the cells that stop sky light give it.
+const LossMap = struct {
+    /// The columns of the cells with opacity more than 0.
+    stop: *const [CHUNK_W][CHUNK_W]Col,
+    blocks: *const PalettedBlocks,
 
-        fn push(r: *@This(), x: usize, y: usize, z: usize) void {
-            const v = cellId(x, y, z);
-            const bit = @as(u64, 1) << @intCast(v & 63);
-            if (r.in_queue[v >> 6] & bit != 0) return;
-            r.in_queue[v >> 6] |= bit;
-            r.queue[(r.head + r.count) % N] = v;
-            r.count += 1;
+    inline fn at(self: LossMap, x: usize, y: usize, z: usize) u8 {
+        if (comptime light.ordered) return if (isSet(self.stop, x, y, z)) light.MAX_LIGHT else 1;
+        return light.loss(self.blocks.getAt(x, y, z));
+    }
+};
+
+/// A queue of chunk cells for a spread with mixed levels. A cell can go
+/// in the queue again when its light increases, and a bit set keeps each
+/// cell in the queue at most once, so a ring of one entry per cell is
+/// enough.
+const Ring = struct {
+    const N = BLOCKS_PER_CHUNK;
+    queue: *[N]CellId,
+    in_queue: [N / 64]u64 = @splat(0),
+    head: usize = 0,
+    count: usize = 0,
+
+    fn push(r: *Ring, x: usize, y: usize, z: usize) void {
+        const v = cellId(x, y, z);
+        const bit = @as(u64, 1) << @intCast(v & 63);
+        if (r.in_queue[v >> 6] & bit != 0) return;
+        r.in_queue[v >> 6] |= bit;
+        r.queue[(r.head + r.count) % N] = v;
+        r.count += 1;
+    }
+
+    fn pop(r: *Ring) CellId {
+        const v = r.queue[r.head];
+        r.head = (r.head + 1) % N;
+        r.count -= 1;
+        r.in_queue[v >> 6] &= ~(@as(u64, 1) << @intCast(v & 63));
+        return v;
+    }
+};
+
+const face_dirs = [6][3]i32{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, -1, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } };
+
+/// Spread the light of `grid` from the cells in `ring` (light.zig rules):
+/// a neighbour gets level - loss when that is more than its light.
+fn spreadRing(grid: *DenseLight, lm: LossMap, ring: *Ring) void {
+    while (ring.count > 0) {
+        const x, const y, const z = cellXyz(ring.pop());
+        const level = grid[x][y][z];
+        if (level < 2) continue;
+        for (face_dirs) |d| {
+            const nx = @as(i32, @intCast(x)) + d[0];
+            const ny = @as(i32, @intCast(y)) + d[1];
+            const nz = @as(i32, @intCast(z)) + d[2];
+            if (nx < 0 or nx >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
+            const nxu: usize = @intCast(nx);
+            const nyu: usize = @intCast(ny);
+            const nzu: usize = @intCast(nz);
+            const target = level -| lm.at(nxu, nyu, nzu);
+            if (target == 0 or grid[nxu][nyu][nzu] >= target) continue;
+            grid[nxu][nyu][nzu] = target;
+            ring.push(nxu, nyu, nzu);
         }
-        fn pop(r: *@This()) CellId {
-            const v = r.queue[r.head];
-            r.head = (r.head + 1) % N;
-            r.count -= 1;
-            r.in_queue[v >> 6] &= ~(@as(u64, 1) << @intCast(v & 63));
-            return v;
-        }
-    };
-    var ring = Ring{ .queue = queue };
+    }
+}
+
+/// Seed the edge cells of `grid` from the light of the neighbours (order
+/// -X, +X, -Z, +Z) in channel `ch`, then spread. An edge cell gets the
+/// light of the neighbour cell across the border, less the loss into the
+/// edge cell, when that is brighter. The ring can hold seeds already.
+fn seedFromNeighbours(
+    grid: *DenseLight,
+    lm: LossMap,
+    ring: *Ring,
+    nbs: [4]?*const Chunk,
+    comptime ch: light.Channel,
+) void {
     const W = CHUNK_W;
     for (nbs, 0..) |maybe_nb, side| {
         const nb = maybe_nb orelse continue;
+        const g = switch (ch) {
+            .sky => &nb.skylight,
+            .block => &nb.block_light,
+        };
         for (0..CHUNK_H) |y| for (0..W) |i| {
             // Our edge cell and the neighbour's cell across the border.
             const ours: [2]usize, const theirs: [2]usize = switch (side) {
@@ -239,55 +292,80 @@ fn seedSkylightFromNeighbours(
                 2 => .{ .{ i, 0 }, .{ i, W - 1 } },
                 else => .{ .{ i, W - 1 }, .{ i, 0 } },
             };
-            if (isSolid(solid, ours[0], y, ours[1])) continue;
-            const nv = nb.skylight.get(theirs[0], y, theirs[1]);
-            if (nv < 2 or sky[ours[0]][y][ours[1]] >= nv - 1) continue;
-            sky[ours[0]][y][ours[1]] = nv - 1;
+            const target = g.get(theirs[0], y, theirs[1]) -| lm.at(ours[0], y, ours[1]);
+            if (target == 0 or grid[ours[0]][y][ours[1]] >= target) continue;
+            grid[ours[0]][y][ours[1]] = target;
             ring.push(ours[0], y, ours[1]);
         };
     }
-
-    while (ring.count > 0) {
-        const x, const y, const z = cellXyz(ring.pop());
-        const level = sky[x][y][z];
-        if (level < 2) continue;
-        const target = level - 1;
-        const dirs = [6][3]i32{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, -1, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } };
-        for (dirs) |d| {
-            const nx = @as(i32, @intCast(x)) + d[0];
-            const ny = @as(i32, @intCast(y)) + d[1];
-            const nz = @as(i32, @intCast(z)) + d[2];
-            if (nx < 0 or nx >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
-            const nxu: usize = @intCast(nx);
-            const nyu: usize = @intCast(ny);
-            const nzu: usize = @intCast(nz);
-            if (isSolid(solid, nxu, nyu, nzu)) continue;
-            if (sky[nxu][nyu][nzu] >= target) continue;
-            sky[nxu][nyu][nzu] = target;
-            ring.push(nxu, nyu, nzu);
-        }
-    }
+    spreadRing(grid, lm, ring);
 }
 
-/// Light values of a chunk, stored per 16-high section. A section where
+/// Light values of a chunk, 0 to 15, stored per 16-high section
+/// (REQ-VOXEL-003). A section holds two cells in each byte. A section where
 /// every cell has the same value (open sky above the terrain, or no block
-/// light) has no array, only that value. Most of a chunk is like that:
-/// on hilly demo terrain 11 of 16 skylight sections, and all block light
-/// when there is no emissive block. Values are the same as a dense grid: store a dense
-/// grid, then get gives back each value.
+/// light) has no array, only that value. Most of a chunk is like that: on
+/// hilly demo terrain 11 of 16 skylight sections, and all block light when
+/// there is no emissive block. Values are the same as a dense grid: store
+/// a dense grid, then get gives back each value.
+///
+/// `store` keeps an array only for a section that is not uniform. `set`
+/// can leave a uniform section with an array. `compact` frees those
+/// arrays, so that `eql` and the light hash see one form for each value.
 pub const LightGrid = struct {
     pub const SECTION_H = 16;
     pub const SECTIONS = CHUNK_H / SECTION_H;
-    const Cells = [CHUNK_W][SECTION_H][CHUNK_W]u8;
+    const SECTION_CELLS = CHUNK_W * SECTION_H * CHUNK_W;
+    /// Cell i (x * 256 + y * 16 + z in the section) is the low 4 bits of
+    /// byte i / 2 when i is even, else the high 4 bits.
+    const Cells = [SECTION_CELLS / 2]u8;
 
     /// Per section: the array, or null when every cell is `fill`.
     arrays: [SECTIONS]?*Cells = @splat(null),
     fill: [SECTIONS]u8 = @splat(0),
 
+    inline fn cellIndex(x: usize, y: usize, z: usize) usize {
+        return x * (SECTION_H * CHUNK_W) + (y % SECTION_H) * CHUNK_W + z;
+    }
+
     pub inline fn get(self: *const LightGrid, x: usize, y: usize, z: usize) u8 {
         const s = y / SECTION_H;
         const arr = self.arrays[s] orelse return self.fill[s];
-        return arr[x][y % SECTION_H][z];
+        const i = cellIndex(x, y, z);
+        return (arr[i >> 1] >> @intCast((i & 1) * 4)) & 0xF;
+    }
+
+    /// Set the value of one cell, 0 to 15. A uniform section gets an array
+    /// when the value is new in it.
+    pub fn set(self: *LightGrid, allocator: std.mem.Allocator, x: usize, y: usize, z: usize, value: u8) !void {
+        std.debug.assert(value <= 0xF);
+        const s = y / SECTION_H;
+        const arr = self.arrays[s] orelse blk: {
+            if (self.fill[s] == value) return;
+            const arr = try allocator.create(Cells);
+            @memset(arr, self.fill[s] * 0x11);
+            self.arrays[s] = arr;
+            break :blk arr;
+        };
+        const i = cellIndex(x, y, z);
+        const shift: u3 = @intCast((i & 1) * 4);
+        arr[i >> 1] = (arr[i >> 1] & ~(@as(u8, 0xF) << shift)) | (value << shift);
+    }
+
+    /// Free the array of each section where every cell has the same value.
+    pub fn compact(self: *LightGrid, allocator: std.mem.Allocator) void {
+        for (&self.arrays, &self.fill) |*a, *fill| {
+            const arr = a.* orelse continue;
+            const b = arr[0];
+            if (b & 0xF != b >> 4) continue;
+            const uniform = for (arr) |x| {
+                if (x != b) break false;
+            } else true;
+            if (!uniform) continue;
+            allocator.destroy(arr);
+            a.* = null;
+            fill.* = b & 0xF;
+        }
     }
 
     /// Replace the values with `dense`. A section keeps its array when it
@@ -311,9 +389,11 @@ pub const LightGrid = struct {
             }
             const arr = self.arrays[s] orelse try allocator.create(Cells);
             self.arrays[s] = arr;
-            for (0..CHUNK_W) |x| {
-                @memcpy(std.mem.asBytes(&arr[x]), std.mem.asBytes(dense[x][y0..][0..SECTION_H]));
-            }
+            for (0..CHUNK_W) |x| for (0..SECTION_H) |y| {
+                const row = &dense[x][y0 + y];
+                const out = arr[cellIndex(x, y, 0) / 2 ..][0 .. CHUNK_W / 2];
+                for (out, 0..) |*b, k| b.* = row[2 * k] | (row[2 * k + 1] << 4);
+            };
         }
     }
 
@@ -323,7 +403,14 @@ pub const LightGrid = struct {
             const y0 = s * SECTION_H;
             for (0..CHUNK_W) |x| {
                 if (self.arrays[s]) |arr| {
-                    @memcpy(std.mem.asBytes(dense[x][y0..][0..SECTION_H]), std.mem.asBytes(&arr[x]));
+                    for (0..SECTION_H) |y| {
+                        const row = &dense[x][y0 + y];
+                        const in = arr[cellIndex(x, y, 0) / 2 ..][0 .. CHUNK_W / 2];
+                        for (in, 0..) |b, k| {
+                            row[2 * k] = b & 0xF;
+                            row[2 * k + 1] = b >> 4;
+                        }
+                    }
                 } else {
                     @memset(std.mem.asBytes(dense[x][y0..][0..SECTION_H]), self.fill[s]);
                 }
@@ -340,7 +427,8 @@ pub const LightGrid = struct {
 
     /// True when the two grids have the same value in each cell. `store`
     /// keeps an array only for a section that is not uniform, so a section
-    /// with an array never equals a section without one.
+    /// with an array never equals a section without one. After `set`, call
+    /// `compact` first.
     pub fn eql(a: *const LightGrid, b: *const LightGrid) bool {
         for (0..SECTIONS) |s| {
             const x = a.arrays[s];
@@ -389,9 +477,9 @@ pub const Chunk = struct {
     /// through `getBlock`/`setBlock`/`resolveBlockRaw`.
     blocks: PalettedBlocks,
     /// Per-block skylight value, range [0, MAX_SKYLIGHT]. Computed by
-    /// `computeSkylight()` after `generateTerrain()`. Solid blocks always
-    /// store 0. Air blocks store the brightness of sunlight that reaches them
-    /// after BFS propagation through air. `computeSkylight` lights the chunk
+    /// `computeSkylight()` after `generateTerrain()`. A block with opacity
+    /// 15 stores 0. Other cells store the sunlight that reaches them
+    /// (light.zig gives the rules). `computeSkylight` lights the chunk
     /// on its own. `computeSkylightWithNeighbors` (called from `World`) adds
     /// the light that comes across the chunk borders.
     ///
@@ -399,17 +487,11 @@ pub const Chunk = struct {
     /// such as open sky, has no array.
     skylight: LightGrid,
     /// Per-block block-light value, range [0, MAX_BLOCK_LIGHT]. Computed by
-    /// `computeBlockLight()` after `generateTerrain()` and again whenever a
-    /// block is placed or removed. Unlike skylight, emissive blocks
-    /// store their OWN emission level in this slot even though
-    /// they are solid — this is what lets the mesher read a bright value for
-    /// an emissive block's own face without the sample escaping to a dim outward
-    /// air cell. Non-emissive solids and unlit air stay at 0.
-    ///
-    /// Phase-3 scope: per-chunk BFS only. An emissive block placed near a chunk
-    /// edge will NOT push light into the neighbour chunk. The seam is small
-    /// in practice because block light decays to 0 within 15 cells and
-    /// emissive blocks are explicitly placed, but it is a documented limitation.
+    /// `computeBlockLight()` after `generateTerrain()`. An emissive block
+    /// stores at least its own emission level, also when its opacity is 15.
+    /// Thus the mesher reads a bright value for the face of an emissive
+    /// block. `computeBlockLightWithNeighbors` adds the light from the
+    /// neighbour chunks.
     block_light: LightGrid,
 
     pub fn init(allocator: std.mem.Allocator) Chunk {
@@ -564,6 +646,13 @@ pub const Chunk = struct {
         return self.skylight.get(@intCast(x), @intCast(y), @intCast(z));
     }
 
+    /// The sky light and the block light of local cell (x, y, z), with the
+    /// out-of-bounds values of `getSkylight` and `getBlockLight`. The mesher
+    /// reads the light of a cell with this function.
+    pub fn lightAt(self: *const Chunk, x: i32, y: i32, z: i32) CellLight {
+        return .{ .sky = self.getSkylight(x, y, z), .block = self.getBlockLight(x, y, z) };
+    }
+
     /// Read the block-light at (x, y, z) using local chunk coordinates.
     /// Out-of-bounds returns 0 (no "above world" bright-side asymmetry — block
     /// light has no global seed like the sun). Light from a neighbour chunk
@@ -573,26 +662,18 @@ pub const Chunk = struct {
         return self.block_light.get(@intCast(x), @intCast(y), @intCast(z));
     }
 
-    /// Recompute skylight for the entire chunk from the current `blocks` array.
-    /// Two-pass algorithm:
+    /// Recompute skylight for the entire chunk from the current `blocks` array,
+    /// with the rules of light.zig:
     ///
     ///   Pass 1 (column seed):
-    ///     For each (x, z) column, walk downward from y=CHUNK_H-1. Every air
-    ///     block sets skylight = MAX_SKYLIGHT until the first solid block.
-    ///     Below that solid, every air block starts at skylight = 0.
-    ///     Solid blocks always store 0.
+    ///     For each (x, z) column, every cell above the highest cell with
+    ///     opacity more than 0 is a sky source, at MAX_SKYLIGHT. Every other
+    ///     cell starts at 0.
     ///
-    ///   Pass 2 (bucket-sort BFS, levels MAX_SKYLIGHT down to 2):
-    ///     For each level L from MAX_SKYLIGHT down to 2, sweep the chunk and
-    ///     for each air cell with skylight == L, propagate (L - 1) into any
-    ///     air neighbour with a strictly lower current skylight. This is
-    ///     equivalent to a level-bucketed BFS but needs no queue allocation:
-    ///     each cell is visited at most once per level transition because the
-    ///     check `current < L - 1` short-circuits stale propagation.
+    ///   Pass 2 (breadth-first spread):
+    ///     Light goes from a cell into each neighbour, less max(1, opacity)
+    ///     of the neighbour, when that is brighter.
     ///
-    /// O(MAX_SKYLIGHT × N) where N = CHUNK_W² × CHUNK_H. For our 48×256×48
-    /// chunks that's ~9M neighbour checks per chunk — single-digit
-    /// milliseconds on a modern desktop, run once per chunk at generate time.
     /// Allocator-free by design so it can be called from `generateTerrain`
     /// without changing the existing call sites.
     pub fn computeSkylight(self: *Chunk) !void {
@@ -600,11 +681,11 @@ pub const Chunk = struct {
     }
 
     /// `computeSkylight`, then light from the four horizontal neighbour
-    /// chunks. An air cell on our edge gets (neighbour - 1) when the
-    /// neighbour's cell across the border has skylight 2 or more and the
-    /// seed is brighter. That light then spreads through our air. Without
-    /// this pass, skylight that enters a cave in one chunk stops at the
-    /// chunk border. Only the edge cells of each neighbour are read.
+    /// chunks. An edge cell gets (neighbour - loss) when that is brighter
+    /// (see `seedFromNeighbours`). That light then spreads through our
+    /// cells. Without this pass, skylight that enters a cave in one chunk
+    /// stops at the chunk border. Only the edge cells of each neighbour are
+    /// read.
     pub fn computeSkylightWithNeighbors(
         self: *Chunk,
         nx_neg: ?*const Chunk, // chunk at cx-1: their x=CHUNK_W-1 is our x=0 border
@@ -615,20 +696,24 @@ pub const Chunk = struct {
         var sky: DenseLight = undefined;
         // The same result as the bucket passes in computeSkylightReference
         // (a test checks it), from one breadth-first pass:
-        // 1. A cell is MAX_SKYLIGHT when no solid block is above it in its
-        //    column, else 0. Solid blocks are 0.
-        // 2. Light spreads from the MAX_SKYLIGHT cells through air, one level
-        //    less per step, to a minimum of 1. The queue is in order of
-        //    level, so a cell gets its final value when it is first set.
-        // Only sky cells next to an air cell at 0 can give light, so only
-        // they go in the queue first. Solidity comes from bit masks.
-        var solid: [CHUNK_W][CHUNK_W]Col = undefined;
-        self.solidColumns(&solid);
+        // 1. A cell is MAX_SKYLIGHT when no cell above it in its column
+        //    stops sky light, else 0.
+        // 2. Light spreads from the MAX_SKYLIGHT cells, less the loss of
+        //    each cell, to a minimum of 1. With `light.ordered`, the queue
+        //    is in order of level, so a cell gets its final value when it
+        //    is first set. Else a ring takes a cell again when it gets
+        //    brighter.
+        // Only sky cells next to a cell at 0 can give light, so only they
+        // go in the queue first. The cells that stop sky light come from
+        // bit masks.
+        var stop: [CHUNK_W][CHUNK_W]Col = undefined;
+        self.columnsWhere(&stop, light.stopsSky);
+        const lm: LossMap = .{ .stop = &stop, .blocks = &self.blocks };
 
-        // Pass 1: column seed. top[x][z] = the y above the highest solid block.
+        // Pass 1: column seed. top[x][z] = the y above the highest stop cell.
         var top: [CHUNK_W][CHUNK_W]u16 = undefined;
         for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
-            const c = solid[x][z];
+            const c = stop[x][z];
             var t: u16 = 0;
             var w: usize = COL_WORDS;
             while (w > 0) {
@@ -642,17 +727,15 @@ pub const Chunk = struct {
             for (0..CHUNK_H) |y| sky[x][y][z] = if (y >= t) MAX_SKYLIGHT else 0;
         };
 
-        // Queue of cells (`cellId`). A cell enters at most once, so
-        // BLOCKS_PER_CHUNK entries are enough.
+        // Queue of cells (`cellId`). With `light.ordered`, a cell enters at
+        // most once, so BLOCKS_PER_CHUNK entries are enough.
         var queue: [BLOCKS_PER_CHUNK]CellId = undefined;
-        var head: usize = 0;
         var tail: usize = 0;
 
-        // Seeds: sky cells with an air neighbour at 0. Inside a column the
-        // cell below the lowest sky cell is solid (or y = -1), so only the
-        // four sides can be shadowed air. A neighbour column with a higher
-        // top has shadowed air next to every sky cell of this column under
-        // that top.
+        // Seeds: sky cells next to a cell that is not a source. Inside a
+        // column the cell below the lowest sky cell stops sky light (or
+        // y = -1). A neighbour column with a higher top has shadowed cells
+        // next to every sky cell of this column under that top.
         for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
             const t: usize = top[x][z];
             if (t >= CHUNK_H) continue;
@@ -661,36 +744,50 @@ pub const Chunk = struct {
             if (x + 1 < CHUNK_W) hi = @max(hi, top[x + 1][z]);
             if (z > 0) hi = @max(hi, top[x][z - 1]);
             if (z + 1 < CHUNK_W) hi = @max(hi, top[x][z + 1]);
+            // A cell with opacity 1 to 14 under the lowest sky cell takes
+            // light from it. With `light.ordered`, that cell stops all light.
+            if (!light.ordered and t > 0) hi = @max(hi, t + 1);
             for (t..@min(hi, CHUNK_H)) |y| {
                 queue[tail] = cellId(x, y, z);
                 tail += 1;
             }
         };
 
-        // Pass 2: breadth-first spread.
-        while (head < tail) {
-            const x, const y, const z = cellXyz(queue[head]);
-            head += 1;
-            const level = sky[x][y][z];
-            if (level < 2) continue;
-            const target = level - 1;
-            const nbs = [6][3]i32{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, -1, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } };
-            for (nbs) |d| {
-                const nx = @as(i32, @intCast(x)) + d[0];
-                const ny = @as(i32, @intCast(y)) + d[1];
-                const nz = @as(i32, @intCast(z)) + d[2];
-                if (nx < 0 or nx >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
-                const nxu: usize = @intCast(nx);
-                const nyu: usize = @intCast(ny);
-                const nzu: usize = @intCast(nz);
-                if (isSolid(&solid, nxu, nyu, nzu)) continue;
-                if (sky[nxu][nyu][nzu] >= target) continue;
-                sky[nxu][nyu][nzu] = target;
-                queue[tail] = cellId(nxu, nyu, nzu);
-                tail += 1;
+        if (comptime light.ordered) {
+            // Pass 2: breadth-first spread in order of level.
+            var head: usize = 0;
+            while (head < tail) {
+                const x, const y, const z = cellXyz(queue[head]);
+                head += 1;
+                const level = sky[x][y][z];
+                if (level < 2) continue;
+                for (face_dirs) |d| {
+                    const nx = @as(i32, @intCast(x)) + d[0];
+                    const ny = @as(i32, @intCast(y)) + d[1];
+                    const nz = @as(i32, @intCast(z)) + d[2];
+                    if (nx < 0 or nx >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
+                    const nxu: usize = @intCast(nx);
+                    const nyu: usize = @intCast(ny);
+                    const nzu: usize = @intCast(nz);
+                    const target = level -| lm.at(nxu, nyu, nzu);
+                    if (target == 0 or sky[nxu][nyu][nzu] >= target) continue;
+                    sky[nxu][nyu][nzu] = target;
+                    queue[tail] = cellId(nxu, nyu, nzu);
+                    tail += 1;
+                }
             }
+            var ring = Ring{ .queue = &queue };
+            seedFromNeighbours(&sky, lm, &ring, .{ nx_neg, nx_pos, nz_neg, nz_pos }, .sky);
+        } else {
+            // Pass 2 with a ring on the same memory. Push i writes entry
+            // i or an entry before it, after the read of entry i.
+            var ring = Ring{ .queue = &queue };
+            for (0..tail) |i| {
+                const x, const y, const z = cellXyz(queue[i]);
+                ring.push(x, y, z);
+            }
+            seedFromNeighbours(&sky, lm, &ring, .{ nx_neg, nx_pos, nz_neg, nz_pos }, .sky);
         }
-        seedSkylightFromNeighbours(&sky, &solid, &queue, .{ nx_neg, nx_pos, nz_neg, nz_pos });
         try self.skylight.store(self.allocator, &sky);
     }
 
@@ -767,128 +864,25 @@ pub const Chunk = struct {
     }
 
     /// Recompute block-light for the entire chunk from the current `blocks`
-    /// array. Same shape as `computeSkylight`, seeded differently:
+    /// array, with the rules of light.zig. Each emissive cell starts at its
+    /// emission level, also when its opacity is 15. The mesher reads that
+    /// value for the face of an emissive block. The light then spreads:
+    /// a neighbour gets level - max(1, opacity), when that is brighter.
     ///
-    ///   Pass 1 (emission seed):
-    ///     Walk every cell. Air cells and non-emissive solids get 0.
-    ///     Emissive blocks (see `emissionLevel`) get their emission level
-    ///     stored directly in `block_light[x][y][z]`, even though the cell
-    ///     is solid — this is what makes an emissive block's own face read bright
-    ///     when the mesher later samples with `max(outward_mean, owner_bl)`.
-    ///
-    ///   Pass 2 (bucket-sort BFS, levels MAX_BLOCK_LIGHT down to 2):
-    ///     For each level L, sweep the chunk and for each cell (emissive
-    ///     solid OR air) with block_light == L, propagate (L - 1) into any
-    ///     AIR neighbour whose current value is strictly lower. Solid
-    ///     neighbours (including other emissive blocks) are skipped — light
-    ///     cannot travel through an emissive block the same way skylight cannot
-    ///     travel through a solid block.
-    ///
-    /// O(MAX_BLOCK_LIGHT × N). In practice the sweep is dominated by
-    /// cells with value 0 that short-circuit on the first check, so this is
-    /// a small fraction of the skylight pass on chunks with no emitters
-    /// (early-out: if pass 1 finds no emitters, pass 2 is a no-op).
-    /// Allocator-free by design so it can be called from `generateTerrain`
-    /// and `World.setBlock` without touching call sites.
-    ///
-    /// This pass lights the chunk on its own. `World.relightSeams` and
-    /// `World.setBlock` then call `computeBlockLightWithNeighbors` so light
-    /// crosses the chunk borders.
+    /// This pass lights the chunk on its own. `World.relightSeams` then
+    /// calls `computeBlockLightWithNeighbors` so light crosses the chunk
+    /// borders.
     pub fn computeBlockLight(self: *Chunk) !void {
-        var bl: DenseLight = undefined;
-        // Pass 1 — seed emissive cells, zero everything else.
-        var any_emitter = false;
-        var x: i32 = 0;
-        while (x < CHUNK_W) : (x += 1) {
-            var y: i32 = 0;
-            while (y < CHUNK_H) : (y += 1) {
-                var z: i32 = 0;
-                while (z < CHUNK_W) : (z += 1) {
-                    const xu: usize = @intCast(x);
-                    const yu: usize = @intCast(y);
-                    const zu: usize = @intCast(z);
-                    const emit = emissionLevel(self.resolveBlockRaw(x, y, z));
-                    bl[xu][yu][zu] = emit;
-                    if (emit > 0) any_emitter = true;
-                }
-            }
-        }
-
-        // Fast path: no emitters, nothing to propagate.
-        if (!any_emitter) return self.block_light.store(self.allocator, &bl);
-
-        // Pass 2 — bucket-sort BFS, level MAX_BLOCK_LIGHT down to 2.
-        var level: u8 = MAX_BLOCK_LIGHT;
-        while (level >= 2) : (level -= 1) {
-            const target: u8 = level - 1;
-            var ix: i32 = 0;
-            while (ix < CHUNK_W) : (ix += 1) {
-                var iy: i32 = 0;
-                while (iy < CHUNK_H) : (iy += 1) {
-                    var iz: i32 = 0;
-                    while (iz < CHUNK_W) : (iz += 1) {
-                        const xu: usize = @intCast(ix);
-                        const yu: usize = @intCast(iy);
-                        const zu: usize = @intCast(iz);
-                        if (bl[xu][yu][zu] != level) continue;
-                        // Six axis-aligned neighbours.
-                        const neighbours = [_][3]i32{
-                            .{ ix + 1, iy, iz },
-                            .{ ix - 1, iy, iz },
-                            .{ ix, iy + 1, iz },
-                            .{ ix, iy - 1, iz },
-                            .{ ix, iy, iz + 1 },
-                            .{ ix, iy, iz - 1 },
-                        };
-                        for (neighbours) |n| {
-                            const nx = n[0];
-                            const ny = n[1];
-                            const nz = n[2];
-                            if (nx < 0 or nx >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
-                            const nxu: usize = @intCast(nx);
-                            const nyu: usize = @intCast(ny);
-                            const nzu: usize = @intCast(nz);
-                            // Solid neighbours block propagation — including
-                            // other emissive solids. Their seed value is
-                            // already set in pass 1 and they will propagate
-                            // from THEIR own cell on their own sweep tick.
-                            if (self.resolveBlockRaw(nx, ny, nz) != .air) continue;
-                            if (bl[nxu][nyu][nzu] >= target) continue;
-                            bl[nxu][nyu][nzu] = target;
-                        }
-                    }
-                }
-            }
-        }
-        try self.block_light.store(self.allocator, &bl);
+        return self.computeBlockLightWithNeighbors(null, null, null, null);
     }
 
-    /// Recompute block-light for this chunk, seeding additional light from
-    /// the four horizontal neighbour chunks.  Call this instead of
-    /// `computeBlockLight` when a block mutation may push light across a
-    /// chunk boundary (i.e. whenever `World.setBlock` runs).
+    /// `computeBlockLight`, with more seeds from the four horizontal
+    /// neighbour chunks: an edge cell gets (neighbour - loss) when that is
+    /// brighter (see `seedFromNeighbours`). The breadth-first spread then
+    /// carries the seeded values inward.
     ///
-    /// Algorithm:
-    ///   Pass 1 — same as `computeBlockLight`: seed own emitters, zero the rest.
-    ///   Pass 1b — for each of the four edges that has a live neighbour chunk,
-    ///             walk the shared border row.  If the neighbour's adjacent cell
-    ///             has block_light >= 2, seed our border cell with (neighbour - 1)
-    ///             when our cell is air and the seed would raise its value.
-    ///             This is a one-hop hand-off; the BFS in pass 2 propagates the
-    ///             seeded values inward, so light travelling from the neighbour
-    ///             fills as many of our cells as the remaining budget allows.
-    ///   Pass 2 — standard bucket-sort BFS, same as `computeBlockLight`.
-    ///
-    /// Cross-chunk propagation notes:
-    ///   - Only the four horizontal neighbours (±X, ±Z) are considered.
-    ///     Vertical light does not cross chunks (chunks span all 256 Y levels).
-    ///   - Light originating in a neighbour that was itself seeded from a
-    ///     further-away chunk is NOT re-propagated here (we only look at the
-    ///     neighbour's already-computed values, not its neighbours).  This is
-    ///     correct for the common case: an emissive block is at most CHUNK_W-1 = 15
-    ///     cells from an edge, and MAX_BLOCK_LIGHT = 15, so the light budget
-    ///     reaching the far side of the adjacent chunk would already be ≤ 1
-    ///     and therefore zero after our one-hop decay.
+    /// Only the four horizontal neighbours (±X, ±Z) are read. Vertical
+    /// light does not cross chunks, because chunks are full columns.
     pub fn computeBlockLightWithNeighbors(
         self: *Chunk,
         nx_neg: ?*const Chunk, // chunk at cx-1: their x=CHUNK_W-1 is our x=0 border
@@ -897,133 +891,29 @@ pub const Chunk = struct {
         nz_pos: ?*const Chunk, // chunk at cz+1: their z=0 is our z=CHUNK_W-1 border
     ) !void {
         var bl: DenseLight = undefined;
-        // Pass 1 — seed own emitters, zero everything else (same as computeBlockLight).
-        var any_emitter = false;
-        var x: i32 = 0;
-        while (x < CHUNK_W) : (x += 1) {
-            var y: i32 = 0;
-            while (y < CHUNK_H) : (y += 1) {
-                var z: i32 = 0;
-                while (z < CHUNK_W) : (z += 1) {
-                    const xu: usize = @intCast(x);
-                    const yu: usize = @intCast(y);
-                    const zu: usize = @intCast(z);
-                    const emit = emissionLevel(self.resolveBlockRaw(x, y, z));
-                    bl[xu][yu][zu] = emit;
-                    if (emit > 0) any_emitter = true;
-                }
-            }
-        }
+        @memset(std.mem.asBytes(&bl), 0);
+        var stop: [CHUNK_W][CHUNK_W]Col = undefined;
+        self.columnsWhere(&stop, light.stopsSky);
+        const lm: LossMap = .{ .stop = &stop, .blocks = &self.blocks };
+        var queue: [BLOCKS_PER_CHUNK]CellId = undefined;
+        var ring = Ring{ .queue = &queue };
 
-        // Pass 1b — seed border cells from each live neighbour's adjacent edge.
-        // nx_neg is the chunk to our left (-X); their rightmost column
-        // (x = CHUNK_W-1) is adjacent to our leftmost column (x = 0).
-        if (nx_neg) |nb| {
-            var yy: usize = 0;
-            while (yy < CHUNK_H) : (yy += 1) {
-                var zz: usize = 0;
-                while (zz < CHUNK_W) : (zz += 1) {
-                    const nv = nb.block_light.get(CHUNK_W - 1, yy, zz);
-                    if (nv >= 2 and self.resolveBlockRaw(0, @intCast(yy), @intCast(zz)) == .air) {
-                        const seed: u8 = nv - 1;
-                        if (seed > bl[0][yy][zz]) {
-                            bl[0][yy][zz] = seed;
-                            any_emitter = true;
-                        }
-                    }
-                }
-            }
+        // Seed the emitters, only in a section with an emissive block in
+        // its palette.
+        for (&self.blocks.sections, 0..) |*sec, s| {
+            const any = for (sec.palette()) |b| {
+                if (light.emission(b) > 0) break true;
+            } else false;
+            if (!any) continue;
+            for (0..CHUNK_W) |x| for (0..section_mod.SIZE) |yy| for (0..CHUNK_W) |z| {
+                const e = light.emission(sec.get(section_mod.cellIndex(x, yy, z)));
+                if (e == 0) continue;
+                const y = s * section_mod.SIZE + yy;
+                bl[x][y][z] = e;
+                ring.push(x, y, z);
+            };
         }
-        if (nx_pos) |nb| {
-            var yy: usize = 0;
-            while (yy < CHUNK_H) : (yy += 1) {
-                var zz: usize = 0;
-                while (zz < CHUNK_W) : (zz += 1) {
-                    const nv = nb.block_light.get(0, yy, zz);
-                    if (nv >= 2 and self.resolveBlockRaw(CHUNK_W - 1, @intCast(yy), @intCast(zz)) == .air) {
-                        const seed: u8 = nv - 1;
-                        if (seed > bl[CHUNK_W - 1][yy][zz]) {
-                            bl[CHUNK_W - 1][yy][zz] = seed;
-                            any_emitter = true;
-                        }
-                    }
-                }
-            }
-        }
-        if (nz_neg) |nb| {
-            var xx: usize = 0;
-            while (xx < CHUNK_W) : (xx += 1) {
-                var yy: usize = 0;
-                while (yy < CHUNK_H) : (yy += 1) {
-                    const nv = nb.block_light.get(xx, yy, CHUNK_W - 1);
-                    if (nv >= 2 and self.resolveBlockRaw(@intCast(xx), @intCast(yy), 0) == .air) {
-                        const seed: u8 = nv - 1;
-                        if (seed > bl[xx][yy][0]) {
-                            bl[xx][yy][0] = seed;
-                            any_emitter = true;
-                        }
-                    }
-                }
-            }
-        }
-        if (nz_pos) |nb| {
-            var xx: usize = 0;
-            while (xx < CHUNK_W) : (xx += 1) {
-                var yy: usize = 0;
-                while (yy < CHUNK_H) : (yy += 1) {
-                    const nv = nb.block_light.get(xx, yy, 0);
-                    if (nv >= 2 and self.resolveBlockRaw(@intCast(xx), @intCast(yy), CHUNK_W - 1) == .air) {
-                        const seed: u8 = nv - 1;
-                        if (seed > bl[xx][yy][CHUNK_W - 1]) {
-                            bl[xx][yy][CHUNK_W - 1] = seed;
-                            any_emitter = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fast path: no emitters or neighbour seeds, nothing to propagate.
-        if (!any_emitter) return self.block_light.store(self.allocator, &bl);
-
-        // Pass 2 — bucket-sort BFS, identical to computeBlockLight.
-        var level: u8 = MAX_BLOCK_LIGHT;
-        while (level >= 2) : (level -= 1) {
-            const target: u8 = level - 1;
-            var ix: i32 = 0;
-            while (ix < CHUNK_W) : (ix += 1) {
-                var iy: i32 = 0;
-                while (iy < CHUNK_H) : (iy += 1) {
-                    var iz: i32 = 0;
-                    while (iz < CHUNK_W) : (iz += 1) {
-                        const xu: usize = @intCast(ix);
-                        const yu: usize = @intCast(iy);
-                        const zu: usize = @intCast(iz);
-                        if (bl[xu][yu][zu] != level) continue;
-                        const neighbours = [_][3]i32{
-                            .{ ix + 1, iy, iz },
-                            .{ ix - 1, iy, iz },
-                            .{ ix, iy + 1, iz },
-                            .{ ix, iy - 1, iz },
-                            .{ ix, iy, iz + 1 },
-                            .{ ix, iy, iz - 1 },
-                        };
-                        for (neighbours) |n| {
-                            const nx2 = n[0];
-                            const ny = n[1];
-                            const nz = n[2];
-                            if (nx2 < 0 or nx2 >= CHUNK_W or ny < 0 or ny >= CHUNK_H or nz < 0 or nz >= CHUNK_W) continue;
-                            const nxu: usize = @intCast(nx2);
-                            const nyu: usize = @intCast(ny);
-                            const nzu: usize = @intCast(nz);
-                            if (self.resolveBlockRaw(nx2, ny, nz) != .air) continue;
-                            if (bl[nxu][nyu][nzu] >= target) continue;
-                            bl[nxu][nyu][nzu] = target;
-                        }
-                    }
-                }
-            }
-        }
+        seedFromNeighbours(&bl, lm, &ring, .{ nx_neg, nx_pos, nz_neg, nz_pos }, .block);
         try self.block_light.store(self.allocator, &bl);
     }
 
@@ -1076,6 +966,12 @@ pub const BlockGetter = struct {
     getFn: *const fn (ctx: *const anyopaque, x: i32, y: i32, z: i32) BlockType,
     getSkylightFn: *const fn (ctx: *const anyopaque, x: i32, y: i32, z: i32) u8,
     getBlockLightFn: *const fn (ctx: *const anyopaque, x: i32, y: i32, z: i32) u8,
+
+    /// The sky light and the block light of cell (x, y, z). The mesher
+    /// reads the light of a cell with this function.
+    pub fn lightAt(self: BlockGetter, x: i32, y: i32, z: i32) CellLight {
+        return .{ .sky = self.getSkylight(x, y, z), .block = self.getBlockLight(x, y, z) };
+    }
 
     pub fn getBlock(self: BlockGetter, x: i32, y: i32, z: i32) BlockType {
         return self.getFn(self.ctx, x, y, z);

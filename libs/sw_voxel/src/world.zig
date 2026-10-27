@@ -5,6 +5,7 @@ const stages = @import("pipeline/stages.zig");
 const protocol = @import("pipeline/protocol.zig");
 const mesh_bytes = @import("pipeline/mesh_bytes.zig");
 const mesher_mod = @import("mesher.zig");
+const light = @import("light.zig");
 const Chunk = chunk_mod.Chunk;
 const Version = stages.Version;
 const Inputs = stages.Inputs;
@@ -424,46 +425,40 @@ pub const World = struct {
         return lc.chunk.getBlock(lx, wy - chunk_mod.MIN_Y, lz);
     }
 
-    /// The reference path: set a block at world-space coordinates and relight
-    /// the chunk and its face neighbours (`spreadLight`). Returns false if
-    /// the chunk is unloaded. The game does not use it: an edit in the game
-    /// goes through `Scheduler.editBlock`, and the light stage relights.
+    /// The reference path: set a block at world-space coordinates and update
+    /// the light incrementally (`light.update`, REQ-VOXEL-005): the light that
+    /// can come from the cell goes, then the cells fill again. Light reads and
+    /// changes only the 3 × 3 chunks around the edit. Returns false if the
+    /// chunk is unloaded. The game does not use it: an edit in the game goes
+    /// through `Scheduler.editBlock`, and the chunk workers update the light.
     /// The stage tests compare the light stage with this path.
     pub fn setBlock(self: *World, wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) !bool {
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
-        const lc_ptr = self.chunks.getPtr(.{ .cx = cx, .cz = cz }) orelse return false;
+        const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return false;
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
+        const ly = wy - chunk_mod.MIN_Y;
+        if (ly < 0 or ly >= chunk_mod.CHUNK_H) return true;
         // Paletted chunk — setBlock can allocate when the palette grows
         // past a power-of-two boundary. Propagate the error instead of
         // swallowing it; OOM here is the caller's problem, not ours.
-        try lc_ptr.*.chunk.setBlock(lx, wy - chunk_mod.MIN_Y, lz, block);
+        try lc.chunk.setBlock(lx, ly, lz, block);
 
-        // Live horizontal neighbours (null if unloaded), for the relight.
-        const nb_xn = self.chunks.get(.{ .cx = cx - 1, .cz = cz });
-        const nb_xp = self.chunks.get(.{ .cx = cx + 1, .cz = cz });
-        const nb_zn = self.chunks.get(.{ .cx = cx, .cz = cz - 1 });
-        const nb_zp = self.chunks.get(.{ .cx = cx, .cz = cz + 1 });
-
-        // Recompute skylight and block-light for the owning chunk, seeding
-        // from neighbour edges so light from a neighbour (an emissive block near
-        // the border, or sky through a cave) crosses into this chunk.
-        try self.relightChunk(lc_ptr.*, .{ .sky = true, .block = true });
-
-        // Re-run the light for each live horizontal neighbour, seeding from
-        // this chunk's newly-updated edges. This propagates light across the
-        // boundary in both directions: an emissive block placed at our x=0 will push
-        // level-14 light into the cx-1 chunk; an emissive block in cx-1 near x=CHUNK_W-1
-        // will push into our chunk (handled above). `spreadLight`
-        // continues to chunks further away while edge light changes.
-        var queue: RelightQueue = .empty;
-        defer queue.deinit(self.allocator);
-        for ([_]?*LoadedChunk{ nb_xn, nb_xp, nb_zn, nb_zp }) |nb| {
-            if (nb) |nlc| try queueRelight(&queue, self.allocator, nlc, .{ .sky = true, .block = true });
+        // The live chunks around the edit. An unloaded chunk stops light.
+        var region: light.Region = .{ .allocator = self.allocator };
+        for (0..9) |s| {
+            const dcx = @as(i32, @intCast(s % 3)) - 1;
+            const dcz = @as(i32, @intCast(s / 3)) - 1;
+            const n = self.chunks.get(.{ .cx = cx + dcx, .cz = cz + dcz }) orelse continue;
+            if (!n.has_blocks) continue;
+            region.parts[light.Region.slot(dcx, dcz)] = .{
+                .blocks = &n.chunk.blocks,
+                .sky = &n.chunk.skylight,
+                .block = &n.chunk.block_light,
+            };
         }
-        _ = try self.spreadLight(&queue, null);
-
+        try region.update(&.{.{ .x = lx, .y = ly, .z = lz }});
         return true;
     }
 
@@ -623,8 +618,8 @@ fn edgeCell(side: Edge, i: usize) struct { usize, usize } {
 /// The light channels in which the edge of `src` can make a cell of `dst`
 /// brighter. `side` is the edge of `dst` that touches `src`. The rule is
 /// the seed rule of `computeSkylightWithNeighbors` and
-/// `computeBlockLightWithNeighbors`: an air cell gets (source - 1) when the
-/// source is 2 or more and the result is brighter.
+/// `computeBlockLightWithNeighbors`: a cell gets (source - loss) when that
+/// is brighter (light.zig).
 fn canSeed(src: *const Chunk, dst: *const Chunk, side: Edge) Channels {
     var out: Channels = .{};
     for (0..chunk_mod.CHUNK_H) |y| for (0..chunk_mod.CHUNK_W) |i| {
@@ -633,9 +628,9 @@ fn canSeed(src: *const Chunk, dst: *const Chunk, side: Edge) Channels {
         const s_sky = src.skylight.get(sx, y, sz);
         const s_block = src.block_light.get(sx, y, sz);
         if (s_sky < 2 and s_block < 2) continue;
-        if (dst.resolveBlockRaw(@intCast(dx), @intCast(y), @intCast(dz)) != .air) continue;
-        if (s_sky >= 2 and dst.skylight.get(dx, y, dz) < s_sky - 1) out.sky = true;
-        if (s_block >= 2 and dst.block_light.get(dx, y, dz) < s_block - 1) out.block = true;
+        const loss = light.loss(dst.resolveBlockRaw(@intCast(dx), @intCast(y), @intCast(dz)));
+        if (dst.skylight.get(dx, y, dz) < s_sky -| loss) out.sky = true;
+        if (dst.block_light.get(dx, y, dz) < s_block -| loss) out.block = true;
         if (out.sky and out.block) return out;
     };
     return out;
