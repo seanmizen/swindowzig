@@ -1,6 +1,6 @@
 /// sw_math - Math library for 3D graphics
 /// Provides vectors, matrices, quaternions, boxes, rays, planes, and camera
-/// projection/view transforms
+/// projection/view transforms, and a camera controller
 pub const Vec2 = @import("vec2.zig").Vec2;
 pub const Vec3 = @import("vec3.zig").Vec3;
 pub const Vec4 = @import("vec4.zig").Vec4;
@@ -11,6 +11,9 @@ pub const Ray = @import("ray.zig").Ray;
 pub const Plane = @import("plane.zig").Plane;
 pub const perspective = @import("transforms.zig").perspective;
 pub const lookAt = @import("transforms.zig").lookAt;
+/// Camera controller: `camera.Controller`, `camera.Settings`, `camera.Input`.
+pub const camera = @import("camera.zig");
+pub const CameraController = camera.Controller;
 
 test {
     @import("std").testing.refAllDecls(@This());
