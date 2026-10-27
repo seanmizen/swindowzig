@@ -57,6 +57,9 @@ pub const exec_threads = if (builtin.cpu.arch == .wasm32) struct {} else @import
 pub const exec_web = @import("pipeline/exec_web.zig");
 /// The upload budget of the chunk meshes (REQ-VOXEL-017).
 pub const streaming = @import("pipeline/streaming.zig");
+/// Cave culling: the face connections of each section, the walk from the
+/// camera, and the box cull (REQ-VOXEL-019, REQ-VOXEL-020).
+pub const visibility = @import("visibility.zig");
 /// The exports of chunks.wasm, the chunk worker of the web build (C9).
 pub const chunk_worker = @import("pipeline/chunk_worker_main.zig");
 
@@ -82,4 +85,5 @@ test {
     _ = exec_threads;
     _ = exec_web;
     _ = streaming;
+    _ = visibility;
 }

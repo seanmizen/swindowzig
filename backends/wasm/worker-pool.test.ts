@@ -18,7 +18,7 @@
 //                executor runs the jobs, so the terrain is correct.
 //   uploads      each run checks the mesh uploads (checkMeshUploads, C5).
 //                With the pool, JS writes no mesh byte into the main wasm
-//                memory: at most the 64-byte head of each result. Each mesh
+//                memory: at most the 96-byte head of each result. Each mesh
 //                goes to the GPU from the ArrayBuffer of its worker, with
 //                its size and its GPU header. JS holds nothing at the end.
 //   memory       the main wasm memory does not grow with the meshed
@@ -35,6 +35,7 @@ import {
   type HeadlessApp,
   type PipelineCounts,
   type PoolSetup,
+  RESULT_HEAD_BYTES,
   startApp,
   type UploadReport,
   yieldToEventLoop,
@@ -242,7 +243,9 @@ describe('chunk worker pool (real Bun Web Workers)', () => {
         expectSameState(o, ref);
         // C5: the meshes went to the GPU from the worker ArrayBuffers.
         expect(o.uploads.heldWrites).toBeGreaterThan(400);
-        expect(o.uploads.headBytesPerResult).toBeLessThanOrEqual(64);
+        expect(o.uploads.headBytesPerResult).toBeLessThanOrEqual(
+          RESULT_HEAD_BYTES,
+        );
       }
     },
     TIMEOUT_MS,

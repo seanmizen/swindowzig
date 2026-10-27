@@ -89,6 +89,8 @@
 | [`REQ-VOXEL-016`](voxel.md#req-voxel-016--the-texture-of-a-fluid-surface-follows-the-flow) | The texture of a fluid surface follows the flow | active | functional | P3 | agent:SWZ-34 |
 | [`REQ-VOXEL-017`](voxel.md#req-voxel-017--the-mesh-uploads-of-one-frame-have-a-limit-and-a-priority) | The mesh uploads of one frame have a limit and a priority | active | quality | P2 | agent:SWZ-55 |
 | [`REQ-VOXEL-018`](voxel.md#req-voxel-018--a-fast-player-has-no-long-hole-near-the-player) | A fast player has no long hole near the player | active | quality | P2 | agent:SWZ-55 |
+| [`REQ-VOXEL-019`](voxel.md#req-voxel-019--each-mesh-records-which-faces-of-its-sections-connect) | Each mesh records which faces of its sections connect | active | functional | P2 | agent:SWZ-40 |
+| [`REQ-VOXEL-020`](voxel.md#req-voxel-020--cave-culling-removes-only-the-sections-that-the-camera-can-not-see) | Cave culling removes only the sections that the camera can not see | active | quality | P2 | agent:SWZ-40 |
 
 ## Dependency graph
 
@@ -178,6 +180,8 @@ graph TD
   REQ_VOXEL_016["REQ-VOXEL-016<br/>The texture of a fluid surface follows the flow"]
   REQ_VOXEL_017["REQ-VOXEL-017<br/>The mesh uploads of one frame have a limit and a priority"]
   REQ_VOXEL_018["REQ-VOXEL-018<br/>A fast player has no long hole near the player"]
+  REQ_VOXEL_019["REQ-VOXEL-019<br/>Each mesh records which faces of its sections connect"]
+  REQ_VOXEL_020["REQ-VOXEL-020<br/>Cave culling removes only the sections that the camera can not see"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -223,6 +227,7 @@ graph TD
   REQ_VOXEL_013 -->|depends-on| REQ_VOXEL_011
   REQ_VOXEL_015 -->|refines| REQ_VOXEL_014
   REQ_VOXEL_016 -->|refines| REQ_VOXEL_014
+  REQ_VOXEL_020 -->|depends-on| REQ_VOXEL_019
 ```
 
 ## Derived reverse links
@@ -249,3 +254,4 @@ graph TD
 - `REQ-VOXEL-009` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
 - `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016
+- `REQ-VOXEL-019` — required-by REQ-VOXEL-020

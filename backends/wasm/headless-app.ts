@@ -572,8 +572,12 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
   };
 }
 
-/** The size of the head of a Result: the part that app.wasm copies (C5). */
-export const RESULT_HEAD_BYTES = 64;
+/**
+ * The size of the head of a Result: the part that app.wasm copies (C5).
+ * protocol.PAYLOAD_OFFSET of the demo: 16 header bytes, 48 fixed bytes and
+ * 32 bytes of section connections (REQ-VOXEL-019).
+ */
+export const RESULT_HEAD_BYTES = 96;
 /** The GPU header of a chunk quad buffer: (origin x, tick, origin z, 0). */
 const GPU_HEADER_BYTES = 16;
 const CHUNK_W = 16;
@@ -596,7 +600,7 @@ export interface UploadReport {
  *   - JS wrote no mesh quad into the wasm memory. For each result, JS wrote
  *     at most RESULT_HEAD_BYTES into the wasm memory.
  *   - Each mesh went to the GPU from the held bytes: one held write for
- *     each upload, at byte 16 of the buffer, from byte 64 of the message,
+ *     each upload, at byte 16 of the buffer, from byte 96 of the message,
  *     with the size of the quads. Just before it, main wrote the 16-byte
  *     GPU header of the same chunk to the same buffer.
  * With no pool (`pooled` false): no held upload. With null (a run that

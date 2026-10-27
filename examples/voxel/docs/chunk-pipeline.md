@@ -161,7 +161,7 @@ Job, 88 bytes
   16 u32×9 block versions of the 3×3 chunks
   52 u32×9 light versions of the 3×3 chunks
 
-Result, 48 bytes, then the payload
+Result, 48 + SECTIONS_LEN bytes (80 in the demo), then the payload
   0  u8    stage
   1  u8    flags: bit 0 = the payload holds blocks
   2  u16   0
@@ -173,7 +173,9 @@ Result, 48 bytes, then the payload
   28 u32   job time in µs
   32 u64   mesh hash (mesh), else 0
   40 u64   0
-  48 ...   payload
+  48 u16×n the face connections of each section (mesh), else 0, then 0
+           to a multiple of 16 bytes (SECTIONS_LEN: 32 in the demo)
+  80 ...   payload (demo: 16 sections)
 
 Error, 16 bytes, then the text
   0  u16   code
@@ -186,11 +188,13 @@ Error, 16 bytes, then the text
 ```
 
 
-The Result payload starts at byte 64 of the message, so the PackedQuad
+Protocol version 4 added the section connections for cave culling
+(REQ-VOXEL-019). The Result payload starts at byte 96 of the message in the
+demo (`protocol.PAYLOAD_OFFSET`, byte 64 before version 4), so the PackedQuad
 bytes of a mesh are 16-byte aligned, ready for upload (C5). The mesh hash
 is `protocol.meshHash` of the payload. The worker calculates it, so main
-can compare meshes without the quads. Main reads only the first 64 bytes of
-a mesh Result (`protocol.decodeResultHead`). A generate payload holds the
+can compare meshes without the quads. Main reads only the first
+PAYLOAD_OFFSET bytes of a mesh Result (`protocol.decodeResultHead`). A generate payload holds the
 blocks: the section count u16, 0 u16, 0 u32, then each section from local
 y 0 up. A section is: index bits u8 (0, 1, 2, 4 or 8), 0 u8, palette
 length u16, the palette (padded to 8 bytes from the start of the section),

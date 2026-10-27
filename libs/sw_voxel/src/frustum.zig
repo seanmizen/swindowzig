@@ -202,6 +202,22 @@ fn boxOutside(planes: [5]Plane, box: Aabb) bool {
     return false;
 }
 
+/// True when `box` is out of the frustum planes of `frustum`
+/// (REQ-VOXEL-020).
+pub fn aabbOutside(frustum: Frustum, box: Aabb) bool {
+    return boxOutside(frustum.planes, box);
+}
+
+/// True when section `sy` (0 at MIN_Y) of chunk (cx, cz) is out of the
+/// frustum planes (REQ-VOXEL-020).
+pub fn sectionOutside(frustum: Frustum, cx: i32, sy: i32, cz: i32) bool {
+    const x0: f32 = @floatFromInt(cx * CHUNK_W);
+    const y0: f32 = @floatFromInt(chunk_mod.MIN_Y + sy * CHUNK_W);
+    const z0: f32 = @floatFromInt(cz * CHUNK_W);
+    const w: f32 = @floatFromInt(CHUNK_W);
+    return boxOutside(frustum.planes, Aabb.init(Vec3.init(x0, y0, z0), Vec3.init(x0 + w, y0 + w, z0 + w)));
+}
+
 /// Returns true if the chunk at chunk-grid coordinates (cx, cz) should be
 /// drawn under the given strategy. Cheap and branch-light: the camera-chunk
 /// short-circuit handles the common case in two integer compares.

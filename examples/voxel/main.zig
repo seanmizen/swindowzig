@@ -311,6 +311,7 @@ const WorldRaycastType = @import("raycast.zig").Raycast(Vec3, world_mod.World);
 const worldRaycast = WorldRaycastType.raycast;
 const camera_clip = @import("camera_clip.zig");
 const frustum_mod = @import("sw_voxel").frustum;
+const visibility = @import("sw_voxel").visibility;
 
 /// 3PV camera-clip skin: distance to keep between the camera origin and the
 /// nearest solid voxel face. Must exceed the near-plane half-diagonal so the
@@ -976,6 +977,13 @@ const State = struct {
     /// game logic.
     frustum_drawn: u32 = 0,
     frustum_culled: u32 = 0,
+    /// Cave culling (REQ-VOXEL-020): skip the chunks that the camera can
+    /// not see through open space. --cave-cull=<on|off>.
+    cave_cull: bool = true,
+    /// The chunks that the cave cull skipped in the last frame.
+    cave_culled: u32 = 0,
+    /// The sections that the camera can see, from the walk of each frame.
+    cave_visible: visibility.VisibleSet = .{},
     /// F3-style debug overlay rolling FPS sampler. Captured at the top of
     /// voxelRender from real-time deltas (not the fixed-step sim tick rate),
     /// so the displayed FPS reflects actual present cadence even when the
@@ -1142,6 +1150,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.frozen_frustum = null;
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
+    state.cave_cull = true;
+    state.cave_culled = 0;
+    state.cave_visible = .{};
     state.fps_window_ns = @splat(0);
     state.fps_window_idx = 0;
     state.fps_window_filled = false;
@@ -1346,6 +1357,17 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.smooth_light = false;
             } else {
                 std.log.err("--smooth-light: invalid value '{s}'. Accepted: on, off", .{val});
+                fatalExit(1);
+            }
+        }
+        if (std.mem.startsWith(u8, arg, "--cave-cull=")) {
+            const val = std.mem.sliceTo(arg["--cave-cull=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.cave_cull = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.cave_cull = false;
+            } else {
+                std.log.err("--cave-cull: invalid value '{s}'. Accepted: on, off", .{val});
                 fatalExit(1);
             }
         }
@@ -1778,6 +1800,14 @@ fn startExecutor(ctx: *sw.Context) !void {
     }
     state.executor = .{ .inline_exec = try exec_inline.Inline.init(a, config, limit) };
     std.log.info("[PIPE] executor: Inline (main thread)", .{});
+}
+
+/// The face connections of a section for the cave cull (REQ-VOXEL-019).
+/// Null for a chunk that is not loaded: the walk goes through it.
+fn sectionConnectivity(ctx: *const anyopaque, p: visibility.SectionPos) ?visibility.Connectivity {
+    const w: *const world_mod.World = @ptrCast(@alignCast(ctx));
+    const lc = w.get(p.cx, p.cz) orelse return null;
+    return lc.mesh.sections[@intCast(p.sy)];
 }
 
 /// The view frustum test for the scheduler priority (C8, class 3).
@@ -2998,6 +3028,17 @@ fn voxelRender(ctx: *sw.Context) !void {
     // strategy rejects.
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
+    state.cave_culled = 0;
+    // Cave culling (REQ-VOXEL-020): the sections that the camera can see
+    // through open space. A walk that fails (no memory) culls nothing.
+    const cave = state.cave_cull and state.frustum_strategy != .none and blk: {
+        const eye = live_frustum.eye;
+        visibility.walk(state.allocator, visibility.sectionOf(eye[0], eye[1], eye[2]), .{ .ctx = &state.world, .connFn = sectionConnectivity }, .{
+            .radius = state.world.render_distance + 1,
+            .frustum = if (state.frustum_strategy == .frustum) &live_frustum else null,
+        }, &state.cave_visible) catch break :blk false;
+        break :blk true;
+    };
     var sorted_chunks: std.ArrayList(*world_mod.LoadedChunk) = .empty;
     defer sorted_chunks.deinit(ctx.allocator());
     {
@@ -3011,6 +3052,13 @@ fn voxelRender(ctx: *sw.Context) !void {
             const y_max: f32 = if (cg) |c| c.y_max else chunk_mod.MIN_Y + chunk_mod.CHUNK_H;
             if (!frustum_mod.keepChunk(state.frustum_strategy, live_frustum, lc_ptr.*.cx, lc_ptr.*.cz, y_min, y_max)) {
                 state.frustum_culled += 1;
+                continue;
+            }
+            // The 3×3 chunks around the camera are never culled (the same
+            // rule as keepChunk).
+            const near = @abs(lc_ptr.*.cx - live_frustum.cam_cx) <= 1 and @abs(lc_ptr.*.cz - live_frustum.cam_cz) <= 1;
+            if (cave and !near and !state.cave_visible.column(lc_ptr.*.cx, lc_ptr.*.cz)) {
+                state.cave_culled += 1;
                 continue;
             }
             state.frustum_drawn += 1;
@@ -3818,6 +3866,7 @@ fn voxelShutdown(ctx: *sw.Context) !void {
     while (it.next()) |entry| entry.value_ptr.release();
     state.chunk_gpu.deinit();
     state.quad_pool.deinit(state.allocator);
+    state.cave_visible.deinit(state.allocator);
     state.world.deinit();
 
     state.overlay.deinit();
@@ -4088,8 +4137,8 @@ fn logGpuMeshStats() void {
             });
         }
     };
-    std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s})", .{
-        state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(),
+    std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s}) cave_culled={}", .{
+        state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(), state.cave_culled,
     });
     // C5: main keeps no CPU copy of a mesh after its upload. `waiting` is
     // the meshes whose bytes wait for the upload.

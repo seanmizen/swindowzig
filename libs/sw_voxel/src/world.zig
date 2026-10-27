@@ -51,6 +51,9 @@ pub const MeshInfo = struct {
     y_max: f32 = mesher_mod.EMPTY_Y_MAX,
     /// protocol.meshHash of the quad bytes. The tests compare meshes by it.
     hash: u64 = 0,
+    /// The face connections of each section, for cave culling
+    /// (REQ-VOXEL-019). Each pair connects until the mesh arrives.
+    sections: [chunk_mod.SECTION_COUNT]u16 = @splat(0x7FFF),
 
     pub fn quadCount(self: MeshInfo) usize {
         return self.quad_count;

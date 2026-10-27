@@ -398,3 +398,41 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   "scheduler: a fast camera leaves no long hole near the player
   (REQ-VOXEL-018)"
 - **Relations:** none
+
+## REQ-VOXEL-019 — Each mesh records which faces of its sections connect
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** For each 16 × 16 × 16 section of a chunk, the mesh stage
+  shall record the pairs of section faces that one region of open cells
+  connects.
+- **Rationale:** Cave culling needs to know if the camera can see
+  through a section. The mesh stage reads the blocks of the chunk, so the
+  connectivity costs no more block reads. The result message carries it
+  to main with the mesh (protocol version 4).
+- **Verification:** Test — `libs/sw_voxel/src/visibility.zig` ›
+  "visibility: a section records the face pairs that connect
+  (REQ-VOXEL-019)"
+- **Relations:** none
+
+## REQ-VOXEL-020 — Cave culling removes only the sections that the camera can not see
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** The cave cull shall keep each section that a line of
+  sight from the camera section reaches through open sections.
+- **Rationale:** In a cave, most chunks in the frustum are behind rock.
+  The cull walks from the camera section through connected faces, and the
+  demo does not draw a chunk column that the walk does not reach. A cull
+  that removes a visible section changes the image, so the cull must
+  keep each section that it can not prove hidden.
+- **Verification:** Test — `libs/sw_voxel/src/visibility.zig` ›
+  "visibility: each section on a line of sight is visible, and the walk
+  culls a closed cave (REQ-VOXEL-020)"
+- **Relations:** depends-on REQ-VOXEL-019

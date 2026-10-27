@@ -325,26 +325,64 @@ ticket of #102, in the order of the batch.
 
 ## #40 occlusion culling and cave culling for chunks and entities
 
-- Status: skipped
+- Status: done in part (the first commit skipped it, and Sean asked for it
+  in the batch). The commit adds cave culling, but no occlusion queries.
 - Commit: see `git log --grep SWZ-40`
-- Reason: the ticket does not fit in the time limit of one ticket. The
-  flood fill of the faces of a section and the walk from the camera
-  section are pure, but the renderer draws one mesh for each chunk
-  column, not one mesh for each 16-cell section. Cave culling needs:
-  - the face connections of each section in the mesh result (a
-    protocol change).
-  - a mesh for each section, or a draw range for each section, in the
-    voxel renderer.
-  - a benchmark in a cave that compares the drawn chunks and the frame
-    (a golden image with culling on and off).
-- Open questions:
-  - The occlusion queries need the timestamp-style query support of
-    `sw_gpu` (#44 added timestamp query sets). Occlusion query sets are
-    not in `sw_gpu` yet.
-  - Proposal: split the ticket. Part 1: the section face graph and the
-    walk, pure and tested, plus the box culling call. Part 2: draw
-    ranges for each section in the renderer, and the cave benchmark.
-- Risks: none. No code changed.
+- What changed:
+  - New `libs/sw_voxel/src/visibility.zig`:
+    - `sectionConnectivity` and `chunkConnectivity`: a flood fill of the
+      open cells of each 16 × 16 × 16 section. The result is 15 bits, one
+      for each pair of faces that connect.
+    - `walk`: from the camera section, through connected faces, never
+      back toward the camera, to the render distance. An optional frustum
+      stops the walk at sections out of view.
+    - `cullBoxes`: a frustum and visible-section test for a list of boxes
+      (chunk meshes, entities).
+  - `frustum.zig`: new `aabbOutside` and `sectionOutside`.
+  - The mesh stage records the connectivity of each section. The mesh
+    result carries it (protocol version 4, 16 more head bytes, so
+    `PAYLOAD_OFFSET` is 96 in the demo). `MeshInfo.sections` keeps it.
+  - The voxel demo walks each frame and does not draw a chunk column that
+    the walk does not reach. The 3 × 3 columns at the camera are always
+    drawn. New flag `--cave-cull=on|off` (default on). The `[GPU MESH]`
+    log line shows `cave_culled=`.
+- Changes of the acceptance criteria:
+  - The demo culls chunk columns, not sections: the renderer has one
+    mesh for each column. Draw ranges for each section are a follow-up.
+  - The demo has no entity list that uses `cullBoxes` yet. A test covers
+    it.
+  - Occlusion queries are not done: `sw_gpu` has no occlusion query sets.
+- What ran:
+  - `zig build test`: 4 new visibility tests. One test casts 4800 rays
+    from the camera section in random section worlds, and checks that each
+    section on a ray, up to and including the first closed section, is in
+    the visible set (REQ-VOXEL-020).
+  - New `examples/voxel/tests/cave_cull.sh`: one headless frame with the
+    cull on and one with it off, for 4 TAS files. Each pair had the same
+    bytes:
+
+    | Run | Drawn, cull on | Drawn, cull off | Cave culled |
+    | --- | --- | --- | --- |
+    | flatland surface | 138 | 154 | 16 |
+    | flatland shaft | 9 | 157 | 148 |
+    | flatland dig | 9 | 117 | 108 |
+    | default terrain, look down | 17 | 66 | 49 |
+
+  - The voxel gate: `stage_match=yes`, the headless TAS, the smoke test
+    and the goldens.
+  - `bun backends/wasm/headless.ts` and
+    `bun test backends/wasm/worker-pool.test.ts` with protocol version 4.
+- Expected changes:
+  - quad hash: no change (the quads do not change)
+  - goldens: none
+- CI changes needed: none. `cave_cull.sh` can run in the headless
+  regression job.
+- Requirements: REQ-VOXEL-019, REQ-VOXEL-020
+- Breaking: protocol version 4. A Web Worker of an old build rejects the
+  Hello of a new build. `RESULT_HEAD_BYTES` in `headless-app.ts` is 96.
+- Risks: a section with an unusual shape can connect two faces that the
+  first path of the walk can not use, and the walk does not try a second
+  path. The ray test found no case in open/closed worlds.
 
 ## #55 chunk streaming with priority
 

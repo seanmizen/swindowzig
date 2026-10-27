@@ -211,15 +211,24 @@ test "protocol: the fields are at the documented offsets, little-endian" {
     try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, body[16..20], .little));
     try std.testing.expectEqual(@as(u32, 9), std.mem.readInt(u32, body[48..52], .little));
 
-    const r = try protocol.encodeResult(a, 1, .{ .stage = .mesh, .cx = 0, .cz = 0, .y_min = 1.5, .y_max = 70, .job_us = 7 }, .{ .quads = &.{.{ 1, 2, 3, 4 }} });
+    var sections: [protocol.SECTION_COUNT]u16 = @splat(0x7FFF);
+    sections[1] = 0x0123;
+    const r = try protocol.encodeResult(a, 1, .{ .stage = .mesh, .cx = 0, .cz = 0, .y_min = 1.5, .y_max = 70, .job_us = 7, .sections = sections }, .{ .quads = &.{.{ 1, 2, 3, 4 }} });
     defer a.free(r);
+    const p = protocol.PAYLOAD_OFFSET;
     try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 1.5))), std.mem.readInt(u32, r[32..36], .little));
     try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, r[40..44], .little));
     try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, r[44..48], .little));
-    try std.testing.expectEqual(protocol.meshHash(r[64..80]), std.mem.readInt(u64, r[48..56], .little));
+    try std.testing.expectEqual(protocol.meshHash(r[p .. p + 16]), std.mem.readInt(u64, r[48..56], .little));
     try std.testing.expectEqual(@as(u64, 0), std.mem.readInt(u64, r[56..64], .little));
-    try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, r[64..68], .little));
-    try std.testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, r[76..80], .little));
+    // The section connections (REQ-VOXEL-019), then the quads.
+    try std.testing.expectEqual(@as(u16, 0x7FFF), std.mem.readInt(u16, r[64..66], .little));
+    try std.testing.expectEqual(@as(u16, 0x0123), std.mem.readInt(u16, r[66..68], .little));
+    try std.testing.expectEqual(@as(usize, 64 + protocol.SECTIONS_LEN), p);
+    try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, r[p..][0..4], .little));
+    try std.testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, r[p + 12 ..][0..4], .little));
+    const decoded = try protocol.decode(r);
+    try std.testing.expectEqualSlices(u16, &sections, &decoded.msg.result.head.sections);
 }
 
 test "protocol: a bad header gives an error" {

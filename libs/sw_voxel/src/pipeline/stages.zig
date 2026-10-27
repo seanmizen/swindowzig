@@ -21,6 +21,7 @@
 //! The scheduler that uses these stages is not here (C1, C8).
 const std = @import("std");
 const chunk_mod = @import("../chunk.zig");
+const visibility = @import("../visibility.zig");
 const mesher_mod = @import("../mesher.zig");
 const content = @import("../content.zig");
 const light_rules = @import("../light.zig");
@@ -512,6 +513,8 @@ pub const MeshResult = struct {
     /// `mesher.EMPTY_Y_MIN` and y_max is `mesher.EMPTY_Y_MAX`.
     y_min: f32,
     y_max: f32,
+    /// The face connections of each section (REQ-VOXEL-019).
+    sections: [chunk_mod.SECTION_COUNT]visibility.Connectivity = @splat(visibility.all),
 
     pub fn deinit(self: *MeshResult, allocator: std.mem.Allocator) void {
         allocator.free(self.quads);
@@ -564,6 +567,7 @@ pub fn meshWith(
         .quads = try m.quads.toOwnedSlice(allocator),
         .y_min = m.y_min,
         .y_max = m.y_max,
+        .sections = visibility.chunkConnectivity(&view),
     };
 }
 

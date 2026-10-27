@@ -275,6 +275,7 @@ pub const WorkerWorld = struct {
                 defer m.deinit(self.allocator);
                 head.y_min = m.y_min;
                 head.y_max = m.y_max;
+                head.sections = m.sections;
                 return protocol.encodeResult(self.allocator, id, head, .{ .quads = m.quads });
             },
         }
