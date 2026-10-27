@@ -65,6 +65,70 @@ pub const Context = struct {
         self.backend.setMouseCapture(capture);
     }
 
+    /// Go to full screen, or back to a window. The new size arrives as a
+    /// `resize` event, and `window()` gives it. Native: a borderless window
+    /// at the desktop resolution. Web: the browser full screen. The browser
+    /// asks for a user gesture: call it on a key press or a click. A refusal
+    /// goes to the console, and the game continues.
+    pub fn setWindowMode(self: *Context, mode: platform.WindowMode) void {
+        self.backend.setWindowMode(mode);
+    }
+
+    /// The window mode now. On the web, Escape ends full screen, so read
+    /// this value. Do not keep your own copy.
+    pub fn windowMode(self: *const Context) platform.WindowMode {
+        return self.backend.getWindowMode();
+    }
+
+    /// Show the cursor (`normal`), hide it over the window (`hidden`), or
+    /// lock it for relative movement (`locked`). On the web, `locked` is
+    /// the pointer lock. The browser can refuse it or end it (Escape), and
+    /// the game continues (REQ-PLATFORM-001). Read `isCursorLocked` for the
+    /// real state. `setMouseCapture` does not change.
+    pub fn setCursorMode(self: *Context, mode: platform.CursorMode) void {
+        self.backend.setCursorMode(mode);
+    }
+
+    /// True while the cursor is locked.
+    pub fn isCursorLocked(self: *const Context) bool {
+        return self.backend.isCursorLocked();
+    }
+
+    /// Write `text` to the system clipboard. The call does not wait. A
+    /// `clipboard` event of kind `write` gives the result
+    /// (`input().clipboard`). On the web, the browser can refuse the write
+    /// (no user gesture, or no focus): then the status is `denied`, and the
+    /// console tells why. `clipboardText()` gives the text after the call,
+    /// also when the browser refused it (REQ-PLATFORM-002).
+    pub fn setClipboardText(self: *Context, text: []const u8) void {
+        self.backend.setClipboardText(text);
+    }
+
+    /// Start a read of the system clipboard. The call does not wait. A
+    /// `clipboard` event of kind `read` gives the result, and
+    /// `clipboardText()` gives the text. On the web, the browser can ask
+    /// the user for a permission, and can refuse (status `denied`). For the
+    /// paste of a text field, use the `paste` event of the web, which needs
+    /// no permission.
+    pub fn requestClipboardText(self: *Context) void {
+        self.backend.requestClipboardText();
+    }
+
+    /// The last clipboard text that the platform knows: from a paste, a
+    /// read or a write. Native reads the system clipboard on each call. The
+    /// slice stays valid until the next clipboard call or event.
+    pub fn clipboardText(self: *Context) []const u8 {
+        return self.backend.clipboardText();
+    }
+
+    /// Web: while this is true (the default), a paste into a text input
+    /// also arrives as `text_input`. Set it to false when the game reads
+    /// the paste from the `clipboard` event, for example with
+    /// `sw_ui.Clipboard.platform`. Native does nothing.
+    pub fn setPasteAsText(self: *Context, on: bool) void {
+        self.backend.setPasteAsText(on);
+    }
+
     /// Start text input. The platform input method turns on: the OS IME on
     /// native, a focused hidden `<input>` on the web. The engine then sends
     /// `text_input` (committed text) and `text_composition` (text in

@@ -1,7 +1,8 @@
 //! sw_voxel: voxel chunks for games. It holds the chunk storage (paletted
-//! 16 × 16 × 16 block sections, skylight and block light), the greedy mesher, the pure chunk
-//! stages, the chunk scheduler, the chunk protocol, the executors (Inline,
-//! ThreadPool and the Web Worker pool) and the frustum cull.
+//! 16 × 16 × 16 block sections, skylight and block light), the greedy
+//! mesher and the model mesher, the pure chunk stages, the chunk scheduler,
+//! the chunk protocol, the executors (Inline, ThreadPool and the Web Worker
+//! pool) and the frustum cull.
 //!
 //! sw_voxel knows no block names and no terrain. The game gives them in a
 //! content module: `content.zig` gives the contract and the build wiring.
@@ -14,8 +15,12 @@ pub const content = @import("content.zig");
 pub const section = @import("section.zig");
 /// One chunk: a column of sections, skylight and block light.
 pub const chunk = @import("chunk.zig");
-/// The greedy mesher: chunk blocks to packed quads.
+/// The greedy mesher and the model mesher: chunk blocks to packed quads.
 pub const mesher = @import("mesher.zig");
+/// Baked block models: the quad type and the box and rotation helpers.
+pub const model = @import("model.zig");
+/// The models of the content as tables, and the GPU table of model quads.
+pub const models = @import("models.zig");
 /// The chunks of main, with versions and cross-chunk light.
 pub const world = @import("world.zig");
 /// The chunk cull: cone, sphere and frustum.
@@ -47,6 +52,8 @@ test {
     _ = section;
     _ = chunk;
     _ = mesher;
+    _ = model;
+    _ = models;
     _ = world;
     _ = frustum;
     _ = stages;

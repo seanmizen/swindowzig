@@ -20,6 +20,14 @@ pub const webLogFn = @import("web_entry.zig").webLogFn;
 pub const Config = app.Config;
 /// Context passed to all callbacks (provides input, GPU, timing, etc).
 pub const Context = context.Context;
+/// Window mode for `Context.setWindowMode`: windowed or full screen.
+pub const WindowMode = platform.platform.WindowMode;
+/// Cursor mode for `Context.setCursorMode`: normal, hidden or locked.
+pub const CursorMode = platform.platform.CursorMode;
+/// The payload of a `clipboard` event (`ctx.input().clipboard`).
+pub const ClipboardEvent = core.ClipboardEvent;
+pub const ClipboardEventKind = core.ClipboardEventKind;
+pub const ClipboardStatus = core.ClipboardStatus;
 
 /// Core framework types (usually accessed via Context, not directly).
 pub const core_types = struct {

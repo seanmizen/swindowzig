@@ -4,6 +4,7 @@ const core = @import("sw_core");
 const backend_mod = @import("backend.zig");
 const platform = @import("platform.zig");
 const storage = @import("storage.zig");
+const clipboard = @import("clipboard.zig");
 
 // The SDL2 headers, translated by build.zig (addTranslateC on sdl.h).
 const sdl = @import("sdl");
@@ -13,6 +14,7 @@ pub const SDL2Backend = struct {
     window: *sdl.SDL_Window,
     start_time: i64,
     window_info: platform.WindowInfo,
+    clipboard: clipboard.ClipboardState = .{},
 
     pub fn create(allocator: std.mem.Allocator, title: []const u8, width: u32, height: u32) !backend_mod.Backend {
         const self = try allocator.create(SDL2Backend);
@@ -35,6 +37,11 @@ pub const SDL2Backend = struct {
         // Let the OS draw the IME candidate list. The game draws the
         // composition text itself.
         _ = sdl.SDL_SetHint(sdl.SDL_HINT_IME_SHOW_UI, "1");
+
+        // macOS: full screen is a borderless window on the same Space, with
+        // no animation. A full-screen Space ignores the request of an app
+        // that is not active, and its animation delays the size change.
+        _ = sdl.SDL_SetHint(sdl.SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES, "0");
 
         // Initialize SDL
         if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) < 0) {
@@ -59,19 +66,6 @@ pub const SDL2Backend = struct {
             return error.SDLWindowCreationFailed;
         };
 
-        // Get actual DPI scale
-        var drawable_w: c_int = 0;
-        var drawable_h: c_int = 0;
-        var window_w: c_int = 0;
-        var window_h: c_int = 0;
-        sdl.SDL_GL_GetDrawableSize(window, &drawable_w, &drawable_h);
-        sdl.SDL_GetWindowSize(window, &window_w, &window_h);
-
-        const dpi_scale = if (window_w > 0)
-            @as(f32, @floatFromInt(drawable_w)) / @as(f32, @floatFromInt(window_w))
-        else
-            1.0;
-
         // SDL turns text input on at window creation on desktop. Text input
         // is off until the game calls Context.startTextInput.
         sdl.SDL_StopTextInput();
@@ -80,11 +74,7 @@ pub const SDL2Backend = struct {
             .allocator = allocator,
             .window = window,
             .start_time = @intCast(sdl.SDL_GetTicks64()),
-            .window_info = .{
-                .width = @intCast(drawable_w),
-                .height = @intCast(drawable_h),
-                .dpi_scale = dpi_scale,
-            },
+            .window_info = queryWindowInfo(window),
         };
 
         return .{
@@ -98,6 +88,13 @@ pub const SDL2Backend = struct {
                 .getWindow = getWindow,
                 .setMouseCapture = setMouseCapture,
                 .setTextInput = setTextInput,
+                .setWindowMode = setWindowMode,
+                .getWindowMode = getWindowMode,
+                .setCursorMode = setCursorMode,
+                .isCursorLocked = isCursorLocked,
+                .setClipboardText = setClipboardText,
+                .requestClipboardText = requestClipboardText,
+                .clipboardText = clipboardText,
             },
         };
     }
@@ -108,6 +105,7 @@ pub const SDL2Backend = struct {
 
     fn deinit(ptr: *anyopaque) void {
         const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
+        self.clipboard.deinit(self.allocator);
         sdl.SDL_DestroyWindow(self.window);
         sdl.SDL_Quit();
         self.allocator.destroy(self);
@@ -128,30 +126,8 @@ pub const SDL2Backend = struct {
                 sdl.SDL_WINDOWEVENT => {
                     switch (event.window.event) {
                         sdl.SDL_WINDOWEVENT_RESIZED, sdl.SDL_WINDOWEVENT_SIZE_CHANGED => {
-                            // Update window info
-                            var drawable_w: c_int = 0;
-                            var drawable_h: c_int = 0;
-                            var window_w: c_int = 0;
-                            var window_h: c_int = 0;
-                            sdl.SDL_GL_GetDrawableSize(self.window, &drawable_w, &drawable_h);
-                            sdl.SDL_GetWindowSize(self.window, &window_w, &window_h);
-
-                            const dpi_scale = if (window_w > 0)
-                                @as(f32, @floatFromInt(drawable_w)) / @as(f32, @floatFromInt(window_w))
-                            else
-                                1.0;
-
-                            self.window_info.width = @intCast(drawable_w);
-                            self.window_info.height = @intCast(drawable_h);
-                            self.window_info.dpi_scale = dpi_scale;
-
-                            try bus.push(0, now_ns, .{
-                                .resize = .{
-                                    .width = self.window_info.width,
-                                    .height = self.window_info.height,
-                                    .dpi_scale = dpi_scale,
-                                },
-                            });
+                            self.window_info = queryWindowInfo(self.window);
+                            try pushResize(bus, now_ns, self.window_info);
                         },
                         sdl.SDL_WINDOWEVENT_FOCUS_GAINED => {
                             try bus.push(0, now_ns, .{ .focus = .{ .focused = true } });
@@ -247,6 +223,39 @@ pub const SDL2Backend = struct {
                 else => {},
             }
         }
+
+        // A move to a monitor with another DPI scale changes the pixel size,
+        // but SDL does not always send SIZE_CHANGED for it (the size in
+        // points stays the same). Compare the pixel size each poll
+        // (REQ-PLATFORM-003).
+        const info = queryWindowInfo(self.window);
+        if (platform.windowInfoChanged(self.window_info, info)) {
+            self.window_info = info;
+            try pushResize(bus, getTime(ptr), info);
+        }
+
+        try self.clipboard.flush(bus, getTime(ptr));
+    }
+
+    /// The pixel size and the DPI scale of the window now.
+    fn queryWindowInfo(window: *sdl.SDL_Window) platform.WindowInfo {
+        var drawable_w: c_int = 0;
+        var drawable_h: c_int = 0;
+        var window_w: c_int = 0;
+        var window_h: c_int = 0;
+        sdl.SDL_GL_GetDrawableSize(window, &drawable_w, &drawable_h);
+        sdl.SDL_GetWindowSize(window, &window_w, &window_h);
+        const w: u32 = @intCast(@max(drawable_w, 0));
+        const h: u32 = @intCast(@max(drawable_h, 0));
+        return .{ .width = w, .height = h, .dpi_scale = platform.dpiScale(w, @intCast(@max(window_w, 0))) };
+    }
+
+    fn pushResize(bus: *core.Bus, now_ns: u64, info: platform.WindowInfo) !void {
+        try bus.push(0, now_ns, .{ .resize = .{
+            .width = info.width,
+            .height = info.height,
+            .dpi_scale = info.dpi_scale,
+        } });
     }
 
     fn getTime(ptr: *anyopaque) u64 {
@@ -410,6 +419,82 @@ pub const SDL2Backend = struct {
 
     fn setTextInput(_: *anyopaque, active: bool) void {
         if (active) sdl.SDL_StartTextInput() else sdl.SDL_StopTextInput();
+    }
+
+    // Full screen is a borderless window at the desktop resolution. The
+    // display mode does not change, so the switch is fast and the other
+    // windows stay. The size change arrives as SIZE_CHANGED.
+    fn setWindowMode(ptr: *anyopaque, mode: platform.WindowMode) void {
+        const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
+        const flags: u32 = switch (mode) {
+            .windowed => 0,
+            .fullscreen => sdl.SDL_WINDOW_FULLSCREEN_DESKTOP,
+        };
+        if (sdl.SDL_SetWindowFullscreen(self.window, flags) != 0) {
+            std.log.warn("SDL_SetWindowFullscreen failed: {s}", .{sdl.SDL_GetError()});
+        }
+    }
+
+    fn getWindowMode(ptr: *anyopaque) platform.WindowMode {
+        const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
+        const flags = sdl.SDL_GetWindowFlags(self.window);
+        return if ((flags & sdl.SDL_WINDOW_FULLSCREEN) != 0) .fullscreen else .windowed;
+    }
+
+    // setMouseCapture does not change: it sets the relative mode only.
+    fn setCursorMode(_: *anyopaque, mode: platform.CursorMode) void {
+        const relative: bool = mode == .locked;
+        if (sdl.SDL_SetRelativeMouseMode(if (relative) 1 else 0) != 0) {
+            std.log.warn("SDL_SetRelativeMouseMode failed: {s}", .{sdl.SDL_GetError()});
+        }
+        // In the relative mode SDL hides the cursor itself.
+        _ = sdl.SDL_ShowCursor(if (mode == .hidden) sdl.SDL_DISABLE else sdl.SDL_ENABLE);
+    }
+
+    fn isCursorLocked(_: *anyopaque) bool {
+        return sdl.SDL_GetRelativeMouseMode() != 0;
+    }
+
+    // The SDL clipboard does not wait, but the result goes out as an event
+    // on the next poll. So a game gets the same events as on the web.
+    fn setClipboardText(ptr: *anyopaque, text: []const u8) void {
+        const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
+        const status: core.ClipboardStatus = blk: {
+            self.clipboard.store(self.allocator, text) catch break :blk .failed;
+            const z = self.allocator.dupeSentinel(u8, self.clipboard.slice(), 0) catch break :blk .failed;
+            defer self.allocator.free(z);
+            if (sdl.SDL_SetClipboardText(z.ptr) != 0) {
+                std.log.warn("SDL_SetClipboardText failed: {s}", .{sdl.SDL_GetError()});
+                break :blk .failed;
+            }
+            break :blk .ok;
+        };
+        self.clipboard.queue(clipboard.writeResult(status));
+    }
+
+    fn requestClipboardText(ptr: *anyopaque) void {
+        const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
+        const status = self.readSdlClipboard();
+        self.clipboard.queue(clipboard.readResult(status, self.clipboard.slice().len));
+    }
+
+    fn clipboardText(ptr: *anyopaque) []const u8 {
+        const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
+        _ = self.readSdlClipboard();
+        return self.clipboard.slice();
+    }
+
+    /// Copy the SDL clipboard text into the clipboard state.
+    fn readSdlClipboard(self: *SDL2Backend) core.ClipboardStatus {
+        if (sdl.SDL_HasClipboardText() == 0) {
+            self.clipboard.text.clearRetainingCapacity();
+            return .no_text;
+        }
+        const raw = sdl.SDL_GetClipboardText() orelse return .failed;
+        defer sdl.SDL_free(@ptrCast(raw));
+        const text = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+        self.clipboard.store(self.allocator, text) catch return .failed;
+        return if (text.len == 0) .no_text else .ok;
     }
 
     /// The bytes of a NUL-terminated SDL text field, without the NUL.

@@ -103,6 +103,9 @@ pub const Serializer = struct {
             .text_composition => |c| {
                 try self.writer.writeStruct(c, .little);
             },
+            .clipboard => |c| {
+                try self.writer.writeStruct(c, .little);
+            },
         }
 
         self.last_tick = e.tick_id;
@@ -173,6 +176,7 @@ pub const Deserializer = struct {
                 break :blk .{ .command = .{ .kind = kind, .args = args } };
             },
             10 => .{ .text_composition = try self.reader.takeStruct(@TypeOf(dummy.text_composition), .little) },
+            11 => .{ .clipboard = try self.reader.takeStruct(event.ClipboardEvent, .little) },
             else => error.InvalidPayloadTag,
         };
     }
@@ -264,4 +268,22 @@ test "Serialize and deserialize text events" {
     const tc = got_composing.payload.text_composition;
     try std.testing.expectEqualStrings("\u{3053}\u{3093}", tc.utf8[0..tc.len]);
     try std.testing.expectEqual(@as(u8, 6), tc.cursor);
+}
+
+test "Serialize and deserialize a clipboard event" {
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
+
+    var serializer = Serializer.init(&buffer.writer);
+    try serializer.writeHeader(120);
+    const sent = Event.init(4, 5000, 0, .{ .clipboard = .{ .kind = .read, .status = .denied, .len = 7 } });
+    try serializer.writeEvent(sent);
+
+    var reader: std.Io.Reader = .fixed(buffer.written());
+    var deserializer = Deserializer.init(&reader);
+    _ = try deserializer.readHeader();
+    const got = try deserializer.readEvent();
+    try std.testing.expectEqual(event.ClipboardEventKind.read, got.payload.clipboard.kind);
+    try std.testing.expectEqual(event.ClipboardStatus.denied, got.payload.clipboard.status);
+    try std.testing.expectEqual(@as(u32, 7), got.payload.clipboard.len);
 }

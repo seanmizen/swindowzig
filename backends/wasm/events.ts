@@ -6,6 +6,8 @@
 // - Alternative: polling every frame would be wasteful and miss edge cases
 // - This approach catches: tab switches, alt-tab, context menus, dev tools opening, etc.
 
+import { requestPointerLockSafe } from './window';
+
 const keysDown = new Set<number>();
 const buttonsDown = new Set<number>();
 let pointerLocked = false;
@@ -41,25 +43,46 @@ let fallbackLock = false;
 const SPIKE_MIN_PX = 150;
 const SPIKE_RATIO = 8;
 
-/** Lock the pointer to the canvas, with raw input when the browser has it. */
+/**
+ * Lock the pointer to the canvas, with raw input when the browser has it.
+ * This function never throws, and no promise rejection escapes from it. A
+ * browser with no pointer lock (iOS Safari) or a refused lock cannot stop
+ * the frame loop (REQ-PLATFORM-001).
+ */
 export function lockPointer(canvas: HTMLCanvasElement) {
+  const fallback = () => {
+    void requestPointerLockSafe(canvas).then(warnLockRefused);
+  };
   let req: Promise<void> | undefined;
   try {
     req = canvas.requestPointerLock({ unadjustedMovement: true }) as
       | Promise<void>
       | undefined;
   } catch {
-    canvas.requestPointerLock();
+    // This browser does not take the options. Ask again now, while the
+    // user gesture is still active.
+    fallback();
     return;
   }
-  req?.catch?.((err: unknown) => {
+  req?.then?.(undefined, (err: unknown) => {
     // No raw input here: lock with no options. The error event of the
     // first request must not pause the game.
     if (err instanceof DOMException && err.name === 'NotSupportedError') {
       fallbackLock = true;
-      canvas.requestPointerLock();
+      fallback();
+    } else {
+      warnLockRefused(err);
     }
   });
+}
+
+/** Tell the developer why the browser refused a pointer lock. */
+function warnLockRefused(err: unknown) {
+  if (err === null || err === undefined) return;
+  const why = err instanceof Error ? `${err.name}: ${err.message}` : err;
+  console.warn(
+    `[swindowzig] pointer lock: the browser refused (${why}). The game continues without the lock.`,
+  );
 }
 
 /** True when a move is a spike: large, and far over the recent average. */
@@ -79,7 +102,11 @@ export function setPointerLock(canvas: HTMLCanvasElement, lock: boolean) {
     lockPointer(canvas);
   } else if (document.pointerLockElement === canvas) {
     gameReleasedLock = true;
-    document.exitPointerLock();
+    try {
+      document.exitPointerLock();
+    } catch (err) {
+      warnLockRefused(err);
+    }
   }
 }
 

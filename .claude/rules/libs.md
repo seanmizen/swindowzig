@@ -149,6 +149,26 @@ depth test rejects hidden fragments before they shade.
   goes to the host of the page. The browser does not tell a refused upgrade
   from a failed connect, so both give `connect_failed`.
 
+### Window, cursor and clipboard
+
+- `ctx.setWindowMode(.fullscreen | .windowed)`, `ctx.windowMode()`. Native:
+  a borderless window at the desktop resolution. Web: browser full screen
+  (needs a user gesture). The new size arrives as `resize`.
+- `ctx.setCursorMode(.normal | .hidden | .locked)`, `ctx.isCursorLocked()`.
+  `setMouseCapture` does not change. A refused web pointer lock does not
+  stop the game (REQ-PLATFORM-001).
+- Clipboard: `ctx.setClipboardText`, `ctx.requestClipboardText`,
+  `ctx.clipboardText()`. Each result is a `clipboard` event (tag 11,
+  `input().clipboard`), on native too (REQ-PLATFORM-002). A web paste
+  (Ctrl+V while text input is on) is a `paste` event.
+  `ctx.setPasteAsText(false)` stops the paste from also typing.
+- DPI: the web loader and SDL send `resize` when the device pixel ratio
+  changes (REQ-PLATFORM-003). `Config.surface_follows_window = true` makes
+  the native surface follow the pixel size (default off: the voxel targets
+  have a fixed size). The dev page uses `canvasSize: 'device'`.
+- Web: `backends/wasm/window.ts` and `clipboard.ts`. Native:
+  `native_sdl.zig`. Zig web side: `libs/sw_platform/src/web_window.zig`.
+
 ### UI tree (sw_ui)
 
 - Each frame: `u.begin(input, w, h)`, build nodes with non-zero `u32` IDs,
@@ -162,8 +182,10 @@ depth test rejects hidden fragments before they shade.
 - Text field: when `u.wantsTextInput()` changes, call `ctx.startTextInput()` or
   `ctx.stopTextInput()`. The app owns the text (`sw_ui.TextValue`), with its
   caret and selection. The app maps Ctrl or Cmd with A, C, X, V to
-  `Keys.select_all`, `copy`, `cut`, `paste`. `Ui.clipboard` is null until the
-  platform has a clipboard: then the fields of one `Ui` share one inside it.
+  `Keys.select_all`, `copy`, `cut`, `paste`. `Ui.clipboard` is null by
+  default: then the fields of one `Ui` share a clipboard inside it.
+  `u.clipboard = sw_ui.Clipboard.platform(ctx)` uses the system clipboard
+  (flat2d does).
 - Widgets: `addSlider`, `beginScrollList` (wheel in `Input.wheel_y` lines,
   drag with `Input.pointer_down`), `Opts.tooltip`, `beginScreen` (a modal
   layer over its parent) with `ScreenStack` (it keeps the focus of each
@@ -220,6 +242,8 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_gpu/src/mipmap.zig` | `MipmapGenerator`: makes mip levels with render passes, native and web (REQ-GPU-001, REQ-GPU-002) |
 | `libs/sw_platform/src/native_sdl.zig` | SDL2 window + event pump (native path). `initStorage` opens the per-user save directory |
 | `libs/sw_platform/src/storage.zig` | Local key-value saves: `storageGet`/`storageSet`/`storageDelete`. Keys `[a-z0-9_-]`, 64 max. Native: files. Web: localStorage via `backends/wasm/storage.ts` |
+| `libs/sw_platform/src/clipboard.zig` | `ClipboardState`: the clipboard text that a backend knows, and the results that wait for the next poll as `clipboard` events (REQ-PLATFORM-002). Unit tested |
+| `libs/sw_platform/src/platform.zig` | `WindowInfo`, `WindowMode`, `CursorMode`, `dpiScale`, `windowInfoChanged` |
 | `libs/sw_platform/src/input_settings.zig` | `save`/`load` an `ActionMap` (bindings and mouse settings) through storage. Text that it cannot read keeps the defaults (REQ-INPUT-004) |
 | `libs/sw_math/src/mat4.zig` | 4×4 matrix: `perspective()`, `lookAt()`, multiply |
 | `libs/sw_math/src/vec3.zig` | Vec3 ops. `vec2.zig` and `vec4.zig` have the same ops. `Mat4.mulVec4` multiplies a Vec4 |
@@ -242,7 +266,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_ui/src/web_mirror.zig` | Encodes the semantic tree for the web screen-reader mirror (`backends/wasm/a11y.ts`), and sends it only when it changes |
 | `libs/sw_app/src/web_entry.zig` | `exportWeb`: the `swindowzig_init` and `swindowzig_frame` exports for an app that uses `sw.run`. `webLogFn` for `std.log` on wasm |
 | `libs/sw_ui/src/draw.zig` | Draws the tree with sw_gfx2d and sw_text, with a focus ring and the tooltip. A scroll list cuts its children (`Renderer.setClip`). `measurer(&text_renderer)` gives the UI its text size and bidi caret positions |
-| `libs/sw_voxel/src/sw_voxel.zig` | Voxel chunks: storage, light, greedy mesher, World, frustum, chunk pipeline. The game gives the module `sw_voxel_content` (`content.zig` has the contract). `.claude/rules/voxel.md` has the file map |
+| `libs/sw_voxel/src/sw_voxel.zig` | Voxel chunks: storage, light, greedy mesher and model mesher, World, frustum, chunk pipeline. The game gives the module `sw_voxel_content` (`content.zig` has the contract). `.claude/rules/voxel.md` has the file map |
 | `libs/sw_assets/src/assets.zig` | `loadBytes(allocator, path_or_url)` returns a `Request`. `request.poll()` gives `.pending`, `.bytes` or `.failed`, and never waits. Native: a thread reads a file in the base directory (`useDirectory`/`useDirectoryPath`), and an `http(s)://` URL fails with `UnsupportedUrl`. Web: `fetch` through `backends/wasm/assets.ts` |
 | `libs/sw_assets/src/zip.zig` | `zip.Archive.open(allocator, bytes, .{})` reads the central directory only (REQ-ASSETS-001). `read`/`readName`/`readInto` decompress one stored or deflate entry (`std.compress.flate`). Zip64, data descriptors, bytes before the archive. Fixtures in `libs/sw_assets/testdata` |
 | `libs/sw_assets/src/files.zig` | `files.poll(allocator)` gives the next file from the player (`.none`, `.loading`, `.file`, `.failed`). Web: a drop on the page, `files.showPicker(accept)`, or `offerFiles` in `backends/wasm/files.ts`. Native: `files.offerPath(io, path)` |

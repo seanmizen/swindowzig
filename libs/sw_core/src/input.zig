@@ -101,6 +101,9 @@ pub const InputSnapshot = struct {
     /// Text in composition now, or empty. Replaced by each `text_composition`
     /// event, and not cleared per tick: it stays until the composition ends.
     composition: Composition = .{},
+    /// The last `clipboard` event of this tick, or null. The text of a paste
+    /// or a read is in `Context.clipboardText()` (REQ-PLATFORM-002).
+    clipboard: ?event.ClipboardEvent = null,
 
     pub fn init() InputSnapshot {
         return .{};
@@ -118,6 +121,7 @@ pub const InputSnapshot = struct {
         self.wheel.delta_x = 0;
         self.wheel.delta_y = 0;
         self.text.clear();
+        self.clipboard = null;
 
         for (events) |e| {
             switch (e.payload) {
@@ -175,6 +179,8 @@ pub const InputSnapshot = struct {
                     self.composition.cursor = c.cursor;
                     self.composition.selection_len = c.selection_len;
                 },
+
+                .clipboard => |c| self.clipboard = c,
 
                 else => {},
             }
@@ -285,4 +291,16 @@ test "InputSnapshot text events" {
     // The committed text is per tick. It does not carry over.
     snapshot.updateFromEvents(&[_]Event{});
     try std.testing.expectEqual(@as(usize, 0), snapshot.text.text().len);
+}
+
+test "InputSnapshot keeps the clipboard event of the tick" {
+    var snapshot = InputSnapshot.init();
+    snapshot.updateFromEvents(&[_]Event{
+        Event.init(0, 0, 0, .{ .clipboard = .{ .kind = .paste, .status = .ok, .len = 3 } }),
+    });
+    try std.testing.expectEqual(event.ClipboardEventKind.paste, snapshot.clipboard.?.kind);
+    try std.testing.expectEqual(@as(u32, 3), snapshot.clipboard.?.len);
+    // The next tick has no clipboard event.
+    snapshot.updateFromEvents(&[_]Event{});
+    try std.testing.expect(snapshot.clipboard == null);
 }

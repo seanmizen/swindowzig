@@ -16,10 +16,17 @@ import { createA11yImports } from './a11y';
 import { createAssetImports } from './assets';
 import { audioImports, setAudioExports } from './audio';
 import {
+  attachPasteListener,
+  browserClipboard,
+  type ClipboardExports,
+  type WebClipboard,
+} from './clipboard';
+import {
   attachEventListeners,
   lockPointer,
   setPointerLock,
   setTextInputActive,
+  textInputHasFocus,
   type WasmExports,
 } from './events';
 import { attachFileDrop, createFileImports } from './files';
@@ -27,6 +34,11 @@ import { createNetImports } from './net';
 import { createStorageImports } from './storage';
 import { type GPUBridge, initWebGPU } from './webgpu';
 import { createWebSocketImports } from './websocket';
+import {
+  CursorStyle,
+  createWindowImports,
+  watchDevicePixelRatio,
+} from './window';
 import {
   attachPool,
   chunkImports,
@@ -153,6 +165,12 @@ function emptyDebug(): SwindowzigDebug {
   };
 }
 
+/** The window, cursor and clipboard state that the imports share. */
+export interface PlatformParts {
+  cursor?: CursorStyle;
+  clipboard?: WebClipboard;
+}
+
 /**
  * Build the full import table. The wasm memory does not exist yet, so each
  * import reads it from window.wasmMemory when the import runs.
@@ -162,7 +180,10 @@ export function createImports(
   gpu: GPUBridge,
   setCursorVisible: (visible: boolean) => void,
   pool: PoolHolder = { pool: null },
+  parts: PlatformParts = {},
 ): WebAssembly.Imports {
+  const cursor = parts.cursor ?? new CursorStyle(canvas, false);
+  const clipboard = parts.clipboard ?? browserClipboard();
   const getMemory = (): WebAssembly.Memory => {
     if (!window.wasmMemory) throw new Error('wasm memory is not set');
     return window.wasmMemory;
@@ -188,6 +209,10 @@ export function createImports(
       jsSetTextInput: (active: number): void => {
         setTextInputActive(active !== 0);
       },
+      // Window modes and cursor modes (window.ts), and the clipboard
+      // (clipboard.ts), for sw_platform web_window.zig.
+      ...createWindowImports({ canvas, cursor, setPointerLock }),
+      ...clipboard.imports(getMemory),
       jsLog: (ptr: number, len: number): void => {
         const mem = window.wasmMemory;
         if (!mem) {
@@ -341,15 +366,19 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
 
   window.swindowzigDebug = emptyDebug();
 
+  const cursor = new CursorStyle(canvas, cursorFollowsLock);
+  const clipboard = browserClipboard(logPrefix);
   const setCursorVisible = (visible: boolean): void => {
-    if (cursorFollowsLock) canvas.style.cursor = visible ? 'auto' : 'none';
+    if (cursorFollowsLock) cursor.apply(!visible);
   };
   if (cursorFollowsLock) {
     // Set canvas.style.cursor here too, so the cursor is correct when
     // requestPointerLock() fails, or when exitPointerLock() is slow.
-    document.addEventListener('pointerlockchange', () => {
+    const sync = (): void => {
       setCursorVisible(document.pointerLockElement !== canvas);
-    });
+    };
+    document.addEventListener('pointerlockchange', sync);
+    document.addEventListener('pointerlockerror', sync);
     // No pointer lock yet, so show the cursor.
     setCursorVisible(true);
   }
@@ -357,7 +386,10 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
   const poolHolder: PoolHolder = { pool: null };
   let instance: WebAssembly.Instance;
   try {
-    const imports = createImports(canvas, gpu, setCursorVisible, poolHolder);
+    const imports = createImports(canvas, gpu, setCursorVisible, poolHolder, {
+      cursor,
+      clipboard,
+    });
     const env = imports.env as Record<string, unknown>;
     for (const [name, fn] of Object.entries(options.env ?? {})) {
       if (name in env) throw new Error(`env.${name} is an engine import`);
@@ -372,6 +404,8 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
   const exports = instance.exports as unknown as Exports;
   window.wasmMemory = exports.memory;
   setAudioExports(instance.exports);
+  clipboard.exports = exports as unknown as ClipboardExports;
+  attachPasteListener(clipboard, () => textInputHasFocus());
 
   // C9: the pool runs only when each worker has the protocol version, the
   // build hash and the build id of app.wasm. Else the main thread runs the
@@ -423,15 +457,34 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
 
   // The first frame reads window_info, so send the size before it.
   const notifyResize = exports.swindowzig_event_resize;
+  // A move to a monitor with another device pixel ratio does not always
+  // send a window resize event (REQ-PLATFORM-003). A media query on the
+  // ratio tells at once. Each frame also compares the ratio, because some
+  // browsers send no media query event (an emulated ratio, for example).
+  let lastRatio = window.devicePixelRatio || 1;
+  let onRatioChange = (): void => {
+    lastRatio = window.devicePixelRatio || 1;
+    resizeCanvas();
+  };
   if (notifyResize) {
+    // The DPI scale is canvas pixels per CSS pixel: the device pixel ratio
+    // in 'device' mode, and 1 in 'css' mode.
     const sendSize = (): void => {
-      notifyResize(canvas.width, canvas.height, window.devicePixelRatio || 1);
+      const scale = canvasSize === 'device' ? window.devicePixelRatio || 1 : 1;
+      notifyResize(canvas.width, canvas.height, scale);
     };
     sendSize();
     window.addEventListener('resize', sendSize);
+    onRatioChange = (): void => {
+      lastRatio = window.devicePixelRatio || 1;
+      resizeCanvas();
+      sendSize();
+    };
   }
+  watchDevicePixelRatio(() => onRatioChange());
 
   const tick = (ts: number): void => {
+    if ((window.devicePixelRatio || 1) !== lastRatio) onRatioChange();
     try {
       frame(ts);
     } catch (err) {
