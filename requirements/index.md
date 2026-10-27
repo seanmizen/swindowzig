@@ -32,6 +32,9 @@
 | [`REQ-GPU-013`](gpu.md#req-gpu-013--the-web-canvas-has-the-screen-format-of-the-zig-side) | The web canvas has the screen format of the Zig side | active | functional | P1 | agent:SWZ-68 |
 | [`REQ-GPU-014`](gpu.md#req-gpu-014--one-draw-call-draws-all-instances-of-one-box-model) | One draw call draws all instances of one box model | active | functional | P2 | agent:SWZ-41 |
 | [`REQ-GPU-015`](gpu.md#req-gpu-015--the-first-person-pass-draws-in-front-of-the-world) | The first-person pass draws in front of the world | active | functional | P2 | agent:SWZ-41 |
+| [`REQ-GPU-016`](gpu.md#req-gpu-016--a-cascaded-shadow-map-shadows-the-scene-from-one-directional-light) | A cascaded shadow map shadows the scene from one directional light | active | functional | P2 | agent:SWZ-38 |
+| [`REQ-GPU-017`](gpu.md#req-gpu-017--the-lit-passes-add-the-point-lights-of-the-frame) | The lit passes add the point lights of the frame | active | functional | P2 | agent:SWZ-38 |
+| [`REQ-GPU-018`](gpu.md#req-gpu-018--a-setting-turns-the-shadows-off) | A setting turns the shadows off | active | functional | P2 | agent:SWZ-38 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -44,6 +47,13 @@
 | [`REQ-PLATFORM-001`](platform.md#req-platform-001--a-refused-pointer-lock-does-not-stop-the-game) | A refused pointer lock does not stop the game | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-002`](platform.md#req-platform-002--clipboard-results-arrive-as-events) | Clipboard results arrive as events | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-003`](platform.md#req-platform-003--the-canvas-and-the-surface-follow-the-device-pixel-ratio) | The canvas and the surface follow the device pixel ratio | active | functional | P2 | agent:SWZ-45 |
+| [`REQ-TEXT-001`](text.md#req-text-001--arabic-letters-take-their-joined-forms-before-reordering) | Arabic letters take their joined forms before reordering | active | functional | P3 | sean |
+| [`REQ-TEXT-002`](text.md#req-text-002--lam-followed-by-alef-is-one-ligature) | Lam followed by alef is one ligature | active | functional | P3 | sean |
+| [`REQ-TEXT-003`](text.md#req-text-003--measuring-uses-the-shaped-text) | Measuring uses the shaped text | active | functional | P3 | sean |
+| [`REQ-TEXT-004`](text.md#req-text-004--a-missing-presentation-form-draws-as-its-letter) | A missing presentation form draws as its letter | active | functional | P3 | agent:SWZ-63 |
+| [`REQ-TEXT-005`](text.md#req-text-005--the-caret-maps-back-to-the-text-in-shaped-text) | The caret maps back to the text in shaped text | active | functional | P3 | sean |
+| [`REQ-TEXT-006`](text.md#req-text-006--diacritics-do-not-break-a-join) | Diacritics do not break a join | active | functional | P3 | sean |
+| [`REQ-TEXT-007`](text.md#req-text-007--text-with-no-arabic-letters-is-unchanged) | Text with no Arabic letters is unchanged | active | constraint | P3 | sean |
 | [`REQ-VOXEL-001`](voxel.md#req-voxel-001--a-block-with-a-baked-model-gets-the-model-mesher) | A block with a baked model gets the model mesher | active | functional | P1 | agent:SWZ-31 |
 | [`REQ-VOXEL-002`](voxel.md#req-voxel-002--a-full-cube-hides-a-model-quad-with-a-cull-face) | A full cube hides a model quad with a cull face | active | functional | P1 | agent:SWZ-31 |
 | [`REQ-VOXEL-003`](voxel.md#req-voxel-003--the-content-gives-the-opacity-and-the-emission-of-each-block) | The content gives the opacity and the emission of each block | active | functional | P1 | agent:SWZ-32 |
@@ -54,6 +64,9 @@
 | [`REQ-VOXEL-008`](voxel.md#req-voxel-008--each-corner-gets-ao-and-smooth-light) | Each corner gets AO and smooth light | active | functional | P2 | agent:SWZ-33 |
 | [`REQ-VOXEL-009`](voxel.md#req-voxel-009--the-content-gives-the-tint-colours) | The content gives the tint colours | active | functional | P2 | agent:SWZ-33 |
 | [`REQ-VOXEL-010`](voxel.md#req-voxel-010--greedy-meshing-merges-only-equal-faces) | Greedy meshing merges only equal faces | active | functional | P2 | agent:SWZ-33 |
+| [`REQ-VOXEL-011`](voxel.md#req-voxel-011--a-saved-region-gives-the-same-blocks-when-it-loads) | A saved region gives the same blocks when it loads | active | functional | P2 | agent:SWZ-52 |
+| [`REQ-VOXEL-012`](voxel.md#req-voxel-012--a-later-format-reads-the-region-files-of-version-1) | A later format reads the region files of version 1 | active | constraint | P2 | agent:SWZ-52 |
+| [`REQ-VOXEL-013`](voxel.md#req-voxel-013--a-damaged-chunk-in-a-region-file-fails-alone) | A damaged chunk in a region file fails alone | active | functional | P2 | agent:SWZ-52 |
 
 ## Dependency graph
 
@@ -86,6 +99,9 @@ graph TD
   REQ_GPU_013["REQ-GPU-013<br/>The web canvas has the screen format of the Zig side"]
   REQ_GPU_014["REQ-GPU-014<br/>One draw call draws all instances of one box model"]
   REQ_GPU_015["REQ-GPU-015<br/>The first-person pass draws in front of the world"]
+  REQ_GPU_016["REQ-GPU-016<br/>A cascaded shadow map shadows the scene from one directional light"]
+  REQ_GPU_017["REQ-GPU-017<br/>The lit passes add the point lights of the frame"]
+  REQ_GPU_018["REQ-GPU-018<br/>A setting turns the shadows off"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -98,6 +114,13 @@ graph TD
   REQ_PLATFORM_001["REQ-PLATFORM-001<br/>A refused pointer lock does not stop the game"]
   REQ_PLATFORM_002["REQ-PLATFORM-002<br/>Clipboard results arrive as events"]
   REQ_PLATFORM_003["REQ-PLATFORM-003<br/>The canvas and the surface follow the device pixel ratio"]
+  REQ_TEXT_001["REQ-TEXT-001<br/>Arabic letters take their joined forms before reordering"]
+  REQ_TEXT_002["REQ-TEXT-002<br/>Lam followed by alef is one ligature"]
+  REQ_TEXT_003["REQ-TEXT-003<br/>Measuring uses the shaped text"]
+  REQ_TEXT_004["REQ-TEXT-004<br/>A missing presentation form draws as its letter"]
+  REQ_TEXT_005["REQ-TEXT-005<br/>The caret maps back to the text in shaped text"]
+  REQ_TEXT_006["REQ-TEXT-006<br/>Diacritics do not break a join"]
+  REQ_TEXT_007["REQ-TEXT-007<br/>Text with no Arabic letters is unchanged"]
   REQ_VOXEL_001["REQ-VOXEL-001<br/>A block with a baked model gets the model mesher"]
   REQ_VOXEL_002["REQ-VOXEL-002<br/>A full cube hides a model quad with a cull face"]
   REQ_VOXEL_003["REQ-VOXEL-003<br/>The content gives the opacity and the emission of each block"]
@@ -108,6 +131,9 @@ graph TD
   REQ_VOXEL_008["REQ-VOXEL-008<br/>Each corner gets AO and smooth light"]
   REQ_VOXEL_009["REQ-VOXEL-009<br/>The content gives the tint colours"]
   REQ_VOXEL_010["REQ-VOXEL-010<br/>Greedy meshing merges only equal faces"]
+  REQ_VOXEL_011["REQ-VOXEL-011<br/>A saved region gives the same blocks when it loads"]
+  REQ_VOXEL_012["REQ-VOXEL-012<br/>A later format reads the region files of version 1"]
+  REQ_VOXEL_013["REQ-VOXEL-013<br/>A damaged chunk in a region file fails alone"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -123,6 +149,15 @@ graph TD
   REQ_GPU_013 -->|refines| REQ_GPU_005
   REQ_GPU_014 -->|refines| REQ_GPU_006
   REQ_GPU_015 -->|refines| REQ_GPU_014
+  REQ_GPU_016 -->|refines| REQ_GPU_005
+  REQ_GPU_016 -->|refines| REQ_GPU_014
+  REQ_GPU_017 -->|refines| REQ_GPU_006
+  REQ_GPU_018 -->|refines| REQ_GPU_016
+  REQ_TEXT_002 -->|refines| REQ_TEXT_001
+  REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
+  REQ_TEXT_004 -->|refines| REQ_TEXT_001
+  REQ_TEXT_005 -->|depends-on| REQ_TEXT_002
+  REQ_TEXT_006 -->|refines| REQ_TEXT_001
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
   REQ_VOXEL_004 -->|refines| REQ_VOXEL_003
   REQ_VOXEL_005 -->|depends-on| REQ_VOXEL_003
@@ -131,6 +166,8 @@ graph TD
   REQ_VOXEL_009 -->|refines| REQ_VOXEL_001
   REQ_VOXEL_010 -->|refines| REQ_VOXEL_008
   REQ_VOXEL_010 -->|refines| REQ_VOXEL_009
+  REQ_VOXEL_012 -->|depends-on| REQ_VOXEL_011
+  REQ_VOXEL_013 -->|depends-on| REQ_VOXEL_011
 ```
 
 ## Derived reverse links
@@ -138,13 +175,17 @@ graph TD
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
-- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013
-- `REQ-GPU-006` — refined-by REQ-GPU-014
+- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
+- `REQ-GPU-006` — refined-by REQ-GPU-014, refined-by REQ-GPU-017
 - `REQ-GPU-008` — refined-by REQ-GPU-010
 - `REQ-GPU-010` — refined-by REQ-GPU-011
-- `REQ-GPU-014` — refined-by REQ-GPU-015
+- `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
+- `REQ-GPU-016` — refined-by REQ-GPU-018
+- `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
+- `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-009
 - `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005, required-by REQ-VOXEL-008
 - `REQ-VOXEL-006` — required-by REQ-VOXEL-007
 - `REQ-VOXEL-008` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-009` — refined-by REQ-VOXEL-010
+- `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013

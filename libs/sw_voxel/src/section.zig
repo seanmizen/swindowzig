@@ -222,6 +222,33 @@ pub const Section = struct {
         return .{ .bits = bits, .len = @intCast(n), .buf = buf };
     }
 
+    /// A section from its stored parts: the palette and the packed index
+    /// words. The region files use it (REQ-VOXEL-011). The width is
+    /// `bitsFor(palette_in.len)`. `words` must have `indexWords(bits)`
+    /// words, and each index must be less than `palette_in.len`. Else the
+    /// result is `error.InvalidSection`.
+    pub fn fromPacked(allocator: std.mem.Allocator, palette_in: []const BlockType, words: []const u64) !Section {
+        if (palette_in.len < 1 or palette_in.len > 256) return error.InvalidSection;
+        const bits = bitsFor(palette_in.len);
+        if (words.len != indexWords(bits)) return error.InvalidSection;
+        if (bits == 0) return uniform(palette_in[0]);
+        const epw: usize = 64 / @as(usize, bits);
+        const shift: u6 = @intCast(bits);
+        const mask: u64 = (@as(u64, 1) << shift) - 1;
+        for (words) |word| {
+            var w = word;
+            for (0..epw) |_| {
+                if (w & mask >= palette_in.len) return error.InvalidSection;
+                w >>= shift;
+            }
+        }
+        const buf = try allocator.alloc(u64, indexWords(bits) + paletteWords(bits));
+        @memset(buf, 0);
+        @memcpy(buf[0..words.len], words);
+        @memcpy(slots(buf, bits)[0..palette_in.len], palette_in);
+        return .{ .bits = bits, .len = @intCast(palette_in.len), .buf = buf };
+    }
+
     /// Write the block type of each cell into `out`, in `cellIndex` order.
     pub fn toCells(self: *const Section, out: *[CELLS]BlockType) void {
         if (self.bits == 0) return @memset(out, self.single);

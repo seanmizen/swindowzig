@@ -4,17 +4,17 @@
 Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS/Linux).
 
 <!-- progress:start -->
-![engine progress](https://img.shields.io/badge/engine-56.4%25-1D76DB)
+![engine progress](https://img.shields.io/badge/engine-59.5%25-1D76DB)
 
-**Engine: 56.4% complete** `███████████░░░░░░░░░` (22 of 39 issues)
+**Engine: 59.5% complete** `████████████░░░░░░░░` (25 of 42 issues)
 
 | State | Issues |
 |---|---|
-| done | 22 |
-| in-review | 3 |
-| in-progress | 2 |
-| ready | 11 |
-| backlog | 1 |
+| done | 25 |
+| in-review | 2 |
+| in-progress | 0 |
+| ready | 12 |
+| backlog | 3 |
 
 A GitHub workflow writes this block from the
 [`engine` issues](https://github.com/seanmizen/swindowzig/issues?q=label%3Aengine).

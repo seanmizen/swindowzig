@@ -336,3 +336,97 @@ Textures, samplers and other resources of `sw_gpu`.
     the camera and the held object. With the depth range, the held object
     shows. With the full depth range, the block covers it.
 - **Relations:** refines REQ-GPU-014
+
+## REQ-GPU-016 — A cascaded shadow map shadows the scene from one directional light
+
+- **Status:** active
+- **Source:** agent:SWZ-38
+- **Origin:** #38
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While the shadows of a `Lighting` are on, `sw_shadow`
+  shall give 0 for a surface point that a shadow caster hides from the
+  light, 1 for a point in light, and a 3 x 3 PCF value at the edge. The
+  cascade passes draw the casters into one depth map for each cascade.
+  By default the light is the sun of `FrameUniforms.sky`, and the moon
+  at night.
+- **Rationale:** Shadows show where an object is in relation to the
+  ground. The cascades give more texels near the camera, so near
+  shadows are sharp and far shadows still show. The cascade size does
+  not change when the camera turns, and the cascade moves in steps of
+  one texel, so the shadow edges do not move when the camera moves.
+- **Verification:**
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: the split
+    distances grow to the shadow distance (REQ-GPU-016)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: each
+    cascade holds its view slice, with depth in 0 to 1 (REQ-GPU-016)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: the
+    cascade moves in whole texels when the camera moves (REQ-GPU-016)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: the
+    shadow light follows the sun, and the moon at night (REQ-GPU-016)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: the CPU
+    PCF gives 0 in a cast shadow, 1 in light, and a soft edge
+    (REQ-GPU-016)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: a ray to
+    the light finds the box that casts the shadow (REQ-GPU-016)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: SwLighting
+    in the include has the layout of LightingUniforms (REQ-GPU-016)"
+  - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: the lit
+    shader adds the shadow and the point lights (REQ-GPU-016,
+    REQ-GPU-017)"
+  - Demonstration — `models --check` (native) draws the figures with the
+    sun 45 degrees up. It compares the ground in the shadow of a body and
+    the same ground in light with the CPU reference, and checks that the
+    shadow is darker by the CPU amount.
+- **Relations:**
+  - refines REQ-GPU-005
+  - refines REQ-GPU-014
+
+## REQ-GPU-017 — The lit passes add the point lights of the frame
+
+- **Status:** active
+- **Source:** agent:SWZ-38
+- **Origin:** #38
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the game gives a `Lighting` up to
+  `max_point_lights` point lights for a frame, `sw_point_lights` shall
+  give the sum of their light on a surface point: the colour times the
+  intensity, times a falloff that is 0 at the radius, times the cosine
+  of the angle to the surface normal.
+- **Rationale:** A game has moving lights, for example a torch that the
+  player holds. The lights go into the lighting uniforms each frame, so
+  a light that moves needs no new GPU object.
+- **Verification:**
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: a point
+    light is bright near, 0 at its radius, 0 behind the surface
+    (REQ-GPU-017)"
+  - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: the lit
+    shader adds the shadow and the point lights (REQ-GPU-016,
+    REQ-GPU-017)"
+  - Demonstration — `models --check` (native) puts a point light near
+    the ground. It compares the ground under the light with the CPU
+    reference, and checks that the light makes the ground brighter.
+- **Relations:** refines REQ-GPU-006
+
+## REQ-GPU-018 — A setting turns the shadows off
+
+- **Status:** active
+- **Source:** agent:SWZ-38
+- **Origin:** #38
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While the shadows of a `Lighting` are off, `sw_shadow`
+  shall give 1 for each surface point, with no cascade pass in the
+  frame.
+- **Rationale:** Shadows cost a draw of the casters for each cascade. A
+  slow device, or a settings menu, must be able to remove that cost. A
+  surface in the shadow then has the colour of the same surface in
+  light.
+- **Verification:**
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: with the
+    shadows off, a shadowed point gets the full light (REQ-GPU-018)"
+  - Demonstration — `models --check` (native) turns the shadows off. It
+    checks that no shadow draw call runs, and that the ground in the
+    shadow point has the colour of the ground in light.
+- **Relations:** refines REQ-GPU-016

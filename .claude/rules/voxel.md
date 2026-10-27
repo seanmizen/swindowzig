@@ -119,6 +119,20 @@ were already correct.
   `zig build bench-stages` prints the time of each stage and
   `stage_match=yes` when the stages give the output of World.
 
+### Region files (libs/sw_voxel/src/region.zig)
+
+- A region holds 16 × 16 chunks. `Region.put` compresses the blocks of a
+  chunk, `get` gives them back, and `encode` and `decode` give the file
+  bytes. The file stores the palette and the packed indices of each
+  section as they are. It does not store the light: the light stage
+  computes it again after a load.
+- `decode` reads each format version that it knows. The test files
+  `libs/sw_voxel/testing/region_v1_*.bin` must stay readable. Do not make
+  them again (REQ-VOXEL-012).
+- A damaged chunk fails alone with `error.CorruptChunk` (REQ-VOXEL-013).
+- `Store(sw_assets.cache)` saves and loads through a folder (native) or
+  OPFS (web). A save writes the full region again.
+
 ---
 
 ## Voxel Demo — CLI Flags
@@ -466,6 +480,7 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `mesher.zig` | Greedy quad mesher and model mesher (writes `PackedQuad` and model quad records), `cornerBits` for a shader |
 | `model.zig` | `BakedQuad`, `BakedModel`, the `box` and `rotateY` helpers, `GpuQuad` (the GPU format of a baked quad) |
 | `models.zig` | The models of the content as comptime tables: `isCube`, `hasModel`, `quads`, `gpu_table` |
+| `region.zig` | Region files: 16 × 16 chunks, each compressed (zlib), with an offset table and a format version. `Store(sw_assets.cache)` saves and loads them. The file has no light (REQ-VOXEL-011 to 013) |
 | `frustum.zig` | Chunk cull strategies: none, sphere, cone, frustum |
 | `clock.zig` | Monotonic clock for the perf logs. main sets `clock.io` |
 | `pipeline/stages.zig` | The pure chunk stages: generate, light, mesh (C2), and versions (C3) |

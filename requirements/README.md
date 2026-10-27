@@ -72,6 +72,7 @@ Prefixes are globally unique. Add a row when you add a file.
 | `INPUT` | `requirements/input.md` | Keyboard, mouse, wheel and gamepad input from the platform backends |
 | `NET` | `requirements/net.md` | The WebSocket client of `sw_net`: events, frames and the reconnect |
 | `PLATFORM` | `requirements/platform.md` | The window, the cursor and the clipboard from the platform backends |
+| `TEXT` | `requirements/text.md` | Shaping, measuring and caret geometry of the text from `sw_text` |
 | `VOXEL` | `requirements/voxel.md` | Chunk storage, meshing and the chunk pipeline of `sw_voxel` |
 
 ---
