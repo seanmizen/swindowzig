@@ -10,6 +10,14 @@
 // - list: <ul> with aria-label, list item: <li>
 // - text field: <input type="text"> with aria-label and the value
 // - image: <div role="img"> with aria-label
+// - slider: <div role="slider"> with aria-valuenow, aria-valuemin,
+//   aria-valuemax and aria-valuetext (REQ-A11Y-006)
+// - screen: <div role="dialog" aria-modal="true"> with aria-label. The
+//   semantic tree holds only the top screen, so the nodes under it are not in
+//   the mirror (REQ-A11Y-006)
+// - tooltip: <div role="tooltip"> with the text, while it shows. Each node
+//   with a tooltip has the text in aria-description at all times
+//   (REQ-A11Y-006)
 //
 // The element of the focused node gets DOM focus, so a screen reader follows
 // the focus of the game (REQ-A11Y-002). The elements have tabindex -1: the
@@ -39,6 +47,9 @@ const ROLES = [
   'list_item',
   'text_field',
   'image',
+  'slider',
+  'dialog',
+  'tooltip',
 ] as const;
 export type A11yRole = (typeof ROLES)[number];
 
@@ -46,6 +57,14 @@ const FLAG_FOCUSED = 1 << 0;
 const FLAG_DISABLED = 1 << 1;
 const FLAG_SELECTED = 1 << 2;
 const FLAG_LIVE = 1 << 3;
+const FLAG_RANGE = 1 << 4;
+
+/** The value of a slider and its limits. */
+export interface A11yRange {
+  value: number;
+  min: number;
+  max: number;
+}
 
 export interface A11yNode {
   id: number;
@@ -58,6 +77,10 @@ export interface A11yNode {
   live: boolean;
   /** Indices into the node list. */
   children: number[];
+  /** More text about the node, such as its tooltip, or empty. */
+  description: string;
+  /** A slider: its value and limits. Null for other roles. */
+  range: A11yRange | null;
 }
 
 /** The ID of the mirror root element. */
@@ -105,9 +128,18 @@ export function decodeTree(bytes: Uint8Array): A11yNode[] {
     at += 2;
     const name = str();
     const value = str();
+    const description = str();
     const childCount = u32();
     const children: number[] = [];
     for (let c = 0; c < childCount; c++) children.push(u32());
+    let range: A11yRange | null = null;
+    if ((flags & FLAG_RANGE) !== 0) {
+      const v = view.getFloat32(at, true);
+      const min = view.getFloat32(at + 4, true);
+      const max = view.getFloat32(at + 8, true);
+      at += 12;
+      range = { value: v, min, max };
+    }
     nodes.push({
       id,
       role,
@@ -118,6 +150,8 @@ export function decodeTree(bytes: Uint8Array): A11yNode[] {
       selected: (flags & FLAG_SELECTED) !== 0,
       live: (flags & FLAG_LIVE) !== 0,
       children,
+      description,
+      range,
     });
   }
   return nodes;
@@ -135,6 +169,11 @@ function setAttr(el: HTMLElement, name: string, value: string | null): void {
   } else if (el.getAttribute(name) !== value) {
     el.setAttribute(name, value);
   }
+}
+
+/** A float32 from the wire as short text: 0.7, not 0.699999988079071. */
+function num(v: number): string {
+  return String(Number(v.toPrecision(6)));
 }
 
 function setText(el: HTMLElement, text: string): void {
@@ -169,6 +208,11 @@ function createElement(node: A11yNode): HTMLElement {
 function updateElement(el: HTMLElement, node: A11yNode): void {
   setAttr(el, 'data-sw-id', String(node.id));
   setAttr(el, 'aria-disabled', node.disabled ? 'true' : null);
+  setAttr(
+    el,
+    'aria-description',
+    node.description === '' ? null : node.description,
+  );
   const name = node.name === '' ? null : node.name;
   switch (node.role) {
     case 'group':
@@ -201,6 +245,26 @@ function updateElement(el: HTMLElement, node: A11yNode): void {
     case 'image':
       setAttr(el, 'role', 'img');
       setAttr(el, 'aria-label', name);
+      break;
+    case 'slider': {
+      const r = node.range ?? { value: 0, min: 0, max: 1 };
+      setAttr(el, 'role', 'slider');
+      setAttr(el, 'tabindex', '-1');
+      setAttr(el, 'aria-label', name);
+      setAttr(el, 'aria-valuenow', num(r.value));
+      setAttr(el, 'aria-valuemin', num(r.min));
+      setAttr(el, 'aria-valuemax', num(r.max));
+      setAttr(el, 'aria-valuetext', node.value === '' ? null : node.value);
+      break;
+    }
+    case 'dialog':
+      setAttr(el, 'role', 'dialog');
+      setAttr(el, 'aria-modal', 'true');
+      setAttr(el, 'aria-label', name);
+      break;
+    case 'tooltip':
+      setAttr(el, 'role', 'tooltip');
+      setText(el, node.name);
       break;
   }
 }

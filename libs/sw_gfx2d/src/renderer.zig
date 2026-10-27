@@ -250,6 +250,18 @@ pub const Renderer = struct {
         return self.logical;
     }
 
+    /// Cut each shape after this call to `rect`, until the next call or the
+    /// next `beginFrame`. Null removes the clip. Text from sw_text is cut too,
+    /// because its glyphs are textured shapes.
+    pub fn setClip(self: *Renderer, rect: ?Rect) void {
+        self.batch.clip = rect;
+    }
+
+    /// The clip rectangle of `setClip`, or null.
+    pub fn getClip(self: *const Renderer) ?Rect {
+        return self.batch.clip;
+    }
+
     pub fn fillRect(self: *Renderer, rect: Rect, color: Color) !void {
         try self.batch.fillRect(self.alloc, rect, color);
     }

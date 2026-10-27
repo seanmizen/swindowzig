@@ -12,6 +12,7 @@ const std = @import("std");
 const gfx = @import("sw_gfx2d");
 const atlas = @import("atlas.zig");
 const bidi = @import("bidi.zig");
+const caret = @import("caret.zig");
 const face_mod = @import("face.zig");
 const font_mod = @import("font.zig");
 const layout = @import("layout.zig");
@@ -156,6 +157,12 @@ pub const TextRenderer = struct {
     /// nothing and adds no glyph to the atlas.
     pub fn measure(self: *const TextRenderer, text: []const u8, size: f32) Size {
         return layout.measure(self.metrics(size), text);
+    }
+
+    /// The caret and selection geometry of `text` as one line at `size`, in
+    /// the visual order that `draw` uses. The caller frees it with `deinit`.
+    pub fn caretLayout(self: *const TextRenderer, text: []const u8, size: f32, direction: bidi.Direction) !caret.CaretLayout {
+        return caret.caretLayout(self.alloc, self.metrics(size), text, direction);
     }
 
     /// The size of `text` wrapped to `max_width` at spaces.

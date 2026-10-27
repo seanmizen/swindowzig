@@ -1,4 +1,4 @@
-// The screen-reader mirror in a real browser (REQ-A11Y-001 to REQ-A11Y-005).
+// The screen-reader mirror in a real browser (REQ-A11Y-001 to REQ-A11Y-006).
 // The test opens the flat2d example, moves the focus of the game with the
 // keyboard, and reads the focused node from the Chromium accessibility tree.
 
@@ -71,7 +71,9 @@ test('the semantic tree of flat2d is in the accessibility tree', async ({
         - listitem: Pink
       - text: "Accent: Green"
       - button "Close menu"
+      - button "Settings"
     - textbox "Name"
+    - button "Keyboard"
   `);
 
   // REQ-A11Y-002: the focus of the game is the DOM focus. flat2d starts
@@ -84,7 +86,13 @@ test('the semantic tree of flat2d is in the accessibility tree', async ({
   await expect.poll(focus).toBe('button: Close menu');
 
   await press(page, 'Tab');
+  await expect.poll(focus).toBe('button: Settings');
+
+  await press(page, 'Tab');
   await expect.poll(focus).toBe('textbox: Name');
+
+  await press(page, 'Shift+Tab');
+  await expect.poll(focus).toBe('button: Settings');
 
   await press(page, 'Shift+Tab');
   await expect.poll(focus).toBe('button: Close menu');
@@ -101,6 +109,53 @@ test('the semantic tree of flat2d is in the accessibility tree', async ({
   await press(page, 'Enter');
   await expect(live).toHaveText('Accent: Orange');
 
+  // REQ-A11Y-006: the widgets. The Settings button has a tooltip: it is
+  // the description of the button, and a tooltip element while it shows.
+  await press(page, 'Tab');
+  await press(page, 'Tab');
+  await expect.poll(focus).toBe('button: Settings');
+  const settingsButton = mirror.getByRole('button', { name: 'Settings' });
+  await expect(settingsButton).toHaveAttribute(
+    'aria-description',
+    'A slider and a long list',
+  );
+  await expect(mirror.getByRole('tooltip')).toHaveText(
+    'A slider and a long list',
+  );
+
+  // The settings screen is a modal dialog. The menu under it leaves the
+  // mirror, and the focus goes to the slider.
+  await press(page, 'Enter');
+  const dialog = mirror.getByRole('dialog', { name: 'Settings' });
+  await expect(dialog).toHaveAttribute('aria-modal', 'true');
+  await expect.poll(focus).toBe('slider: Volume');
+  await expect(mirror.getByRole('button', { name: 'Close menu' })).toHaveCount(
+    0,
+  );
+  const slider = dialog.getByRole('slider', { name: 'Volume' });
+  await expect(slider).toHaveAttribute('aria-valuenow', '0.7');
+  await press(page, 'ArrowRight');
+  await expect(slider).toHaveAttribute('aria-valuenow', '0.75');
+  await expect(slider).toHaveAttribute('aria-valuetext', '75%');
+
+  // The scroll list is a list with all its items, also the hidden ones.
+  await press(page, 'Tab');
+  await expect.poll(focus).toBe('listitem: Level 1');
+  await expect(
+    dialog.getByRole('list', { name: 'Level' }).getByRole('listitem'),
+  ).toHaveCount(30);
+  await press(page, 'End');
+  await expect.poll(focus).toBe('listitem: Level 30');
+
+  // Escape closes the screen, and the focus goes back to Settings.
+  await press(page, 'Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(focus).toBe('button: Settings');
+  await press(page, 'Shift+Tab');
+  await expect.poll(focus).toBe('button: Close menu');
+  // events.ts drops an Escape that comes less than 250 ms after the last one.
+  await page.waitForTimeout(300);
+
   // A node that goes away leaves the mirror. Escape closes the menu, and
   // the focus moves to the button that opens it.
   await press(page, 'Escape');
@@ -108,4 +163,23 @@ test('the semantic tree of flat2d is in the accessibility tree', async ({
   await expect(mirror.getByRole('button', { name: 'Close menu' })).toHaveCount(
     0,
   );
+
+  // The on-screen keyboard fills the text field. Its keys are buttons.
+  await press(page, 'Tab');
+  await press(page, 'Tab');
+  await expect.poll(focus).toBe('button: Keyboard');
+  await press(page, 'Enter');
+  const osk = mirror.getByRole('dialog', { name: 'On-screen keyboard' });
+  await expect(osk).toHaveCount(1);
+  await expect.poll(focus).toBe('textbox: Name');
+  await press(page, 'Tab');
+  await expect.poll(focus).toBe('button: 1');
+  await press(page, 'ArrowDown');
+  await expect.poll(focus).toBe('button: q');
+  await press(page, 'Enter');
+  await expect(osk.getByRole('textbox', { name: 'Name' })).toHaveValue('q');
+  await page.waitForTimeout(300);
+  await press(page, 'Escape');
+  await expect(osk).toHaveCount(0);
+  await expect.poll(focus).toBe('button: Keyboard');
 });
