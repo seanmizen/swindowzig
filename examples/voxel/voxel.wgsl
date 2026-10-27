@@ -36,6 +36,9 @@ struct VertexOutput {
     @location(8) block_light: f32,
     // Block type. fs_main picks the texture rules from it.
     @location(9) @interpolate(flat) block_type: u32,
+    // 1: fs_main applies the directional shade. 0: no shade (the shade flag
+    // of a baked model quad).
+    @location(10) @interpolate(flat) shade: u32,
 };
 
 // Block type colors
@@ -64,6 +67,9 @@ fn getBlockColor(block_type: u32) -> vec3<f32> {
         }
         case 8u: { // Sand — warm sandy yellow.
             return vec3<f32>(0.85, 0.78, 0.48);
+        }
+        case 9u: { // Half block (a baked model) — pale blue-grey stone.
+            return vec3<f32>(0.66, 0.68, 0.74);
         }
         case 99u: { // Debug marker
             return vec3<f32>(1.0, 0.0, 0.0);
@@ -101,6 +107,16 @@ struct ChunkQuads {
 };
 
 @group(1) @binding(0) var<storage, read> chunk: ChunkQuads;
+
+// The baked model quads of the content (sw_voxel models.gpu_table), 6 vec4
+// per quad. A model quad record of a chunk holds an index into it. The
+// layout is in sw_voxel model.zig (GpuQuad):
+//   vec4 0-3: the f32 bits of corner 0-3 (x, y, z). w of corner 0: face
+//             (bits 0-2), shade (bit 3), tint index (bits 8-15).
+//   vec4 4-5: the f32 bits of the texture coordinates of corners 0-1, 2-3.
+@group(2) @binding(0) var<storage, read> model_quads: array<vec4<u32>>;
+// Bit 31 of q.w is set in a model quad record (mesher.MODEL_RECORD_BIT).
+const MODEL_RECORD_BIT: u32 = 0x80000000u;
 
 // Faces are numbered px, nx, py, ny, pz, nz (0..5). The normal axis is
 // face / 2 and the face is positive when face is even. The in-plane axes are
@@ -148,6 +164,9 @@ fn lightField(q: vec4<u32>, i: u32) -> u32 {
 fn vs_chunk(@builtin(vertex_index) vi: u32) -> VertexOutput {
     let q = chunk.quads[vi / 6u];
     let corner = (TRI_CORNERS >> ((vi % 6u) * 2u)) & 3u;
+    if ((q.w & MODEL_RECORD_BIT) != 0u) {
+        return modelVertex(q, corner);
+    }
     let face = (q.x >> 16u) & 0x7u;
     let w = f32(((q.x >> 19u) & 0xFu) + 1u);
     let h = f32(((q.x >> 23u) & 0xFFu) + 1u);
@@ -157,11 +176,7 @@ fn vs_chunk(@builtin(vertex_index) vi: u32) -> VertexOutput {
     let j_axis = select(1u, 2u, normal_axis == 1u);
     let n = axisVec(normal_axis);
 
-    let cell = vec3<f32>(
-        f32(i32(q.x & 0xFu) + chunk.origin.x),
-        f32(i32(((q.x >> 4u) & 0xFFu) | (((q.w >> 20u) & 0xFu) << 8u)) + chunk.origin.w),
-        f32(i32((q.x >> 12u) & 0xFu) + chunk.origin.z),
-    );
+    let cell = recordCell(q);
     let p = cornerStep(FACE_POS_A, FACE_POS_B, face, corner);
     let t = cornerStep(FACE_UV_A, FACE_UV_B, face, corner);
 
@@ -174,6 +189,40 @@ fn vs_chunk(@builtin(vertex_index) vi: u32) -> VertexOutput {
     in.skylight = f32(lightField(q, 4u + corner)) / 60.0;
     in.block_light = f32(lightField(q, 8u + corner)) / 60.0;
     var out = shadeVertex(in);
+    out.highlight = rebuildTint(u32(chunk.origin.y));
+    return out;
+}
+
+// The cell of a packed quad or a model quad record, in world blocks.
+fn recordCell(q: vec4<u32>) -> vec3<f32> {
+    return vec3<f32>(
+        f32(i32(q.x & 0xFu) + chunk.origin.x),
+        f32(i32(((q.x >> 4u) & 0xFFu) | (((q.w >> 20u) & 0xFu) << 8u)) + chunk.origin.w),
+        f32(i32((q.x >> 12u) & 0xFu) + chunk.origin.z),
+    );
+}
+
+// One corner of a model quad record. mesher.unpackCorner is the same decode
+// in Zig. The normal comes from the corners: they go counter-clockwise.
+fn modelVertex(q: vec4<u32>, corner: u32) -> VertexOutput {
+    let base = (q.x >> 16u) * 6u;
+    let info = model_quads[base].w;
+    let p0 = bitcast<vec3<f32>>(model_quads[base].xyz);
+    let p1 = bitcast<vec3<f32>>(model_quads[base + 1u].xyz);
+    let p2 = bitcast<vec3<f32>>(model_quads[base + 2u].xyz);
+    let pc = bitcast<vec3<f32>>(model_quads[base + corner].xyz);
+    let uvs = bitcast<vec4<f32>>(model_quads[base + 4u + corner / 2u]);
+
+    var in: VertexInput;
+    in.position = recordCell(q) + pc;
+    in.normal = normalize(cross(p1 - p0, p2 - p0));
+    in.block_type = (q.w >> 12u) & 0xFFu;
+    in.uv = select(uvs.zw, uvs.xy, (corner & 1u) == 0u);
+    in.ao = f32(lightField(q, corner)) / 42.0;
+    in.skylight = f32(lightField(q, 4u + corner)) / 60.0;
+    in.block_light = f32(lightField(q, 8u + corner)) / 60.0;
+    var out = shadeVertex(in);
+    out.shade = (info >> 3u) & 1u;
     out.highlight = rebuildTint(u32(chunk.origin.y));
     return out;
 }
@@ -207,6 +256,7 @@ fn shadeVertex(in: VertexInput) -> VertexOutput {
     out.skylight = in.skylight;
     out.block_light = in.block_light;
     out.block_type = block_type;
+    out.shade = 1u;
     return out;
 }
 
@@ -359,7 +409,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
     let ambient = 0.4;
     let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.6;
-    let brightness = ambient + diffuse;
+    let brightness = select(1.0, ambient + diffuse, in.shade != 0u);
 
     // Ambient occlusion: map 0..1 → 0.55..1.0 (raised floor reduces harsh MSAA blends)
     let ao_brightness = 0.55 + in.ao * 0.45;

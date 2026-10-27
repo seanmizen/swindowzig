@@ -1,6 +1,7 @@
 const std = @import("std");
 const clock = @import("clock.zig");
 const content = @import("content.zig");
+const models = @import("models.zig");
 const section_mod = @import("section.zig");
 pub const Section = section_mod.Section;
 
@@ -483,6 +484,22 @@ pub const Chunk = struct {
     /// call for each cell. A section with one block type sets 16 bits of
     /// each column at a time.
     pub fn solidColumns(self: *const Chunk, out: *[CHUNK_W][CHUNK_W]Col) void {
+        self.columnsWhere(out, notAir);
+    }
+
+    /// The same as `solidColumns`, but the mask has bit y only when the block is
+    /// a full cube: not air and with no model (`models.isCube`). With no
+    /// models in the content, the result is the same as `solidColumns`.
+    pub fn cubeColumns(self: *const Chunk, out: *[CHUNK_W][CHUNK_W]Col) void {
+        if (!models.any) return self.solidColumns(out);
+        self.columnsWhere(out, models.isCube);
+    }
+
+    fn notAir(b: BlockType) bool {
+        return b != .air;
+    }
+
+    fn columnsWhere(self: *const Chunk, out: *[CHUNK_W][CHUNK_W]Col, comptime set: fn (BlockType) bool) void {
         for (out) |*row| for (row) |*col| {
             col.* = @splat(0);
         };
@@ -491,14 +508,14 @@ pub const Chunk = struct {
             const word = y0 >> 6;
             const shift: u6 = @intCast(y0 & 63);
             if (sec.bits == 0) {
-                if (sec.single == .air) continue;
+                if (!set(sec.single)) continue;
                 for (out) |*row| for (row) |*col| {
                     col[word] |= @as(u64, 0xFFFF) << shift;
                 };
                 continue;
             }
             var solid: [256]bool = @splat(false);
-            for (sec.palette(), 0..) |b, i| solid[i] = b != .air;
+            for (sec.palette(), 0..) |b, i| solid[i] = set(b);
             switch (sec.bits) {
                 inline 1, 2, 4, 8 => |bits| solidSectionBits(bits, sec, &solid, out, word, shift),
                 else => unreachable,

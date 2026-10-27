@@ -227,6 +227,7 @@ const Chunk = chunk_mod.Chunk;
 const BlockType = chunk_mod.BlockType;
 
 const mesher_mod = @import("sw_voxel").mesher;
+const models_mod = @import("sw_voxel").models;
 const mesh_bytes = @import("sw_voxel").mesh_bytes;
 const Mesh = mesher_mod.Mesh;
 const VoxelVertex = mesher_mod.VoxelVertex;
@@ -822,9 +823,14 @@ const State = struct {
     player: Player = undefined, // set by voxelInit
     pipeline: ?gpu_mod.RenderPipeline = null,
     cylinder_pipeline: ?gpu_mod.RenderPipeline = null,
-    /// Chunk meshes: vs_chunk, with the packed quads at group 1.
+    /// Chunk meshes: vs_chunk, with the packed quads at group 1 and the
+    /// baked model quads at group 2.
     chunk_pipeline: ?gpu_mod.RenderPipeline = null,
     chunk_bg_layout: ?gpu_mod.BindGroupLayout = null,
+    /// The baked model quads of the content (sw_voxel `models.gpu_table`),
+    /// uploaded one time. The model quad records of the chunks index it.
+    model_quad_buffer: ?gpu_mod.Buffer = null,
+    model_bind_group: ?gpu_mod.BindGroup = null,
     /// The chunk scheduler (C1, C8) and its executor. voxelFrame runs them
     /// once per frame. See docs/chunk-pipeline.md.
     scheduler: scheduler_mod.Scheduler = undefined, // set by voxelInit
@@ -1148,8 +1154,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.golden_max_channel_delta = 2;
 
     // Hotbar defaults: slot 1 = stone, slot 2 = grass, slot 3 = dirt,
-    // slot 4 = glowstone (block-light BFS is live). Slots 5-10 empty.
-    state.hotbar_slots = .{ .stone, .grass, .dirt, .glowstone, .air, .air, .air, .air, .air, .air };
+    // slot 4 = glowstone (block-light BFS is live), slot 5 = the half block
+    // (a block with a baked model). Slots 6-10 empty.
+    state.hotbar_slots = .{ .stone, .grass, .dirt, .glowstone, .slab, .air, .air, .air, .air, .air };
     state.hotbar_selected = 0;
     state.hotbar_visible = true;
 
@@ -1590,6 +1597,7 @@ fn hotbarBlockColor(bt: chunk_mod.BlockType) [3]f32 {
         .wood => .{ 0.45, 0.30, 0.12 },
         .leaves => .{ 0.18, 0.50, 0.12 },
         .sand => .{ 0.85, 0.78, 0.48 },
+        .slab => .{ 0.66, 0.68, 0.74 },
         .debug_marker => .{ 1.0, 0.0, 0.0 },
         .air => .{ 0.0, 0.0, 0.0 },
     };
@@ -3023,6 +3031,7 @@ fn voxelRender(ctx: *sw.Context) !void {
 
     pass.setPipeline(state.chunk_pipeline.?);
     pass.setBindGroup(0, state.bind_group.?);
+    pass.setBindGroup(2, state.model_bind_group.?);
     for (sorted_chunks.items) |lc| {
         const key = world_mod.ChunkKey{ .cx = lc.cx, .cz = lc.cz };
         const cg = state.chunk_gpu.get(key) orelse continue;
@@ -3938,8 +3947,24 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             .buffer = .{ .type = .read_only_storage },
         }},
     });
+    // Group 2: the baked model quads (REQ-VOXEL-001). The table does not
+    // change, so one upload and one bind group serve every chunk.
+    var model_bg_layout = try g.createBindGroupLayout(.{
+        .entries = &[_]sw.gpu_types.BindGroupLayoutEntry{.{
+            .binding = 0,
+            .visibility = .{ .vertex = true },
+            .buffer = .{ .type = .read_only_storage },
+        }},
+    });
+    const model_bytes = models_mod.gpuTableBytes();
+    state.model_quad_buffer = try g.createBuffer(.{ .size = model_bytes.len, .usage = .{ .storage = true, .copy_dst = true } });
+    g.writeBuffer(state.model_quad_buffer.?, 0, model_bytes);
+    state.model_bind_group = try g.createBindGroup(.{
+        .layout = &model_bg_layout,
+        .entries = &[_]gpu_mod.BindGroupEntry{.{ .binding = 0, .buffer = &state.model_quad_buffer.?, .size = model_bytes.len }},
+    });
     var chunk_pipeline_layout = try g.createPipelineLayout(.{
-        .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{ &bg_layout, &state.chunk_bg_layout.? },
+        .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{ &bg_layout, &state.chunk_bg_layout.?, &model_bg_layout },
     });
     state.chunk_pipeline = try g.createRenderPipeline(.{
         .layout = &chunk_pipeline_layout,
