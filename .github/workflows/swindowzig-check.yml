@@ -108,6 +108,11 @@ jobs:
         # The blocks that sw_audio mixes play on the audio clock with no gap.
         run: bun test backends/wasm/audio.test.ts
 
+      - name: Player files and cache tests in Bun
+        # sw_assets in wasm with files.ts: dropped files, the OPFS cache, and
+        # the error on a page that is not a secure context.
+        run: bun test backends/wasm/files.test.ts
+
       - name: Native build
         run: zig build native -Dexample=voxel
 

@@ -65,8 +65,9 @@ Prefixes are globally unique. Add a row when you add a file.
 | Prefix | File | Scope |
 |---|---|---|
 | `A11Y` | `requirements/a11y.md` | Access for assistive technology (screen readers) to a swindowzig UI |
-| `CAMERA` | `requirements/camera.md` | The camera controller of `sw_math`: modes, smoothing, field of view |
+| `ASSETS` | `requirements/assets.md` | Data from `sw_assets`: zip archives, files from the player and the data cache |
 | `AUDIO` | `requirements/audio.md` | Sound output from `sw_audio`: the waveform API, samples, streams, the mixer and 3D sound |
+| `CAMERA` | `requirements/camera.md` | The camera controller of `sw_math`: modes, smoothing, field of view |
 | `GPU` | `requirements/gpu.md` | Textures, samplers and other resources of `sw_gpu` |
 | `INPUT` | `requirements/input.md` | Keyboard, mouse and wheel input from the platform backends |
 | `PLATFORM` | `requirements/platform.md` | The window, the cursor and the clipboard from the platform backends |

@@ -295,6 +295,43 @@ pub fn build(b: *std.Build) void {
         addAssetsC(b, unit_tests.root_module);
         test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     }
+    // sw_assets: the zip reader reads archives that the zip tool made
+    // (libs/sw_assets/testdata). The player files and the cache test their
+    // native backends.
+    const zip_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_assets/src/zip.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    zip_tests.root_module.addAnonymousImport("test_zip_standard", .{ .root_source_file = b.path("libs/sw_assets/testdata/standard.zip") });
+    zip_tests.root_module.addAnonymousImport("test_zip_streamed", .{ .root_source_file = b.path("libs/sw_assets/testdata/streamed.zip") });
+    test_step.dependOn(&b.addRunArtifact(zip_tests).step);
+    inline for (.{ "libs/sw_assets/src/files.zig", "libs/sw_assets/src/cache.zig" }) |file| {
+        const unit_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    }
+    // The web build of sw_assets (zip, player files, cache) must compile and
+    // link for wasm32-freestanding.
+    const assets_wasm = b.addExecutable(.{
+        .name = "assets_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_assets/src/wasm_check.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    assets_wasm.root_module.addImport("sw_assets", web_libs.assets);
+    assets_wasm.entry = .disabled;
+    assets_wasm.rdynamic = true;
+    test_step.dependOn(&assets_wasm.step);
 
     inline for (test_files) |file| {
         const unit_tests = b.addTest(.{
