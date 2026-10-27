@@ -139,6 +139,12 @@ depth test rejects hidden fragments before they shade.
   WebGPU imports and the real worker pool. `headless.ts` (CI) and
   `worker-pool.test.ts` use it. The stub records the GPU buffers and the
   writes to them, and checks the rules of `writeBuffer` (`StubGpu`).
+- Web: the bridge (`backends/wasm/webgpu.ts`) drops the handle of a view,
+  an encoder, a pass and a command buffer where native releases the object.
+  So a frame adds no handle (REQ-GPU-012). The canvas is always
+  `bgra8unorm`, the screen format of the Zig side (REQ-GPU-013). `yarn test:browser` runs the
+  Playwright tests: `canvas.pw.ts` checks the pixels of justabox on the
+  canvas, and `a11y.pw.ts` checks flat2d. `yarn test:a11y` runs the same.
 - Web: `gpu.writeBufferHeld` writes bytes that JS holds
   (`backends/wasm/held-bytes.ts`, by handle) to a GPU buffer. The bytes do
   not go through the wasm memory. The WebGPU bridge owns the store, and the
@@ -306,6 +312,8 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_render/src/post_plan.zig` | Post chain rules: the route of the links, the tonemap curves (CPU reference), the effect WGSL (`post.shader`). No GPU code, unit tested |
 | `libs/sw_render/src/sky.zig` | `Sky`: the sky pass (gradient, sun, moon, stars, or a `CubeMap`) before the scene on one target. `setTime` (0 midnight, 0.5 noon), then `frame.sky = try sky.update()` each frame. Scene passes on the target use `load_op = .load` (REQ-GPU-010) |
 | `libs/sw_render/src/sky_plan.zig` | The time of day, the sky colours (`Palette`), `Fog`, and the CPU reference of the sky shader and of the WGSL helpers `sw_sky_color` and `sw_fog` (no GPU code, unit tested) (REQ-GPU-010, REQ-GPU-011) |
+| `libs/sw_render/src/box_models.zig` | `BoxModels`: trees of boxes, one draw call for all instances of one model. Each frame: `clear`, `add(layer, model, .{ .transform, .rotations, .tint })`, then `draw(pass, .world, .{})`. `addFirstPersonPass` draws the `.first_person` layer (view space) with its own depth range (REQ-GPU-014, REQ-GPU-015) |
+| `libs/sw_render/src/box_model_plan.zig` | Box models with no GPU code: `validate`, `buildMesh`, `pose` (`parent * T(pivot) * R * T(-pivot)`), the record layouts, the WGSL and the CPU `shade` (unit tested) |
 | `libs/sw_gpu/src/fxaa.zig` | The FXAA source and quality presets. `shaderSource` sets the tokens and the bind group. `configureFXAA` and the post chain use it |
 | `libs/sw_net/src/socket.zig` | `Socket`: open, `poll`, send, close, and the reconnect. The same code for web and native. `net_root.zig` is the module root |
 | `libs/sw_net/src/native.zig` | The native transport: connect, TLS for `wss:`, the HTTP upgrade, the frame loop on one network thread |
