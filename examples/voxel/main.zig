@@ -288,7 +288,7 @@ const Executor = union(enum) {
     fn workerCount(self: *const Executor) usize {
         return switch (self.*) {
             .inline_exec => 0,
-            .threads => |p| if (comptime is_wasm) unreachable else p.workers.len,
+            .threads => |p| if (comptime is_wasm) unreachable else p.workerCount(),
             .web => |*w| if (comptime !is_wasm) unreachable else w.workerCount(),
         };
     }
@@ -2785,7 +2785,7 @@ fn drawPipelinePage(buf: *[96]u8, x: f32, y: *f32, line_h: f32, scale: f32, col:
     Line.draw(std.fmt.bufPrint(buf, "MAIN MS LAST FRAME: {d:.3}", .{ms(state.last_frame.main_ns)}) catch "?", x, y, line_h, scale, col, ow, oh);
     if (comptime !is_wasm) if (state.executor == .threads) {
         const pool = &state.executor.threads;
-        for (0..pool.workers.len) |i| {
+        for (0..pool.workerCount()) |i| {
             const info = pool.workerInfo(i);
             const lookups = info.stats.hits + info.stats.misses;
             const hit_pct = if (lookups == 0) 0 else info.stats.hits * 100 / lookups;
@@ -4080,7 +4080,7 @@ fn logGpuMeshStats() void {
     // The cache of each worker thread (C12, C14).
     if (comptime !is_wasm) if (state.executor == .threads) {
         const pool = &state.executor.threads;
-        for (0..pool.workers.len) |i| {
+        for (0..pool.workerCount()) |i| {
             const info = pool.workerInfo(i);
             const st_w = info.stats;
             std.log.info("[PIPE] worker {}: jobs={} generated={} lit={} hits={} misses={} evicted={} cached={} peak_mb={}", .{

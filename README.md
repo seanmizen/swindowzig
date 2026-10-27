@@ -198,7 +198,7 @@ exe.root_module.addImport("sw_app", swindowzig.module("sw_app"));
 ```
 
 The package exports `sw_core`, `sw_platform`, `sw_gpu`, `sw_audio`, `sw_math`,
-`sw_gfx2d`, `sw_net` and `sw_app`. The `platform` option picks the platform of these modules:
+`sw_gfx2d`, `sw_net`, `sw_jobs` and `sw_app`. The `platform` option picks the platform of these modules:
 `web` (the default, no SDL) or `native` (SDL2 from `addTranslateC`):
 
 ```zig

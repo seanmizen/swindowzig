@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 12. Skipped: 3. Not started: 0.
+- Done: 13. Skipped: 2. Not started: 0.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -258,26 +258,49 @@ ticket of #102, in the order of the batch.
 
 ## #26 sw_jobs worker pool for native threads and Web Workers
 
-- Status: skipped
+- Status: done (the first commit skipped it, and Sean asked for it in the
+  batch)
 - Commit: see `git log --grep SWZ-26`
-- Reason: the ticket does not fit in the time limit of one ticket. It has
-  three large parts:
-  - a generic `sw_jobs` pool from `pipeline/exec_threads.zig` and
-    `pipeline/exec_web.zig`, with tests for order, cancel and shutdown.
-  - the move of `sw_voxel` to it, with `stage_match=yes`.
-  - a SharedArrayBuffer mode in `backends/wasm/worker-pool.ts`.
-- Open questions:
-  - `backends/wasm/worker-pool.ts` says "No SharedArrayBuffer and no wasm
-    threads (section 11)": each message is a transferred ArrayBuffer, so
-    no copy occurs now. The acceptance criteria ask for
-    SharedArrayBuffer when the page is cross-origin isolated, and copies
-    when it is not. Sean must decide if that design changes, and what the
-    shared mode gives (a ring buffer with no postMessage, or wasm
-    threads).
-  - Proposal: split the ticket. Part 1: native `sw_jobs` and the move of
-    `exec_threads.zig`. Part 2: the web side and the SharedArrayBuffer
-    decision.
-- Risks: none. No code changed.
+- What changed:
+  - New library `libs/sw_jobs`:
+    - `ThreadPool(Handler)`: native threads, each with its own handler and
+      queue. `post`, `broadcast`, `cancel`, `takeReplies`, `waitForReply`,
+      `snapshot`, and `deinit` (shutdown).
+    - `Transport`: one API for a pool of workers. `NativeTransport` gives
+      it for a ThreadPool. `webTransport` gives it for the JS Web Worker
+      pool (imports of the module "jobs").
+  - `sw_voxel` uses `sw_jobs`: `exec_threads.zig` runs its WorkerWorlds on
+    `sw_jobs.ThreadPool`, `exec_web.zig` uses `sw_jobs.Transport`, and
+    `mesh_bytes.Store` is `sw_jobs.Held`.
+  - `worker-pool.ts`: `chunkImports` is now `jobImports`, the import module
+    is "jobs", and each function is `jsJob*`, not `jsChunk*`.
+  - `ThreadPool.workers` of `exec_threads` is gone. Use `workerCount()`.
+- Change of an acceptance criterion: no SharedArrayBuffer mode. The web
+  pool transfers each message and each result as an ArrayBuffer, so it
+  copies no bytes now, and the sites need no cross-origin isolation. A
+  decision card for Sean has this question.
+- Change of behaviour: at shutdown, a native worker stops after its
+  current job. Before, it ran its whole queue first.
+- What ran:
+  - `zig build test`: 5 new sw_jobs tests (order, no reply, failure,
+    broadcast, cancel, shutdown, Transport). The test binary passed 30
+    runs in sequence.
+  - The voxel gate: `stage_match=yes`, the headless TAS, the smoke test
+    (ThreadPool executor) and the goldens (10 passed).
+  - `bun backends/wasm/headless.ts` (WorkerPool executor, real Bun Web
+    Workers) and `bun test backends/wasm/worker-pool.test.ts` (12 pass).
+- Not run here: the voxel page in a browser with the new import names.
+  The loader and the headless app use the same `jobImports`.
+- Expected changes:
+  - quad hash: no change
+  - goldens: none
+- CI changes needed: none. `zig build test` runs the new tests.
+- Requirements: REQ-JOBS-001, REQ-JOBS-002
+- Breaking: the JS import module of app.wasm changes from "chunks" to
+  "jobs". A page with an old `loader.ts` and a new `app.wasm` does not
+  start. The loader and app.wasm of one build always match.
+- Risks: the horizon reference was not read (the sandbox has no `gh`).
+  The design comes from the executors of this repo.
 
 ## #39 far terrain level of detail in sw_voxel
 

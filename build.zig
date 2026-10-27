@@ -348,6 +348,17 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_unit_tests.step);
     }
 
+    // sw_jobs: the native thread pool (order, cancel, shutdown) and its
+    // Transport.
+    const jobs_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_jobs/src/jobs_root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(jobs_tests).step);
+
     // sw_net: the frame codec, the handshake, the URL parser, the backoff,
     // and the native client against a local server that the test starts.
     const net_tests = b.addTest(.{
@@ -835,6 +846,7 @@ fn addVoxel(
     const content = b.createModule(content_options);
     voxel.addImport("sw_gpu", libs.gpu);
     voxel.addImport("sw_math", libs.math);
+    voxel.addImport("sw_jobs", libs.jobs);
     voxel.addImport("sw_voxel_content", content);
     content.addImport("sw_voxel", voxel);
     return .{ .voxel = voxel, .content = content };
@@ -870,6 +882,7 @@ const Libs = struct {
     ui: *std.Build.Module,
     assets: *std.Build.Module,
     net: *std.Build.Module,
+    jobs: *std.Build.Module,
     voxel: *std.Build.Module,
     render: *std.Build.Module,
     app: *std.Build.Module,
@@ -915,8 +928,11 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     // sw_voxel needs a content module from the dependent package:
     // voxel.addImport("sw_voxel_content", content). See
     // libs/sw_voxel/src/content.zig.
+    // sw_jobs: worker threads and Web Workers. No other library module.
+    const jobs = libModule(b, exported, "sw_jobs", "libs/sw_jobs/src/jobs_root.zig");
     const voxel = libModule(b, exported, "sw_voxel", "libs/sw_voxel/src/sw_voxel.zig");
     voxel.addImport("sw_gpu", gpu);
+    voxel.addImport("sw_jobs", jobs);
     voxel.addImport("sw_math", math);
     const render = libModule(b, exported, "sw_render", "libs/sw_render/src/render_root.zig");
     render.addImport("sw_gpu", gpu);
@@ -929,7 +945,7 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     app.addImport("sw_gpu", gpu);
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
-    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .net = net, .text = text, .ui = ui, .voxel = voxel, .render = render, .app = app };
+    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .net = net, .jobs = jobs, .text = text, .ui = ui, .voxel = voxel, .render = render, .app = app };
 }
 
 /// Compile stb_vorbis (libs/sw_audio/c) into `module`. The file needs no C

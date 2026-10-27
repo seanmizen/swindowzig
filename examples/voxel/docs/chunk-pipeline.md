@@ -590,10 +590,10 @@ The quad bytes of a new mesh go from the worker to the GPU like this
 
 1. A worker sends the Result as a transferable ArrayBuffer.
 2. In the frame phase, `exec_web.zig` takes the next result
-   (`jsChunkTakeHead`). JS holds the ArrayBuffer under a handle
+   (`jsJobTakeHead`). JS holds the ArrayBuffer under a handle
    (`held-bytes.ts`), and copies its first 64 bytes into the wasm memory.
 3. For a mesh, the scheduler gets the counts and the handle. Any other
-   result comes into the wasm memory as a whole (`jsChunkRead`): a
+   result comes into the wasm memory as a whole (`jsJobRead`): a
    generate result has the blocks of the prefetch radius (C6).
 4. The render (`uploadNewMeshes` in `main.zig`) writes the 16-byte GPU
    header of the chunk from the wasm memory, then asks JS to write the

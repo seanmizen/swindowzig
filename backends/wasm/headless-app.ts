@@ -4,7 +4,7 @@
 // one import for each entry of WebAssembly.Module.imports(module):
 //   - The time import reads a clock that the caller controls ('sim'), or
 //     performance.now() ('real').
-//   - The "chunks" imports use a real WorkerPool (worker-pool.ts) with real
+//   - The "jobs" imports (sw_jobs) use a real WorkerPool (worker-pool.ts) with real
 //     Bun Web Workers, or no pool.
 //   - The storage and asset imports are the real ones.
 //   - The WebGPU buffer imports are a stub that records each buffer and each
@@ -20,7 +20,7 @@ import { HeldBytes } from './held-bytes';
 import { createStorageImports } from './storage';
 import {
   attachPool,
-  chunkImports,
+  jobImports,
   type PoolHolder,
   WorkerPool,
   type WorkerPoolOptions,
@@ -413,7 +413,7 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
       ...createStorageImports(getMemory),
       ...createAssetImports(getMemory),
     },
-    chunks: chunkImports(holder, getMemory, held),
+    jobs: jobImports(holder, getMemory, held),
     files: createFileImports(getMemory),
     webgpu: gpu.imports(),
   };

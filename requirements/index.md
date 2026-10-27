@@ -56,6 +56,8 @@
 | [`REQ-INPUT-005`](input.md#req-input-005--gamepads-are-recorded-input-that-binds-to-actions) | Gamepads are recorded input that binds to actions | active | functional | P2 | agent:SWZ-50 |
 | [`REQ-INPUT-006`](input.md#req-input-006--old-recordings-still-play) | Old recordings still play | active | constraint | P1 | agent:SWZ-50 |
 | [`REQ-INPUT-007`](input.md#req-input-007--a-key-press-shorter-than-one-tick-is-not-lost) | A key press shorter than one tick is not lost | active | functional | P2 | agent:SWZ-92 |
+| [`REQ-JOBS-001`](jobs.md#req-jobs-001--a-native-worker-runs-its-messages-in-order-and-can-stop) | A native worker runs its messages in order, and can stop | active | functional | P2 | agent:SWZ-26 |
+| [`REQ-JOBS-002`](jobs.md#req-jobs-002--native-threads-and-web-workers-have-one-transport-api) | Native threads and Web Workers have one Transport API | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-NET-001`](net.md#req-net-001--the-game-polls-network-events) | The game polls network events | active | constraint | P1 | agent:SWZ-53 |
 | [`REQ-NET-002`](net.md#req-net-002--the-native-client-masks-each-frame) | The native client masks each frame | active | functional | P1 | agent:SWZ-53 |
 | [`REQ-NET-003`](net.md#req-net-003--the-reconnect-delay-doubles-to-a-limit) | The reconnect delay doubles to a limit | active | functional | P2 | agent:SWZ-53 |
@@ -143,6 +145,8 @@ graph TD
   REQ_INPUT_005["REQ-INPUT-005<br/>Gamepads are recorded input that binds to actions"]
   REQ_INPUT_006["REQ-INPUT-006<br/>Old recordings still play"]
   REQ_INPUT_007["REQ-INPUT-007<br/>A key press shorter than one tick is not lost"]
+  REQ_JOBS_001["REQ-JOBS-001<br/>A native worker runs its messages in order, and can stop"]
+  REQ_JOBS_002["REQ-JOBS-002<br/>Native threads and Web Workers have one Transport API"]
   REQ_NET_001["REQ-NET-001<br/>The game polls network events"]
   REQ_NET_002["REQ-NET-002<br/>The native client masks each frame"]
   REQ_NET_003["REQ-NET-003<br/>The reconnect delay doubles to a limit"]

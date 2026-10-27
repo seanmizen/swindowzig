@@ -32,6 +32,7 @@ const exec_inline = @import("exec_inline.zig");
 const worker_world = @import("worker_world.zig");
 const world_mod = @import("../world.zig");
 const content = @import("../content.zig");
+const jobs = @import("sw_jobs");
 
 const Scheduler = scheduler_mod.Scheduler;
 const Started = scheduler_mod.Started;
@@ -61,78 +62,39 @@ pub fn ownerOf(cx: i32, cz: i32, n: usize) usize {
     return @intCast(@mod(rx + 2 * rz, @as(i32, @intCast(n))));
 }
 
-/// A message from a worker. `bytes` is null when the worker had no memory
-/// for the reply. Main then abandons the job.
-const Reply = struct {
-    id: u32,
-    bytes: ?[]u8,
-};
-
-const Worker = struct {
-    pool: *ThreadPool,
-    index: usize,
-    thread: ?std.Thread = null,
+/// The handler of one worker thread (sw_jobs): a WorkerWorld. It answers
+/// each message with protocol bytes, and writes the job time into each
+/// Result (C12).
+const ChunkWorker = struct {
     world: worker_world.WorkerWorld,
+    io: std.Io,
 
-    // Shared with the thread, under `mutex`.
-    mutex: std.Io.Mutex = .init,
-    cond: std.Io.Condition = .init,
-    inbox: std.ArrayList([]u8) = .empty,
-    inbox_head: usize = 0,
-    stop: bool = false,
-    /// A copy of the cache counters of the thread (C12).
-    stats: worker_world.Stats = .{},
-    cached: usize = 0,
-    cache_bytes: usize = 0,
+    pub const Snapshot = struct {
+        stats: worker_world.Stats = .{},
+        cached: usize = 0,
+        cache_bytes: usize = 0,
+    };
 
-    // Main thread only.
-    /// Jobs sent and not answered.
-    in_flight: usize = 0,
-
-    /// Give `msg` to the thread. The thread owns it after the call.
-    fn post(self: *Worker, msg: []u8) !void {
-        const io = self.pool.io;
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        try self.inbox.append(self.pool.allocator, msg);
-        self.cond.signal(io);
+    pub fn handle(self: *ChunkWorker, msg: []const u8) jobs.Answer {
+        const t0 = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
+        const reply = self.world.handle(msg) catch null;
+        const t1 = std.Io.Timestamp.now(self.io, .awake).toNanoseconds();
+        if (reply) |r| {
+            stampJobTime(r, t1 - t0);
+            return .{ .reply = r };
+        }
+        // An edit has no reply. A job with no reply had no memory: main
+        // abandons it.
+        return if (msg[6] == @backingInt(protocol.Kind.edit)) .none else .failed;
     }
 
-    fn run(self: *Worker) void {
-        const io = self.pool.io;
-        const a = self.pool.allocator;
-        while (true) {
-            self.mutex.lockUncancelable(io);
-            while (self.inbox_head == self.inbox.items.len and !self.stop) self.cond.waitUncancelable(io, &self.mutex);
-            if (self.inbox_head == self.inbox.items.len) {
-                // stop, and no message waits.
-                self.mutex.unlock(io);
-                return;
-            }
-            const msg = self.inbox.items[self.inbox_head];
-            self.inbox_head += 1;
-            if (self.inbox_head == self.inbox.items.len) {
-                self.inbox.clearRetainingCapacity();
-                self.inbox_head = 0;
-            }
-            self.mutex.unlock(io);
+    /// A copy of the cache counters (C12).
+    pub fn snapshot(self: *const ChunkWorker) Snapshot {
+        return .{ .stats = self.world.stats, .cached = self.world.cachedChunks(), .cache_bytes = self.world.bytes };
+    }
 
-            const id = std.mem.readInt(u32, msg[12..16], .little);
-            const t0 = std.Io.Timestamp.now(io, .awake).toNanoseconds();
-            const reply = self.world.handle(msg) catch null;
-            const t1 = std.Io.Timestamp.now(io, .awake).toNanoseconds();
-            const is_edit = msg[6] == @backingInt(protocol.Kind.edit);
-            a.free(msg);
-            if (reply) |r| stampJobTime(r, t1 - t0);
-
-            self.mutex.lockUncancelable(io);
-            self.stats = self.world.stats;
-            self.cached = self.world.cachedChunks();
-            self.cache_bytes = self.world.bytes;
-            self.mutex.unlock(io);
-            if (reply == null and is_edit) continue;
-            self.pool.pushReply(.{ .id = id, .bytes = reply });
-        }
+    pub fn deinit(self: *ChunkWorker) void {
+        self.world.deinit();
     }
 
     /// Write the job time into a Result (C12).
@@ -143,6 +105,11 @@ const Worker = struct {
     }
 };
 
+const Pool = jobs.ThreadPool(ChunkWorker);
+/// A message from a worker. `bytes` is null when the worker had no memory
+/// for the reply. Main then abandons the job.
+const Reply = Pool.Reply;
+
 const InFlight = struct {
     started: Started,
     worker: usize,
@@ -151,11 +118,10 @@ const InFlight = struct {
 pub const ThreadPool = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
-    workers: []Worker,
-    /// Replies from the workers, under `reply_mutex`.
-    reply_mutex: std.Io.Mutex = .init,
-    reply_cond: std.Io.Condition = .init,
-    replies: std.ArrayList(Reply) = .empty,
+    /// The worker threads (sw_jobs).
+    pool: Pool,
+    /// The jobs sent to each worker and not answered. Main thread only.
+    in_flight: []usize,
     /// Replies that main took and did not install yet (the install budget).
     pending: std.ArrayList(Reply) = .empty,
     pending_head: usize = 0,
@@ -168,46 +134,42 @@ pub const ThreadPool = struct {
     /// The pool must not move after `init`: the threads hold pointers to it.
     pub fn init(self: *ThreadPool, allocator: std.mem.Allocator, io: std.Io, n: usize, config: content.GenConfig, cache_limit: u64) !void {
         std.debug.assert(n >= 1);
-        self.* = .{ .allocator = allocator, .io = io, .workers = &.{} };
-        const workers = try allocator.alloc(Worker, n);
-        for (workers, 0..) |*w, i| w.* = .{ .pool = self, .index = i, .world = .init(allocator) };
-        self.workers = workers;
+        const handlers = try allocator.alloc(ChunkWorker, n);
+        defer allocator.free(handlers);
+        for (handlers) |*h| h.* = .{ .world = .init(allocator), .io = io };
+        const in_flight = allocator.alloc(usize, n) catch |err| {
+            for (handlers) |*h| h.deinit();
+            return err;
+        };
+        @memset(in_flight, 0);
+        self.* = .{ .allocator = allocator, .io = io, .pool = undefined, .in_flight = in_flight };
+        self.pool.init(allocator, io, handlers) catch |err| {
+            for (handlers) |*h| h.deinit();
+            allocator.free(in_flight);
+            return err;
+        };
         // deinit stops the threads that started, and frees the workers.
         errdefer self.deinit();
 
         // The handshake, before the threads start.
         const hello = try protocol.encodeHello(allocator, exec_inline.helloOf(config, cache_limit));
         defer allocator.free(hello);
-        for (workers) |*w| {
-            const reply = try w.world.handle(hello);
+        for (0..n) |i| {
+            const reply = try self.pool.handler(i).world.handle(hello);
             defer if (reply) |r| allocator.free(r);
             if (!exec_inline.checkHello(reply)) return error.WorkerHandshake;
         }
-        for (workers) |*w| w.thread = try std.Thread.spawn(.{}, Worker.run, .{w});
+        try self.pool.start();
     }
 
-    /// Stop each thread and wait for it, then free everything. Jobs that
-    /// did not finish are lost: the caller frees the scheduler too, or calls
-    /// `abandonAll` first.
+    /// Stop each thread after its current job, and wait for it, then free
+    /// everything. Jobs that did not finish are lost: the caller frees the
+    /// scheduler too, or calls `abandonAll` first.
     pub fn deinit(self: *ThreadPool) void {
         const a = self.allocator;
-        for (self.workers) |*w| {
-            w.mutex.lockUncancelable(self.io);
-            w.stop = true;
-            w.cond.signal(self.io);
-            w.mutex.unlock(self.io);
-        }
-        for (self.workers) |*w| {
-            if (w.thread) |t| t.join();
-            w.thread = null;
-            for (w.inbox.items[w.inbox_head..]) |m| a.free(m);
-            w.inbox.deinit(a);
-            w.world.deinit();
-        }
-        a.free(self.workers);
-        self.workers = &.{};
-        for (self.replies.items) |r| if (r.bytes) |b| a.free(b);
-        self.replies.deinit(a);
+        self.pool.deinit();
+        a.free(self.in_flight);
+        self.in_flight = &.{};
         for (self.pending.items[self.pending_head..]) |r| if (r.bytes) |b| a.free(b);
         self.pending.deinit(a);
         self.jobs.deinit(a);
@@ -219,18 +181,7 @@ pub const ThreadPool = struct {
         var it = self.jobs.valueIterator();
         while (it.next()) |j| sched.abandon(j.started);
         self.jobs.clearRetainingCapacity();
-        for (self.workers) |*w| w.in_flight = 0;
-    }
-
-    fn pushReply(self: *ThreadPool, r: Reply) void {
-        self.reply_mutex.lockUncancelable(self.io);
-        defer self.reply_mutex.unlock(self.io);
-        defer self.reply_cond.signal(self.io);
-        self.replies.append(self.allocator, r) catch {
-            // No memory for the list: drop the reply. Main abandons the
-            // job when the pool stops.
-            if (r.bytes) |b| self.allocator.free(b);
-        };
+        @memset(self.in_flight, 0);
     }
 
     /// Send the pending edits of the scheduler to each worker, in order.
@@ -238,13 +189,9 @@ pub const ThreadPool = struct {
         for (sched.pendingEdits()) |e| {
             const msg = try protocol.encodeEdit(self.allocator, e);
             defer self.allocator.free(msg);
-            for (self.workers) |*w| {
-                const copy = try self.allocator.dupe(u8, msg);
-                errdefer self.allocator.free(copy);
-                try w.post(copy);
-                self.traffic.edits += 1;
-                self.traffic.edit_bytes += copy.len;
-            }
+            try self.pool.broadcast(0, msg);
+            self.traffic.edits += self.in_flight.len;
+            self.traffic.edit_bytes += msg.len * self.in_flight.len;
         }
         sched.outbox.clearRetainingCapacity();
     }
@@ -255,10 +202,7 @@ pub const ThreadPool = struct {
             self.pending.clearRetainingCapacity();
             self.pending_head = 0;
         }
-        self.reply_mutex.lockUncancelable(self.io);
-        defer self.reply_mutex.unlock(self.io);
-        try self.pending.appendSlice(self.allocator, self.replies.items);
-        self.replies.clearRetainingCapacity();
+        try self.pool.takeReplies(&self.pending);
     }
 
     const Installed = struct {
@@ -276,7 +220,7 @@ pub const ThreadPool = struct {
             return null;
         };
         const job = kv.value;
-        self.workers[job.worker].in_flight -= 1;
+        self.in_flight[job.worker] -= 1;
         const bytes = r.bytes orelse {
             sched.abandon(job.started);
             return null;
@@ -331,10 +275,10 @@ pub const ThreadPool = struct {
     /// while work waits. That worker generates the chunks that it does not
     /// have. Null when no worker can take the job now.
     fn workerFor(self: *const ThreadPool, job: scheduler_mod.Job) ?usize {
-        const owner = ownerOf(job.cx, job.cz, self.workers.len);
-        if (self.workers[owner].in_flight < JOBS_PER_WORKER) return owner;
-        for (self.workers, 0..) |w, i| {
-            if (w.in_flight == 0) return i;
+        const owner = ownerOf(job.cx, job.cz, self.in_flight.len);
+        if (self.in_flight[owner] < JOBS_PER_WORKER) return owner;
+        for (self.in_flight, 0..) |n, i| {
+            if (n == 0) return i;
         }
         return null;
     }
@@ -345,7 +289,7 @@ pub const ThreadPool = struct {
     fn dispatch(self: *ThreadPool, sched: *Scheduler, world: *World) !usize {
         try sched.plan(world);
         var room: usize = 0;
-        for (self.workers) |w| room += JOBS_PER_WORKER - w.in_flight;
+        for (self.in_flight) |n| room += JOBS_PER_WORKER - n;
         var skipped = false;
         var sent: usize = 0;
         while (room > 0) {
@@ -354,7 +298,6 @@ pub const ThreadPool = struct {
                 skipped = true;
                 continue;
             };
-            const w = &self.workers[wi];
             const started = try sched.start(world, job);
             errdefer sched.abandon(started);
             const id = self.next_id;
@@ -364,10 +307,10 @@ pub const ThreadPool = struct {
             errdefer self.allocator.free(msg);
             try self.jobs.put(self.allocator, id, .{ .started = started, .worker = wi });
             errdefer _ = self.jobs.remove(id);
-            try w.post(msg);
+            try self.pool.post(wi, id, msg);
             self.traffic.jobs += 1;
             self.traffic.job_bytes += msg.len;
-            w.in_flight += 1;
+            self.in_flight[wi] += 1;
             room -= 1;
             sent += 1;
         }
@@ -387,21 +330,20 @@ pub const ThreadPool = struct {
         }
     }
 
+    /// The number of worker threads.
+    pub fn workerCount(self: *const ThreadPool) usize {
+        return self.in_flight.len;
+    }
+
     /// Wait until a reply arrives, or `timeout_us` passes.
     pub fn waitForReply(self: *ThreadPool, timeout_us: i64) void {
-        self.reply_mutex.lockUncancelable(self.io);
-        defer self.reply_mutex.unlock(self.io);
-        if (self.replies.items.len > 0) return;
-        const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromMicroseconds(timeout_us), .clock = .awake } };
-        self.reply_cond.waitTimeout(self.io, &self.reply_mutex, timeout) catch {};
+        self.pool.waitForReply(timeout_us);
     }
 
     /// The jobs in flight of each worker, and its cache (C12).
     pub fn workerInfo(self: *ThreadPool, i: usize) struct { in_flight: usize, cached: usize, cache_bytes: usize, stats: worker_world.Stats } {
-        const w = &self.workers[i];
-        w.mutex.lockUncancelable(self.io);
-        defer w.mutex.unlock(self.io);
-        return .{ .in_flight = w.in_flight, .cached = w.cached, .cache_bytes = w.cache_bytes, .stats = w.stats };
+        const snap = self.pool.snapshot(i);
+        return .{ .in_flight = self.in_flight[i], .cached = snap.cached, .cache_bytes = snap.cache_bytes, .stats = snap.stats };
     }
 
     fn zeroClock() u64 {
