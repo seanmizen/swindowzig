@@ -6,10 +6,11 @@
 //! and isolating run sequences), W1-W7, N0-N2, I1-I2 (implicit levels), and
 //! L1, L2 and L4 (a line: whitespace levels, reordering, mirroring). The
 //! character data is in `bidi_tables.zig`, generated from the Unicode
-//! Character Database. This file does not shape Arabic letters into their
-//! joined forms.
+//! Character Database. `Paragraphs` shapes Arabic letters into their joined
+//! forms (`shape.zig`) before it reorders a line (REQ-TEXT-001).
 
 const std = @import("std");
+const shape = @import("shape.zig");
 const tables = @import("bidi_tables.zig");
 const utf8 = @import("utf8.zig");
 
@@ -703,6 +704,8 @@ pub const Visual = struct {
 /// reorders each line on its own (UAX #9 section 3.4).
 pub const Paragraphs = struct {
     alloc: std.mem.Allocator,
+    /// The code points in logical order, after Arabic shaping. The alef of a
+    /// lam-alef ligature is `shape.ligature_part`.
     codepoints: []u21,
     /// The byte offset of each code point, and the text length at the end.
     offsets: []usize,
@@ -711,8 +714,8 @@ pub const Paragraphs = struct {
     /// The paragraph level of each code point.
     bases: []u8,
 
-    /// Decode `text` (bad bytes give U+FFFD) and resolve its levels. A
-    /// paragraph ends after each B, such as `\n`.
+    /// Decode `text` (bad bytes give U+FFFD), resolve its levels and shape
+    /// its Arabic letters. A paragraph ends after each B, such as `\n`.
     pub fn init(alloc: std.mem.Allocator, text: []const u8, direction: Direction) !Paragraphs {
         var count: usize = 0;
         var it = utf8.Iterator.init(text);
@@ -731,10 +734,12 @@ pub const Paragraphs = struct {
 
         it = utf8.Iterator.init(text);
         var k: usize = 0;
+        var arabic = false;
         while (it.next()) |item| : (k += 1) {
             codepoints[k] = item.codepoint;
             offsets[k] = item.start;
             classes[k] = classOf(item.codepoint);
+            arabic = arabic or shape.hasForms(item.codepoint);
         }
         offsets[count] = text.len;
 
@@ -747,6 +752,9 @@ pub const Paragraphs = struct {
             @memset(bases[start..end], para);
             start = end;
         }
+        // Shape after the levels and before the reordering. The classes stay
+        // those of the letters: the presentation forms are AL too.
+        if (arabic) shape.shapeInto(text, codepoints);
         return .{
             .alloc = alloc,
             .codepoints = codepoints,
@@ -1009,4 +1017,39 @@ test "a paragraph separator starts a new paragraph with its own direction" {
     defer p.deinit();
     try testing.expectEqual(@as(u8, 1), p.bases[0]);
     try testing.expectEqual(@as(u8, 0), p.bases[2]);
+}
+
+test "Arabic letters are shaped before the line is reordered" {
+    // "Salam" (seen, lam, alef, meem) in logical order is initial seen, the
+    // final lam-alef ligature, the ligature part and isolated meem. The
+    // line reverses the shaped letters.
+    var v = try visual(testing.allocator, "\u{633}\u{644}\u{627}\u{645}", .auto);
+    defer v.deinit(testing.allocator);
+    try testing.expectEqualSlices(u21, &.{ 0xFEE1, shape.ligature_part, 0xFEFC, 0xFEB3 }, v.codepoints);
+    try testing.expectEqualSlices(usize, &.{ 6, 4, 2, 0 }, v.offsets);
+}
+
+test "mixed Arabic, Latin and numbers" {
+    // "abc " + beh beh + " 12" in a left-to-right paragraph. The digits
+    // after an Arabic letter are Arabic numbers (rule W2), so the space
+    // before them is right to left too (rule N1).
+    const text = "abc \u{628}\u{628} 12";
+    var v = try visual(testing.allocator, text, .auto);
+    defer v.deinit(testing.allocator);
+    try testing.expectEqualSlices(u21, &.{ 'a', 'b', 'c', ' ', '1', '2', ' ', 0xFE90, 0xFE91 }, v.codepoints);
+    try testing.expectEqualSlices(usize, &.{ 0, 1, 2, 3, 9, 10, 8, 6, 4 }, v.offsets);
+
+    // The same words in a right-to-left paragraph, with a Latin word after
+    // the Arabic word.
+    var r = try visual(testing.allocator, "\u{628}\u{628} abc 12", .auto);
+    defer r.deinit(testing.allocator);
+    try testing.expectEqualSlices(u21, &.{ 'a', 'b', 'c', ' ', '1', '2', ' ', 0xFE90, 0xFE91 }, r.codepoints);
+}
+
+test "the bidi classes are those of the letters before shaping" {
+    var p = try Paragraphs.init(testing.allocator, "\u{644}\u{627}", .auto);
+    defer p.deinit();
+    try testing.expectEqualSlices(u21, &.{ 0xFEFB, shape.ligature_part }, p.codepoints);
+    try testing.expectEqual(Class.AL, p.classes[1]);
+    try testing.expectEqual(@as(u8, 1), p.levels[0]);
 }
