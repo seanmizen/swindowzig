@@ -46,6 +46,9 @@
 | [`REQ-GPU-028`](gpu.md#req-gpu-028--gpu-timestamps-time-each-render-pass) | GPU timestamps time each render pass | active | functional | P3 | agent:SWZ-44 |
 | [`REQ-GPU-029`](gpu.md#req-gpu-029--the-overlay-draws-a-frame-time-chart-with-sw_gfx2d) | The overlay draws a frame-time chart with sw_gfx2d | active | functional | P3 | agent:SWZ-44 |
 | [`REQ-GPU-030`](gpu.md#req-gpu-030--a-post-effect-reads-the-depth-target-and-gives-the-fog) | A post effect reads the depth target and gives the fog | active | functional | P3 | agent:SWZ-81 |
+| [`REQ-GPU-031`](gpu.md#req-gpu-031--a-cloud-puts-a-moving-shadow-on-the-ground-under-it) | A cloud puts a moving shadow on the ground under it | active | functional | P2 | agent:SWZ-101 |
+| [`REQ-GPU-032`](gpu.md#req-gpu-032--soft-clouds-have-semi-transparent-edges-and-a-rim-toward-the-sun) | Soft clouds have semi-transparent edges and a rim toward the sun | active | functional | P2 | agent:SWZ-101 |
+| [`REQ-GPU-033`](gpu.md#req-gpu-033--light-shafts-go-toward-the-sun-on-the-screen) | Light shafts go toward the sun on the screen | active | functional | P2 | agent:SWZ-101 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -127,6 +130,9 @@ graph TD
   REQ_GPU_028["REQ-GPU-028<br/>GPU timestamps time each render pass"]
   REQ_GPU_029["REQ-GPU-029<br/>The overlay draws a frame-time chart with sw_gfx2d"]
   REQ_GPU_030["REQ-GPU-030<br/>A post effect reads the depth target and gives the fog"]
+  REQ_GPU_031["REQ-GPU-031<br/>A cloud puts a moving shadow on the ground under it"]
+  REQ_GPU_032["REQ-GPU-032<br/>Soft clouds have semi-transparent edges and a rim toward the sun"]
+  REQ_GPU_033["REQ-GPU-033<br/>Light shafts go toward the sun on the screen"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -186,6 +192,10 @@ graph TD
   REQ_GPU_023 -->|depends-on| REQ_GPU_022
   REQ_GPU_024 -->|depends-on| REQ_GPU_022
   REQ_GPU_030 -->|depends-on| REQ_GPU_011
+  REQ_GPU_031 -->|depends-on| REQ_GPU_020
+  REQ_GPU_031 -->|depends-on| REQ_GPU_030
+  REQ_GPU_032 -->|depends-on| REQ_GPU_020
+  REQ_GPU_033 -->|depends-on| REQ_GPU_030
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
   REQ_TEXT_004 -->|refines| REQ_TEXT_001
@@ -217,7 +227,9 @@ graph TD
 - `REQ-GPU-011` — refined-by REQ-GPU-020, refined-by REQ-GPU-021, required-by REQ-GPU-030
 - `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
 - `REQ-GPU-016` — refined-by REQ-GPU-018
+- `REQ-GPU-020` — required-by REQ-GPU-031, required-by REQ-GPU-032
 - `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024
+- `REQ-GPU-030` — required-by REQ-GPU-031, required-by REQ-GPU-033
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
 - `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-009

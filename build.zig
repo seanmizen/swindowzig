@@ -459,6 +459,7 @@ pub fn build(b: *std.Build) void {
         "libs/sw_render/src/translucent_plan.zig",
         "libs/sw_render/src/settings.zig",
         "libs/sw_render/src/frame_pacing.zig",
+        "libs/sw_render/src/shafts_plan.zig",
     };
     inline for (render_graph_test_files) |file| {
         const unit_tests = b.addTest(.{

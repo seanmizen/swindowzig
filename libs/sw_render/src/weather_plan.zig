@@ -23,6 +23,7 @@
 const std = @import("std");
 const wgsl = @import("wgsl.zig");
 const sky_plan = @import("sky_plan.zig");
+const post_plan = @import("post_plan.zig");
 
 pub const Vec3 = [3]f32;
 pub const SkyUniforms = wgsl.SkyUniforms;
@@ -104,6 +105,21 @@ pub const CloudSettings = struct {
     /// stops the ray walk at `fade_end`.
     fade_start: f32 = 256,
     fade_end: f32 = 512,
+    /// Soft clouds (REQ-GPU-032): the alpha of a pixel follows the length
+    /// of the view ray in the cloud, so the edges are semi-transparent,
+    /// and the sun scatters forward through the cloud. False: the box
+    /// clouds.
+    soft: bool = false,
+    /// Soft clouds: how fast the cloud stops the light, for each world
+    /// unit of the ray in the cloud.
+    density: f32 = 0.08,
+    /// Soft clouds: the strength of the forward scattering. A cloud
+    /// between the camera and the sun gets a bright rim.
+    scatter: f32 = 1.5,
+    /// The cloud shadows (REQ-GPU-031): how much a cloud darkens the
+    /// sunlit ground, 0 to 1. 0: no cloud shadows. The shadows need the
+    /// effect of `Clouds.addShadowEffect`.
+    shadow: f32 = 0.5,
 };
 
 /// The uniforms of the cloud pass, with the memory layout of `SwClouds` in
@@ -114,17 +130,19 @@ pub const CloudUniforms = extern struct {
     /// xy: the shape texel of the camera, after the wind. zw: the camera
     /// position in that texel along X and Z, in world units.
     camera: [4]f32 = .{ 0, 0, 0, 0 },
-    /// x: fade start, y: fade end, z: the most grid steps, w: not used.
+    /// x: fade start, y: fade end, z: the most grid steps, w: the
+    /// scatter of soft clouds.
     fade: [4]f32 = .{ 256, 512, 64, 0 },
     /// rgb: the cloud colour. w: the bottom shade.
     color: [4]f32 = .{ 1, 1, 1, 0.7 },
     /// rgb: the ambient light. w: the side shade.
     ambient: [4]f32 = .{ 0, 0, 0, 0.85 },
-    /// rgb: the sun light. w: not used.
+    /// rgb: the sun light. w: the shadow strength.
     sun: [4]f32 = .{ 0, 0, 0, 0 },
     /// xyz: the unit vector to the sun. w: not used.
     sun_dir: [4]f32 = .{ 0, 1, 0, 0 },
-    /// x: shape width, y: shape height, in texels. zw: not used.
+    /// x: shape width, y: shape height, in texels. z: 1 for soft
+    /// clouds, else 0. w: the density of soft clouds.
     shape: [4]f32 = .{ 1, 1, 0, 0 },
 };
 
@@ -151,12 +169,12 @@ pub fn cloudUniforms(settings: CloudSettings, width: u32, height: u32, input: Fr
     return .{
         .layer = .{ settings.bottom, settings.bottom + settings.thickness, settings.cell_size, std.math.clamp(settings.opacity, 0, 1) },
         .camera = .{ @floatCast(cell_x), @floatCast(cell_z), @floatCast(local_x - cell_x * cs), @floatCast(local_z - cell_z * cs) },
-        .fade = .{ settings.fade_start, settings.fade_end, steps, 0 },
+        .fade = .{ settings.fade_start, settings.fade_end, steps, @max(settings.scatter, 0) },
         .color = .{ settings.color[0], settings.color[1], settings.color[2], settings.bottom_shade },
         .ambient = .{ l.ambient[0], l.ambient[1], l.ambient[2], settings.side_shade },
-        .sun = .{ l.sun[0], l.sun[1], l.sun[2], 0 },
+        .sun = .{ l.sun[0], l.sun[1], l.sun[2], std.math.clamp(settings.shadow, 0, 1) },
         .sun_dir = .{ l.sun_dir[0], l.sun_dir[1], l.sun_dir[2], 0 },
-        .shape = .{ @floatFromInt(width), @floatFromInt(height), 0, 0 },
+        .shape = .{ @floatFromInt(width), @floatFromInt(height), if (settings.soft) 1 else 0, @max(settings.density, 0) },
     };
 }
 
@@ -168,6 +186,9 @@ pub const CloudHit = struct {
     normal: Vec3,
     /// The shape texel of the box.
     cell: [2]i32,
+    /// Soft clouds: the distance at which the ray leaves the cloud (the
+    /// last filled cell in a line, or the slab). Box clouds: `t`.
+    exit: f32,
 };
 
 /// The shape texel of the grid cell `c`, with the image repeated.
@@ -228,7 +249,35 @@ pub fn cloudHit(u: CloudUniforms, cam_y: f32, dir: Vec3, ctx: anytype, comptime 
     var i: u32 = 0;
     while (i < steps) : (i += 1) {
         const texel = shapeTexel(u, .{ ox + cx, oz + cz });
-        if (filled(ctx, texel)) return .{ .t = t, .normal = n, .cell = texel };
+        if (filled(ctx, texel)) {
+            var exit = t;
+            if (u.shape[2] > 0.5) {
+                // Walk on through the filled cells to the exit.
+                var ecx = cx;
+                var ecz = cz;
+                var etmx = tmx;
+                var etmz = tmz;
+                var j = i;
+                while (true) {
+                    if (etmx < etmz) {
+                        exit = etmx;
+                        ecx += sx;
+                        etmx += tdx;
+                    } else {
+                        exit = etmz;
+                        ecz += sz;
+                        etmz += tdz;
+                    }
+                    if (exit >= t1) {
+                        exit = t1;
+                        break;
+                    }
+                    j += 1;
+                    if (j >= steps or !filled(ctx, shapeTexel(u, .{ ox + ecx, oz + ecz }))) break;
+                }
+            }
+            return .{ .t = t, .normal = n, .cell = texel, .exit = exit };
+        }
         if (tmx < tmz) {
             t = tmx;
             cx += sx;
@@ -260,6 +309,25 @@ pub fn cloudAlpha(u: CloudUniforms, t: f32) f32 {
     return u.layer[3] * (1.0 - smoothstep(u.fade[0], u.fade[1], t));
 }
 
+/// The forward scattering of soft clouds: the Henyey-Greenstein phase
+/// with g = 0.6, for the cosine of the angle between the view ray and the
+/// direction to the sun.
+pub fn cloudPhase(cos_angle: f32) f32 {
+    const g: f32 = 0.6;
+    const d = 1.0 + g * g - 2.0 * g * cos_angle;
+    return (1.0 - g * g) / (4.0 * std.math.pi * d * @sqrt(d));
+}
+
+/// `sw_cloud_soft`: the colour and the alpha of a soft cloud (REQ-GPU-032)
+/// from the lit colour `lit`, the tint, the view ray and the hit.
+pub fn cloudSoft(u: CloudUniforms, lit: Vec3, tint: Vec3, dir: Vec3, hit: CloudHit) struct { color: Vec3, alpha: f32 } {
+    const through = @exp(-u.shape[3] * @max(hit.exit - hit.t, 0.0));
+    const glow = u.fade[3] * cloudPhase(dot(dir, .{ u.sun_dir[0], u.sun_dir[1], u.sun_dir[2] })) * through;
+    var c: Vec3 = undefined;
+    for (0..3) |i| c[i] = lit[i] + u.sun[i] * u.color[i] * tint[i] * glow;
+    return .{ .color = c, .alpha = cloudAlpha(u, hit.t) * (1.0 - through) };
+}
+
 /// The cloud colour and alpha of the pixel with the view ray `dir`, after
 /// the fog. The colour is not multiplied by the alpha. The pass blends it
 /// over the target with `alpha`.
@@ -281,44 +349,64 @@ pub fn cloudSample(
     comptime tint: fn (@TypeOf(ctx), [2]i32) Vec3,
 ) ?CloudSample {
     const hit = cloudHit(u, cam_y, dir, ctx, filled) orelse return null;
-    const lit = cloudShade(u, hit.normal, tint(ctx, hit.cell));
+    const tn = tint(ctx, hit.cell);
+    const lit = cloudShade(u, hit.normal, tn);
+    if (u.shape[2] > 0.5) {
+        const soft = cloudSoft(u, lit, tn, dir, hit);
+        return .{ .color = sky_plan.applyFog(sky, soft.color, hit.t), .alpha = soft.alpha, .hit = hit };
+    }
     return .{ .color = sky_plan.applyFog(sky, lit, hit.t), .alpha = cloudAlpha(u, hit.t), .hit = hit };
+}
+
+/// `sw_cloud_shadow`: how much the cloud layer darkens the sunlit point
+/// `p` (REQ-GPU-031), 0 to 1. The line from `p` to the sun crosses the
+/// middle of the layer in a cell. A filled cell gives the shadow strength
+/// times the opacity, times the sun light (no shadow at night). `camera`
+/// is the camera of the uniforms.
+pub fn cloudShadow(u: CloudUniforms, camera: Vec3, p: Vec3, ctx: anytype, comptime filled: fn (@TypeOf(ctx), [2]i32) bool) f32 {
+    const sd: Vec3 = .{ u.sun_dir[0], u.sun_dir[1], u.sun_dir[2] };
+    if (sd[1] <= 1e-4 or u.sun[3] <= 0) return 0;
+    const mid = 0.5 * (u.layer[0] + u.layer[1]);
+    if (p[1] >= mid) return 0;
+    const t = (mid - p[1]) / sd[1];
+    const cs = u.layer[2];
+    const lx = u.camera[2] + (p[0] + sd[0] * t - camera[0]);
+    const lz = u.camera[3] + (p[2] + sd[2] * t - camera[2]);
+    const cell: [2]i32 = .{
+        @as(i32, @intFromFloat(u.camera[0])) + @as(i32, @intFromFloat(@floor(lx / cs))),
+        @as(i32, @intFromFloat(u.camera[1])) + @as(i32, @intFromFloat(@floor(lz / cs))),
+    };
+    if (!filled(ctx, shapeTexel(u, cell))) return 0;
+    const sun = std.math.clamp(@max(u.sun[0], @max(u.sun[1], u.sun[2])), 0, 1);
+    return u.sun[3] * u.layer[3] * sun;
+}
+
+/// The colour of the cloud shadow effect: the scene colour `c`, which has
+/// the fog `amount` of the fog colour `fog`, with the shadow `s` on the
+/// colour before the fog. The fog itself does not get darker.
+pub fn shadowed(c: Vec3, fog: Vec3, amount: f32, s: f32) Vec3 {
+    var out: Vec3 = undefined;
+    for (0..3) |i| out[i] = c[i] - s * (c[i] - fog[i] * amount);
+    return out;
 }
 
 /// The cloud pass: one triangle over the target. Group 0 has the frame
 /// uniforms, group 1 the cloud uniforms and the shape texture. `fs_main`
 /// writes the depth of the box, so the scene depth hides the clouds.
 /// `fs_flat` writes no depth, for a pass with no depth target.
-pub const cloud_shader = wgsl.shader(
-    \\struct SwClouds {
-    \\    layer: vec4<f32>,
-    \\    camera: vec4<f32>,
-    \\    fade: vec4<f32>,
-    \\    color: vec4<f32>,
-    \\    ambient: vec4<f32>,
-    \\    sun: vec4<f32>,
-    \\    sun_dir: vec4<f32>,
-    \\    shape: vec4<f32>,
-    \\}
-    \\@group(1) @binding(0) var<uniform> sw_clouds: SwClouds;
-    \\@group(1) @binding(1) var sw_cloud_shape: texture_2d<f32>;
-    \\
+pub const cloud_shader = wgsl.shader(cloudDecl(1) ++
     \\struct SwCloudHit {
     \\    t: f32,
     \\    found: bool,
     \\    normal: vec3<f32>,
     \\    texel: vec2<i32>,
+    \\    exit: f32,
     \\}
     \\
     \\@vertex fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     \\    let x = select(-1.0, 3.0, vi == 1u);
     \\    let y = select(-1.0, 3.0, vi == 2u);
     \\    return vec4<f32>(x, y, 0.0, 1.0);
-    \\}
-    \\
-    \\fn sw_cloud_texel(c: vec2<i32>) -> vec2<i32> {
-    \\    let size = vec2<i32>(sw_clouds.shape.xy);
-    \\    return ((c % size) + size) % size;
     \\}
     \\
     \\fn sw_cloud_hit(cam_y: f32, dir: vec3<f32>) -> SwCloudHit {
@@ -377,6 +465,34 @@ pub const cloud_shader = wgsl.shader(
     \\            hit.t = t;
     \\            hit.normal = n;
     \\            hit.texel = texel;
+    \\            hit.exit = t;
+    \\            if (sw_clouds.shape.z > 0.5) {
+    \\                // Walk on through the filled cells to the exit.
+    \\                var ecx = cx;
+    \\                var ecz = cz;
+    \\                var etmx = tmx;
+    \\                var etmz = tmz;
+    \\                var j = i;
+    \\                loop {
+    \\                    if (etmx < etmz) {
+    \\                        hit.exit = etmx;
+    \\                        ecx += sx;
+    \\                        etmx += tdx;
+    \\                    } else {
+    \\                        hit.exit = etmz;
+    \\                        ecz += sz;
+    \\                        etmz += tdz;
+    \\                    }
+    \\                    if (hit.exit >= t1) {
+    \\                        hit.exit = t1;
+    \\                        break;
+    \\                    }
+    \\                    j += 1u;
+    \\                    if (j >= steps || textureLoad(sw_cloud_shape, sw_cloud_texel(origin + vec2<i32>(ecx, ecz)), 0).a < 0.5) {
+    \\                        break;
+    \\                    }
+    \\                }
+    \\            }
     \\            return hit;
     \\        }
     \\        if (tmx < tmz) {
@@ -412,6 +528,12 @@ pub const cloud_shader = wgsl.shader(
     \\    return sw_clouds.layer.w * (1.0 - smoothstep(sw_clouds.fade.x, sw_clouds.fade.y, t));
     \\}
     \\
+    \\fn sw_cloud_phase(cos_angle: f32) -> f32 {
+    \\    let g = 0.6;
+    \\    let d = 1.0 + g * g - 2.0 * g * cos_angle;
+    \\    return (1.0 - g * g) / (4.0 * 3.14159265 * d * sqrt(d));
+    \\}
+    \\
     \\struct SwCloudOut {
     \\    @location(0) color: vec4<f32>,
     \\    @builtin(frag_depth) depth: f32,
@@ -425,9 +547,16 @@ pub const cloud_shader = wgsl.shader(
     \\        return vec4<f32>(0.0, 0.0, 0.0, -1.0);
     \\    }
     \\    let tint = textureLoad(sw_cloud_shape, hit.texel, 0).rgb;
-    \\    let lit = sw_cloud_shade(hit.normal, tint);
+    \\    var lit = sw_cloud_shade(hit.normal, tint);
+    \\    var alpha = sw_cloud_alpha(hit.t);
+    \\    if (sw_clouds.shape.z > 0.5) {
+    \\        let through = exp(-sw_clouds.shape.w * max(hit.exit - hit.t, 0.0));
+    \\        let glow = sw_clouds.fade.w * sw_cloud_phase(dot(dir, sw_clouds.sun_dir.xyz)) * through;
+    \\        lit = lit + sw_clouds.sun.rgb * sw_clouds.color.rgb * tint * glow;
+    \\        alpha = alpha * (1.0 - through);
+    \\    }
     \\    *out_t = hit.t;
-    \\    return vec4<f32>(sw_fog(lit, cam + dir * hit.t), sw_cloud_alpha(hit.t));
+    \\    return vec4<f32>(sw_fog(lit, cam + dir * hit.t), alpha);
     \\}
     \\
     \\@fragment fn fs_main(@builtin(position) pos: vec4<f32>) -> SwCloudOut {
@@ -450,6 +579,74 @@ pub const cloud_shader = wgsl.shader(
     \\        discard;
     \\    }
     \\    return c;
+    \\}
+    \\
+);
+
+/// The cloud uniforms and the shape at the bind group `group`, and
+/// `sw_cloud_texel`.
+fn cloudDecl(comptime group: u32) []const u8 {
+    return std.fmt.comptimePrint(
+        \\struct SwClouds {{
+        \\    layer: vec4<f32>,
+        \\    camera: vec4<f32>,
+        \\    fade: vec4<f32>,
+        \\    color: vec4<f32>,
+        \\    ambient: vec4<f32>,
+        \\    sun: vec4<f32>,
+        \\    sun_dir: vec4<f32>,
+        \\    shape: vec4<f32>,
+        \\}}
+        \\@group({d}) @binding(0) var<uniform> sw_clouds: SwClouds;
+        \\@group({d}) @binding(1) var sw_cloud_shape: texture_2d<f32>;
+        \\
+        \\fn sw_cloud_texel(c: vec2<i32>) -> vec2<i32> {{
+        \\    let size = vec2<i32>(sw_clouds.shape.xy);
+        \\    return ((c % size) + size) % size;
+        \\}}
+        \\
+        \\
+    , .{ group, group });
+}
+
+/// The cloud shadow effect (REQ-GPU-031): an HDR post effect that reads
+/// the depth target. Group 2 has the cloud uniforms and the shape, the
+/// same as group 1 of the cloud pass. It darkens each pixel with geometry
+/// that a cloud hides from the sun, and keeps the fog of the pixel.
+pub const cloud_shadow_shader = post_plan.depthShader(cloudDecl(post_plan.params_group) ++
+    \\fn sw_cloud_shadow(p: vec3<f32>) -> f32 {
+    \\    let sd = sw_clouds.sun_dir.xyz;
+    \\    if (sd.y <= 1e-4 || sw_clouds.sun.w <= 0.0) {
+    \\        return 0.0;
+    \\    }
+    \\    let mid = 0.5 * (sw_clouds.layer.x + sw_clouds.layer.y);
+    \\    if (p.y >= mid) {
+    \\        return 0.0;
+    \\    }
+    \\    let t = (mid - p.y) / sd.y;
+    \\    let cs = sw_clouds.layer.z;
+    \\    let cam = sw_frame.camera_pos.xyz;
+    \\    let lx = sw_clouds.camera.z + (p.x + sd.x * t - cam.x);
+    \\    let lz = sw_clouds.camera.w + (p.z + sd.z * t - cam.z);
+    \\    let cell = vec2<i32>(sw_clouds.camera.xy) + vec2<i32>(i32(floor(lx / cs)), i32(floor(lz / cs)));
+    \\    if (textureLoad(sw_cloud_shape, sw_cloud_texel(cell), 0).a < 0.5) {
+    \\        return 0.0;
+    \\    }
+    \\    let sun = clamp(max(sw_clouds.sun.r, max(sw_clouds.sun.g, sw_clouds.sun.b)), 0.0, 1.0);
+    \\    return sw_clouds.sun.w * sw_clouds.layer.w * sun;
+    \\}
+    \\
+    \\@fragment fn fs_main(in: SwPostOut) -> @location(0) vec4<f32> {
+    \\    let c = textureSample(sw_input, sw_input_sampler, in.uv);
+    \\    let depth = textureLoad(sw_depth, vec2<i32>(in.pos.xy), 0);
+    \\    if (depth >= 1.0) {
+    \\        return c;
+    \\    }
+    \\    let dist = sw_view_distance(in.pos.xy, depth);
+    \\    let p = sw_frame.camera_pos.xyz + sw_view_ray(in.pos.xy) * dist;
+    \\    let s = sw_cloud_shadow(p);
+    \\    let fog = sw_frame.sky.fog_color.rgb * sw_fog_amount(dist);
+    \\    return vec4<f32>(c.rgb - s * (c.rgb - fog), c.a);
     \\}
     \\
 );
@@ -991,6 +1188,86 @@ test "weather: the sun lights the clouds, and the fog and the fade hide far clou
     const clear = sky_plan.uniforms(s, .{}, null);
     const lit = cloudSample(noon, clear, 0, .{ 0, 1, 0 }, &shape, TestShape.filled, TestShape.white).?;
     for (0..3) |i| try testing.expectApproxEqAbs(bottom[i], lit.color[i], 1e-5);
+}
+
+test "weather: a soft cloud has the alpha of the ray length in it, and a rim toward the sun (REQ-GPU-032)" {
+    // Two boxes in a line along X at texels (1, 0) and (2, 0).
+    var cells: [16]bool = @splat(false);
+    cells[1] = true;
+    cells[2] = true;
+    const shape: TestShape = .{ .width = 4, .height = 4, .cells = &cells };
+    const set: CloudSettings = .{ .bottom = 100, .thickness = 4, .cell_size = 10, .wind = .{ 0, 0 }, .soft = true, .density = 0.1 };
+    const u = cloudUniforms(set, 4, 4, noonInput(.{ 5, 102, 5 }, 0));
+    // A flat ray in the slab goes through both boxes: from x 10 to x 30.
+    const flat = cloudHit(u, 102, .{ 1, 0, 0 }, &shape, TestShape.filled).?;
+    try testing.expectApproxEqAbs(@as(f32, 5), flat.t, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 25), flat.exit, 1e-4);
+    // A ray up through one box leaves at the top of the slab.
+    const up = cloudHit(cloudUniforms(set, 4, 4, noonInput(.{ 15, 90, 5 }, 0)), 90, .{ 0, 1, 0 }, &shape, TestShape.filled).?;
+    try testing.expectApproxEqAbs(@as(f32, 10), up.t, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 14), up.exit, 1e-4);
+    // The long path has more alpha than the short path, and both have
+    // less than the opacity.
+    const clear = sky_plan.uniforms(sky_plan.state(0.5, .{}), .{}, null);
+    const long = cloudSample(u, clear, 102, .{ 1, 0, 0 }, &shape, TestShape.filled, TestShape.white).?;
+    const short = cloudSample(cloudUniforms(set, 4, 4, noonInput(.{ 15, 90, 5 }, 0)), clear, 90, .{ 0, 1, 0 }, &shape, TestShape.filled, TestShape.white).?;
+    try testing.expectApproxEqAbs(set.opacity * (1 - @exp(@as(f32, -2))), long.alpha, 1e-5);
+    try testing.expectApproxEqAbs(set.opacity * (1 - @exp(@as(f32, -0.4))), short.alpha, 1e-5);
+    try testing.expect(short.alpha < long.alpha and long.alpha < set.opacity);
+    // Toward the sun the cloud is brighter: forward scattering.
+    try testing.expect(cloudPhase(1) > 10 * cloudPhase(-1));
+    const lit = cloudShade(u, .{ 0, -1, 0 }, .{ 1, 1, 1 });
+    const hit: CloudHit = .{ .t = 10, .normal = .{ 0, -1, 0 }, .cell = .{ 1, 0 }, .exit = 14 };
+    const toward = cloudSoft(u, lit, .{ 1, 1, 1 }, .{ u.sun_dir[0], u.sun_dir[1], u.sun_dir[2] }, hit);
+    const away = cloudSoft(u, lit, .{ 1, 1, 1 }, .{ -u.sun_dir[0], -u.sun_dir[1], -u.sun_dir[2] }, hit);
+    try testing.expect(toward.color[0] > away.color[0] + 0.5);
+    // The box clouds stay the default: the alpha is the opacity.
+    var hard = set;
+    hard.soft = false;
+    const box = cloudSample(cloudUniforms(hard, 4, 4, noonInput(.{ 5, 102, 5 }, 0)), clear, 102, .{ 1, 0, 0 }, &shape, TestShape.filled, TestShape.white).?;
+    try testing.expectEqual(set.opacity, box.alpha);
+    try testing.expectEqual(box.hit.t, box.hit.exit);
+    try testing.expect(!(CloudSettings{}).soft);
+}
+
+test "weather: a cloud puts a shadow on the ground under it, and the wind moves it (REQ-GPU-031)" {
+    // One box at texel (2, 1): world X 20 to 30, Z 10 to 20.
+    var cells: [16]bool = @splat(false);
+    cells[1 * 4 + 2] = true;
+    const shape: TestShape = .{ .width = 4, .height = 4, .cells = &cells };
+    const set: CloudSettings = .{ .bottom = 100, .thickness = 4, .cell_size = 10, .wind = .{ 2, 0 }, .shadow = 0.5 };
+    const cam: Vec3 = .{ 5, 2, 5 };
+    // Light straight down.
+    const light: Light = .{ .ambient = .{ 0.3, 0.3, 0.3 }, .sun = .{ 1, 1, 1 }, .sun_dir = .{ 0, 1, 0 } };
+    const u = cloudUniforms(set, 4, 4, .{ .camera = cam, .seconds = 0, .light = light });
+    try testing.expectApproxEqAbs(@as(f32, 0.5 * set.opacity), cloudShadow(u, cam, .{ 25, 0, 15 }, &shape, TestShape.filled), 1e-6);
+    try testing.expectEqual(@as(f32, 0), cloudShadow(u, cam, .{ 35, 0, 15 }, &shape, TestShape.filled));
+    // A point over the middle of the layer has no shadow.
+    try testing.expectEqual(@as(f32, 0), cloudShadow(u, cam, .{ 25, 103, 15 }, &shape, TestShape.filled));
+    // A low sun moves the shadow away from the sun.
+    const low: Light = .{ .sun = .{ 1, 1, 1 }, .sun_dir = sky_plan.normalize(.{ 1, 1, 0 }) };
+    const ul = cloudUniforms(set, 4, 4, .{ .camera = cam, .seconds = 0, .light = low });
+    try testing.expect(cloudShadow(ul, cam, .{ 25 - 102, 0, 15 }, &shape, TestShape.filled) > 0);
+    // After 5 seconds the wind moved the box one cell along +X.
+    const later = cloudUniforms(set, 4, 4, .{ .camera = cam, .seconds = 5, .light = light });
+    try testing.expectEqual(@as(f32, 0), cloudShadow(later, cam, .{ 25, 0, 15 }, &shape, TestShape.filled));
+    try testing.expect(cloudShadow(later, cam, .{ 35, 0, 15 }, &shape, TestShape.filled) > 0);
+    // A shadow of 0, or no sun: no shadow.
+    var off = set;
+    off.shadow = 0;
+    try testing.expectEqual(@as(f32, 0), cloudShadow(cloudUniforms(off, 4, 4, .{ .camera = cam, .seconds = 0, .light = light }), cam, .{ 25, 0, 15 }, &shape, TestShape.filled));
+    const night: Light = .{ .sun = .{ 0, 0, 0 }, .sun_dir = .{ 0, 1, 0 } };
+    try testing.expectEqual(@as(f32, 0), cloudShadow(cloudUniforms(set, 4, 4, .{ .camera = cam, .seconds = 0, .light = night }), cam, .{ 25, 0, 15 }, &shape, TestShape.filled));
+    // The shadow darkens the colour under the fog, not the fog.
+    const fog: Vec3 = .{ 0.5, 0.5, 0.5 };
+    try testing.expectEqual(Vec3{ 0.25, 0.25, 0.25 }, shadowed(.{ 0.5, 0.5, 0.5 }, fog, 0, 0.5));
+    try testing.expectEqual(fog, shadowed(fog, fog, 1, 0.5));
+}
+
+test "weather: the cloud shadow effect has the depth prefix and the cloud uniforms at group 2 (REQ-GPU-031)" {
+    try testing.expect(std.mem.startsWith(u8, cloud_shadow_shader, wgsl.prefix ++ post_plan.post_prefix ++ post_plan.depth_prefix));
+    try testing.expect(std.mem.indexOf(u8, cloud_shadow_shader, "@group(2) @binding(0) var<uniform> sw_clouds: SwClouds;") != null);
+    try expectStruct(CloudUniforms, cloud_shadow_shader, "SwClouds");
 }
 
 test "weather: the particles stay in the column and stay in place while the camera moves (REQ-GPU-021)" {

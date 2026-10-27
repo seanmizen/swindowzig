@@ -344,6 +344,12 @@ pub const PostChain = struct {
         try self.reroute();
     }
 
+    /// Give an effect a new own bind group (group 2), for example after
+    /// a texture of the effect changed. The layout must not change.
+    pub fn setEffectParams(self: *PostChain, id: EffectId, bind_group: gpu_mod.BindGroup) void {
+        self.find(id.pass()).params = bind_group;
+    }
+
     /// Change the tonemap settings. The next frame uses them.
     pub fn setTonemap(self: *PostChain, t: Tonemap) void {
         self.tonemap = t;

@@ -704,3 +704,84 @@ Textures, samplers and other resources of `sw_gpu`.
     and at sunrise with no shader fog and the fog effect on. Each pixel of
     the right half must match the CPU reference of the shader fog.
 - **Relations:** depends-on REQ-GPU-011
+
+## REQ-GPU-031 — A cloud puts a moving shadow on the ground under it
+
+- **Status:** active
+- **Source:** agent:SWZ-101
+- **Origin:** #101
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** Where a post chain has the cloud shadow effect of a cloud
+  layer, the post chain shall darken each pixel with geometry whose line
+  to the sun crosses a cloud cell of that layer, with the shape, the wind
+  and the height of the layer.
+- **Rationale:** Moving shadows on the ground make the sky look alive. The
+  effect reads the depth target, so the scene shaders do not change. The
+  shadow darkens the colour under the fog and not the fog. A shadow of 0
+  or the off switch of the effect turns it off.
+- **Verification:**
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: a cloud puts
+    a shadow on the ground under it, and the wind moves it (REQ-GPU-031)"
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: the cloud
+    shadow effect has the depth prefix and the cloud uniforms at group 2
+    (REQ-GPU-031)"
+  - Demonstration — `sky --check` (native, in CI) compares each ground
+    pixel of the right half with the CPU reference of the shadow, and
+    each visible shadow pixel must be darker than the same ground in the
+    sun.
+- **Relations:**
+  - depends-on REQ-GPU-020
+  - depends-on REQ-GPU-030
+
+## REQ-GPU-032 — Soft clouds have semi-transparent edges and a rim toward the sun
+
+- **Status:** active
+- **Source:** agent:SWZ-101
+- **Origin:** #101
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While the soft option of a cloud layer is on, the cloud
+  pass shall give each cloud pixel an alpha from the length of the view
+  ray in the cloud, and a colour with the forward scattering of the sun.
+- **Rationale:** A short path at the edge of a cloud gives a partial
+  alpha, so the edges are soft. The forward scattering makes a cloud
+  between the camera and the sun glow at its thin parts. The box clouds
+  stay the default.
+- **Verification:**
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: a soft cloud
+    has the alpha of the ray length in it, and a rim toward the sun
+    (REQ-GPU-032)"
+  - Demonstration — `sky --check` (native, in CI) compares each cloud
+    pixel of the right half with the CPU reference of the soft clouds, at
+    noon and at sunrise. Each soft edge pixel must be between the cloud
+    and the sky colour.
+- **Relations:** depends-on REQ-GPU-020
+
+## REQ-GPU-033 — Light shafts go toward the sun on the screen
+
+- **Status:** active
+- **Source:** agent:SWZ-101
+- **Origin:** #101
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While the light shaft effect is on and the sun is in
+  front of the camera, the post chain shall add to each pixel the bright
+  sky colour on the line from the pixel to the sun on the screen.
+- **Rationale:** Rays of sunlight through the gaps between clouds and
+  objects make the sky look alive. The effect is a radial blur that uses
+  the depth target, so the geometry makes the gaps. It has a strength, a
+  sample count and an off switch. When the sun is behind the camera, the
+  effect does nothing.
+- **Verification:**
+  - Test — `libs/sw_render/src/shafts_plan.zig` › "shafts: the sun on the
+    screen, and no sun behind the camera (REQ-GPU-033)"
+  - Test — `libs/sw_render/src/shafts_plan.zig` › "shafts: a pixel under
+    the sun gets brighter, and the geometry makes a gap (REQ-GPU-033)"
+  - Test — `libs/sw_render/src/shafts_plan.zig` › "shafts: more strength
+    gives more light, and the sample count has a limit (REQ-GPU-033)"
+  - Demonstration — `sky --check` (native, in CI) compares the pixels
+    under the sun at sunrise with the frame with no shafts: they must be
+    brighter. With the sun behind the camera, each pixel must match the
+    CPU reference with no shafts.
+- **Relations:** depends-on REQ-GPU-030

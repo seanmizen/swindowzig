@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 8. Skipped: 0. Not started: 7.
+- Done: 9. Skipped: 0. Not started: 6.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -209,3 +209,48 @@ ticket of #102, in the order of the batch.
   uses the effect must not also call `sw_fog` in its scene shaders.
 - Risks: `sw_view_distance` reads the projection in `sw_frame.proj`. A
   projection with a rotation or a skew gives a wrong distance.
+
+## #101 light shafts, cloud shadows and soft clouds
+
+- Status: done
+- Commit: see `git log --grep SWZ-101`
+- Not run here:
+  - The H, J and O keys of the `sky` example (they need a window).
+  - The effects in a browser. The web build compiles.
+  - The cost on a real GPU. The numbers below are from lavapipe, which
+    runs on the CPU.
+- What ran: `sky --check` passed on lavapipe, with 5 new steps:
+  - Soft clouds at noon and at sunrise: 219375 pixels each, 0 differ from
+    the CPU reference, largest difference 1. 13131 soft edge pixels, each
+    between the cloud and the sky colour.
+  - Cloud shadows in the morning: 1275 ground pixels in a shadow, 0
+    differ from the CPU reference. 955 of 955 visible shadow pixels are
+    darker than the same ground in the sun.
+  - Light shafts at sunrise: 19 of 19 pixels under the sun are brighter
+    than with no shafts, largest gain 213 (sum of RGB).
+  - Light shafts with the sun behind the camera: 228000 pixels, 0 differ
+    from the CPU reference with no shafts.
+- Cost at 1920 by 1080 (`sky --perf`, ReleaseFast, lavapipe, GPU
+  timestamps, mean of 30 frames). For scale, the tonemap pass (one full
+  screen pass with one texture read) costs 9.5 ms on lavapipe.
+  - Box clouds: cloud pass 13.7 ms.
+  - Soft clouds: cloud pass 17.5 ms (+3.8 ms).
+  - Cloud shadows: effect 15.2 ms.
+  - Light shafts (48 samples): effect 176.5 ms. The effect reads the
+    depth and the colour 48 times for each pixel. Use fewer samples or a
+    half-size target on a slow device.
+- Expected changes:
+  - quad hash: no change
+  - goldens: none
+- CI changes needed: none. The `sky --check` step runs the new steps.
+  `sky --perf` is a manual tool.
+- Requirements: REQ-GPU-031, REQ-GPU-032, REQ-GPU-033
+- Open questions:
+  - The cloud shadow is one sample of the layer middle, so its edge is
+    hard. A soft edge needs more samples.
+  - `Clouds.setEnabled(false)` does not turn off the shadow effect. The
+    game turns it off with `post.setEffectEnabled`.
+  - The light shafts start from the bright sky in screen space. When the
+    sun is off the screen, the shafts become weak.
+- Risks: the light shafts are the costliest effect. The default of 48
+  samples is for a desktop GPU.

@@ -207,3 +207,7 @@ pub const PassTimerOptions = gpu_timing.Options;
 pub const PassTime = gpu_timing.PassTime;
 pub const FrameChartOptions = perf_overlay.ChartOptions;
 pub const drawFrameChart = perf_overlay.drawFrameChart;
+pub const shafts = @import("shafts_plan.zig");
+pub const LightShafts = shafts_mod.LightShafts;
+pub const ShaftSettings = shafts.ShaftSettings;
+const shafts_mod = @import("shafts.zig");
