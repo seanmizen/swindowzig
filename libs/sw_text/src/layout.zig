@@ -3,9 +3,12 @@
 //!
 //!   fn advance(self: M, codepoint: u21) f32   // pen movement for one code point
 //!   fn lineHeight(self: M) f32                // distance between two baselines
+//!
+//! The widths are those of the shaped text (`shape.zig`), as it is drawn
+//! (REQ-TEXT-003).
 
 const std = @import("std");
-const utf8 = @import("utf8.zig");
+const shape = @import("shape.zig");
 
 pub const Size = struct {
     w: f32,
@@ -22,8 +25,8 @@ pub const Line = struct {
 /// The width of `text` on one line. A newline is not special here.
 pub fn lineWidth(m: anytype, text: []const u8) f32 {
     var width: f32 = 0;
-    var it = utf8.Iterator.init(text);
-    while (it.next()) |item| width += m.advance(item.codepoint);
+    var it = shape.Iterator.init(text);
+    while (it.next()) |item| width += shape.advance(m, item.codepoint);
     return width;
 }
 
@@ -58,7 +61,7 @@ pub fn wrap(alloc: std.mem.Allocator, m: anytype, text: []const u8, max_width: f
     var width: f32 = 0;
     var last_break: ?Break = null;
 
-    var it = utf8.Iterator.init(text);
+    var it = shape.Iterator.init(text);
     while (it.next()) |item| {
         const cp = item.codepoint;
         if (cp == '\n') {
@@ -68,7 +71,7 @@ pub fn wrap(alloc: std.mem.Allocator, m: anytype, text: []const u8, max_width: f
             last_break = null;
             continue;
         }
-        const advance = m.advance(cp);
+        const advance = shape.advance(m, cp);
         if (cp == ' ') {
             last_break = .{ .end = item.start, .next = item.start + item.len };
             width += advance;

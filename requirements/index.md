@@ -47,6 +47,13 @@
 | [`REQ-PLATFORM-001`](platform.md#req-platform-001--a-refused-pointer-lock-does-not-stop-the-game) | A refused pointer lock does not stop the game | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-002`](platform.md#req-platform-002--clipboard-results-arrive-as-events) | Clipboard results arrive as events | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-003`](platform.md#req-platform-003--the-canvas-and-the-surface-follow-the-device-pixel-ratio) | The canvas and the surface follow the device pixel ratio | active | functional | P2 | agent:SWZ-45 |
+| [`REQ-TEXT-001`](text.md#req-text-001--arabic-letters-take-their-joined-forms-before-reordering) | Arabic letters take their joined forms before reordering | active | functional | P3 | sean |
+| [`REQ-TEXT-002`](text.md#req-text-002--lam-followed-by-alef-is-one-ligature) | Lam followed by alef is one ligature | active | functional | P3 | sean |
+| [`REQ-TEXT-003`](text.md#req-text-003--measuring-uses-the-shaped-text) | Measuring uses the shaped text | active | functional | P3 | sean |
+| [`REQ-TEXT-004`](text.md#req-text-004--a-missing-presentation-form-draws-as-its-letter) | A missing presentation form draws as its letter | active | functional | P3 | agent:SWZ-63 |
+| [`REQ-TEXT-005`](text.md#req-text-005--the-caret-maps-back-to-the-text-in-shaped-text) | The caret maps back to the text in shaped text | active | functional | P3 | sean |
+| [`REQ-TEXT-006`](text.md#req-text-006--diacritics-do-not-break-a-join) | Diacritics do not break a join | active | functional | P3 | sean |
+| [`REQ-TEXT-007`](text.md#req-text-007--text-with-no-arabic-letters-is-unchanged) | Text with no Arabic letters is unchanged | active | constraint | P3 | sean |
 | [`REQ-VOXEL-001`](voxel.md#req-voxel-001--a-block-with-a-baked-model-gets-the-model-mesher) | A block with a baked model gets the model mesher | active | functional | P1 | agent:SWZ-31 |
 | [`REQ-VOXEL-002`](voxel.md#req-voxel-002--a-full-cube-hides-a-model-quad-with-a-cull-face) | A full cube hides a model quad with a cull face | active | functional | P1 | agent:SWZ-31 |
 | [`REQ-VOXEL-003`](voxel.md#req-voxel-003--the-content-gives-the-opacity-and-the-emission-of-each-block) | The content gives the opacity and the emission of each block | active | functional | P1 | agent:SWZ-32 |
@@ -101,6 +108,13 @@ graph TD
   REQ_PLATFORM_001["REQ-PLATFORM-001<br/>A refused pointer lock does not stop the game"]
   REQ_PLATFORM_002["REQ-PLATFORM-002<br/>Clipboard results arrive as events"]
   REQ_PLATFORM_003["REQ-PLATFORM-003<br/>The canvas and the surface follow the device pixel ratio"]
+  REQ_TEXT_001["REQ-TEXT-001<br/>Arabic letters take their joined forms before reordering"]
+  REQ_TEXT_002["REQ-TEXT-002<br/>Lam followed by alef is one ligature"]
+  REQ_TEXT_003["REQ-TEXT-003<br/>Measuring uses the shaped text"]
+  REQ_TEXT_004["REQ-TEXT-004<br/>A missing presentation form draws as its letter"]
+  REQ_TEXT_005["REQ-TEXT-005<br/>The caret maps back to the text in shaped text"]
+  REQ_TEXT_006["REQ-TEXT-006<br/>Diacritics do not break a join"]
+  REQ_TEXT_007["REQ-TEXT-007<br/>Text with no Arabic letters is unchanged"]
   REQ_VOXEL_001["REQ-VOXEL-001<br/>A block with a baked model gets the model mesher"]
   REQ_VOXEL_002["REQ-VOXEL-002<br/>A full cube hides a model quad with a cull face"]
   REQ_VOXEL_003["REQ-VOXEL-003<br/>The content gives the opacity and the emission of each block"]
@@ -127,6 +141,11 @@ graph TD
   REQ_GPU_016 -->|refines| REQ_GPU_014
   REQ_GPU_017 -->|refines| REQ_GPU_006
   REQ_GPU_018 -->|refines| REQ_GPU_016
+  REQ_TEXT_002 -->|refines| REQ_TEXT_001
+  REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
+  REQ_TEXT_004 -->|refines| REQ_TEXT_001
+  REQ_TEXT_005 -->|depends-on| REQ_TEXT_002
+  REQ_TEXT_006 -->|refines| REQ_TEXT_001
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
   REQ_VOXEL_004 -->|refines| REQ_VOXEL_003
   REQ_VOXEL_005 -->|depends-on| REQ_VOXEL_003
@@ -144,6 +163,8 @@ graph TD
 - `REQ-GPU-010` — refined-by REQ-GPU-011
 - `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
 - `REQ-GPU-016` — refined-by REQ-GPU-018
+- `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
+- `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
 - `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005
 - `REQ-VOXEL-006` — required-by REQ-VOXEL-007

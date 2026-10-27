@@ -109,8 +109,11 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
   `DerivedBidiClass.txt`, `BidiMirroring.txt` and `BidiBrackets.txt`
   (Unicode 16.0.0). The tests in `libs/sw_text/src/bidi.zig` include lines
   from `BidiCharacterTest.txt`.
+- Files: `libs/sw_text/src/shaping_tables.zig`. The script
+  `libs/sw_text/tools/gen_shaping_tables.py` makes it from
+  `ArabicShaping.txt` and `UnicodeData.txt` (Unicode 16.0.0).
 - Source: https://www.unicode.org/Public/16.0.0/ucd/
-- Used by: `libs/sw_text` (the bidirectional algorithm).
+- Used by: `libs/sw_text` (the bidirectional algorithm and Arabic shaping).
 - Licence: Unicode License v3. The full text follows.
 
 ```text
