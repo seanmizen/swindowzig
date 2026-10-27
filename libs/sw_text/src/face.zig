@@ -6,6 +6,7 @@ const std = @import("std");
 const font_mod = @import("font.zig");
 const bitmap_mod = @import("bitmap_font.zig");
 const bidi = @import("bidi.zig");
+const shape = @import("shape.zig");
 
 pub const Font = font_mod.Font;
 pub const BitmapFont = bitmap_mod.BitmapFont;
@@ -89,12 +90,19 @@ pub const ChainMetrics = struct {
 
     /// Pen movement for a code point, in pixels. A tab is four spaces.
     /// Control characters have no width, and direction controls that no face
-    /// has have no width. Another code point that no face has has the width
-    /// of the replacement box.
+    /// has have no width. The part of a lam-alef ligature has no width. An
+    /// Arabic presentation form that no face has is as wide as its letters
+    /// (REQ-TEXT-004). Another code point that no face has has the width of
+    /// the replacement box.
     pub fn advance(self: ChainMetrics, codepoint: u21) f32 {
         if (codepoint == '\t') return 4 * self.advance(' ');
         if (codepoint < 0x20 or (codepoint >= 0x7F and codepoint < 0xA0)) return 0;
+        if (codepoint == shape.ligature_part) return 0;
         const hit = self.find(codepoint) orelse {
+            if (shape.nominal(codepoint)) |n| {
+                const second = if (n.second != 0) self.advance(n.second) else 0;
+                return self.advance(n.first) + second;
+            }
             return if (bidi.isFormat(codepoint)) 0 else font_mod.missing_advance * self.size;
         };
         return self.faces[hit.face].advance(hit.glyph, self.size);

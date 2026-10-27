@@ -7,9 +7,14 @@
 //! logical order, its box on the drawn line. From that it gives the x of the
 //! caret at a byte offset, the byte offset nearest to an x (a click), and the
 //! boxes of a selection, which can be in more than one part in mixed text.
+//!
+//! The widths are those of the shaped text (REQ-TEXT-005). A lam-alef
+//! ligature is one glyph for two code points: each letter gets half of the
+//! glyph, so the caret can go between the lam and the alef.
 
 const std = @import("std");
 const bidi = @import("bidi.zig");
+const shape = @import("shape.zig");
 const utf8 = @import("utf8.zig");
 
 pub const CaretLayout = struct {
@@ -113,13 +118,42 @@ pub fn caretLayout(alloc: std.mem.Allocator, m: anytype, text: []const u8, direc
         for (v.codepoints, v.offsets) |cp, byte| {
             const k = std.sort.lowerBound(usize, p.offsets[0..n], byte, CaretLayout.orderUsize);
             left[k] = total;
-            width[k] = m.advance(cp);
+            width[k] = shape.advance(m, cp);
             rtl[k] = p.levels[k] & 1 == 1;
             total += width[k];
         }
+        splitLigatures(p.codepoints[0..n], left, width, rtl);
     }
     offsets[n] = text.len;
     return .{ .alloc = alloc, .offsets = offsets, .left = left, .width = width, .rtl = rtl, .total = total };
+}
+
+/// Give each letter of a lam-alef ligature half of the ligature box. The
+/// lam is first in logical order: in right-to-left text it is the right
+/// half.
+fn splitLigatures(codepoints: []const u21, left: []f32, width: []f32, rtl: []const bool) void {
+    for (codepoints, 0..) |cp, part| {
+        if (cp != shape.ligature_part) continue;
+        // The ligature is the last code point before the part that is not
+        // a mark.
+        var lig = part;
+        while (lig > 0) {
+            lig -= 1;
+            if (shape.joiningType(codepoints[lig]) != .T) break;
+        }
+        const n = shape.nominal(codepoints[lig]) orelse continue;
+        if (n.second == 0) continue;
+        const half = width[lig] / 2;
+        const box_left = left[lig];
+        width[lig] = half;
+        width[part] = half;
+        if (rtl[lig]) {
+            left[lig] = box_left + half;
+            left[part] = box_left;
+        } else {
+            left[part] = box_left + half;
+        }
+    }
 }
 
 // ---- Tests ----------------------------------------------------------------
@@ -184,4 +218,74 @@ test "caret: mixed text keeps the logical boxes" {
     // The caret before the first Hebrew letter is at its right edge.
     try testing.expectEqual(@as(f32, 40), c.caretX(2));
     try testing.expectEqual(@as(f32, 20), c.caretX(text.len));
+}
+
+/// Each presentation form is 10 wide, a lam-alef ligature is 16 wide and
+/// each other code point is 20 wide, so the widths show if the text was
+/// shaped. A line is 20 high.
+const Shaped = struct {
+    pub fn advance(_: Shaped, cp: u21) f32 {
+        if (cp >= 0xFEF5 and cp <= 0xFEFC) return 16;
+        if (cp >= 0xFB50 and cp <= 0xFEFF) return 10;
+        return 20;
+    }
+    pub fn lineHeight(_: Shaped) f32 {
+        return 20;
+    }
+};
+
+test "caret: shaped Arabic text keeps a position for each byte offset" {
+    // "Salam": seen, lam, alef, meem, two bytes each. Shaped: initial seen
+    // (10), the lam-alef ligature (16) and isolated meem (10).
+    const text = "\u{633}\u{644}\u{627}\u{645}";
+    var c = try caretLayout(testing.allocator, Shaped{}, text, .auto);
+    defer c.deinit();
+    try testing.expectEqual(@as(f32, 36), c.total);
+    // The width agrees with `layout.measure`, which `TextRenderer.measure`
+    // uses.
+    try testing.expectEqual(@as(f32, 36), @import("layout.zig").measure(Shaped{}, text).w);
+    // From the right: seen [26, 36], lam [18, 26], alef [10, 18], meem
+    // [0, 10]. Lam and alef each have half of the ligature.
+    try testing.expectEqual(@as(f32, 36), c.caretX(0));
+    try testing.expectEqual(@as(f32, 26), c.caretX(2));
+    try testing.expectEqual(@as(f32, 18), c.caretX(4));
+    try testing.expectEqual(@as(f32, 10), c.caretX(6));
+    try testing.expectEqual(@as(f32, 0), c.caretX(text.len));
+    // A click maps back to each byte offset of the text.
+    try testing.expectEqual(@as(usize, 0), c.offsetAt(35));
+    try testing.expectEqual(@as(usize, 2), c.offsetAt(25));
+    try testing.expectEqual(@as(usize, 4), c.offsetAt(18));
+    try testing.expectEqual(@as(usize, 6), c.offsetAt(11));
+    try testing.expectEqual(text.len, c.offsetAt(1));
+}
+
+test "caret: a diacritic in shaped text keeps its own box" {
+    // Beh, fatha, beh. The fatha is 20 wide here, so its box is visible.
+    const text = "\u{628}\u{64E}\u{628}";
+    var c = try caretLayout(testing.allocator, Shaped{}, text, .auto);
+    defer c.deinit();
+    try testing.expectEqual(@as(f32, 40), c.total);
+    try testing.expectEqual(@as(f32, 40), c.caretX(0));
+    try testing.expectEqual(@as(f32, 30), c.caretX(2));
+    try testing.expectEqual(@as(f32, 10), c.caretX(4));
+    try testing.expectEqual(@as(f32, 0), c.caretX(text.len));
+}
+
+test "caret: mixed Latin, Arabic and numbers" {
+    // "ab " + lam alef + " 1" in a left-to-right paragraph. The space and
+    // the digit after the Arabic word are right to left (rules W2 and N1).
+    const text = "ab \u{644}\u{627} 1";
+    var c = try caretLayout(testing.allocator, Shaped{}, text, .auto);
+    defer c.deinit();
+    try testing.expectEqual(@as(f32, 20 * 5 + 16), c.total);
+    // Visual order: "ab " [0, 60], "1" [60, 80], " " [80, 100], then the
+    // ligature: alef [100, 108] and lam [108, 116].
+    try testing.expectEqual(@as(f32, 0), c.caretX(0));
+    try testing.expectEqual(@as(f32, 116), c.caretX(3));
+    try testing.expectEqual(@as(f32, 108), c.caretX(5));
+    try testing.expectEqual(@as(f32, 100), c.caretX(7));
+    try testing.expectEqual(@as(f32, 60), c.caretX(8));
+    try testing.expectEqual(@as(f32, 80), c.caretX(text.len));
+    try testing.expectEqual(@as(usize, 3), c.offsetAt(115));
+    try testing.expectEqual(@as(usize, 5), c.offsetAt(108));
 }

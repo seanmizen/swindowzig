@@ -258,11 +258,12 @@ pub fn build(b: *std.Build) void {
         "libs/sw_gfx2d/src/batch.zig",
         "libs/sw_gfx2d/src/projection.zig",
         // sw_text: UTF-8, measuring and wrapping, the atlas packer, the
-        // bidirectional algorithm and the caret geometry.
+        // bidirectional algorithm, Arabic shaping and the caret geometry.
         "libs/sw_text/src/utf8.zig",
         "libs/sw_text/src/layout.zig",
         "libs/sw_text/src/atlas.zig",
         "libs/sw_text/src/bidi.zig",
+        "libs/sw_text/src/shape.zig",
         "libs/sw_text/src/caret.zig",
         // sw_ui: the tree, layout, focus, semantic tree, on-screen keyboard
         // and screen stack have no GPU or font code. draw.zig is built with
