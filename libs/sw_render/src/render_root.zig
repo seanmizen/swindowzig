@@ -29,11 +29,17 @@
 //! The post chain adds an `rgba16float` scene target to a frame graph, and
 //! runs the HDR effects, the tonemap, the LDR effects and FXAA as graph
 //! passes (REQ-GPU-008, REQ-GPU-009). See `post.zig`.
+//!
+//! The sky pass draws a gradient, a sun, a moon and stars from a time of
+//! day, or a cube-map skybox (REQ-GPU-010). The shared WGSL prefix gives
+//! `sw_fog`, which fades the scene into the horizon colour of the sky
+//! (REQ-GPU-011). See `sky.zig`.
 
 const atlas_mod = @import("atlas.zig");
 const frame_graph_mod = @import("frame_graph.zig");
 const post_mod = @import("post.zig");
 const ring_mod = @import("ring.zig");
+const sky_mod = @import("sky.zig");
 const upload_mod = @import("upload.zig");
 
 /// Atlas packing with no GPU code: the cell grid, rectangles and texture
@@ -49,6 +55,9 @@ pub const wgsl = @import("wgsl.zig");
 /// The post chain with no GPU code: the route of the links, the tonemap
 /// curves, and the WGSL of the effects (`post.shader`).
 pub const post = @import("post_plan.zig");
+/// The sky with no GPU code: the time of day, the sky colours, the fog,
+/// and the CPU reference of the WGSL sky helpers.
+pub const sky = @import("sky_plan.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasBuilder = atlas_mod.AtlasBuilder;
@@ -74,6 +83,7 @@ pub const Attachments = plan.Attachments;
 pub const ColorAttachment = plan.ColorAttachment;
 pub const DepthAttachment = plan.DepthAttachment;
 pub const FrameUniforms = wgsl.FrameUniforms;
+pub const SkyUniforms = wgsl.SkyUniforms;
 pub const UniformRing = ring_mod.UniformRing;
 pub const Uploads = upload_mod.Uploads;
 
@@ -84,3 +94,11 @@ pub const PostEffectId = post_mod.EffectId;
 pub const PostParams = post_mod.Params;
 pub const Tonemap = post_mod.Tonemap;
 pub const TonemapCurve = post_mod.Curve;
+
+pub const Sky = sky_mod.Sky;
+pub const SkyOptions = sky_mod.Options;
+pub const SkySettings = sky.Settings;
+pub const SkyPalette = sky.Palette;
+pub const SkyState = sky.State;
+pub const Fog = sky.Fog;
+pub const CubeMap = sky_mod.CubeMap;
