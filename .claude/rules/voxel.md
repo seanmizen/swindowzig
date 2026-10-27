@@ -26,6 +26,11 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
   the scheduler edits and the mesh y range use world y (`local + MIN_Y`).
   The unit tests of the library run two times: y 0 to 255, and y -64 to
   319.
+- The content can give a baked model for a block ID: `model(block)`
+  returns a `*const sw_voxel.model.BakedModel` or null (REQ-VOXEL-001).
+  `models.zig` makes the tables at comptime. A block with no model is a
+  full cube. For light and AO, a block with a model is the same as a
+  full cube.
 - `build.zig` wires it with `addVoxel`. The demo gives
   `examples/voxel/content.zig`. The unit tests of the library give
   `libs/sw_voxel/testing/content.zig`, with numbered blocks.
@@ -41,9 +46,14 @@ were already correct.
 
 ### Mesher output and block edits (libs/sw_voxel/src/mesher.zig)
 
-- Greedy meshing is the only mesher. `generateMesh` writes one 16-byte
+- `generateMesh` runs the greedy mesher for the full cubes, then the
+  model mesher for the blocks with a baked model. It writes one 16-byte
   `PackedQuad` per quad to `Mesh.quads`, and the y range to `Mesh.y_min`
-  and `Mesh.y_max`. This is the GPU format. The upload writes the bytes of
+  and `Mesh.y_max`. This is the GPU format. A model quad record has bit
+  31 of word 3 set, and an index into `models.gpu_table` in place of the
+  face and the size. The game uploads the table one time (the demo binds
+  it at group 2). A quad with a cull face is not drawn next to a full
+  cube (REQ-VOXEL-002). `mesher.zig` has the layout. The upload writes the bytes of
   the worker result to the GPU as they are, and main keeps no copy (C5).
   Main keeps only `world.MeshInfo`: the quad count, the y range and the
   mesh hash.
@@ -413,7 +423,9 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `section.zig` | `Section`: 16 × 16 × 16 cells, a palette and indices of 0, 1, 2, 4 or 8 bits. One block type has no index array |
 | `chunk.zig` | `Chunk`: `PalettedBlocks` (a column of sections), skylight, block light, `setBlock`/`getBlock`, `generateTerrain` (calls `content.generate`). `CHUNK_H` and `MIN_Y` come from the content |
 | `world.zig` | Multi-chunk world, chunk map, chunk versions, `World.init(allocator, gen_config, render_distance)` |
-| `mesher.zig` | Greedy quad mesher (writes `PackedQuad`), `cornerBits` for a shader |
+| `mesher.zig` | Greedy quad mesher and model mesher (writes `PackedQuad` and model quad records), `cornerBits` for a shader |
+| `model.zig` | `BakedQuad`, `BakedModel`, the `box` and `rotateY` helpers, `GpuQuad` (the GPU format of a baked quad) |
+| `models.zig` | The models of the content as comptime tables: `isCube`, `hasModel`, `quads`, `gpu_table` |
 | `frustum.zig` | Chunk cull strategies: none, sphere, cone, frustum |
 | `clock.zig` | Monotonic clock for the perf logs. main sets `clock.io` |
 | `pipeline/stages.zig` | The pure chunk stages: generate, light, mesh (C2), and versions (C3) |

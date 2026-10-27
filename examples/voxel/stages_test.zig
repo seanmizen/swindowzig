@@ -414,6 +414,60 @@ test "stages: mesh gives the quads of the greedy mesher through the World getter
     }
 }
 
+test "stages: mesh gives the model quads of World after edits (REQ-VOXEL-001)" {
+    // Half blocks (a block with a model) at the chunk borders, next to full
+    // cubes in the neighbour chunk, in the open sky and under the terrain.
+    // The cull faces and the light of the model quads read across the
+    // border, so the stage must give the bytes of World.
+    const a = std.testing.allocator;
+    const half: i32 = 3;
+    var world = try world_mod.World.init(a, hilly_config, 4);
+    defer world.deinit();
+    const n: usize = @intCast((2 * half + 1) * (2 * half + 1));
+    const order = try identityOrder(a, n);
+    defer a.free(order);
+    try loadWorld(&world, half, order);
+    var region = try Region.init(a, half);
+    defer region.deinit();
+
+    const edits = [_]Edit{
+        .{ .wx = 15, .wy = 150, .wz = 5, .block = .slab },
+        .{ .wx = 16, .wy = 150, .wz = 5, .block = .stone },
+        .{ .wx = -1, .wy = 151, .wz = 0, .block = .slab },
+        .{ .wx = 0, .wy = 151, .wz = 0, .block = .stone },
+        .{ .wx = -1, .wy = 152, .wz = 0, .block = .stone },
+        .{ .wx = 7, .wy = 30, .wz = 15, .block = .slab },
+        .{ .wx = 7, .wy = 30, .wz = 16, .block = .slab },
+        .{ .wx = 3, .wy = 200, .wz = 3, .block = .slab },
+        .{ .wx = 3, .wy = 201, .wz = 3, .block = .glowstone },
+    };
+    for (edits) |e| {
+        _ = try world.setBlock(e.wx, e.wy, e.wz, e.block);
+        try region.setBlock(e.wx, e.wy, e.wz, e.block);
+    }
+    var lights = try Lights.init(a, &region, half - 1);
+    defer lights.deinit();
+    try lights.computeAll();
+
+    var model_records: usize = 0;
+    var cx: i32 = -1;
+    while (cx <= 1) : (cx += 1) {
+        var cz: i32 = -1;
+        while (cz <= 1) : (cz += 1) {
+            const lc = world.chunks.get(.{ .cx = cx, .cz = cz }).?;
+            var want_mesh = mesher_mod.Mesh.init(a);
+            defer want_mesh.deinit();
+            try mesher_mod.generateMesh(&lc.chunk, &want_mesh, lc.worldX(), lc.worldZ(), world.asBlockGetter(), .moore, .skylight);
+            for (want_mesh.quads.items) |q| model_records += @intFromBool(mesher_mod.isModelRecord(q));
+            var got = try lights.mesh(a, cx, cz, .moore, .skylight);
+            defer got.deinit(a);
+            const want: stages.MeshResult = .{ .quads = want_mesh.quads.items, .y_min = want_mesh.y_min, .y_max = want_mesh.y_max };
+            try expectSameMesh(&want, &got);
+        }
+    }
+    try std.testing.expect(model_records > 0);
+}
+
 // ---------------------------------------------------------------------------
 // Install order
 // ---------------------------------------------------------------------------

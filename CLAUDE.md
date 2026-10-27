@@ -107,7 +107,7 @@ swindowzig/
 │   ├── sw_text/        # Text: TTF and bitmap font chain, bidi, atlas, measure, wrap, draw
 │   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix, post chain, sky
 │   ├── sw_ui/          # UI tree: layout, focus, widgets, screen stack, on-screen keyboard, semantic tree, drawing
-│   └── sw_voxel/       # Voxel chunks: storage, light, greedy mesher, chunk pipeline
+│   └── sw_voxel/       # Voxel chunks: storage, light, greedy and model mesher, chunk pipeline
 │       ├── src/                 # Library. content.zig gives the content contract
 │       └── testing/content.zig  # Test content: numbered blocks, no game names
 ├── examples/
