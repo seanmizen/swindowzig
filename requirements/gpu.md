@@ -430,3 +430,66 @@ Textures, samplers and other resources of `sw_gpu`.
     checks that no shadow draw call runs, and that the ground in the
     shadow point has the colour of the ground in light.
 - **Relations:** refines REQ-GPU-016
+
+## REQ-GPU-020 — The cloud layer moves with the wind and takes its shape from the game
+
+- **Status:** active
+- **Source:** agent:SWZ-37
+- **Origin:** #37
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** While a `Clouds` of `sw_render` is in a frame graph, the
+  cloud pass shall draw a box for each filled texel of the shape image of
+  the game, at the cloud height, moved by the wind times the time, lit by
+  the sky light and faded by the fog, with the colours of the CPU
+  reference `weather.cloudSample`.
+- **Rationale:** A game gives the cloud shape and the wind, and the engine
+  draws the layer. One ray walk in a full-screen pass needs no mesh and no
+  upload when the clouds move. The pass writes the depth of the box, so the
+  scene hides the clouds behind it. The f64 wrap of the wind and the
+  camera on the CPU keeps the shape stable after a long time and far from
+  the origin.
+- **Verification:**
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: a ray hits
+    the first cloud box, and the wind moves the shape (REQ-GPU-020)"
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: a large time
+    and a far camera keep the precision (REQ-GPU-020)"
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: the sun
+    lights the clouds, and the fog and the fade hide far clouds
+    (REQ-GPU-020)"
+  - Demonstration — `sky --check` (native, in CI) compares each sky pixel
+    in the right half of the screen with the CPU reference of the clouds,
+    at noon, at sunrise and 40 seconds later, with the fog.
+- **Relations:** refines REQ-GPU-011
+
+## REQ-GPU-021 — Rain and snow fall around the camera and stop at the height map
+
+- **Status:** active
+- **Source:** agent:SWZ-37
+- **Origin:** #37
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** While a `Precipitation` of `sw_render` is in a frame
+  graph, the precipitation pass shall draw each particle of the column
+  around the camera that is above the ground height of the height map of
+  the game, faded by the fog, and no particle under that height.
+- **Rationale:** Rain and snow must not fall through a roof or into the
+  ground. The vertex shader makes each particle from its index and the
+  time, so the CPU sends no particle data. A particle keeps its world
+  position while the camera moves, so the weather does not move with the
+  camera. A snow flake has a darker edge, so it shows on a bright sky.
+- **Verification:**
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: the particles
+    stay in the column and stay in place while the camera moves
+    (REQ-GPU-021)"
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: particles
+    fall, and the wrap of the fall time moves no particle (REQ-GPU-021)"
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: the height
+    map gives the ground under a particle (REQ-GPU-021)"
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: a snow flake
+    has a bright centre, a darker edge, and a soft rim (REQ-GPU-021)"
+  - Demonstration — `sky --check` (native, in CI) draws snow and rain over
+    a height map with a raised part. Each flake that no other particle
+    covers has the CPU reference colour, and each particle under the height
+    map leaves the background.
+- **Relations:** refines REQ-GPU-011

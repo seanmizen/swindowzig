@@ -45,6 +45,12 @@
 //! frame. A scene shader samples the shadow with a PCF filter and adds
 //! the point lights through a WGSL include (REQ-GPU-016, REQ-GPU-017). A
 //! setting turns the shadows off (REQ-GPU-018). See `lighting.zig`.
+//!
+//! The cloud pass draws a layer of boxes at a set height, from a shape
+//! image that the game gives, and the wind moves it (REQ-GPU-020). The
+//! precipitation pass draws rain or snow in a column around the camera,
+//! and a height map from the game stops it at the ground (REQ-GPU-021).
+//! Both use the sky light and the fog. See `weather.zig`.
 
 const atlas_mod = @import("atlas.zig");
 const box_models_mod = @import("box_models.zig");
@@ -54,6 +60,7 @@ const post_mod = @import("post.zig");
 const ring_mod = @import("ring.zig");
 const sky_mod = @import("sky.zig");
 const upload_mod = @import("upload.zig");
+const weather_mod = @import("weather.zig");
 
 /// Atlas packing with no GPU code: the cell grid, rectangles and texture
 /// coordinates.
@@ -77,6 +84,9 @@ pub const box_model = @import("box_model_plan.zig");
 /// Shadows and point lights with no GPU code: the cascade fit, the WGSL
 /// include (`lighting.include`) and the CPU reference of its helpers.
 pub const lighting = @import("lighting_plan.zig");
+/// Clouds and precipitation with no GPU code: the settings, the sky light,
+/// the WGSL and the CPU reference of the shaders.
+pub const weather = @import("weather_plan.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasBuilder = atlas_mod.AtlasBuilder;
@@ -142,3 +152,13 @@ pub const PointLight = lighting.PointLight;
 pub const ShadowCasterPass = lighting_mod.CasterPass;
 pub const ShadowCaster = lighting_mod.CasterCallback;
 pub const LightingUniforms = lighting.LightingUniforms;
+pub const Clouds = weather_mod.Clouds;
+pub const CloudOptions = weather_mod.CloudOptions;
+pub const CloudSettings = weather.CloudSettings;
+pub const Precipitation = weather_mod.Precipitation;
+pub const PrecipitationOptions = weather_mod.PrecipitationOptions;
+pub const PrecipitationSettings = weather.PrecipitationSettings;
+pub const PrecipitationKind = weather.PrecipitationKind;
+pub const HeightMap = weather.HeightMap;
+pub const WeatherInput = weather.FrameInput;
+pub const WeatherLight = weather.Light;
