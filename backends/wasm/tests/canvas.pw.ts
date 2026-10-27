@@ -12,47 +12,108 @@ import { expect, type Page, test } from '@playwright/test';
 /** The time that the test watches the example, in milliseconds. */
 const watchMs = 10_000;
 
-/** The size of the small copy of the canvas that the test compares. */
+/** The number of canvas samples that the test compares. */
 const gridW = 64;
 const gridH = 36;
 
 interface CanvasPixels {
   /** The fraction of pixels that have a channel brighter than 64. */
   lit: number;
-  /** The RGB bytes of a gridW x gridH copy of the canvas. */
+  /** The colour bytes of gridW x gridH samples of the canvas. */
   grid: number[];
 }
 
-/** Read the pixels of the canvas, as the compositor shows them. */
-async function readCanvas(page: Page): Promise<CanvasPixels> {
-  const png = await page.locator('#canvas').screenshot();
-  return page.evaluate(
-    async ({ b64, w, h }) => {
-      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-      const bitmap = await createImageBitmap(
-        new Blob([bytes], { type: 'image/png' }),
-      );
-      const full = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const fctx = full.getContext('2d');
-      if (!fctx) throw new Error('No 2D context');
-      fctx.drawImage(bitmap, 0, 0);
-      const data = fctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+/**
+ * The test hooks of the page. The init script (`instrument`) sets them
+ * before the loader runs.
+ */
+interface Hooks {
+  swCanvasFrames: number;
+  swReadCanvas: () => Promise<CanvasPixels>;
+}
+
+/**
+ * Count the canvas frames, and read the canvas texture of a frame back from
+ * the GPU. The read copies the texture after the submit of the frame, in the
+ * same task, before the browser shows it. So the test reads what the frame
+ * graph wrote, and not the screenshot of the compositor (the Linux headless
+ * shell gives a black screenshot of a WebGPU canvas).
+ */
+function instrument(grid: { w: number; h: number }): void {
+  const hooks = window as unknown as Hooks;
+  hooks.swCanvasFrames = 0;
+  let device: GPUDevice | null = null;
+  let current: GPUTexture | null = null;
+  let waiting: ((p: CanvasPixels) => void) | null = null;
+
+  const configure = GPUCanvasContext.prototype.configure;
+  GPUCanvasContext.prototype.configure = function (c) {
+    device = c.device;
+    const usage =
+      (c.usage ?? GPUTextureUsage.RENDER_ATTACHMENT) | GPUTextureUsage.COPY_SRC;
+    return configure.call(this, { ...c, usage });
+  };
+  const get = GPUCanvasContext.prototype.getCurrentTexture;
+  GPUCanvasContext.prototype.getCurrentTexture = function () {
+    const t = get.call(this);
+    if (t !== current) hooks.swCanvasFrames++;
+    current = t;
+    return t;
+  };
+  hooks.swReadCanvas = () =>
+    new Promise((resolve) => {
+      waiting = resolve;
+    });
+
+  const submit = GPUQueue.prototype.submit;
+  GPUQueue.prototype.submit = function (buffers) {
+    submit.call(this, buffers);
+    const resolve = waiting;
+    const tex = current;
+    if (!resolve || !tex || !device) return;
+    waiting = null;
+    const w = tex.width;
+    const h = tex.height;
+    const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+    const buffer = device.createBuffer({
+      size: bytesPerRow * h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const encoder = device.createCommandEncoder();
+    encoder.copyTextureToBuffer(
+      { texture: tex },
+      { buffer, bytesPerRow },
+      { width: w, height: h },
+    );
+    submit.call(this, [encoder.finish()]);
+    buffer.mapAsync(GPUMapMode.READ).then(() => {
+      const data = new Uint8Array(buffer.getMappedRange());
       let lit = 0;
-      for (let i = 0; i < data.length; i += 4) {
-        if (Math.max(data[i], data[i + 1], data[i + 2]) > 64) lit++;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = y * bytesPerRow + x * 4;
+          if (Math.max(data[i], data[i + 1], data[i + 2]) > 64) lit++;
+        }
       }
-      const small = new OffscreenCanvas(w, h);
-      const sctx = small.getContext('2d');
-      if (!sctx) throw new Error('No 2D context');
-      sctx.drawImage(bitmap, 0, 0, w, h);
-      const sd = sctx.getImageData(0, 0, w, h).data;
-      const grid: number[] = [];
-      for (let i = 0; i < sd.length; i += 4)
-        grid.push(sd[i], sd[i + 1], sd[i + 2]);
-      return { lit: lit / (data.length / 4), grid };
-    },
-    { b64: png.toString('base64'), w: gridW, h: gridH },
-  );
+      const cells: number[] = [];
+      for (let gy = 0; gy < grid.h; gy++) {
+        for (let gx = 0; gx < grid.w; gx++) {
+          const x = Math.floor(((gx + 0.5) * w) / grid.w);
+          const y = Math.floor(((gy + 0.5) * h) / grid.h);
+          const i = y * bytesPerRow + x * 4;
+          cells.push(data[i], data[i + 1], data[i + 2]);
+        }
+      }
+      buffer.unmap();
+      buffer.destroy();
+      resolve({ lit: lit / (w * h), grid: cells });
+    });
+  };
+}
+
+/** Read the canvas texture of the next frame. */
+async function readCanvas(page: Page): Promise<CanvasPixels> {
+  return page.evaluate(() => (window as unknown as Hooks).swReadCanvas());
 }
 
 /** The number of grid cells that changed between two reads. */
@@ -90,20 +151,9 @@ test('justabox draws the spinning box on the canvas', async ({ page }) => {
     logs.push(`pageerror: ${e.message}`);
     gpuErrors.push(`pageerror: ${e.message}`);
   });
-  // Count the canvas textures that the page gets: one for each frame.
-  await page.addInitScript(() => {
-    const w = window as unknown as { swCanvasFrames: number };
-    w.swCanvasFrames = 0;
-    const get = GPUCanvasContext.prototype.getCurrentTexture;
-    GPUCanvasContext.prototype.getCurrentTexture = function () {
-      w.swCanvasFrames++;
-      return get.call(this);
-    };
-  });
+  await page.addInitScript(instrument, { w: gridW, h: gridH });
   const frames = () =>
-    page.evaluate(
-      () => (window as unknown as { swCanvasFrames: number }).swCanvasFrames,
-    );
+    page.evaluate(() => (window as unknown as Hooks).swCanvasFrames);
   let framesNow = 0;
   const dump = () =>
     `\nCanvas frames: ${framesNow}\nConsole:\n${logs.join('\n')}`;
