@@ -105,7 +105,8 @@ swindowzig/
 │   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
 │   ├── sw_assets/      # loadBytes, PNG decode, zip reader, player files, OPFS/folder cache
 │   ├── sw_text/        # Text: TTF and bitmap font chain, bidi, atlas, measure, wrap, draw
-│   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix
+│   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix, post chain, sky
+│   ├── sw_net/         # WebSocket client: browser WebSocket (web), RFC 6455 on std.Io with TLS (native)
 │   ├── sw_ui/          # UI tree: layout, focus, widgets, screen stack, on-screen keyboard, semantic tree, drawing
 │   └── sw_voxel/       # Voxel chunks: storage, light, greedy and model mesher, chunk pipeline
 │       ├── src/                 # Library. content.zig gives the content contract
@@ -116,6 +117,7 @@ swindowzig/
 │   ├── flat2d/         # sw_gfx2d + sw_text + sw_ui demo: shapes, text, each sw_ui widget
 │   ├── mipmaps/        # GPU mip levels, a texture array, anisotropic sampling. `--check` tests it
 │   ├── atlas/          # sw_render atlas and animated sprites. `--check` tests it
+│   ├── sky/            # sw_render sky, fog and time of day. `--check` tests it
 │   └── voxel/          # Voxel demo on sw_voxel: content.zig, world_gen, renderer
 └── backends/
     └── wasm/           # Web platform boot + dev server

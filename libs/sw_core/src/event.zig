@@ -190,6 +190,43 @@ pub fn utf8OffsetOfCodePoint(utf8: []const u8, index: usize) usize {
     return @min(offset, utf8.len);
 }
 
+/// What a `clipboard` event reports (REQ-PLATFORM-002).
+pub const ClipboardEventKind = enum(u8) {
+    /// The user pasted: Ctrl+V or Cmd+V while text input is on, or the
+    /// Paste command of the browser. Only the web backend sends it. The
+    /// text is in `Context.clipboardText()`.
+    paste = 0,
+    /// A read that `Context.requestClipboardText` started is complete. When
+    /// the status is `ok`, the text is in `Context.clipboardText()`.
+    read = 1,
+    /// A write that `Context.setClipboardText` started is complete.
+    write = 2,
+};
+
+/// The result of a clipboard operation.
+pub const ClipboardStatus = enum(u8) {
+    ok = 0,
+    /// The platform has no clipboard. On the web: the browser has no
+    /// Clipboard API, or the page is not a secure context (https or
+    /// localhost).
+    unavailable = 1,
+    /// The browser refused. The page did not have the focus or a user
+    /// gesture, or the user did not give the permission.
+    denied = 2,
+    /// The clipboard has no text, or the text is larger than the limit.
+    no_text = 3,
+    /// The operation failed for a different reason.
+    failed = 4,
+};
+
+/// The payload of a `clipboard` event. The text is not in the event: a
+/// paste can be large. `len` is the byte count of the text.
+pub const ClipboardEvent = extern struct {
+    kind: ClipboardEventKind,
+    status: ClipboardStatus,
+    len: u32,
+};
+
 /// Event payloads
 pub const EventPayload = union(enum) {
     pointer_move: extern struct {
@@ -258,8 +295,8 @@ pub const EventPayload = union(enum) {
         args: [4]f32,
     },
 
-    // Keep this last: serialize.zig stores the union tag, and tags 0-9 are
-    // fixed in files that exist.
+    // serialize.zig stores the union tag, and tags 0-10 are fixed in files
+    // that exist. Add a new member after the last member only.
     /// Text that is in composition (an IME or a dead key has not committed
     /// it yet). Each event replaces the one before. `len == 0` means the
     /// composition ended or was cancelled: the committed part arrives as
@@ -272,6 +309,10 @@ pub const EventPayload = union(enum) {
         cursor: u8,
         selection_len: u8,
     },
+
+    /// A clipboard operation is complete (serialize tag 11). New members go
+    /// after this one.
+    clipboard: ClipboardEvent,
 };
 
 /// Core event structure
@@ -372,4 +413,10 @@ test "utf8OffsetOfCodePoint converts a code point index to bytes" {
     try std.testing.expectEqual(@as(usize, 3), utf8OffsetOfCodePoint(text, 2));
     try std.testing.expectEqual(@as(usize, 6), utf8OffsetOfCodePoint(text, 3));
     try std.testing.expectEqual(@as(usize, 7), utf8OffsetOfCodePoint(text, 99));
+}
+
+test "the clipboard event has tag 11" {
+    // serialize.zig stores the union tag (REQ-PLATFORM-002).
+    try std.testing.expectEqual(@as(usize, 11), @backingInt(std.meta.Tag(EventPayload).clipboard));
+    try std.testing.expectEqual(@as(usize, 10), @backingInt(std.meta.Tag(EventPayload).text_composition));
 }

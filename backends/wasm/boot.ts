@@ -12,6 +12,7 @@ loadWasm({
   // The dev server sends these files with Cache-Control: no-cache, so they
   // need no content-hashed names.
   chunkWorkers: { wasmUrl: '/chunks.wasm', workerUrl: '/chunk-worker.js' },
-  canvasSize: 'css',
+  // The canvas and the swapchain use device pixels (REQ-PLATFORM-003).
+  canvasSize: 'device',
   cursorFollowsLock: true,
 }).catch(console.error);

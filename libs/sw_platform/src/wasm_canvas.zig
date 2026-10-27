@@ -3,6 +3,9 @@ const std = @import("std");
 const core = @import("sw_core");
 const backend_mod = @import("backend.zig");
 const platform = @import("platform.zig");
+// Window modes, cursor modes and the clipboard (REQ-PLATFORM-001,
+// REQ-PLATFORM-002).
+const web_window = @import("web_window.zig");
 
 // Global event queue for WASM event handlers
 var global_event_queue: ?*std.ArrayList(core.Event) = null;
@@ -46,6 +49,14 @@ pub const WasmBackend = struct {
                 .getWindow = getWindow,
                 .setMouseCapture = setMouseCapture,
                 .setTextInput = setTextInput,
+                .setWindowMode = web_window.setWindowMode,
+                .getWindowMode = web_window.getWindowMode,
+                .setCursorMode = web_window.setCursorMode,
+                .isCursorLocked = web_window.isCursorLocked,
+                .setClipboardText = web_window.setClipboardText,
+                .requestClipboardText = web_window.requestClipboardText,
+                .clipboardText = web_window.clipboardText,
+                .setPasteAsText = web_window.setPasteAsText,
             },
         };
     }
@@ -98,7 +109,7 @@ pub const WasmBackend = struct {
 };
 
 // Helper to push events from exports
-fn pushEvent(payload: core.EventPayload, allocator: std.mem.Allocator) void {
+pub fn pushEvent(payload: core.EventPayload, allocator: std.mem.Allocator) void {
     if (global_event_queue) |queue| {
         const event = core.Event{
             .tick_id = 0,
@@ -111,7 +122,12 @@ fn pushEvent(payload: core.EventPayload, allocator: std.mem.Allocator) void {
 }
 
 // Global allocator ref
-var global_allocator: std.mem.Allocator = undefined;
+pub var global_allocator: std.mem.Allocator = undefined;
+
+/// True after `WasmBackend.create`: the event queue and the allocator exist.
+pub fn ready() bool {
+    return global_event_queue != null;
+}
 
 // Map a key number from backends/wasm/events.ts (keyNumber) to a KeyCode.
 // The numbers are the KeyboardEvent.keyCode values of a US keyboard.
