@@ -28,6 +28,8 @@
 | [`REQ-GPU-009`](gpu.md#req-gpu-009--the-post-chain-runs-its-passes-in-order-and-fxaa-is-one-link) | The post chain runs its passes in order, and FXAA is one link | active | functional | P2 | agent:SWZ-30 |
 | [`REQ-GPU-010`](gpu.md#req-gpu-010--the-sky-pass-draws-the-sky-from-a-time-of-day) | The sky pass draws the sky from a time of day | active | functional | P2 | agent:SWZ-36 |
 | [`REQ-GPU-011`](gpu.md#req-gpu-011--the-distance-fog-fades-into-the-sky-colour-at-the-horizon) | The distance fog fades into the sky colour at the horizon | active | functional | P2 | agent:SWZ-36 |
+| [`REQ-GPU-014`](gpu.md#req-gpu-014--one-draw-call-draws-all-instances-of-one-box-model) | One draw call draws all instances of one box model | active | functional | P2 | agent:SWZ-41 |
+| [`REQ-GPU-015`](gpu.md#req-gpu-015--the-first-person-pass-draws-in-front-of-the-world) | The first-person pass draws in front of the world | active | functional | P2 | agent:SWZ-41 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -65,6 +67,8 @@ graph TD
   REQ_GPU_009["REQ-GPU-009<br/>The post chain runs its passes in order, and FXAA is one link"]
   REQ_GPU_010["REQ-GPU-010<br/>The sky pass draws the sky from a time of day"]
   REQ_GPU_011["REQ-GPU-011<br/>The distance fog fades into the sky colour at the horizon"]
+  REQ_GPU_014["REQ-GPU-014<br/>One draw call draws all instances of one box model"]
+  REQ_GPU_015["REQ-GPU-015<br/>The first-person pass draws in front of the world"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -85,6 +89,8 @@ graph TD
   REQ_GPU_009 -->|refines| REQ_GPU_005
   REQ_GPU_010 -->|refines| REQ_GPU_008
   REQ_GPU_011 -->|refines| REQ_GPU_010
+  REQ_GPU_014 -->|refines| REQ_GPU_006
+  REQ_GPU_015 -->|refines| REQ_GPU_014
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
 ```
 
@@ -94,6 +100,8 @@ graph TD
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009
+- `REQ-GPU-006` — refined-by REQ-GPU-014
 - `REQ-GPU-008` — refined-by REQ-GPU-010
 - `REQ-GPU-010` — refined-by REQ-GPU-011
+- `REQ-GPU-014` — refined-by REQ-GPU-015
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002

@@ -34,8 +34,14 @@
 //! day, or a cube-map skybox (REQ-GPU-010). The shared WGSL prefix gives
 //! `sw_fog`, which fades the scene into the horizon colour of the sky
 //! (REQ-GPU-011). See `sky.zig`.
+//!
+//! Box models are trees of boxes that the game animates part by part. One
+//! draw call draws all instances of one model (REQ-GPU-014). A first-person
+//! pass draws view-space models in front of the world, with their own depth
+//! range (REQ-GPU-015). See `box_models.zig`.
 
 const atlas_mod = @import("atlas.zig");
+const box_models_mod = @import("box_models.zig");
 const frame_graph_mod = @import("frame_graph.zig");
 const post_mod = @import("post.zig");
 const ring_mod = @import("ring.zig");
@@ -58,6 +64,9 @@ pub const post = @import("post_plan.zig");
 /// The sky with no GPU code: the time of day, the sky colours, the fog,
 /// and the CPU reference of the WGSL sky helpers.
 pub const sky = @import("sky_plan.zig");
+/// Box models with no GPU code: the mesh, the pose of the parts, the WGSL
+/// and the CPU reference of the shader.
+pub const box_model = @import("box_model_plan.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasBuilder = atlas_mod.AtlasBuilder;
@@ -102,3 +111,16 @@ pub const SkyPalette = sky.Palette;
 pub const SkyState = sky.State;
 pub const Fog = sky.Fog;
 pub const CubeMap = sky_mod.CubeMap;
+
+pub const BoxModels = box_models_mod.BoxModels;
+pub const BoxModelOptions = box_models_mod.Options;
+pub const BoxModelDesc = box_models_mod.ModelDesc;
+pub const BoxModelPart = box_models_mod.Part;
+pub const BoxModelBox = box_models_mod.Box;
+pub const BoxModelId = box_models_mod.ModelId;
+pub const BoxModelLayer = box_models_mod.Layer;
+pub const BoxModelInstance = box_models_mod.Instance;
+pub const BoxModelView = box_models_mod.View;
+pub const BoxModelLight = box_models_mod.Light;
+pub const BoxModelStats = box_models_mod.Stats;
+pub const FirstPersonOptions = box_models_mod.FirstPersonOptions;
