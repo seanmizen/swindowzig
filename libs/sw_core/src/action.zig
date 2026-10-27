@@ -8,8 +8,10 @@
 //! and back. `sw_platform.input_settings` keeps that text in storage
 //! (REQ-INPUT-004).
 //!
-//! A new kind of input (for example a gamepad) is a new member of `Source`.
-//! Code that defines, reads and rebinds actions does not change.
+//! A new kind of input is a new member of `Source`. Code that defines,
+//! reads and rebinds actions does not change. Gamepad buttons and gamepad
+//! axes are sources too (REQ-INPUT-005). A gamepad binding reads each
+//! connected gamepad, and the largest value counts.
 
 const std = @import("std");
 const event = @import("event.zig");
@@ -18,7 +20,10 @@ const input = @import("input.zig");
 const KeyCode = event.KeyCode;
 const MouseButton = event.MouseButton;
 const Modifiers = event.Modifiers;
+const GamepadButton = event.GamepadButton;
+const GamepadAxis = event.GamepadAxis;
 const InputSnapshot = input.InputSnapshot;
+const GamepadSettings = input.GamepadSettings;
 
 /// The number of bindings that one action can have.
 pub const max_bindings = 4;
@@ -30,27 +35,60 @@ pub const press_threshold: f32 = 0.5;
 /// The first line of the text that `encode` writes.
 pub const text_header = "swindowzig-input 1";
 
+/// One direction of a gamepad axis. A stick axis has two directions. A
+/// trigger has only `positive`.
+pub const AxisDirection = struct {
+    axis: GamepadAxis,
+    positive: bool = true,
+
+    pub fn eql(a: AxisDirection, b: AxisDirection) bool {
+        return a.axis == b.axis and a.positive == b.positive;
+    }
+};
+
 /// One input that a binding reads.
 pub const Source = union(enum) {
     /// The binding slot is empty.
     none,
     key: KeyCode,
     mouse: MouseButton,
+    /// A gamepad button (REQ-INPUT-005).
+    gamepad_button: GamepadButton,
+    /// One direction of a gamepad axis, after the dead zone (REQ-INPUT-005).
+    gamepad_axis: AxisDirection,
 
     pub fn eql(a: Source, b: Source) bool {
         return switch (a) {
             .none => b == .none,
             .key => |k| b == .key and b.key == k,
             .mouse => |m| b == .mouse and b.mouse == m,
+            .gamepad_button => |g| b == .gamepad_button and b.gamepad_button == g,
+            .gamepad_axis => |d| b == .gamepad_axis and b.gamepad_axis.eql(d),
         };
     }
 
-    /// The value of the source in `snap`, from 0 to 1.
+    /// The value of the source in `snap`, from 0 to 1, with the default
+    /// gamepad settings.
     pub fn value(self: Source, snap: *const InputSnapshot) f32 {
+        return self.valueWith(snap, .{});
+    }
+
+    /// The value of the source in `snap`, from 0 to 1. `pad` gives the
+    /// gamepad dead zones.
+    pub fn valueWith(self: Source, snap: *const InputSnapshot, pad: GamepadSettings) f32 {
         return switch (self) {
             .none => 0,
             .key => |k| if (snap.keyDown(k)) 1 else 0,
             .mouse => |m| if (snap.buttonDown(m)) 1 else 0,
+            .gamepad_button => |b| blk: {
+                for (&snap.gamepads) |*g| if (g.buttonDown(b)) break :blk 1;
+                break :blk 0;
+            },
+            .gamepad_axis => |d| blk: {
+                var v: f32 = 0;
+                for (&snap.gamepads) |*g| v = @max(v, g.axisValue(d.axis, d.positive, pad));
+                break :blk v;
+            },
         };
     }
 };
@@ -71,6 +109,16 @@ pub const Binding = struct {
         return .{ .source = .{ .mouse = b } };
     }
 
+    pub fn gamepadButton(b: GamepadButton) Binding {
+        return .{ .source = .{ .gamepad_button = b } };
+    }
+
+    /// One direction of a gamepad axis. `positive` is right for an `x` axis,
+    /// down for a `y` axis, and pulled for a trigger.
+    pub fn gamepadAxis(a: GamepadAxis, positive: bool) Binding {
+        return .{ .source = .{ .gamepad_axis = .{ .axis = a, .positive = positive } } };
+    }
+
     /// This binding, with `mods` as the modifier keys that must be down.
     pub fn withMods(self: Binding, mods: Modifiers) Binding {
         return .{ .source = self.source, .mods = normalMods(mods) };
@@ -87,17 +135,25 @@ pub const Binding = struct {
     /// The value of the binding in `snap`. It is 0 when a modifier key of
     /// the binding is not down.
     pub fn value(self: Binding, snap: *const InputSnapshot) f32 {
-        const need = modBits(self.mods);
-        if (need & modBits(heldMods(snap)) != need) return 0;
-        return self.source.value(snap);
+        return self.valueWith(snap, .{});
     }
 
-    /// Write the binding as one text token, for example `key:S+ctrl`.
+    /// `value`, with the gamepad dead zones of `pad`.
+    pub fn valueWith(self: Binding, snap: *const InputSnapshot, pad: GamepadSettings) f32 {
+        const need = modBits(self.mods);
+        if (need & modBits(heldMods(snap)) != need) return 0;
+        return self.source.valueWith(snap, pad);
+    }
+
+    /// Write the binding as one text token, for example `key:S+ctrl`,
+    /// `gamepad:south` or `gamepad_axis:left_y.neg`.
     pub fn writeText(self: Binding, out: *std.ArrayList(u8), gpa: std.mem.Allocator) error{OutOfMemory}!void {
         switch (self.source) {
             .none => return out.appendSlice(gpa, "none"),
             .key => |k| try out.print(gpa, "key:{s}", .{@tagName(k)}),
             .mouse => |m| try out.print(gpa, "mouse:{s}", .{@tagName(m)}),
+            .gamepad_button => |b| try out.print(gpa, "gamepad:{s}", .{@tagName(b)}),
+            .gamepad_axis => |d| try out.print(gpa, "gamepad_axis:{s}.{s}", .{ @tagName(d.axis), if (d.positive) "pos" else "neg" }),
         }
         if (self.mods.shift) try out.appendSlice(gpa, "+shift");
         if (self.mods.ctrl) try out.appendSlice(gpa, "+ctrl");
@@ -117,6 +173,10 @@ pub const Binding = struct {
             key(std.meta.stringToEnum(KeyCode, name) orelse return error.InvalidBinding)
         else if (std.mem.eql(u8, kind, "mouse"))
             mouse(std.meta.stringToEnum(MouseButton, name) orelse return error.InvalidBinding)
+        else if (std.mem.eql(u8, kind, "gamepad"))
+            gamepadButton(std.meta.stringToEnum(GamepadButton, name) orelse return error.InvalidBinding)
+        else if (std.mem.eql(u8, kind, "gamepad_axis"))
+            try parseAxis(name)
         else
             return error.InvalidBinding;
         while (parts.next()) |m| {
@@ -131,6 +191,15 @@ pub const Binding = struct {
             } else return error.InvalidBinding;
         }
         return b;
+    }
+
+    fn parseAxis(name: []const u8) error{InvalidBinding}!Binding {
+        const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return error.InvalidBinding;
+        const a = std.meta.stringToEnum(GamepadAxis, name[0..dot]) orelse return error.InvalidBinding;
+        const dir = name[dot + 1 ..];
+        if (std.mem.eql(u8, dir, "pos")) return gamepadAxis(a, true);
+        if (std.mem.eql(u8, dir, "neg")) return gamepadAxis(a, false);
+        return error.InvalidBinding;
     }
 };
 
@@ -238,6 +307,8 @@ pub fn ActionMap(comptime Action: type) type {
         slots: std.enums.EnumArray(Action, Slots),
         states: std.enums.EnumArray(Action, ActionState) = .initFill(.{}),
         mouse: MouseSettings = .{},
+        /// The dead zones of the gamepad axis bindings (REQ-INPUT-005).
+        gamepad: GamepadSettings = .{},
 
         /// Make a map with the default bindings. Each action can have
         /// `max_bindings` defaults at most.
@@ -263,7 +334,7 @@ pub fn ActionMap(comptime Action: type) type {
         pub fn update(self: *Self, snap: *const InputSnapshot) void {
             var values: [all_slots]f32 = undefined;
             for (actions, 0..) |a, ai| {
-                for (self.slots.get(a), 0..) |b, si| values[ai * max_bindings + si] = b.value(snap);
+                for (self.slots.get(a), 0..) |b, si| values[ai * max_bindings + si] = b.valueWith(snap, self.gamepad);
             }
             for (actions, 0..) |a, ai| {
                 var v: f32 = 0;
@@ -355,11 +426,12 @@ pub fn ActionMap(comptime Action: type) type {
             self.slots.set(a, self.default_slots.get(a));
         }
 
-        /// Give every action its default bindings, and the mouse its
-        /// default settings.
+        /// Give every action its default bindings, and the mouse and the
+        /// gamepad their default settings.
         pub fn resetAll(self: *Self) void {
             self.slots = self.default_slots;
             self.mouse = .{};
+            self.gamepad = .{};
         }
 
         /// True when no binding of `a` differs from its defaults.
@@ -390,6 +462,8 @@ pub fn ActionMap(comptime Action: type) type {
             try out.print(gpa, "mouse sensitivity {d}\n", .{self.mouse.sensitivity});
             try out.print(gpa, "mouse invert_x {d}\n", .{@intFromBool(self.mouse.invert_x)});
             try out.print(gpa, "mouse invert_y {d}\n", .{@intFromBool(self.mouse.invert_y)});
+            try out.print(gpa, "gamepad stick_dead_zone {d}\n", .{self.gamepad.stick_dead_zone});
+            try out.print(gpa, "gamepad trigger_dead_zone {d}\n", .{self.gamepad.trigger_dead_zone});
             for (actions) |a| {
                 try out.print(gpa, "action {s}", .{@tagName(a)});
                 for (self.slots.get(a)) |b| {
@@ -419,6 +493,14 @@ pub fn ActionMap(comptime Action: type) type {
                 if (std.mem.eql(u8, kind, "mouse")) {
                     const arg = tokens.next() orelse continue;
                     self.decodeMouse(name, arg);
+                } else if (std.mem.eql(u8, kind, "gamepad")) {
+                    const arg = tokens.next() orelse continue;
+                    const v = std.fmt.parseFloat(f32, arg) catch continue;
+                    if (std.mem.eql(u8, name, "stick_dead_zone")) {
+                        self.gamepad.setStickDeadZone(v);
+                    } else if (std.mem.eql(u8, name, "trigger_dead_zone")) {
+                        self.gamepad.setTriggerDeadZone(v);
+                    }
                 } else if (std.mem.eql(u8, kind, "action")) {
                     const a = std.meta.stringToEnum(Action, name) orelse continue;
                     const slots = self.slots.getPtr(a);
@@ -453,10 +535,14 @@ pub fn ActionMap(comptime Action: type) type {
 /// - A key that is not a modifier key, or a mouse button, gives a binding
 ///   with the modifier keys that are down.
 /// - A modifier key alone gives a binding when the player releases it.
+/// - A gamepad button gives a binding with no modifier keys.
+/// - A gamepad axis gives a binding when its value goes to
+///   `press_threshold` or more, after the dead zones of `gamepad`.
 ///
 /// The menu must check for its own cancel key before it calls `update`.
 pub const BindingCapture = struct {
     pending_modifier: ?KeyCode = null,
+    gamepad: GamepadSettings = .{},
 
     pub fn reset(self: *BindingCapture) void {
         self.pending_modifier = null;
@@ -473,6 +559,22 @@ pub const BindingCapture = struct {
             if (!snap.buttonPressed(m)) continue;
             self.reset();
             return Binding.mouse(m).withMods(mods);
+        }
+        for (&snap.gamepads) |*g| {
+            for (std.enums.values(GamepadButton)) |b| {
+                if (!g.buttonPressed(b)) continue;
+                self.reset();
+                return Binding.gamepadButton(b);
+            }
+            for (std.enums.values(GamepadAxis)) |a| {
+                for ([_]bool{ true, false }) |positive| {
+                    const now = g.axisValue(a, positive, self.gamepad);
+                    const before = g.prevAxisValue(a, positive, self.gamepad);
+                    if (now < press_threshold or before >= press_threshold) continue;
+                    self.reset();
+                    return Binding.gamepadAxis(a, positive);
+                }
+            }
         }
         if (self.pending_modifier) |k| {
             if (snap.keyReleased(k)) {
@@ -715,4 +817,98 @@ test "actions: the same events give the same actions (REQ-INPUT-003)" {
     for (runs[0], runs[1]) |x, y| {
         for (std.enums.values(TestAction)) |act| try testing.expectEqual(x.get(act), y.get(act));
     }
+}
+
+fn padButton(b: GamepadButton, is_down: bool) Event {
+    return Event.init(0, 0, 0, .{ .gamepad_button = .{ .pad = 0, .button = b, .down = is_down } });
+}
+
+fn padAxis(pad: u8, a: GamepadAxis, v: f32) Event {
+    return Event.init(0, 0, 0, .{ .gamepad_axis = .{ .pad = pad, .axis = a, .value = v } });
+}
+
+const PadAction = enum { jump, left, right, fire };
+
+const pad_defaults: ActionMap(PadAction).Defaults = .{
+    .jump = &.{ Binding.key(.Space), Binding.gamepadButton(.south) },
+    .left = &.{ Binding.key(.A), Binding.gamepadAxis(.left_x, false), Binding.gamepadButton(.dpad_left) },
+    .right = &.{ Binding.key(.D), Binding.gamepadAxis(.left_x, true) },
+    .fire = &.{Binding.gamepadAxis(.right_trigger, true)},
+};
+
+test "actions: gamepad buttons and axes bind like keys (REQ-INPUT-005)" {
+    var map = ActionMap(PadAction).init(pad_defaults);
+    var snap = InputSnapshot.init();
+
+    snap.updateFromEvents(&.{padButton(.south, true)});
+    map.update(&snap);
+    try testing.expect(map.pressed(.jump));
+    try testing.expectEqual(@as(f32, 1), map.value(.jump));
+
+    // The stick inside the dead zone: no action.
+    snap.updateFromEvents(&.{ padButton(.south, false), padAxis(0, .left_x, -0.1) });
+    map.update(&snap);
+    try testing.expect(map.released(.jump));
+    try testing.expectEqual(@as(f32, 0), map.value(.left));
+
+    // 60% of the travel after the dead zone: value 0.6, so the action is down.
+    snap.updateFromEvents(&.{padAxis(0, .left_x, -0.66)});
+    map.update(&snap);
+    try testing.expectApproxEqAbs(@as(f32, 0.6), map.value(.left), 1e-6);
+    try testing.expect(map.down(.left));
+    try testing.expect(!map.down(.right));
+    try testing.expectApproxEqAbs(@as(f32, -0.6), map.axis(.left, .right), 1e-6);
+
+    // A gamepad in another slot also counts.
+    snap.updateFromEvents(&.{ padAxis(0, .left_x, 0), padAxis(3, .right_trigger, 1) });
+    map.update(&snap);
+    try testing.expect(map.pressed(.fire));
+    try testing.expect(map.released(.left));
+
+    // A larger dead zone is a setting of the map.
+    map.gamepad.setTriggerDeadZone(0.9);
+    snap.updateFromEvents(&.{padAxis(3, .right_trigger, 0.8)});
+    map.update(&snap);
+    try testing.expect(!map.down(.fire));
+}
+
+test "actions: gamepad bindings encode and decode (REQ-INPUT-005)" {
+    const a = testing.allocator;
+    var map = ActionMap(PadAction).init(pad_defaults);
+    map.bind(.fire, 1, Binding.gamepadAxis(.right_y, false));
+    map.gamepad.setStickDeadZone(0.25);
+    const text = try map.encode(a);
+    defer a.free(text);
+    try testing.expect(std.mem.indexOf(u8, text, "gamepad_axis:right_y.neg") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "gamepad:dpad_left") != null);
+
+    var other = ActionMap(PadAction).init(.{});
+    try other.decode(text);
+    for (std.enums.values(PadAction)) |act| {
+        for (map.bindings(act), other.bindings(act)) |x, y| try testing.expect(x.eql(y));
+    }
+    try testing.expectEqual(@as(f32, 0.25), other.gamepad.stick_dead_zone);
+
+    try testing.expectError(error.InvalidBinding, Binding.parseText("gamepad:no_such_button"));
+    try testing.expectError(error.InvalidBinding, Binding.parseText("gamepad_axis:left_x"));
+    try testing.expectError(error.InvalidBinding, Binding.parseText("gamepad_axis:left_x.up"));
+    other.resetAll();
+    try testing.expectEqual(GamepadSettings{}, other.gamepad);
+}
+
+test "binding capture: a gamepad button and a gamepad axis (REQ-INPUT-005)" {
+    var cap: BindingCapture = .{};
+    var snap = InputSnapshot.init();
+
+    snap.updateFromEvents(&.{padButton(.north, true)});
+    try testing.expect(cap.update(&snap).?.eql(Binding.gamepadButton(.north)));
+
+    // An axis gives a binding when it crosses the threshold, not while it
+    // stays past it.
+    snap.updateFromEvents(&.{ padButton(.north, false), padAxis(0, .left_y, 0.3) });
+    try testing.expectEqual(@as(?Binding, null), cap.update(&snap));
+    snap.updateFromEvents(&.{padAxis(0, .left_y, -0.9)});
+    try testing.expect(cap.update(&snap).?.eql(Binding.gamepadAxis(.left_y, false)));
+    snap.updateFromEvents(&.{padAxis(0, .left_y, -1)});
+    try testing.expectEqual(@as(?Binding, null), cap.update(&snap));
 }

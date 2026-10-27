@@ -69,7 +69,7 @@ Prefixes are globally unique. Add a row when you add a file.
 | `AUDIO` | `requirements/audio.md` | Sound output from `sw_audio`: the waveform API, samples, streams, the mixer and 3D sound |
 | `CAMERA` | `requirements/camera.md` | The camera controller of `sw_math`: modes, smoothing, field of view |
 | `GPU` | `requirements/gpu.md` | Textures, samplers and other resources of `sw_gpu` |
-| `INPUT` | `requirements/input.md` | Keyboard, mouse and wheel input from the platform backends |
+| `INPUT` | `requirements/input.md` | Keyboard, mouse, wheel and gamepad input from the platform backends |
 | `NET` | `requirements/net.md` | The WebSocket client of `sw_net`: events, frames and the reconnect |
 | `PLATFORM` | `requirements/platform.md` | The window, the cursor and the clipboard from the platform backends |
 | `VOXEL` | `requirements/voxel.md` | Chunk storage, meshing and the chunk pipeline of `sw_voxel` |

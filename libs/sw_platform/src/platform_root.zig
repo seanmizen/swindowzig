@@ -8,6 +8,7 @@ pub const storage = @import("storage.zig");
 pub const input_settings = @import("input_settings.zig");
 
 pub const clipboard = @import("clipboard.zig");
+pub const gamepad = @import("gamepad.zig");
 
 pub const WindowInfo = platform.WindowInfo;
 pub const WindowMode = platform.WindowMode;

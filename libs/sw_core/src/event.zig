@@ -227,6 +227,65 @@ pub const ClipboardEvent = extern struct {
     len: u32,
 };
 
+/// The most gamepads that the engine reads at one time. A gamepad has a slot
+/// from 0 to `max_gamepads - 1` while it is connected (REQ-INPUT-005).
+pub const max_gamepads = 4;
+
+/// A gamepad button, by its position on the gamepad. `south` is the bottom
+/// face button, `east` the right one, and so on. A recording stores the
+/// integer value, so a value never changes. Add a new member after the last
+/// member only (REQ-INPUT-005).
+pub const GamepadButton = enum(u8) {
+    south = 0,
+    east = 1,
+    west = 2,
+    north = 3,
+    left_shoulder = 4,
+    right_shoulder = 5,
+    back = 6,
+    start = 7,
+    guide = 8,
+    left_stick = 9,
+    right_stick = 10,
+    dpad_up = 11,
+    dpad_down = 12,
+    dpad_left = 13,
+    dpad_right = 14,
+};
+
+/// A gamepad axis. A stick axis goes from -1 to 1: `x` is positive to the
+/// right, and `y` is positive down (as SDL and the web Gamepad API give it).
+/// A trigger goes from 0 (released) to 1. The values are raw: no dead zone
+/// (REQ-INPUT-005). Add a new member after the last member only.
+pub const GamepadAxis = enum(u8) {
+    left_x = 0,
+    left_y = 1,
+    right_x = 2,
+    right_y = 3,
+    left_trigger = 4,
+    right_trigger = 5,
+};
+
+/// A gamepad was connected to slot `pad`, or disconnected from it.
+pub const GamepadConnectionEvent = extern struct {
+    pad: u8,
+    connected: bool,
+};
+
+/// A gamepad button went down or up.
+pub const GamepadButtonEvent = extern struct {
+    pad: u8,
+    button: GamepadButton,
+    down: bool,
+};
+
+/// A gamepad axis has a new raw value.
+pub const GamepadAxisEvent = extern struct {
+    pad: u8,
+    axis: GamepadAxis,
+    value: f32,
+};
+
 /// Event payloads
 pub const EventPayload = union(enum) {
     pointer_move: extern struct {
@@ -310,9 +369,14 @@ pub const EventPayload = union(enum) {
         selection_len: u8,
     },
 
-    /// A clipboard operation is complete (serialize tag 11). New members go
-    /// after this one.
+    /// A clipboard operation is complete (serialize tag 11).
     clipboard: ClipboardEvent,
+
+    /// Gamepad events (serialize tags 12, 13 and 14, REQ-INPUT-005). New
+    /// members go after `gamepad_axis`.
+    gamepad_connection: GamepadConnectionEvent,
+    gamepad_button: GamepadButtonEvent,
+    gamepad_axis: GamepadAxisEvent,
 };
 
 /// Core event structure
@@ -419,4 +483,15 @@ test "the clipboard event has tag 11" {
     // serialize.zig stores the union tag (REQ-PLATFORM-002).
     try std.testing.expectEqual(@as(usize, 11), @backingInt(std.meta.Tag(EventPayload).clipboard));
     try std.testing.expectEqual(@as(usize, 10), @backingInt(std.meta.Tag(EventPayload).text_composition));
+}
+
+test "the gamepad events have tags 12, 13 and 14 (REQ-INPUT-005)" {
+    const Tag = std.meta.Tag(EventPayload);
+    try std.testing.expectEqual(@as(usize, 12), @backingInt(Tag.gamepad_connection));
+    try std.testing.expectEqual(@as(usize, 13), @backingInt(Tag.gamepad_button));
+    try std.testing.expectEqual(@as(usize, 14), @backingInt(Tag.gamepad_axis));
+    // A recording stores these values.
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(GamepadButton.south));
+    try std.testing.expectEqual(@as(u8, 14), @backingInt(GamepadButton.dpad_right));
+    try std.testing.expectEqual(@as(u8, 5), @backingInt(GamepadAxis.right_trigger));
 }

@@ -102,6 +102,22 @@ depth test rejects hidden fragments before they shade.
   The punctuation and navigation keys follow the physical key on the web
   (`KeyboardEvent.code`) and on SDL (the scancode) (REQ-INPUT-002).
 
+### Gamepads
+
+- Events `gamepad_connection`, `gamepad_button`, `gamepad_axis` (tags 12 to
+  14). `input().gamepad(slot)` (4 slots) has the buttons and the raw axes.
+  `stick(.left, settings)` and `trigger` apply the dead zones
+  (`GamepadSettings`). `Binding.gamepadButton(.south)` and
+  `Binding.gamepadAxis(.left_x, positive)` bind them to actions. The
+  `ActionMap.gamepad` field has the dead zones (REQ-INPUT-005).
+- A recording is version 2. The reader also reads version 1 (REQ-INPUT-006).
+  A new event type increases `serialize.VERSION`.
+- Native: SDL game controllers in `native_sdl.zig`. Web:
+  `backends/wasm/gamepad.ts` reads the Gamepad API once per frame, before
+  `swindowzig_frame`, and calls the exports of `web_gamepad.zig`.
+- TAS: `gamepad_down south`, `gamepad_up south`, `gamepad_axis left_x -0.5`,
+  each with an optional slot at the end.
+
 ### Text input (IME)
 
 - `ctx.startTextInput()` and `ctx.stopTextInput()` turn the platform input
@@ -230,8 +246,9 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_core/src/event.zig` | `Event` union — all input/system event variants |
 | `libs/sw_core/src/bus.zig` | Event bus: push/subscribe per tick |
 | `libs/sw_core/src/input.zig` | Keyboard/mouse snapshot, edge detection |
-| `libs/sw_core/src/action.zig` | `ActionMap(Action)`: game actions with default bindings (keys, mouse buttons, modifiers), rebinding, `BindingCapture` for a rebind menu, `MouseSettings` (sensitivity, invert). `update(ctx.input())` once per tick (REQ-INPUT-003). A new input kind is a new `Source` member |
+| `libs/sw_core/src/action.zig` | `ActionMap(Action)`: game actions with default bindings (keys, mouse buttons, gamepad buttons and axes, modifiers), rebinding, `BindingCapture` for a rebind menu, `MouseSettings` (sensitivity, invert). `update(ctx.input())` once per tick (REQ-INPUT-003). A new input kind is a new `Source` member |
 | `libs/sw_core/src/record.zig` | Record events to a TAS file |
+| `libs/sw_platform/src/gamepad.zig` | Gamepad slots by platform ID, and the SDL axis scaling (no platform code, unit tested) |
 | `libs/sw_core/src/replay.zig` | Replay events from a TAS file |
 | `libs/sw_core/src/tas.zig` | TAS file format (parse/write) |
 | `libs/sw_gpu/src/gpu.zig` | Main GPU API — `GPU` struct, all `create*` / `begin*` / `submit` methods |

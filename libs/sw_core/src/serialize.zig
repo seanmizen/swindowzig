@@ -2,8 +2,20 @@ const std = @import("std");
 const event = @import("event.zig");
 const Event = event.Event;
 
-/// Serialization format version
-pub const VERSION: u32 = 1;
+/// The format version that `Serializer` writes.
+///
+/// - 1: event tags 0 to 11.
+/// - 2: adds the gamepad events, tags 12 to 14 (REQ-INPUT-005).
+///
+/// `Deserializer` reads each version from `MIN_VERSION` to `VERSION`, so an
+/// old recording still plays (REQ-INPUT-006).
+pub const VERSION: u32 = 2;
+
+/// The oldest format version that `Deserializer` reads.
+pub const MIN_VERSION: u32 = 1;
+
+/// The largest event tag in each format version, from version 1.
+const max_tag_of_version = [_]u8{ 11, 14 };
 
 /// Magic bytes for file format identification
 pub const MAGIC: [4]u8 = .{ 'S', 'W', 'E', 'V' }; // "SWEV" = SWindow Events
@@ -28,9 +40,15 @@ pub const Header = extern struct {
         if (!std.mem.eql(u8, &self.magic, &MAGIC)) {
             return error.InvalidMagic;
         }
-        if (self.version != VERSION) {
+        if (self.version < MIN_VERSION or self.version > VERSION) {
             return error.UnsupportedVersion;
         }
+    }
+
+    /// The largest event tag that a file of this version can have.
+    pub fn maxTag(self: *const Header) u8 {
+        const v = std.math.clamp(self.version, MIN_VERSION, VERSION);
+        return max_tag_of_version[v - MIN_VERSION];
     }
 };
 
@@ -106,6 +124,22 @@ pub const Serializer = struct {
             .clipboard => |c| {
                 try self.writer.writeStruct(c, .little);
             },
+            // Write the gamepad events field by field, so the file has
+            // no padding bytes.
+            .gamepad_connection => |g| {
+                try self.writer.writeInt(u8, g.pad, .little);
+                try self.writer.writeInt(u8, @intFromBool(g.connected), .little);
+            },
+            .gamepad_button => |g| {
+                try self.writer.writeInt(u8, g.pad, .little);
+                try self.writer.writeInt(u8, @backingInt(g.button), .little);
+                try self.writer.writeInt(u8, @intFromBool(g.down), .little);
+            },
+            .gamepad_axis => |g| {
+                try self.writer.writeInt(u8, g.pad, .little);
+                try self.writer.writeInt(u8, @backingInt(g.axis), .little);
+                try self.writer.writeInt(u32, @bitCast(g.value), .little);
+            },
         }
 
         self.last_tick = e.tick_id;
@@ -118,6 +152,8 @@ pub const Deserializer = struct {
     reader: *std.Io.Reader,
     last_tick: u64,
     last_time: u64,
+    /// The largest event tag of the file version. `readHeader` sets it.
+    max_tag: u8 = max_tag_of_version[max_tag_of_version.len - 1],
 
     pub fn init(reader: *std.Io.Reader) Deserializer {
         return .{
@@ -130,6 +166,7 @@ pub const Deserializer = struct {
     pub fn readHeader(self: *Deserializer) !Header {
         const header = try self.reader.takeStruct(Header, .little);
         try header.validate();
+        self.max_tag = header.maxTag();
         return header;
     }
 
@@ -152,6 +189,8 @@ pub const Deserializer = struct {
     }
 
     fn readPayload(self: *Deserializer, tag: u8) !event.EventPayload {
+        // A tag that the file version does not have is an error.
+        if (tag > self.max_tag) return error.InvalidPayloadTag;
         const dummy: event.EventPayload = undefined;
         return switch (tag) {
             0 => .{ .pointer_move = try self.reader.takeStruct(@TypeOf(dummy.pointer_move), .little) },
@@ -177,7 +216,35 @@ pub const Deserializer = struct {
             },
             10 => .{ .text_composition = try self.reader.takeStruct(@TypeOf(dummy.text_composition), .little) },
             11 => .{ .clipboard = try self.reader.takeStruct(event.ClipboardEvent, .little) },
+            12 => .{ .gamepad_connection = .{
+                .pad = try self.readPad(),
+                .connected = try self.readBool(),
+            } },
+            13 => .{ .gamepad_button = .{
+                .pad = try self.readPad(),
+                .button = try self.reader.takeEnum(event.GamepadButton, .little),
+                .down = try self.readBool(),
+            } },
+            14 => .{ .gamepad_axis = .{
+                .pad = try self.readPad(),
+                .axis = try self.reader.takeEnum(event.GamepadAxis, .little),
+                .value = @bitCast(try self.reader.takeInt(u32, .little)),
+            } },
             else => error.InvalidPayloadTag,
+        };
+    }
+
+    fn readPad(self: *Deserializer) !u8 {
+        const pad = try self.reader.takeInt(u8, .little);
+        if (pad >= event.max_gamepads) return error.InvalidGamepad;
+        return pad;
+    }
+
+    fn readBool(self: *Deserializer) !bool {
+        return switch (try self.reader.takeInt(u8, .little)) {
+            0 => false,
+            1 => true,
+            else => error.InvalidBool,
         };
     }
 };
@@ -286,4 +353,57 @@ test "Serialize and deserialize a clipboard event" {
     try std.testing.expectEqual(event.ClipboardEventKind.read, got.payload.clipboard.kind);
     try std.testing.expectEqual(event.ClipboardStatus.denied, got.payload.clipboard.status);
     try std.testing.expectEqual(@as(u32, 7), got.payload.clipboard.len);
+}
+
+test "Serialize and deserialize gamepad events (REQ-INPUT-005)" {
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
+
+    var serializer = Serializer.init(&buffer.writer);
+    try serializer.writeHeader(120);
+    try serializer.writeEvent(Event.init(1, 10, 0, .{ .gamepad_connection = .{ .pad = 2, .connected = true } }));
+    try serializer.writeEvent(Event.init(1, 10, 1, .{ .gamepad_button = .{ .pad = 2, .button = .dpad_left, .down = true } }));
+    try serializer.writeEvent(Event.init(2, 20, 0, .{ .gamepad_axis = .{ .pad = 2, .axis = .left_y, .value = -0.75 } }));
+
+    var reader: std.Io.Reader = .fixed(buffer.written());
+    var deserializer = Deserializer.init(&reader);
+    const header = try deserializer.readHeader();
+    try std.testing.expectEqual(VERSION, header.version);
+
+    const c = (try deserializer.readEvent()).payload.gamepad_connection;
+    try std.testing.expectEqual(@as(u8, 2), c.pad);
+    try std.testing.expect(c.connected);
+    const b = (try deserializer.readEvent()).payload.gamepad_button;
+    try std.testing.expectEqual(event.GamepadButton.dpad_left, b.button);
+    try std.testing.expect(b.down);
+    const a = try deserializer.readEvent();
+    try std.testing.expectEqual(@as(u64, 2), a.tick_id);
+    try std.testing.expectEqual(event.GamepadAxis.left_y, a.payload.gamepad_axis.axis);
+    try std.testing.expectEqual(@as(f32, -0.75), a.payload.gamepad_axis.value);
+    try std.testing.expectError(error.EndOfStream, deserializer.readEvent());
+}
+
+test "a version 1 file reads, and cannot have the gamepad tags (REQ-INPUT-006)" {
+    // Version 1 has the same bytes as version 2 for tags 0 to 11.
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
+    var serializer = Serializer.init(&buffer.writer);
+    var old = Header.init(120);
+    old.version = 1;
+    try buffer.writer.writeStruct(old, .little);
+    try serializer.writeEvent(Event.init(1, 10, 0, .{ .focus = .{ .focused = true } }));
+    try serializer.writeEvent(Event.init(1, 10, 1, .{ .gamepad_connection = .{ .pad = 0, .connected = true } }));
+
+    var reader: std.Io.Reader = .fixed(buffer.written());
+    var deserializer = Deserializer.init(&reader);
+    try std.testing.expectEqual(@as(u32, 1), (try deserializer.readHeader()).version);
+    try std.testing.expect((try deserializer.readEvent()).payload.focus.focused);
+    try std.testing.expectError(error.InvalidPayloadTag, deserializer.readEvent());
+
+    // A version from the future does not read.
+    var future = Header.init(120);
+    future.version = VERSION + 1;
+    try std.testing.expectError(error.UnsupportedVersion, future.validate());
+    future.version = 0;
+    try std.testing.expectError(error.UnsupportedVersion, future.validate());
 }

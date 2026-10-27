@@ -247,6 +247,8 @@ pub fn build(b: *std.Build) void {
         "libs/sw_platform/src/storage.zig",
         // sw_platform: the DPI scale and the window and cursor mode numbers.
         "libs/sw_platform/src/platform.zig",
+        // sw_platform: the gamepad slots and the SDL axis scaling.
+        "libs/sw_platform/src/gamepad.zig",
         // sw_gpu: the mip chain maths and the descriptor checks have no
         // GPU code.
         "libs/sw_gpu/src/mip_chain.zig",

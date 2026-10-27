@@ -1,7 +1,7 @@
 # Input requirements — `REQ-INPUT-*`
 
-Keyboard, mouse and wheel input from the platform backends, and the input
-actions that a game binds to them.
+Keyboard, mouse, wheel and gamepad input from the platform backends, and the
+input actions that a game binds to them.
 
 ## REQ-INPUT-001 — Key code values do not change
 
@@ -71,4 +71,43 @@ actions that a game binds to them.
   newer version must still load, and must not reset all bindings.
 - **Verification:** Test — `libs/sw_core/src/action.zig` › "actions: decode
   keeps defaults for entries it cannot read (REQ-INPUT-004)"
+- **Relations:** none
+
+## REQ-INPUT-005 — Gamepads are recorded input that binds to actions
+
+- **Status:** active
+- **Source:** agent:SWZ-50
+- **Origin:** #50
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The `sw_core` `InputSnapshot` and `ActionMap` shall get
+  the gamepad state only from the gamepad events and the dead zone
+  settings.
+- **Rationale:** A platform backend sends a gamepad event when a gamepad
+  connects, disconnects, or changes a button or an axis. A recording and a TAS replay store the raw input events. If
+  the gamepad state comes from the events, a replay gives the same gamepad
+  input. SDL sends events, but the web Gamepad API must be read each frame:
+  the web backend reads it once per frame and sends the changes as events.
+  The snapshot keeps the raw axis values, and the game applies its dead
+  zones when it reads them, so a change of a setting does not change the
+  recording.
+- **Verification:** Test — `libs/sw_core/src/replay.zig` › "Replayer plays
+  gamepad input into the snapshot (REQ-INPUT-005)"
+- **Relations:** none
+
+## REQ-INPUT-006 — Old recordings still play
+
+- **Status:** active
+- **Source:** agent:SWZ-50
+- **Origin:** #50
+- **Type:** constraint
+- **Priority:** P1
+- **Statement:** The `sw_core` `Deserializer` shall read each recording
+  format version from `MIN_VERSION` to `VERSION`.
+- **Rationale:** Projects keep recordings and TAS replays for regression
+  tests and for bug reports. A new event type must not make an old file stop
+  playing. Each change to the format increases `VERSION`, and the version
+  tells the reader which event tags the file can have.
+- **Verification:** Test — `libs/sw_core/src/replay.zig` › "Replayer plays a
+  version 1 recording (REQ-INPUT-006)"
 - **Relations:** none

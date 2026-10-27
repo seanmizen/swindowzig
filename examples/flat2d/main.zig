@@ -23,6 +23,13 @@
 //
 // The focused node has a yellow ring.
 //
+// A gamepad also works (an input action map, sw_core ActionMap): the d-pad
+// or the left stick moves the focus and changes a slider, the bottom face
+// button activates, the right face button is Escape, and the shoulder
+// buttons are Tab and Shift+Tab. The right stick moves the volume slider
+// smoothly. The status line shows the first gamepad: the sticks and the
+// triggers after the dead zones.
+//
 // Window and cursor: Alt+Enter goes to full screen and back. Alt+M changes
 // the cursor mode: normal, hidden, locked. A line at the top left shows the
 // modes, the DPI scale and the last clipboard event.
@@ -102,6 +109,21 @@ var keyboard: sw_ui.osk.Keyboard = .{};
 var cursor_mode: sw.CursorMode = .normal;
 var last_clipboard: ?sw.ClipboardEvent = null;
 
+// The gamepad navigation of the UI. Each action has a gamepad binding only:
+// the keyboard goes to the UI directly (uiInput).
+const Binding = sw.core_types.Binding;
+const Nav = enum { up, down, left, right, activate, back, next, prev };
+var nav = sw.core_types.ActionMap(Nav).init(.{
+    .up = &.{ Binding.gamepadButton(.dpad_up), Binding.gamepadAxis(.left_y, false) },
+    .down = &.{ Binding.gamepadButton(.dpad_down), Binding.gamepadAxis(.left_y, true) },
+    .left = &.{ Binding.gamepadButton(.dpad_left), Binding.gamepadAxis(.left_x, false) },
+    .right = &.{ Binding.gamepadButton(.dpad_right), Binding.gamepadAxis(.left_x, true) },
+    .activate = &.{Binding.gamepadButton(.south)},
+    .back = &.{Binding.gamepadButton(.east)},
+    .next = &.{Binding.gamepadButton(.right_shoulder)},
+    .prev = &.{Binding.gamepadButton(.left_shoulder)},
+});
+
 const Screen = enum { settings, keyboard };
 var screens: sw_ui.ScreenStack(Screen, 4) = .{};
 const level_count = 30;
@@ -155,14 +177,14 @@ fn uiInput(ctx: *sw.Context) sw_ui.Input {
     const wheel_lines = if (builtin.cpu.arch.isWasm()) input.wheel.delta_y / 40 else input.wheel.delta_y;
     return .{
         .keys = .{
-            .tab = input.keyPressed(.Tab),
-            .up = input.keyPressed(.Up),
-            .down = input.keyPressed(.Down),
-            .left = input.keyPressed(.Left),
-            .right = input.keyPressed(.Right),
-            .enter = input.keyPressed(.Enter),
+            .tab = input.keyPressed(.Tab) or nav.pressed(.next) or nav.pressed(.prev),
+            .up = input.keyPressed(.Up) or nav.pressed(.up),
+            .down = input.keyPressed(.Down) or nav.pressed(.down),
+            .left = input.keyPressed(.Left) or nav.pressed(.left),
+            .right = input.keyPressed(.Right) or nav.pressed(.right),
+            .enter = input.keyPressed(.Enter) or nav.pressed(.activate),
             .space = input.keyPressed(.Space),
-            .escape = input.keyPressed(.Escape),
+            .escape = input.keyPressed(.Escape) or nav.pressed(.back),
             .backspace = input.keyPressed(.Backspace),
             .home = input.keyPressed(.Home),
             .end = input.keyPressed(.End),
@@ -172,7 +194,7 @@ fn uiInput(ctx: *sw.Context) sw_ui.Input {
             .cut = shortcut and input.keyPressed(.X),
             .paste = shortcut and input.keyPressed(.V),
         },
-        .shift = input.mods.shift,
+        .shift = input.mods.shift or nav.down(.prev),
         .pointer_x = input.mouse.x,
         .pointer_y = input.mouse.y,
         .pointer_pressed = input.buttonPressed(.left),
@@ -352,6 +374,39 @@ fn windowKeys(ctx: *sw.Context) void {
     }
 }
 
+/// The right stick of each gamepad moves the volume slider: one full turn of
+/// the slider in one second at full tilt.
+fn padVolume(ctx: *sw.Context) void {
+    if (screens.top() != .settings) return;
+    const input = ctx.input();
+    for (&input.gamepads) |*g| {
+        const x = g.stick(.right, nav.gamepad).x;
+        volume = std.math.clamp(volume + x / @as(f32, @floatFromInt(config.tick_hz)), 0, 1);
+    }
+}
+
+/// The second status line: the first connected gamepad, after the dead
+/// zones.
+fn gamepadLine(ctx: *sw.Context, buf: []u8) []const u8 {
+    const input = ctx.input();
+    for (&input.gamepads, 0..) |*g, i| {
+        if (!g.connected) continue;
+        const l = g.stick(.left, nav.gamepad);
+        const r = g.stick(.right, nav.gamepad);
+        return std.fmt.bufPrint(buf, "gamepad {d}: left {d:.2} {d:.2}   right {d:.2} {d:.2}   triggers {d:.2} {d:.2}   south {s}", .{
+            i,
+            l.x,
+            l.y,
+            r.x,
+            r.y,
+            g.trigger(.left, nav.gamepad),
+            g.trigger(.right, nav.gamepad),
+            if (g.buttonDown(.south)) "down" else "up",
+        }) catch "";
+    }
+    return "gamepad: none (press a button on it)";
+}
+
 /// The status line: the window mode, the cursor mode, the DPI scale and the
 /// last clipboard event.
 fn statusLine(ctx: *sw.Context, buf: []u8) []const u8 {
@@ -449,6 +504,8 @@ const Callbacks = struct {
     pub fn tick(ctx: *sw.Context) !void {
         ticks +%= 1;
         windowKeys(ctx);
+        nav.update(ctx.input());
+        padVolume(ctx);
 
         const u = if (ui_state) |*p| p else return;
         const win = ctx.window();
@@ -516,6 +573,8 @@ const Callbacks = struct {
 
             var status_buf: [160]u8 = undefined;
             _ = try tr.draw(r, statusLine(ctx, &status_buf), 8, 8, .{ .size = 12, .color = gfx.Color.rgba8(170, 170, 190, 255) });
+            var pad_buf: [160]u8 = undefined;
+            _ = try tr.draw(r, gamepadLine(ctx, &pad_buf), 8, 22, .{ .size = 12, .color = gfx.Color.rgba8(170, 170, 190, 255) });
         }
 
         // The UI is drawn last, over everything else.
