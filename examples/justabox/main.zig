@@ -1,10 +1,16 @@
 // justabox - A single colored box that slowly spins.
 // Dead simple. MEGA KISS. No camera movement, no input, no complexity.
+//
+// It draws with the sw_render frame graph: one pass to the screen. The
+// frame uniforms of the WGSL prefix give the view and projection, and the
+// uniform ring gives the model matrix (REQ-GPU-005, REQ-GPU-006,
+// REQ-GPU-007).
 const std = @import("std");
 const sw = @import("sw_app");
 const builtin = @import("builtin");
 const sw_math = @import("sw_math");
 const gpu_mod = @import("sw_gpu");
+const sw_render = @import("sw_render");
 
 // Freestanding WASM has no std.process.Init, so the web build gets a main
 // with no parameters. The native build passes Io to the app (ctx.io).
@@ -82,11 +88,11 @@ var sorted_indices: [36]u16 = undefined;
 // Face order for back-to-front sorting
 var face_order: [num_faces]usize = .{ 0, 1, 2, 3, 4, 5 };
 
+var graph: ?sw_render.FrameGraph = null;
 var pipeline: ?sw.gpu_types.RenderPipeline = null;
 var vertex_buffer: ?gpu_mod.Buffer = null;
 var index_buffer: ?gpu_mod.Buffer = null;
-var uniform_buffer: ?gpu_mod.Buffer = null;
-var bind_group: ?gpu_mod.BindGroup = null;
+var draw_bind_group: ?gpu_mod.BindGroup = null;
 var angle: f32 = 0.0;
 
 // Frame timing
@@ -94,9 +100,12 @@ const target_fps: u64 = 60;
 const frame_time_ns: u64 = std.time.ns_per_s / target_fps;
 var last_frame_time: u64 = 0;
 
-const shader_code =
-    \\struct Uniforms { mvp: mat4x4<f32> }
-    \\@group(0) @binding(0) var<uniform> u: Uniforms;
+/// The per-draw uniforms, from the uniform ring.
+const Draw = extern struct { model: [16]f32 };
+
+const shader_code = sw_render.wgsl.shader(
+    \\struct Draw { model: mat4x4<f32> }
+    \\@group(1) @binding(0) var<uniform> draw: Draw;
     \\
     \\struct VSOut {
     \\    @builtin(position) pos: vec4f,
@@ -108,7 +117,7 @@ const shader_code =
     \\    @location(1) color: vec3f,
     \\) -> VSOut {
     \\    var out: VSOut;
-    \\    out.pos = u.mvp * vec4f(pos, 1.0);
+    \\    out.pos = sw_frame.view_proj * (draw.model * vec4f(pos, 1.0));
     \\    out.color = color;
     \\    return out;
     \\}
@@ -116,7 +125,7 @@ const shader_code =
     \\@fragment fn fs_main(in: VSOut) -> @location(0) vec4f {
     \\    return vec4f(in.color, 1.0);
     \\}
-;
+);
 
 const Callbacks = struct {
     pub fn init(ctx: *sw.Context) !void {
@@ -138,32 +147,32 @@ const Callbacks = struct {
         });
         gpu.writeBuffer(index_buffer.?, 0, std.mem.sliceAsBytes(&sorted_indices));
 
-        // Uniform buffer: mat4x4 = 64 bytes, padded to 256
-        uniform_buffer = try gpu.createBuffer(.{
-            .size = 256,
-            .usage = .{ .uniform = true, .copy_dst = true },
+        // The frame graph: one pass that clears the screen and draws the box.
+        graph = try sw_render.FrameGraph.init(ctx.allocator(), gpu, .{ .ring_capacity = 4096 });
+        const g = &graph.?;
+        try g.addPass(.{
+            .name = "box",
+            .attachments = .{ .colors = &.{.{
+                .target = .screen,
+                .clear_value = .{ .r = 0.08, .g = 0.08, .b = 0.12, .a = 1.0 },
+            }} },
+            .callback = .plain(drawBox),
         });
 
-        // Bind group layout + bind group
-        var bg_layout = try gpu.createBindGroupLayout(.{
-            .entries = &[_]sw.gpu_types.BindGroupLayoutEntry{.{
-                .binding = 0,
-                .visibility = .{ .vertex = true },
-                .buffer = .{ .type = .uniform },
-            }},
+        // Group 1: the model matrix, at a dynamic offset in the uniform ring.
+        var draw_layout = try gpu.createBindGroupLayout(.{
+            .entries = &[_]sw.gpu_types.BindGroupLayoutEntry{
+                sw_render.UniformRing.layoutEntry(0, .{ .vertex = true }, @sizeOf(Draw)),
+            },
         });
-        bind_group = try gpu.createBindGroup(.{
-            .layout = &bg_layout,
-            .entries = &[_]gpu_mod.BindGroupEntry{.{
-                .binding = 0,
-                .buffer = &uniform_buffer.?,
-                .size = 256,
-            }},
+        draw_bind_group = try gpu.createBindGroup(.{
+            .layout = &draw_layout,
+            .entries = &[_]gpu_mod.BindGroupEntry{g.ring.bindGroupEntry(0, @sizeOf(Draw))},
         });
 
-        // Pipeline layout
+        // Pipeline layout: group 0 is the frame uniforms of the WGSL prefix.
         var pipeline_layout = try gpu.createPipelineLayout(.{
-            .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{&bg_layout},
+            .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{ &g.frame_layout, &draw_layout },
         });
 
         // Shader
@@ -225,7 +234,7 @@ const Callbacks = struct {
         }
         last_frame_time = ctx.timeNs();
 
-        // Build MVP matrix
+        // Build the view and projection matrices
         const proj = sw_math.perspective(
             std.math.pi / 3.0, // 60 degree fov
             800.0 / 600.0,
@@ -237,46 +246,38 @@ const Callbacks = struct {
             .{ .x = 0.0, .y = 0.0, .z = 0.0 },
             .{ .x = 0.0, .y = 1.0, .z = 0.0 },
         );
-        const rot = sw_math.Mat4.rotationY(angle);
-        const mvp = proj.mul(view.mul(rot));
+        const g = &graph.?;
 
-        // Upload MVP to uniform buffer
-        gpu.writeBuffer(uniform_buffer.?, 0, std.mem.sliceAsBytes(&mvp.data));
-
-        // Sort faces back-to-front (painter's algorithm, no hardware depth testing)
+        // Sort faces back-to-front (painter's algorithm, no hardware depth
+        // testing). The index write goes through the staged uploads.
         sortFaces();
         buildIndices();
-        gpu.writeBuffer(index_buffer.?, 0, std.mem.sliceAsBytes(&sorted_indices));
+        try g.uploads.write(index_buffer.?, 0, std.mem.sliceAsBytes(&sorted_indices));
 
-        // Render
-        var view_tex = try gpu.getCurrentTextureView();
-        const encoder = try gpu.createCommandEncoder();
-        const pass = try encoder.beginRenderPass(.{
-            .color_attachments = &[_]sw.gpu_types.RenderPassColorAttachment{.{
-                .view = &view_tex,
-                .load_op = .clear,
-                .store_op = .store,
-                .clear_value = .{ .r = 0.08, .g = 0.08, .b = 0.12, .a = 1.0 },
-            }},
-        });
-
-        pass.setPipeline(pipeline.?);
-        pass.setBindGroup(0, bind_group.?);
-        pass.setVertexBuffer(0, vertex_buffer.?, 0, @sizeOf(Vertex) * 24);
-        pass.setIndexBuffer(index_buffer.?, .uint16, 0, @sizeOf(u16) * 36);
-        pass.drawIndexed(36, 1, 0, 0, 0);
-        pass.end();
-
-        const cmd = try encoder.finish();
-        gpu.submit(&[_]sw.gpu_types.CommandBuffer{cmd});
-        view_tex.release();
-        gpu.present();
+        // Render: the graph runs the box pass and submits.
+        if (try g.execute(.{ .view = view.data, .proj = proj.data, .view_proj = proj.mul(view).data })) {
+            gpu.present();
+        }
     }
 
     pub fn shutdown(ctx: *sw.Context) !void {
         _ = ctx;
+        if (graph) |*g| g.deinit();
+        graph = null;
     }
 };
+
+/// The box pass: the frame graph began the render pass on the screen.
+fn drawBox(pass: *sw_render.Pass) !void {
+    const draw_offset = try pass.push(Draw{ .model = sw_math.Mat4.rotationY(angle).data });
+    const rp = pass.render.?;
+    rp.setPipeline(pipeline.?);
+    pass.bindFrame();
+    rp.setBindGroupWithOffsets(1, draw_bind_group.?, &.{draw_offset});
+    rp.setVertexBuffer(0, vertex_buffer.?, 0, @sizeOf(Vertex) * 24);
+    rp.setIndexBuffer(index_buffer.?, .uint16, 0, @sizeOf(u16) * 36);
+    rp.drawIndexed(36, 1, 0, 0, 0);
+}
 
 // Compute centroid of each face (average of 4 vertices after rotation)
 // and sort face_order back-to-front relative to camera at (2, 2, 4).

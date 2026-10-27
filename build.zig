@@ -315,6 +315,26 @@ pub fn build(b: *std.Build) void {
     render_layout_tests.root_module.addImport("sw_text", web_libs.text);
     test_step.dependOn(&b.addRunArtifact(render_layout_tests).step);
 
+    // sw_render frame graph tests: the plan, the uniform ring, the staged
+    // uploads and the WGSL prefix. No GPU code runs.
+    const render_graph_test_files = [_][]const u8{
+        "libs/sw_render/src/plan.zig",
+        "libs/sw_render/src/ring.zig",
+        "libs/sw_render/src/upload.zig",
+        "libs/sw_render/src/wgsl.zig",
+    };
+    inline for (render_graph_test_files) |file| {
+        const unit_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        unit_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    }
+
     // sw_text font tests: they read a real font through stb_truetype (C).
     // text.zig also needs sw_gfx2d, but its tests use no GPU.
     const font_test_files = [_][]const u8{

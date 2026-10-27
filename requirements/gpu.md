@@ -79,3 +79,62 @@ Textures, samplers and other resources of `sw_gpu`.
   - Test — `examples/atlas/main.zig` › `--check`: each texel of each sprite
     cell has the sprite colour at each mip level.
 - **Relations:** refines REQ-GPU-002
+
+## REQ-GPU-005 — The frame graph runs the passes in a set order on targets that follow the window
+
+- **Status:** active
+- **Source:** agent:SWZ-29
+- **Origin:** #29
+- **Type:** functional
+- **Priority:** P1
+- **Statement:** When a game calls `FrameGraph.execute` of `sw_render`,
+  the graph shall run the passes from the lowest `order` to the highest,
+  each on targets that have the size of the surface of that frame.
+- **Rationale:** Many render features (post effects, translucency, sky,
+  shadows) add passes that read the targets of other passes. One set order
+  and one place that changes the target sizes stop each feature from doing
+  this work again, and stop a pass from drawing to a target of the old size.
+- **Verification:**
+  - Test — `libs/sw_render/src/plan.zig` › "plan: passes run by order, and
+    equal orders keep the add sequence (REQ-GPU-005)"
+  - Test — `libs/sw_render/src/plan.zig` › "plan: a surface target follows
+    the surface size (REQ-GPU-005)"
+- **Relations:** none
+
+## REQ-GPU-006 — Per-frame data uses no new GPU buffer each frame
+
+- **Status:** active
+- **Source:** agent:SWZ-29
+- **Origin:** #29
+- **Type:** constraint
+- **Priority:** P1
+- **Statement:** While a frame graph runs frames, the uniform ring and the
+  staged uploads of `sw_render` shall write the per-frame data into the GPU
+  buffers that they made at the start, with no new GPU buffer and no new
+  allocation after the first frames.
+- **Rationale:** A new buffer for each frame or each draw costs a GPU
+  allocation and, on the web, more calls into JavaScript. One ring with
+  dynamic offsets and one write for each frame keep the cost flat.
+- **Verification:**
+  - Test — `libs/sw_render/src/ring.zig` › "ring: one write for each frame,
+    and no new memory after init (REQ-GPU-006)"
+  - Test — `libs/sw_render/src/upload.zig` › "uploads: a frame after the
+    first makes no new allocation (REQ-GPU-006)"
+- **Relations:** none
+
+## REQ-GPU-007 — The WGSL prefix matches the frame uniforms
+
+- **Status:** active
+- **Source:** agent:SWZ-29
+- **Origin:** #29
+- **Type:** constraint
+- **Priority:** P1
+- **Statement:** The shared WGSL prefix of `sw_render` shall declare the
+  frame uniforms at group 0 binding 0 with the same members, sizes and
+  offsets as `FrameUniforms`.
+- **Rationale:** Each pass reads the camera and the viewport from one
+  binding. If the WGSL struct and the Zig struct differ, every shader reads
+  wrong values with no error.
+- **Verification:** Test — `libs/sw_render/src/wgsl.zig` › "wgsl: SwFrame
+  in the prefix has the layout of FrameUniforms (REQ-GPU-007)"
+- **Relations:** none
