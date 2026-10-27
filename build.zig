@@ -263,6 +263,8 @@ pub fn build(b: *std.Build) void {
         "libs/sw_audio/src/wav.zig",
         // sw_render: the frame timing of animated sprites.
         "libs/sw_render/src/animation.zig",
+        // sw_math: vectors, matrices, quaternions, boxes, rays and planes.
+        "libs/sw_math/src/math_root.zig",
     };
 
     // sw_assets: byte loading and PNG decoding. The PNG decoder is C

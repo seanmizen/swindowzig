@@ -182,7 +182,9 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_platform/src/native_sdl.zig` | SDL2 window + event pump (native path). `initStorage` opens the per-user save directory |
 | `libs/sw_platform/src/storage.zig` | Local key-value saves: `storageGet`/`storageSet`/`storageDelete`. Keys `[a-z0-9_-]`, 64 max. Native: files. Web: localStorage via `backends/wasm/storage.ts` |
 | `libs/sw_math/src/mat4.zig` | 4×4 matrix: `perspective()`, `lookAt()`, multiply |
-| `libs/sw_math/src/vec3.zig` | Vec3 ops |
+| `libs/sw_math/src/vec3.zig` | Vec3 ops. `vec2.zig` and `vec4.zig` have the same ops. `Mat4.mulVec4` multiplies a Vec4 |
+| `libs/sw_math/src/quat.zig` | `Quat`: `fromAxisAngle`, `mul`, `rotate`, `slerp`, `toMat4` (same rotation direction as `Mat4.rotationX/Y/Z`) |
+| `libs/sw_math/src/aabb.zig`, `ray.zig`, `plane.zig` | `Aabb` (closed box: union, intersect, contains, expand, expandTowards), `Ray` (against an `Aabb` or a `Plane`), `Plane` (signed distance, `classifyAabb` for culling) |
 | `libs/sw_gfx2d/src/batch.zig` | 2D shapes to vertices, indices and draw calls (no GPU code, unit tested) |
 | `libs/sw_gfx2d/src/projection.zig` | Pixel projection, origin top left, and `dpi_scale` maths |
 | `libs/sw_gfx2d/src/renderer.zig` | `Renderer`: pipeline, buffers, textures, `updateTexture`, `flush` into a render pass |
