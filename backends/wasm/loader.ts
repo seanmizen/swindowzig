@@ -14,7 +14,7 @@
 
 import { createA11yImports } from './a11y';
 import { createAssetImports } from './assets';
-import { audioImports } from './audio';
+import { audioImports, setAudioExports } from './audio';
 import {
   attachEventListeners,
   lockPointer,
@@ -356,6 +356,7 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
 
   const exports = instance.exports as unknown as Exports;
   window.wasmMemory = exports.memory;
+  setAudioExports(instance.exports);
 
   // C9: the pool runs only when each worker has the protocol version, the
   // build hash and the build id of app.wasm. Else the main thread runs the

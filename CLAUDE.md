@@ -95,6 +95,7 @@ swindowzig/
 │   ├── sw_core/        # Timeline, events, input, record/replay
 │   ├── sw_platform/    # SDL2 (native) + canvas (web)
 │   ├── sw_app/         # Entry point — run() function + Context
+│   ├── sw_audio/       # Waveforms, WAV and Ogg Vorbis (stb_vorbis), mixer, 3D sound, streams
 │   ├── sw_gpu/         # WebGPU wrapper (active development)
 │   │   ├── gpu.zig              # Main API — GPU struct, all create* methods
 │   │   ├── native_webgpu.zig    # C bindings for wgpu-native

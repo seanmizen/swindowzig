@@ -99,6 +99,10 @@ jobs:
         # The key numbers and the wheel deltas that events.ts sends.
         run: bun test backends/wasm/events.test.ts
 
+      - name: Web audio mixer pump tests in Bun
+        # The blocks that sw_audio mixes play on the audio clock with no gap.
+        run: bun test backends/wasm/audio.test.ts
+
       - name: Native build
         run: zig build native -Dexample=voxel
 

@@ -10,6 +10,8 @@
 | [`REQ-A11Y-003`](a11y.md#req-a11y-003--a-live-region-is-an-aria-live-element) | A live region is an aria-live element | active | functional | P1 | sean |
 | [`REQ-A11Y-004`](a11y.md#req-a11y-004--the-mirror-is-visually-hidden) | The mirror is visually hidden | active | constraint | P1 | sean |
 | [`REQ-A11Y-005`](a11y.md#req-a11y-005--an-unchanged-tree-is-not-sent-to-js) | An unchanged tree is not sent to JS | active | quality | P1 | sean |
+| [`REQ-AUDIO-001`](audio.md#req-audio-001--the-waveform-api-does-not-change) | The waveform API does not change | active | constraint | P1 | agent:SWZ-48 |
+| [`REQ-AUDIO-002`](audio.md#req-audio-002--a-stream-does-not-decode-all-of-its-data) | A stream does not decode all of its data | active | quality | P1 | agent:SWZ-48 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
@@ -24,6 +26,8 @@ graph TD
   REQ_A11Y_003["REQ-A11Y-003<br/>A live region is an aria-live element"]
   REQ_A11Y_004["REQ-A11Y-004<br/>The mirror is visually hidden"]
   REQ_A11Y_005["REQ-A11Y-005<br/>An unchanged tree is not sent to JS"]
+  REQ_AUDIO_001["REQ-AUDIO-001<br/>The waveform API does not change"]
+  REQ_AUDIO_002["REQ-AUDIO-002<br/>A stream does not decode all of its data"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]

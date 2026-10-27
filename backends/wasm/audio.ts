@@ -5,6 +5,10 @@
 // - audioPlayBuffer: two channels of samples from the wasm memory. The
 //   samples are copied during the call, so the caller can use the memory
 //   again after the call.
+// - audioStartMixer: a timer calls the wasm export sw_audio_mix, and plays
+//   each mixed block on the audio clock, a short time ahead (pumpMixer).
+//   The sw_audio mixer plays the decoded samples, the streams and the 3D
+//   sound.
 // The delays of the sounds of one task count from one audio time
 // (startTime).
 
@@ -34,6 +38,83 @@ function ensureContext(): AudioContext | null {
 function audioInit(): void {
   ensureContext();
   console.log('🔊 Audio initialized');
+}
+
+/** The rate of the audio context, or 0 if it does not exist. */
+function audioSampleRate(): number {
+  return ensureContext()?.sampleRate ?? 0;
+}
+
+// The mixer of sw_audio (libs/sw_audio/src/web.zig).
+type MixExport = (frames: number) => number;
+let mixExport: MixExport | null = null;
+let mixMemory: WebAssembly.Memory | null = null;
+let mixTimer: ReturnType<typeof setInterval> | null = null;
+// The audio time of the end of the last scheduled block. 0: no block.
+let mixNextTime = 0;
+
+/** Frames in one mixed block. */
+const MIX_BLOCK = 1024;
+/** Seconds of mixed audio to keep scheduled ahead of the audio clock. */
+const MIX_LEAD = 0.06;
+/** Milliseconds between two pumps. */
+const MIX_INTERVAL_MS = 10;
+
+/**
+ * Give the wasm exports to the mixer pump. The loader calls it after the
+ * wasm starts. A wasm with no sw_audio_mix export has no mixer.
+ */
+export function setAudioExports(exports: WebAssembly.Exports): void {
+  const mix = exports.sw_audio_mix;
+  const memory = exports.memory;
+  mixExport = typeof mix === 'function' ? (mix as MixExport) : null;
+  mixMemory = memory instanceof WebAssembly.Memory ? memory : null;
+}
+
+/**
+ * Schedule mixed blocks until MIX_LEAD seconds are ready. When no voice
+ * plays, sw_audio_mix gives 0 and the pump schedules nothing.
+ */
+export function pumpMixer(): void {
+  const ctx = audioContext;
+  const mix = mixExport;
+  const memory = mixMemory ?? window.wasmMemory;
+  if (!ctx || !mix || !memory || ctx.state !== 'running') return;
+  const now = ctx.currentTime;
+  // After a silence or a late timer, start a little after now.
+  if (mixNextTime < now) mixNextTime = now + 0.01;
+  while (mixNextTime < now + MIX_LEAD) {
+    const ptr = mix(MIX_BLOCK);
+    if (!ptr) {
+      mixNextTime = 0;
+      return;
+    }
+    const buffer = ctx.createBuffer(2, MIX_BLOCK, ctx.sampleRate);
+    const frames = new Float32Array(memory.buffer, ptr, MIX_BLOCK * 2);
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    for (let i = 0; i < MIX_BLOCK; i++) {
+      left[i] = frames[i * 2];
+      right[i] = frames[i * 2 + 1];
+    }
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.start(mixNextTime);
+    mixNextTime += MIX_BLOCK / ctx.sampleRate;
+  }
+}
+
+/** Start the mixer pump. A browser starts the audio after a user gesture. */
+function audioStartMixer(): void {
+  if (mixTimer !== null) return;
+  mixTimer = setInterval(pumpMixer, MIX_INTERVAL_MS);
+  const resume = (): void => {
+    if (audioContext?.state === 'suspended') audioContext.resume();
+  };
+  for (const name of ['pointerdown', 'keydown', 'touchend']) {
+    window.addEventListener(name, resume, { capture: true });
+  }
 }
 
 // The audio time of the first sound in this task. Every sound that the
@@ -178,4 +259,6 @@ export const audioImports = {
   audioInit,
   audioPlay,
   audioPlayBuffer,
+  audioSampleRate,
+  audioStartMixer,
 };
