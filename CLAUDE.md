@@ -105,7 +105,7 @@ swindowzig/
 │   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
 │   ├── sw_assets/      # loadBytes (async, native + fetch) and PNG decode (stb_image)
 │   ├── sw_text/        # TTF text (stb_truetype): atlas, measure, wrap, draw
-│   ├── sw_render/      # Texture atlas with mip levels and animated sprites
+│   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix
 │   ├── sw_ui/          # UI tree: layout, keyboard focus, semantic tree, drawing
 │   └── sw_voxel/       # Voxel chunks: storage, light, greedy mesher, chunk pipeline
 │       ├── src/                 # Library. content.zig gives the content contract

@@ -206,3 +206,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_render/src/layout.zig` | Atlas packing on a grid of power-of-two cells (the `sw_text` shelf packer), UV rectangles, and `compose` (no GPU code, unit tested) |
 | `libs/sw_render/src/animation.zig` | Frame timing of animated sprites: `imageAt`, `Player.advance` (no GPU code, unit tested) |
 | `libs/sw_render/src/atlas.zig` | `AtlasBuilder` and `Atlas`: textures, mip levels with `MipmapGenerator`, and `update`, which copies changed frames with `copyTextureToTexture` (REQ-GPU-003, REQ-GPU-004) |
+| `libs/sw_render/src/frame_graph.zig` | `FrameGraph`: named render targets that follow the window, passes by `order`, frame uniforms at group 0. `execute` submits, then the game calls `gpu.present()` (REQ-GPU-005) |
+| `libs/sw_render/src/plan.zig` | Frame graph rules: target sizes, pass order, attachment checks (no GPU code, unit tested) |
+| `libs/sw_render/src/ring.zig`, `upload.zig` | `UniformRing` (per-draw uniforms at dynamic offsets, one write per frame) and `Uploads` (staged buffer writes, merged). No new buffer each frame (REQ-GPU-006) |
+| `libs/sw_render/src/wgsl.zig` | The shared WGSL prefix (`sw_frame` at group 0) and `FrameUniforms` (REQ-GPU-007) |
