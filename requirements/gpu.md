@@ -38,3 +38,44 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Verification:** Test — `libs/sw_gpu/src/mip_chain.zig` › "mip chain:
   every 2x2 block of an atlas stays in one tile (REQ-GPU-002)"
 - **Relations:** refines REQ-GPU-001
+
+## REQ-GPU-003 — An animated sprite changes with GPU copies only
+
+- **Status:** active
+- **Source:** agent:SWZ-28
+- **Origin:** #28
+- **Type:** functional
+- **Priority:** P1
+- **Statement:** When the image of an animated sprite changes,
+  `Atlas.update` of `sw_render` shall copy the new image into the atlas
+  with GPU texture copies only, one for each mip level, with no texel
+  upload from the CPU.
+- **Rationale:** An atlas can hold many animated sprites, and they change
+  each tick. An upload of the atlas, or of each changed image, sends data
+  from the CPU each tick. The frame images go to the GPU one time, with
+  their mip levels, and a copy on the GPU is fast.
+- **Verification:**
+  - Test — `examples/atlas/main.zig` › `--check`: after each time step,
+    each mip level of each sprite has the colour of the frame that shows.
+  - Test — `libs/sw_render/src/animation.zig` › "player: advance gives an
+    image only when the image changes"
+- **Relations:** none
+
+## REQ-GPU-004 — The atlas packer keeps each image on the cell grid
+
+- **Status:** active
+- **Source:** agent:SWZ-28
+- **Origin:** #28
+- **Type:** constraint
+- **Priority:** P1
+- **Statement:** The atlas packer of `sw_render` shall put each image in
+  a whole number of power-of-two cells that start at a cell edge.
+- **Rationale:** The mip levels of an atlas keep the tiles apart only when
+  each tile is on a grid of power-of-two tiles. With the cell as the tile
+  size, no mip level mixes two images.
+- **Verification:**
+  - Test — `libs/sw_render/src/layout.zig` › "pack: each image is on the
+    cell grid, in the texture, and apart (REQ-GPU-004)"
+  - Test — `examples/atlas/main.zig` › `--check`: each texel of each sprite
+    cell has the sprite colour at each mip level.
+- **Relations:** refines REQ-GPU-002

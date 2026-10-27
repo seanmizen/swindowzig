@@ -1106,6 +1106,38 @@ function createWebGPUImports(
       return createHandle(computePass);
     },
 
+    webgpuCommandEncoderCopyTextureToTexture: (
+      encoderHandle: number,
+      srcTextureHandle: number,
+      srcMipLevel: number,
+      srcX: number,
+      srcY: number,
+      srcZ: number,
+      dstTextureHandle: number,
+      dstMipLevel: number,
+      dstX: number,
+      dstY: number,
+      dstZ: number,
+      width: number,
+      height: number,
+      depth: number,
+    ): void => {
+      const encoder = getHandle<GPUCommandEncoder>(encoderHandle);
+      encoder.copyTextureToTexture(
+        {
+          texture: getHandle<GPUTexture>(srcTextureHandle),
+          mipLevel: srcMipLevel,
+          origin: { x: srcX, y: srcY, z: srcZ },
+        },
+        {
+          texture: getHandle<GPUTexture>(dstTextureHandle),
+          mipLevel: dstMipLevel,
+          origin: { x: dstX, y: dstY, z: dstZ },
+        },
+        { width, height, depthOrArrayLayers: depth },
+      );
+    },
+
     webgpuCommandEncoderFinish: (encoderHandle: number): number => {
       const encoder = getHandle<GPUCommandEncoder>(encoderHandle);
       const commandBuffer = encoder.finish();

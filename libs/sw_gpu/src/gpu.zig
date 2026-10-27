@@ -1943,6 +1943,49 @@ pub const CommandEncoder = struct {
         }
     }
 
+    /// Record a copy of a region of `src` to `dst` on the GPU (REQ-GPU-003).
+    /// The two textures must have the same format. `src` needs `copy_src`
+    /// usage and `dst` needs `copy_dst` usage. For a 2D texture array,
+    /// `origin.z` is the first array layer and `size.depth_or_array_layers`
+    /// is the number of layers. No data goes through the CPU.
+    pub fn copyTextureToTexture(self: CommandEncoder, src: TextureCopy, dst: TextureCopy, size: Extent3D) void {
+        if (comptime is_wasm) {
+            web.webgpuCommandEncoderCopyTextureToTexture(
+                self.handle,
+                src.texture.handle,
+                src.mip_level,
+                src.origin.x,
+                src.origin.y,
+                src.origin.z,
+                dst.texture.handle,
+                dst.mip_level,
+                dst.origin.x,
+                dst.origin.y,
+                dst.origin.z,
+                size.width,
+                size.height,
+                size.depth_or_array_layers,
+            );
+        } else {
+            var c_src = std.mem.zeroes(native.WGPUImageCopyTexture);
+            c_src.texture = src.texture.handle;
+            c_src.mip_level = src.mip_level;
+            c_src.origin = .{ .x = src.origin.x, .y = src.origin.y, .z = src.origin.z };
+            c_src.aspect = .all;
+            var c_dst = std.mem.zeroes(native.WGPUImageCopyTexture);
+            c_dst.texture = dst.texture.handle;
+            c_dst.mip_level = dst.mip_level;
+            c_dst.origin = .{ .x = dst.origin.x, .y = dst.origin.y, .z = dst.origin.z };
+            c_dst.aspect = .all;
+            const extent = native.WGPUExtent3D{
+                .width = size.width,
+                .height = size.height,
+                .depth_or_array_layers = size.depth_or_array_layers,
+            };
+            native.wgpuCommandEncoderCopyTextureToTexture(self.handle, &c_src, &c_dst, &extent);
+        }
+    }
+
     /// Finish encoding and return command buffer
     pub fn finish(self: CommandEncoder) !CommandBuffer {
         if (comptime is_wasm) {
@@ -2130,6 +2173,14 @@ pub const ImageCopyBuffer = struct {
     offset: u64 = 0,
     bytes_per_row: u32,
     rows_per_image: u32,
+};
+
+/// One end of `CommandEncoder.copyTextureToTexture`: a texture, a mip
+/// level and the first texel.
+pub const TextureCopy = struct {
+    texture: Texture,
+    mip_level: u32 = 0,
+    origin: Origin3D = .{},
 };
 
 /// Image copy texture (overrides types.zig version)

@@ -203,3 +203,6 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_audio/src/mixer.zig` | `Mixer`: 64 voices, 8 volume groups, pan and distance loss from the listener, a limiter. No platform code, unit tested |
 | `libs/sw_audio/src/vorbis.zig`, `wav.zig` | Ogg Vorbis (stb_vorbis in `c/`, one memory buffer, no libc) and WAV decoding. `Stream` decodes a 4096-frame window at a time (REQ-AUDIO-002) |
 | `libs/sw_audio/src/native_sdl.zig`, `web.zig` | Backends. Native: the SDL audio thread calls `Mixer.mix`. The main thread changes the mixer between `SDL_LockAudioDevice` and unlock. Web: `backends/wasm/audio.ts` calls the `sw_audio_mix` export from a timer, and plays each block on the audio clock |
+| `libs/sw_render/src/layout.zig` | Atlas packing on a grid of power-of-two cells (the `sw_text` shelf packer), UV rectangles, and `compose` (no GPU code, unit tested) |
+| `libs/sw_render/src/animation.zig` | Frame timing of animated sprites: `imageAt`, `Player.advance` (no GPU code, unit tested) |
+| `libs/sw_render/src/atlas.zig` | `AtlasBuilder` and `Atlas`: textures, mip levels with `MipmapGenerator`, and `update`, which copies changed frames with `copyTextureToTexture` (REQ-GPU-003, REQ-GPU-004) |
