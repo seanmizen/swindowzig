@@ -2022,6 +2022,17 @@ pub const RenderPassEncoder = struct {
         }
     }
 
+    /// Set a bind group that has dynamic offsets. Give one offset for each
+    /// binding with `has_dynamic_offset`, in binding order. Each offset is a
+    /// multiple of 256 (`minUniformBufferOffsetAlignment`).
+    pub fn setBindGroupWithOffsets(self: RenderPassEncoder, index: u32, bind_group: BindGroup, offsets: []const u32) void {
+        if (comptime is_wasm) {
+            web.webgpuRenderPassSetBindGroup(self.handle, index, bind_group.handle, offsets.ptr, @intCast(offsets.len));
+        } else {
+            native.wgpuRenderPassEncoderSetBindGroup(self.handle, index, bind_group.handle, offsets.len, if (offsets.len == 0) null else offsets.ptr);
+        }
+    }
+
     pub fn setVertexBuffer(self: RenderPassEncoder, slot: u32, buffer: Buffer, offset: u64, size: u64) void {
         if (comptime is_wasm) {
             web.webgpuRenderPassSetVertexBuffer(self.handle, slot, buffer.handle, offset, size);

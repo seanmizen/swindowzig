@@ -1,4 +1,5 @@
 const std = @import("std");
+const Vec4 = @import("vec4.zig").Vec4;
 
 /// 4x4 matrix in column-major order (WebGPU/OpenGL convention)
 /// Memory layout: [col0_x, col0_y, col0_z, col0_w, col1_x, col1_y, ...]
@@ -44,6 +45,16 @@ pub const Mat4 = struct {
             }
         }
         return result;
+    }
+
+    /// Matrix-vector multiplication: result = m * v (v is a column vector)
+    pub fn mulVec4(m: Mat4, v: Vec4) Vec4 {
+        return .{
+            .x = m.get(0, 0) * v.x + m.get(0, 1) * v.y + m.get(0, 2) * v.z + m.get(0, 3) * v.w,
+            .y = m.get(1, 0) * v.x + m.get(1, 1) * v.y + m.get(1, 2) * v.z + m.get(1, 3) * v.w,
+            .z = m.get(2, 0) * v.x + m.get(2, 1) * v.y + m.get(2, 2) * v.z + m.get(2, 3) * v.w,
+            .w = m.get(3, 0) * v.x + m.get(3, 1) * v.y + m.get(3, 2) * v.z + m.get(3, 3) * v.w,
+        };
     }
 
     /// Transpose matrix
@@ -144,4 +155,17 @@ test "mat4 transpose" {
     const t = m.transpose();
     try std.testing.expectEqual(@as(f32, 5), t.get(1, 0));
     try std.testing.expectEqual(@as(f32, 0), t.get(0, 1));
+}
+
+test "mat4 mulVec4" {
+    const p = Vec4.init(1, 2, 3, 1);
+    try std.testing.expectEqual(p, Mat4.identity().mulVec4(p));
+    // A translation moves a point (w = 1) and does not move a direction (w = 0).
+    const t = Mat4.translation(10, 20, 30);
+    try std.testing.expectEqual(Vec4.init(11, 22, 33, 1), t.mulVec4(p));
+    try std.testing.expectEqual(Vec4.init(1, 2, 3, 0), t.mulVec4(Vec4.init(1, 2, 3, 0)));
+    // Rotate +x by 90 degrees around z: it gives +y.
+    const r = Mat4.rotationZ(std.math.pi / 2.0).mulVec4(Vec4.init(1, 0, 0, 0));
+    try std.testing.expectApproxEqAbs(@as(f32, 0), r.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), r.y, 0.0001);
 }
