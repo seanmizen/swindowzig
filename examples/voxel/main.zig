@@ -926,12 +926,6 @@ const State = struct {
     /// light: each face takes the light of the cell in front of it
     /// (sw_voxel REQ-VOXEL-008). Default: on.
     smooth_light: bool = true,
-    /// Block type emitted by right-click placement. Parsed from
-    /// `--place-block=<stone|glowstone>`; default stone preserves prior
-    /// behaviour. Introduced alongside phase-3 block light so the
-    /// `glowstone_cave.tas` regression can place a glowstone without
-    /// needing an in-game block-picker UI.
-    place_block: chunk_mod.BlockType = .stone,
     /// --dump-frame=<path>: capture first rendered frame to a PPM file then exit.
     dump_frame_path: ?[]const u8 = null,
     dump_frame_done: bool = false,
@@ -1415,15 +1409,16 @@ fn voxelInit(ctx: *sw.Context) !void {
             };
         }
         if (std.mem.startsWith(u8, arg, "--place-block=")) {
-            const val = arg["--place-block=".len..];
-            if (std.mem.eql(u8, val, "stone")) {
-                state.place_block = .stone;
-            } else if (std.mem.eql(u8, val, "glowstone")) {
-                state.place_block = .glowstone;
-            } else {
-                std.log.err("--place-block: invalid value '{s}'. Accepted: stone, glowstone", .{val});
+            // Put the block in hotbar slot 1, the slot that is selected at
+            // the start. Then right-click places it. A TAS can place an
+            // emitter with no key presses (tests/glowstone_cave.sh).
+            const val = std.mem.sliceTo(arg["--place-block=".len..], 0);
+            const block = std.meta.stringToEnum(chunk_mod.BlockType, val) orelse .air;
+            if (block == .air) {
+                std.log.err("--place-block: invalid value '{s}'. Accepted: a block name, for example stone or glowstone", .{val});
                 fatalExit(1);
             }
+            state.hotbar_slots[0] = block;
         }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s}", .{

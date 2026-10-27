@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 2. Skipped: 0. Not started: 13.
+- Done: 3. Skipped: 0. Not started: 12.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -54,3 +54,20 @@ ticket of #102, in the order of the batch.
   correct names. The parser now also accepts a tab between fields, and a
   test covers more than one space and a tab. Separate bug, not fixed: when
   the TAS parse fails, the voxel demo logs a memory leak on exit.
+
+## #76 `voxel --place-block` has no effect
+
+- Status: done
+- Commit: see `git log --grep SWZ-76`
+- Not run here: nothing. `glowstone_cave.sh` passed under `xvfb-run`:
+  core +104, wall near +78, wall rim +34, far grass -0.1.
+- Expected changes:
+  - quad hash: no change
+  - goldens: none (10 of 10 passed)
+- CI changes needed: optional. `glowstone_cave.sh` opens a window, so CI
+  needs `xvfb-run` to run it.
+- Requirements: none
+- Open questions: none
+- Risks: the flag now accepts each block name of `content.zig`, not only
+  `stone` and `glowstone`. It puts the block in hotbar slot 1.
+  `State.place_block` is gone.
