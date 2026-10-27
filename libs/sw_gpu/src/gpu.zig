@@ -1742,9 +1742,13 @@ pub const Texture = struct {
 pub const TextureView = struct {
     handle: if (is_wasm) web.WebGPUTextureView else native.WGPUTextureView,
 
+    /// Release the view. A view of the window surface is good for one
+    /// frame only: release it after the submit (REQ-GPU-012).
     pub fn release(self: TextureView) void {
         if (comptime is_wasm) {
-            // WASM handles cleanup automatically
+            // A view has no destroy in WebGPU. The bridge drops its handle,
+            // so the browser can collect the view and its canvas texture.
+            web.webgpuTextureViewRelease(self.handle);
         } else {
             native.wgpuTextureViewRelease(self.handle);
         }

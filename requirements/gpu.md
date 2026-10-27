@@ -189,3 +189,22 @@ Textures, samplers and other resources of `sw_gpu`.
   - Demonstration — `justabox --check` (native, in CI) turns FXAA off and
     checks that FXAA changed the box edges and nothing else.
 - **Relations:** refines REQ-GPU-005
+
+## REQ-GPU-012 — The web bridge keeps no surface view or command object from an earlier frame
+
+- **Status:** active
+- **Source:** agent:SWZ-68
+- **Origin:** #68
+- **Type:** functional
+- **Priority:** P1
+- **Statement:** When the web build submits a frame, the WebGPU bridge
+  shall drop the handles of the canvas view, the encoders, the passes and
+  the command buffers of that frame.
+- **Rationale:** The canvas gives a new texture for each frame, and the
+  frame graph gets the view of it in each frame. Native
+  releases these objects at the same points. Before this requirement, the
+  bridge kept about six handles for each frame, with the canvas texture of
+  each frame. The memory of the page increased while the game ran.
+- **Verification:** Test — `backends/wasm/tests/canvas.pw.ts` › "justabox
+  draws the spinning box on the canvas"
+- **Relations:** refines REQ-GPU-005
