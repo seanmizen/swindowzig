@@ -111,6 +111,8 @@ const server = serve({
       '/a11y': './backends/wasm/a11y.ts',
       '/net.js': './backends/wasm/net.ts',
       '/net': './backends/wasm/net.ts',
+      '/websocket.js': './backends/wasm/websocket.ts',
+      '/websocket': './backends/wasm/websocket.ts',
       '/held-bytes.js': './backends/wasm/held-bytes.ts',
       '/held-bytes': './backends/wasm/held-bytes.ts',
       '/window.js': './backends/wasm/window.ts',

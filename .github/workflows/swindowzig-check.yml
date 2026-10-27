@@ -108,6 +108,11 @@ jobs:
         # the error on a page that is not a secure context.
         run: bun test backends/wasm/files.test.ts
 
+      - name: WebSocket bridge tests in Bun
+        # sw_net in wasm with websocket.ts, against a local Bun server:
+        # binary and text messages, the close codes, and the reconnect.
+        run: bun test backends/wasm/websocket.test.ts
+
       - name: Native build
         run: zig build native -Dexample=voxel
 
@@ -145,6 +150,17 @@ jobs:
           zig build web -Dexample=justabox
           zig build native -Dexample=justabox
           ./zig-out/bin/justabox --check
+
+      - name: Sky, fog and the time of day (sky --check)
+        # The sky pass and a fogged scene draw into the HDR target. The
+        # example reads the screen back at noon, at sunrise, at midnight
+        # and with the cube map, and compares the sky and the ground with
+        # the CPU reference after the tonemap (REQ-GPU-010, REQ-GPU-011).
+        # The web build must compile too.
+        run: |
+          zig build web -Dexample=sky
+          zig build native -Dexample=sky
+          ./zig-out/bin/sky --check
 
       - name: Screen-reader mirror in Chromium (flat2d)
         # Playwright opens flat2d with WebGPU, moves the focus with Tab, and

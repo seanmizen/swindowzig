@@ -26,12 +26,17 @@
 | [`REQ-GPU-007`](gpu.md#req-gpu-007--the-wgsl-prefix-matches-the-frame-uniforms) | The WGSL prefix matches the frame uniforms | active | constraint | P1 | agent:SWZ-29 |
 | [`REQ-GPU-008`](gpu.md#req-gpu-008--the-scene-renders-to-an-hdr-target-and-a-tonemap-writes-display-colour) | The scene renders to an HDR target, and a tonemap writes display colour | active | functional | P2 | agent:SWZ-30 |
 | [`REQ-GPU-009`](gpu.md#req-gpu-009--the-post-chain-runs-its-passes-in-order-and-fxaa-is-one-link) | The post chain runs its passes in order, and FXAA is one link | active | functional | P2 | agent:SWZ-30 |
+| [`REQ-GPU-010`](gpu.md#req-gpu-010--the-sky-pass-draws-the-sky-from-a-time-of-day) | The sky pass draws the sky from a time of day | active | functional | P2 | agent:SWZ-36 |
+| [`REQ-GPU-011`](gpu.md#req-gpu-011--the-distance-fog-fades-into-the-sky-colour-at-the-horizon) | The distance fog fades into the sky colour at the horizon | active | functional | P2 | agent:SWZ-36 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
 | [`REQ-INPUT-004`](input.md#req-input-004--saved-input-settings-load-in-a-newer-version) | Saved input settings load in a newer version | active | functional | P2 | agent:SWZ-49 |
 | [`REQ-INPUT-005`](input.md#req-input-005--gamepads-are-recorded-input-that-binds-to-actions) | Gamepads are recorded input that binds to actions | active | functional | P2 | agent:SWZ-50 |
 | [`REQ-INPUT-006`](input.md#req-input-006--old-recordings-still-play) | Old recordings still play | active | constraint | P1 | agent:SWZ-50 |
+| [`REQ-NET-001`](net.md#req-net-001--the-game-polls-network-events) | The game polls network events | active | constraint | P1 | agent:SWZ-53 |
+| [`REQ-NET-002`](net.md#req-net-002--the-native-client-masks-each-frame) | The native client masks each frame | active | functional | P1 | agent:SWZ-53 |
+| [`REQ-NET-003`](net.md#req-net-003--the-reconnect-delay-doubles-to-a-limit) | The reconnect delay doubles to a limit | active | functional | P2 | agent:SWZ-53 |
 | [`REQ-PLATFORM-001`](platform.md#req-platform-001--a-refused-pointer-lock-does-not-stop-the-game) | A refused pointer lock does not stop the game | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-002`](platform.md#req-platform-002--clipboard-results-arrive-as-events) | Clipboard results arrive as events | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-003`](platform.md#req-platform-003--the-canvas-and-the-surface-follow-the-device-pixel-ratio) | The canvas and the surface follow the device pixel ratio | active | functional | P2 | agent:SWZ-45 |
@@ -63,12 +68,17 @@ graph TD
   REQ_GPU_007["REQ-GPU-007<br/>The WGSL prefix matches the frame uniforms"]
   REQ_GPU_008["REQ-GPU-008<br/>The scene renders to an HDR target, and a tonemap writes display colour"]
   REQ_GPU_009["REQ-GPU-009<br/>The post chain runs its passes in order, and FXAA is one link"]
+  REQ_GPU_010["REQ-GPU-010<br/>The sky pass draws the sky from a time of day"]
+  REQ_GPU_011["REQ-GPU-011<br/>The distance fog fades into the sky colour at the horizon"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
   REQ_INPUT_004["REQ-INPUT-004<br/>Saved input settings load in a newer version"]
   REQ_INPUT_005["REQ-INPUT-005<br/>Gamepads are recorded input that binds to actions"]
   REQ_INPUT_006["REQ-INPUT-006<br/>Old recordings still play"]
+  REQ_NET_001["REQ-NET-001<br/>The game polls network events"]
+  REQ_NET_002["REQ-NET-002<br/>The native client masks each frame"]
+  REQ_NET_003["REQ-NET-003<br/>The reconnect delay doubles to a limit"]
   REQ_PLATFORM_001["REQ-PLATFORM-001<br/>A refused pointer lock does not stop the game"]
   REQ_PLATFORM_002["REQ-PLATFORM-002<br/>Clipboard results arrive as events"]
   REQ_PLATFORM_003["REQ-PLATFORM-003<br/>The canvas and the surface follow the device pixel ratio"]
@@ -83,6 +93,8 @@ graph TD
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
   REQ_GPU_009 -->|refines| REQ_GPU_005
+  REQ_GPU_010 -->|refines| REQ_GPU_008
+  REQ_GPU_011 -->|refines| REQ_GPU_010
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
 ```
 
@@ -92,4 +104,6 @@ graph TD
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009
+- `REQ-GPU-008` — refined-by REQ-GPU-010
+- `REQ-GPU-010` — refined-by REQ-GPU-011
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
