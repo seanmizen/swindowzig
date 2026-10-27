@@ -1,6 +1,16 @@
 //! GPU module root - exports WebGPU wrapper
 const gpu_mod = @import("gpu.zig");
 const types_mod = @import("types.zig");
+const mipmap_mod = @import("mipmap.zig");
+
+/// Mip chain maths with no GPU code: level counts, level sizes, and the
+/// tile limit of a texture atlas.
+pub const mip_chain = @import("mip_chain.zig");
+pub const TileSize = mip_chain.TileSize;
+
+/// Mip level generation on the GPU, native and web.
+pub const MipmapGenerator = mipmap_mod.MipmapGenerator;
+pub const MipmapTarget = mipmap_mod.MipmapTarget;
 
 // Main GPU context
 pub const GPU = gpu_mod.GPU;
@@ -39,6 +49,11 @@ pub const Origin3D = types_mod.Origin3D;
 pub const BufferDescriptor = types_mod.BufferDescriptor;
 pub const TextureDescriptor = types_mod.TextureDescriptor;
 pub const SamplerDescriptor = types_mod.SamplerDescriptor;
+pub const TextureViewDescriptor = types_mod.TextureViewDescriptor;
+pub const TextureRegion = types_mod.TextureRegion;
+pub const TextureViewDimension = types_mod.TextureViewDimension;
+pub const AddressMode = types_mod.AddressMode;
+pub const FilterMode = types_mod.FilterMode;
 pub const ShaderModuleDescriptor = types_mod.ShaderModuleDescriptor;
 pub const BindGroupLayoutDescriptor = types_mod.BindGroupLayoutDescriptor;
 pub const BindGroupLayoutEntry = types_mod.BindGroupLayoutEntry;

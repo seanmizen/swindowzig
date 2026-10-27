@@ -235,6 +235,10 @@ pub fn build(b: *std.Build) void {
         "libs/sw_core/src/replay.zig",
         "libs/sw_core/src/tas.zig",
         "libs/sw_platform/src/storage.zig",
+        // sw_gpu: the mip chain maths and the descriptor checks have no
+        // GPU code.
+        "libs/sw_gpu/src/mip_chain.zig",
+        "libs/sw_gpu/src/types.zig",
         // sw_gfx2d: the batching and the projection maths have no GPU code.
         "libs/sw_gfx2d/src/batch.zig",
         "libs/sw_gfx2d/src/projection.zig",

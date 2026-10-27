@@ -316,6 +316,12 @@ function createWebGPUImports(
       texture.destroy();
     },
 
+    // A texture view has no destroy in WebGPU. Drop the handle so the
+    // browser can collect it.
+    webgpuTextureViewRelease: (viewHandle: number): void => {
+      handles.delete(viewHandle);
+    },
+
     webgpuWriteTexture: (
       queueHandle: number,
       textureHandle: number,
@@ -367,6 +373,7 @@ function createWebGPUImports(
       lodMin: number,
       lodMax: number,
       compare: number,
+      maxAnisotropy: number,
     ): number => {
       const device = getHandle<GPUDevice>(deviceHandle);
 
@@ -403,6 +410,9 @@ function createWebGPUImports(
         lodMinClamp: lodMin,
         lodMaxClamp: lodMax,
         compare: compareMap[compare],
+        // An older wasm build does not pass this argument. 1 is no
+        // anisotropic filtering.
+        maxAnisotropy: maxAnisotropy > 1 ? maxAnisotropy : 1,
       });
 
       return createHandle(sampler);

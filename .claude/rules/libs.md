@@ -45,6 +45,14 @@ reject every fragment (blank sky-only output). `createRenderPipeline` now uses
 fields (depth_compare, stencil_front.compare, stencil_back.compare).
 Do not use raw `@intFromEnum` for CompareFunction conversions.
 
+### Sampler and view enum mismatches (fixed in gpu.zig)
+`types.AddressMode` starts with `clamp_to_edge=0`, but `WGPUAddressMode` starts
+with `repeat=0`. `types.TextureViewDimension` starts with `1d=0`, but the
+native enum and webgpu.ts use `undefined=0, 1d=1, 2d=2`. `createSampler` and
+`Texture.createView` use named maps (`toNativeAddressMode`,
+`viewDimensionCode`). A sampler with `max_anisotropy > 1` needs linear
+filters: `SamplerDescriptor.validate` gives an error before the GPU sees it.
+
 ### Hardware depth testing (macOS/Metal)
 Hardware depth testing is **enabled** in the voxel pipeline (`depth24plus`,
 `depth_write_enabled = true`, `depth_compare = .less`). The Metal crash
@@ -169,6 +177,8 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_gpu/src/native_webgpu.zig` | Raw C bindings for wgpu-native (`WGPUFoo` types) |
 | `libs/sw_gpu/src/types.zig` | Shared descriptor types used by both native and WASM paths |
 | `libs/sw_gpu/src/web_bridge.zig` | WASM/JS extern bindings |
+| `libs/sw_gpu/src/mip_chain.zig` | Mip level counts and sizes, the atlas tile limit, and the CPU reference box filter (no GPU code, unit tested) |
+| `libs/sw_gpu/src/mipmap.zig` | `MipmapGenerator`: makes mip levels with render passes, native and web (REQ-GPU-001, REQ-GPU-002) |
 | `libs/sw_platform/src/native_sdl.zig` | SDL2 window + event pump (native path). `initStorage` opens the per-user save directory |
 | `libs/sw_platform/src/storage.zig` | Local key-value saves: `storageGet`/`storageSet`/`storageDelete`. Keys `[a-z0-9_-]`, 64 max. Native: files. Web: localStorage via `backends/wasm/storage.ts` |
 | `libs/sw_math/src/mat4.zig` | 4×4 matrix: `perspective()`, `lookAt()`, multiply |

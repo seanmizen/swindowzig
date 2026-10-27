@@ -65,6 +65,7 @@ Prefixes are globally unique. Add a row when you add a file.
 | Prefix | File | Scope |
 |---|---|---|
 | `A11Y` | `requirements/a11y.md` | Access for assistive technology (screen readers) to a swindowzig UI |
+| `GPU` | `requirements/gpu.md` | Textures, samplers and other resources of `sw_gpu` |
 | `INPUT` | `requirements/input.md` | Keyboard, mouse and wheel input from the platform backends |
 
 ---

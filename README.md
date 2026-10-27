@@ -105,6 +105,7 @@ zig build run                      # justabox (default) — spinning colored box
 zig build run -Dexample=voxel     # voxel chunk demo
 zig build run -Dexample=windows   # triangle with mouse drag
 zig build run -Dexample=flat2d    # 2D renderer: rectangles, outline, textured quad
+zig build run -Dexample=mipmaps   # GPU mip levels, texture array, anisotropy (Space: sampler)
 ```
 
 ### Voxel Demo — CLI Flags
