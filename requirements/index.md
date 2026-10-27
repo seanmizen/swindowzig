@@ -32,6 +32,9 @@
 | [`REQ-INPUT-004`](input.md#req-input-004--saved-input-settings-load-in-a-newer-version) | Saved input settings load in a newer version | active | functional | P2 | agent:SWZ-49 |
 | [`REQ-VOXEL-001`](voxel.md#req-voxel-001--a-block-with-a-baked-model-gets-the-model-mesher) | A block with a baked model gets the model mesher | active | functional | P1 | agent:SWZ-31 |
 | [`REQ-VOXEL-002`](voxel.md#req-voxel-002--a-full-cube-hides-a-model-quad-with-a-cull-face) | A full cube hides a model quad with a cull face | active | functional | P1 | agent:SWZ-31 |
+| [`REQ-VOXEL-003`](voxel.md#req-voxel-003--the-content-gives-the-opacity-and-the-emission-of-each-block) | The content gives the opacity and the emission of each block | active | functional | P1 | agent:SWZ-32 |
+| [`REQ-VOXEL-004`](voxel.md#req-voxel-004--sky-light-falls-straight-down-without-loss) | Sky light falls straight down without loss | active | functional | P1 | agent:SWZ-32 |
+| [`REQ-VOXEL-005`](voxel.md#req-voxel-005--an-edit-updates-the-light-incrementally) | An edit updates the light incrementally | active | quality | P1 | agent:SWZ-32 |
 
 ## Dependency graph
 
@@ -64,6 +67,9 @@ graph TD
   REQ_INPUT_004["REQ-INPUT-004<br/>Saved input settings load in a newer version"]
   REQ_VOXEL_001["REQ-VOXEL-001<br/>A block with a baked model gets the model mesher"]
   REQ_VOXEL_002["REQ-VOXEL-002<br/>A full cube hides a model quad with a cull face"]
+  REQ_VOXEL_003["REQ-VOXEL-003<br/>The content gives the opacity and the emission of each block"]
+  REQ_VOXEL_004["REQ-VOXEL-004<br/>Sky light falls straight down without loss"]
+  REQ_VOXEL_005["REQ-VOXEL-005<br/>An edit updates the light incrementally"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -74,6 +80,8 @@ graph TD
   REQ_GPU_008 -->|refines| REQ_GPU_005
   REQ_GPU_009 -->|refines| REQ_GPU_005
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
+  REQ_VOXEL_004 -->|refines| REQ_VOXEL_003
+  REQ_VOXEL_005 -->|depends-on| REQ_VOXEL_003
 ```
 
 ## Derived reverse links
@@ -83,3 +91,4 @@ graph TD
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
+- `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005

@@ -26,6 +26,7 @@ const chunk_mod = @import("../chunk.zig");
 const content = @import("../content.zig");
 const stages = @import("stages.zig");
 const protocol = @import("protocol.zig");
+const light_rules = @import("../light.zig");
 
 const PalettedBlocks = chunk_mod.PalettedBlocks;
 const Version = stages.Version;
@@ -71,6 +72,8 @@ pub const Stats = struct {
     lit: u64 = 0,
     evicted: u64 = 0,
     edits: u64 = 0,
+    /// Edits that updated the cached light incrementally (REQ-VOXEL-005).
+    relit: u64 = 0,
     /// The largest cache size after a message, in bytes.
     peak_bytes: usize = 0,
 };
@@ -146,9 +149,16 @@ pub const WorkerWorld = struct {
         return l.version;
     }
 
-    /// Add an edit to the log, and apply it to the cached blocks.
+    /// Add an edit to the log, and apply it to the cached blocks. When the
+    /// cache has the current light of the 3×3 chunks around the edit, the
+    /// light changes incrementally (REQ-VOXEL-005), and the light of those
+    /// chunks stays current. Else the light of the edited chunk goes, and
+    /// `lightOf` computes the light again.
     pub fn applyEdit(self: *WorkerWorld, e: protocol.Edit) !void {
         const key: Key = .{ .cx = e.cx, .cz = e.cz };
+        // Before the log changes: the light of the 3×3 chunks must be the
+        // light of the blocks before this edit.
+        const lit = self.currentLight(e.cx, e.cz);
         const gop = try self.log.getOrPut(self.allocator, key);
         if (!gop.found_existing) gop.value_ptr.* = .{};
         try gop.value_ptr.edits.append(self.allocator, e);
@@ -156,9 +166,60 @@ pub const WorkerWorld = struct {
         self.stats.edits += 1;
         if (self.cache.get(key)) |entry| {
             try entry.blocks.setAt(self.allocator, e.x, e.y, e.z, e.block);
-            self.dropLight(entry);
-            self.recount(entry);
+            if (lit) |entries| {
+                self.relightEdit(entries, e) catch |err| {
+                    for (entries) |n| {
+                        self.dropLight(n);
+                        self.recount(n);
+                    }
+                    return err;
+                };
+            } else {
+                self.dropLight(entry);
+                self.recount(entry);
+            }
         }
+    }
+
+    /// The cache entries of the 3×3 chunks around (cx, cz), by slot, when
+    /// each one has the light of the blocks now. Else null.
+    fn currentLight(self: *const WorkerWorld, cx: i32, cz: i32) ?[SLOTS]*Entry {
+        var out: [SLOTS]*Entry = undefined;
+        for (0..SLOTS) |s| {
+            const dcx, const dcz = stages.offsetOf(s);
+            const n = self.cache.get(.{ .cx = cx + dcx, .cz = cz + dcz }) orelse return null;
+            if (n.light == null) return null;
+            for (0..SLOTS) |t| {
+                const tx, const tz = stages.offsetOf(t);
+                if (n.light_inputs[t] != self.blockVersion(n.key.cx + tx, n.key.cz + tz)) return null;
+            }
+            out[s] = n;
+        }
+        return out;
+    }
+
+    /// Update the light of `entries` (the 3×3 chunks around the edit) for
+    /// edit `e`, which is in their blocks now. Each entry then records the
+    /// new version of the edited chunk as a light input.
+    fn relightEdit(self: *WorkerWorld, entries: [SLOTS]*Entry, e: protocol.Edit) !void {
+        var region: light_rules.Region = .{ .allocator = self.allocator };
+        for (entries, 0..) |n, s| {
+            const dcx, const dcz = stages.offsetOf(s);
+            region.parts[light_rules.Region.slot(dcx, dcz)] = .{
+                .blocks = &n.blocks,
+                .sky = &n.light.?.sky,
+                .block = &n.light.?.block,
+            };
+        }
+        try region.update(&.{.{ .x = e.x, .y = e.y, .z = e.z }});
+        for (entries, 0..) |n, s| {
+            // The edited chunk is at offset -(dcx, dcz) from entry s.
+            const dcx, const dcz = stages.offsetOf(s);
+            n.light_inputs[stages.slot(-dcx, -dcz)] = e.version;
+            n.light_hash = protocol.lightHash(&n.light.?);
+            self.recount(n);
+        }
+        self.stats.relit += 1;
     }
 
     fn runJob(self: *WorkerWorld, id: u32, job: protocol.Job) ![]u8 {

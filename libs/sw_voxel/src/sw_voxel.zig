@@ -15,6 +15,8 @@ pub const content = @import("content.zig");
 pub const section = @import("section.zig");
 /// One chunk: a column of sections, skylight and block light.
 pub const chunk = @import("chunk.zig");
+/// The light rules (opacity, emission) and the incremental light update.
+pub const light = @import("light.zig");
 /// The greedy mesher and the model mesher: chunk blocks to packed quads.
 pub const mesher = @import("mesher.zig");
 /// Baked block models: the quad type and the box and rotation helpers.
@@ -51,6 +53,7 @@ test {
     _ = content;
     _ = section;
     _ = chunk;
+    _ = light;
     _ = mesher;
     _ = model;
     _ = models;
