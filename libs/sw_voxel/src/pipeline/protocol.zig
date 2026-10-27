@@ -32,7 +32,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const chunk_mod = @import("../chunk.zig");
 const mesher_mod = @import("../mesher.zig");
-const world_gen = @import("../world_gen.zig");
+const content = @import("../content.zig");
 const stages = @import("stages.zig");
 
 const BlockType = chunk_mod.BlockType;
@@ -48,7 +48,7 @@ pub const MAGIC: u32 = 0x50435856;
 pub const VERSION: u16 = 2;
 
 pub const HEADER_LEN = 16;
-pub const HELLO_LEN = 56;
+pub const HELLO_LEN = 24 + content.GEN_CONFIG_LEN;
 pub const EDIT_LEN = 16;
 pub const JOB_LEN = 88;
 pub const RESULT_HEAD_LEN = 48;
@@ -89,28 +89,21 @@ pub const Kind = enum(u8) {
 // Message bodies
 // ---------------------------------------------------------------------------
 
-/// The first message in each direction. Main sends the world: the generation
-/// config with the seed, and the cache limit of the worker (C14). The worker
-/// answers with its own build hash.
+/// The first message in each direction. Main sends the world: the generator
+/// settings of the content with the seed, and the cache limit of the worker
+/// (C14). The worker answers with its own build hash.
 ///
-/// Body (56 bytes):
+/// Body (24 + content.GEN_CONFIG_LEN bytes):
 ///
 ///   0  u64  build hash
 ///   8  u64  seed
 ///   16 u64  cache limit in bytes
-///   24 u8   preset
-///   25 u8×3 reserved, 0
-///   28 i32  sea level
-///   32 i32  terrain height min
-///   36 i32  terrain height max
-///   40 f32  noise scale
-///   44 u32  noise octaves
-///   48 f32  noise persistence
-///   52 f32  noise lacunarity
+///   24 ...  the generator settings without the seed
+///           (content.encodeGenConfig)
 pub const Hello = struct {
     build_hash: u64 = BUILD_HASH,
     cache_limit: u64,
-    config: world_gen.WorldGenConfig,
+    config: content.GenConfig,
 };
 
 /// One block edit (P2). Main sends each edit to each worker, in the order of
@@ -331,21 +324,19 @@ fn finish(out: Out) []u8 {
     return out.buf;
 }
 
+fn genConfigBytes(config: content.GenConfig) [content.GEN_CONFIG_LEN]u8 {
+    var out: [content.GEN_CONFIG_LEN]u8 = undefined;
+    content.encodeGenConfig(config, &out);
+    return out;
+}
+
 pub fn encodeHello(allocator: std.mem.Allocator, hello: Hello) ![]u8 {
     var o = try begin(allocator, HEADER_LEN + HELLO_LEN, .hello, 0);
     const c = hello.config;
     o.int(u64, hello.build_hash);
     o.int(u64, c.seed);
     o.int(u64, hello.cache_limit);
-    o.int(u8, @backingInt(c.preset));
-    o.zeros(3);
-    o.int(i32, c.sea_level);
-    o.int(i32, c.terrain_height_min);
-    o.int(i32, c.terrain_height_max);
-    o.float(c.noise_scale);
-    o.int(u32, c.noise_octaves);
-    o.float(c.noise_persistence);
-    o.float(c.noise_lacunarity);
+    o.bytes(&genConfigBytes(c));
     return finish(o);
 }
 
@@ -506,22 +497,12 @@ pub fn decode(bytes: []const u8) DecodeError!Decoded {
             const build_hash = b.int(u64);
             const seed = b.int(u64);
             const cache_limit = b.int(u64);
-            const preset = try b.enumOf(world_gen.Preset);
-            for (0..3) |_| if (b.int(u8) != 0) return error.BadField;
+            var config = try content.decodeGenConfig(b.buf[b.pos..][0..content.GEN_CONFIG_LEN]);
+            config.seed = seed;
             break :blk .{ .hello = .{
                 .build_hash = build_hash,
                 .cache_limit = cache_limit,
-                .config = .{
-                    .preset = preset,
-                    .seed = seed,
-                    .sea_level = b.int(i32),
-                    .terrain_height_min = b.int(i32),
-                    .terrain_height_max = b.int(i32),
-                    .noise_scale = b.float(),
-                    .noise_octaves = b.int(u32),
-                    .noise_persistence = b.float(),
-                    .noise_lacunarity = b.float(),
-                },
+                .config = config,
             } };
         },
         .edit => blk: {
@@ -708,4 +689,17 @@ pub fn lightHash(light: *const stages.ChunkLight) u64 {
         }
     }
     return h.final();
+}
+
+test "a Hello carries the seed and the generator settings of the content" {
+    const a = std.testing.allocator;
+    var config: content.GenConfig = .{};
+    config.seed = 0x5eed_0001;
+    const bytes = try encodeHello(a, .{ .cache_limit = 1 << 20, .config = config });
+    defer a.free(bytes);
+    try std.testing.expectEqual(@as(usize, HEADER_LEN + HELLO_LEN), bytes.len);
+    const d = try decode(bytes);
+    try std.testing.expectEqual(BUILD_HASH, d.msg.hello.build_hash);
+    try std.testing.expectEqual(@as(u64, 1 << 20), d.msg.hello.cache_limit);
+    try std.testing.expectEqual(config, d.msg.hello.config);
 }

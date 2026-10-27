@@ -19,7 +19,7 @@ pub const VoxelVertex = extern struct {
     uv: [2]f32, // offset 28
     ao: f32 = 1.0, // offset 36 — ambient occlusion brightness 0..1
     skylight: f32 = 1.0, // offset 40 — sky brightness 0..1 (0 = pitch cave, 1 = open sky)
-    block_light: f32 = 0.0, // offset 44 — block-light brightness 0..1 (0 = no emitter nearby, 1 = adjacent to glowstone)
+    block_light: f32 = 0.0, // offset 44 — block-light brightness 0..1 (0 = no emitter nearby, 1 = adjacent to an emitter)
 };
 
 /// The mesh of one chunk, in the GPU format: one 16-byte PackedQuad per quad,
@@ -169,7 +169,7 @@ fn aoMooreValue(s1: bool, s2: bool, c: bool, ds1: bool, ds2: bool, dc: bool) f32
 ///
 /// Strategy dispatch:
 ///   - .none           — returns [1.0]*4 (no occlusion at all)
-///   - .classic        — face-plane 8-neighbour Mojang AO (3 samples per vertex)
+///   - .classic        — face-plane 8-neighbour AO (3 samples per vertex)
 ///   - .moore          — extended outward sampling; falls back to classic in
 ///                       commit A (this file), implemented in commit B
 ///   - .propagated     — TODO; falls back to classic with a runtime warning
@@ -216,7 +216,7 @@ const UnimplementedWarn = struct {
 
 var unimplemented_warned: UnimplementedWarn = .{};
 
-/// Classic per-vertex Mojang/Minecraft AO.
+/// Classic per-vertex AO (the 3-neighbour corner rule).
 /// Samples the 8 face-plane neighbours one cell beyond the face plane and
 /// picks 3 (side1, side2, corner) per vertex via `aoValue`.
 fn computeFaceAOClassic(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
@@ -908,7 +908,7 @@ fn blockLightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, wor
 /// that vertex corner.
 ///
 /// CRITICAL DIFFERENCE from skylight: a face belonging to an emissive block
-/// (e.g. a glowstone) must render at the emitter's own level, not at the
+/// (an emissive block) must render at the emitter's own level, not at the
 /// slightly-dimmer value one BFS hop away in the outward air. This function
 /// folds the face-owner's own block-light into the final value via `max`:
 ///
@@ -916,7 +916,7 @@ fn blockLightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, wor
 ///
 /// The owner_level comes from `blockLightSample(wx, wy, wz)` — the cell the
 /// face belongs to. For non-emissive solids this is 0 (no effect); for a
-/// glowstone cell it is `MAX_BLOCK_LIGHT` and the face lights up fully.
+/// emissive cell it is `MAX_BLOCK_LIGHT` and the face lights up fully.
 fn computeFaceBlockLight(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32, wx: i32, wy: i32, wz: i32, face: Face) [4]f32 {
     const max_f: f32 = @floatFromInt(chunk_mod.MAX_BLOCK_LIGHT);
     const inv4: f32 = 1.0 / 4.0;
@@ -1047,7 +1047,7 @@ const GreedyCell = struct {
     /// Per-vertex block-light brightness 0..1. Baked from the chunk's
     /// `block_light` grid (seeded by emissive blocks, BFS-propagated through
     /// air). Omitting this from the merge key was the P0 bug: all greedy quads
-    /// defaulted to block_light=0 even near glowstone.
+    /// defaulted to block_light=0 even near an emissive block.
     bl: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
@@ -1406,7 +1406,7 @@ pub fn generateMesh(
     // 2/255 RMS per channel.
     //
     // Cap of 6 lands comfortably inside the RMS tolerance while still
-    // hitting the 5–10× reduction target on flatland and capturing most
+    // hitting the 5–10× reduction target on flat demo terrain and capturing most
     // of the hilly-terrain wins. Per-channel RMS against 1×1 quads on a
     // flatland pit scene (measured in April 2026):
     //   cap=4 → 0.62 /255   (safe)
@@ -1575,9 +1575,10 @@ const face_layouts = [6]FaceLayout{
     .{ .normal_axis = 2, .i_axis = 0, .j_axis = 1, .positive = false, .pos = .{ .{ 1, 0 }, .{ 0, 0 }, .{ 0, 1 }, .{ 1, 1 } }, .uv = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } } },
 };
 
-/// The corner steps of face_layouts as voxel.wgsl stores them: 2 bits per
-/// corner (i | j << 1), 8 bits per face, faces 0-3 in A and faces 4-5 in B.
-fn cornerBits(comptime which: enum { pos, uv }) [2]u32 {
+/// The corner steps of face_layouts as a shader that decodes `PackedQuad`
+/// stores them (voxel.wgsl of the demo): 2 bits per corner (i | j << 1), 8
+/// bits per face, faces 0-3 in A and faces 4-5 in B.
+pub fn cornerBits(comptime which: enum { pos, uv }) [2]u32 {
     var out = [2]u32{ 0, 0 };
     for (face_layouts, 0..) |fl, f| {
         const steps = if (which == .pos) fl.pos else fl.uv;
@@ -1678,39 +1679,17 @@ const TestGetter = struct {
     }
 };
 
-fn wgslHexConst(src: []const u8, comptime name: []const u8) !u32 {
-    const key = "const " ++ name ++ ": u32 = 0x";
-    const start = (std.mem.indexOf(u8, src, key) orelse return error.MissingConstant) + key.len;
-    var v: u32 = 0;
-    for (src[start..]) |ch| {
-        if (ch == '_') continue;
-        const d = std.fmt.charToDigit(ch, 16) catch break;
-        v = v * 16 + d;
-    }
-    return v;
-}
-
-test "voxel.wgsl corner constants match face_layouts" {
-    const src = @embedFile("voxel.wgsl");
-    const pos = comptime cornerBits(.pos);
-    const uv = comptime cornerBits(.uv);
-    try std.testing.expectEqual(pos[0], try wgslHexConst(src, "FACE_POS_A"));
-    try std.testing.expectEqual(pos[1], try wgslHexConst(src, "FACE_POS_B"));
-    try std.testing.expectEqual(uv[0], try wgslHexConst(src, "FACE_UV_A"));
-    try std.testing.expectEqual(uv[1], try wgslHexConst(src, "FACE_UV_B"));
-}
-
-/// A stepped hill with an overhang and a glowstone, so every face, merged
+/// A stepped hill with an overhang and an emissive block, so every face, merged
 /// quads, AO and both light channels occur.
 fn testHillChunk(allocator: std.mem.Allocator) !Chunk {
     var chunk = Chunk.init(allocator);
     errdefer chunk.deinit();
     for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
         const top: usize = 60 + (x + z) / 4;
-        for (0..top) |y| try chunk.setBlock(@intCast(x), @intCast(y), @intCast(z), if (y + 1 == top) .grass else .stone);
+        for (0..top) |y| try chunk.setBlock(@intCast(x), @intCast(y), @intCast(z), if (y + 1 == top) .b3 else .solid);
     };
-    for (4..9) |x| for (4..9) |z| try chunk.setBlock(@intCast(x), 75, @intCast(z), .stone);
-    try chunk.setBlock(6, 70, 6, .glowstone);
+    for (4..9) |x| for (4..9) |z| try chunk.setBlock(@intCast(x), 75, @intCast(z), .solid);
+    try chunk.setBlock(6, 70, 6, .emitter);
     try chunk.computeSkylight();
     try chunk.computeBlockLight();
     return chunk;

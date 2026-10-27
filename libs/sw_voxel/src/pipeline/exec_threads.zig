@@ -31,7 +31,7 @@ const scheduler_mod = @import("scheduler.zig");
 const exec_inline = @import("exec_inline.zig");
 const worker_world = @import("worker_world.zig");
 const world_mod = @import("../world.zig");
-const world_gen = @import("../world_gen.zig");
+const content = @import("../content.zig");
 
 const Scheduler = scheduler_mod.Scheduler;
 const Started = scheduler_mod.Started;
@@ -166,7 +166,7 @@ pub const ThreadPool = struct {
     /// Start `n` worker threads for the world `config`. Each worker gets a
     /// Hello first, and must answer with the same protocol and build (C9).
     /// The pool must not move after `init`: the threads hold pointers to it.
-    pub fn init(self: *ThreadPool, allocator: std.mem.Allocator, io: std.Io, n: usize, config: world_gen.WorldGenConfig, cache_limit: u64) !void {
+    pub fn init(self: *ThreadPool, allocator: std.mem.Allocator, io: std.Io, n: usize, config: content.GenConfig, cache_limit: u64) !void {
         std.debug.assert(n >= 1);
         self.* = .{ .allocator = allocator, .io = io, .workers = &.{} };
         const workers = try allocator.alloc(Worker, n);

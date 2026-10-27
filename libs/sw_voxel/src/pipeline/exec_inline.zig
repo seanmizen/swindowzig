@@ -17,7 +17,7 @@ const protocol = @import("protocol.zig");
 const scheduler_mod = @import("scheduler.zig");
 const worker_world = @import("worker_world.zig");
 const world_mod = @import("../world.zig");
-const world_gen = @import("../world_gen.zig");
+const content = @import("../content.zig");
 const MeshBytes = @import("mesh_bytes.zig").MeshBytes;
 
 const Scheduler = scheduler_mod.Scheduler;
@@ -135,7 +135,7 @@ pub fn checkJob(st: Started, head: protocol.ResultHead) ReplyError!void {
 }
 
 /// The Hello that starts a worker for `config` (C9).
-pub fn helloOf(config: world_gen.WorldGenConfig, cache_limit: u64) protocol.Hello {
+pub fn helloOf(config: content.GenConfig, cache_limit: u64) protocol.Hello {
     return .{ .cache_limit = cache_limit, .config = config };
 }
 
@@ -156,7 +156,7 @@ pub const Inline = struct {
     traffic: Traffic = .{},
 
     /// Start the worker for the world `config`, through a Hello message.
-    pub fn init(allocator: std.mem.Allocator, config: world_gen.WorldGenConfig, cache_limit: u64) !Inline {
+    pub fn init(allocator: std.mem.Allocator, config: content.GenConfig, cache_limit: u64) !Inline {
         var self: Inline = .{ .allocator = allocator, .worker = .init(allocator) };
         errdefer self.worker.deinit();
         const hello = try protocol.encodeHello(allocator, helloOf(config, cache_limit));

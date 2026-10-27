@@ -5,11 +5,11 @@
 //! code with the workers (worker_world.zig) except the stages. A test then
 //! checks that each current result of the World is the recomputed result.
 const std = @import("std");
-const stages = @import("pipeline/stages.zig");
-const protocol = @import("pipeline/protocol.zig");
-const scheduler_mod = @import("pipeline/scheduler.zig");
-const world_mod = @import("world.zig");
-const chunk_mod = @import("chunk.zig");
+const stages = @import("sw_voxel").stages;
+const protocol = @import("sw_voxel").protocol;
+const scheduler_mod = @import("sw_voxel").scheduler;
+const world_mod = @import("sw_voxel").world;
+const chunk_mod = @import("sw_voxel").chunk;
 
 const World = world_mod.World;
 const Scheduler = scheduler_mod.Scheduler;

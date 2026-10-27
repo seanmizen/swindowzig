@@ -15,8 +15,10 @@
 //! Add the final value of each chunk to the total (wrapping add). The order
 //! of the chunks does not change the total.
 const std = @import("std");
-const world_mod = @import("world.zig");
-const chunk_mod = @import("chunk.zig");
+/// The demo world of the tests and the tools: the hilly preset.
+const hilly_config = @import("voxel_content").world_gen.presetConfig(.hilly);
+const world_mod = @import("sw_voxel").world;
+const chunk_mod = @import("sw_voxel").chunk;
 
 /// Generation logs at info level for each chunk. This tool prints only its
 /// hash lines.
@@ -31,7 +33,7 @@ pub const SEED0_BLOCK_HASH: u64 = 0xdb5d8508a4c6cd54;
 
 /// Generate the 9×9 hilly area for `seed` and return its block hash.
 pub fn blockHash(allocator: std.mem.Allocator, seed: u64) !u64 {
-    var world = try world_mod.World.init(allocator, .hilly, HALF + 1);
+    var world = try world_mod.World.init(allocator, hilly_config, HALF + 1);
     defer world.deinit();
     world.gen_config.seed = seed;
 

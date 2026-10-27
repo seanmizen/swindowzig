@@ -1,6 +1,6 @@
 const std = @import("std");
 const chunk_mod = @import("chunk.zig");
-const world_gen = @import("world_gen.zig");
+const content = @import("content.zig");
 const stages = @import("pipeline/stages.zig");
 const protocol = @import("pipeline/protocol.zig");
 const mesh_bytes = @import("pipeline/mesh_bytes.zig");
@@ -114,7 +114,7 @@ pub const LoadedChunk = struct {
         return self.mesh_inputs != null;
     }
 
-    /// Forget the mesh. The GPU buffers belong to main.zig, and main frees them.
+    /// Forget the mesh. The GPU buffers belong to the game, and the game frees them.
     pub fn dropMesh(self: *LoadedChunk) void {
         self.dropUpload();
         self.mesh = .{};
@@ -180,10 +180,10 @@ pub const World = struct {
     /// The render distance in chunks (circular radius). The fog and the
     /// frustum read it. The scheduler sets it (Scheduler.setRenderDistance).
     render_distance: i32,
-    /// The world generation config. `init` sets it from the preset, and
+    /// The settings of the generator of the content. `init` sets it, and
     /// each generation reads it. Change a field after init to change the
-    /// generation without a new preset.
-    gen_config: world_gen.WorldGenConfig,
+    /// generation.
+    gen_config: content.GenConfig,
     /// The next light version. Light versions are never used again, so a
     /// recorded light version names one light content (C3).
     next_light_version: Version = 1,
@@ -191,12 +191,12 @@ pub const World = struct {
     /// main generates inline gets its edits from it (C6).
     edits: std.HashMapUnmanaged(ChunkKey, std.ArrayList(protocol.Edit), ChunkKey.HashContext, std.hash_map.default_max_load_percentage) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator, preset: world_gen.Preset, render_distance: i32) !World {
+    pub fn init(allocator: std.mem.Allocator, gen_config: content.GenConfig, render_distance: i32) !World {
         return .{
             .allocator = allocator,
             .chunks = ChunkMap.init(allocator),
             .render_distance = render_distance,
-            .gen_config = world_gen.presetConfig(preset),
+            .gen_config = gen_config,
         };
     }
 
@@ -331,7 +331,7 @@ pub const World = struct {
 
     /// Exchange light across the borders of the new chunk at (cx, cz).
     /// Generation lights a chunk on its own, so without this step skylight
-    /// in a cave and light from a glowstone stop at the chunk border. The
+    /// in a cave and light from an emissive block stop at the chunk border. The
     /// new chunk is seeded from its neighbours, then `spreadLight` carries
     /// its edge light outward. The relight runs only where an edge can make
     /// a cell across the border brighter (see `canSeed`).
@@ -439,14 +439,14 @@ pub const World = struct {
         const nb_zp = self.chunks.get(.{ .cx = cx, .cz = cz + 1 });
 
         // Recompute skylight and block-light for the owning chunk, seeding
-        // from neighbour edges so light from a neighbour (a glowstone near
+        // from neighbour edges so light from a neighbour (an emissive block near
         // the border, or sky through a cave) crosses into this chunk.
         try self.relightChunk(lc_ptr.*, .{ .sky = true, .block = true });
 
         // Re-run the light for each live horizontal neighbour, seeding from
         // this chunk's newly-updated edges. This propagates light across the
-        // boundary in both directions: a glowstone placed at our x=0 will push
-        // level-14 light into the cx-1 chunk; a glowstone in cx-1 near x=CHUNK_W-1
+        // boundary in both directions: an emissive block placed at our x=0 will push
+        // level-14 light into the cx-1 chunk; an emissive block in cx-1 near x=CHUNK_W-1
         // will push into our chunk (handled above). `spreadLight`
         // continues to chunks further away while edge light changes.
         var queue: RelightQueue = .empty;
@@ -632,10 +632,10 @@ fn canSeed(src: *const Chunk, dst: *const Chunk, side: Edge) Channels {
     return out;
 }
 
-const ChunkOffset = struct { dx: i32, dz: i32 };
+pub const ChunkOffset = struct { dx: i32, dz: i32 };
 
-/// The (dx, dz) offsets of a disc of radius r, nearest first. For the tests.
-fn buildSpiralOffsets(allocator: std.mem.Allocator, r: i32) ![]ChunkOffset {
+/// The (dx, dz) offsets of a disc of radius r, nearest first.
+pub fn buildSpiralOffsets(allocator: std.mem.Allocator, r: i32) ![]ChunkOffset {
     var offsets: std.ArrayList(ChunkOffset) = .empty;
     defer offsets.deinit(allocator);
 
@@ -681,7 +681,7 @@ fn countSeamLightErrors(world: *World, lc: *const LoadedChunk, own: *Chunk) !usi
 }
 
 test "generated chunks get light from their neighbours" {
-    var world = try World.init(std.testing.allocator, .hilly, 4);
+    var world = try World.init(std.testing.allocator, .{}, 4);
     defer world.deinit();
     // Generate in spiral order, nearest first.
     const R: i32 = 6;
@@ -712,29 +712,4 @@ test "generated chunks get light from their neighbours" {
     }
     try std.testing.expectEqual(@as(usize, 0), errors);
     try std.testing.expect(seeded > 0);
-}
-
-test "a shaft dug into a cave lights the cave across the chunk border" {
-    // Sean's repro: at (14, 15) on the hilly world, a shaft from the
-    // surface down to y=60 opens into a cave at y <= 66. x=15 and z=15 are
-    // the last cells before the borders with chunks (1,0) and (0,1).
-    var world = try World.init(std.testing.allocator, .hilly, 4);
-    defer world.deinit();
-    const offsets = try buildSpiralOffsets(std.testing.allocator, 3);
-    defer std.testing.allocator.free(offsets);
-    for (offsets) |off| _ = try world.generateChunk(off.dx, off.dz);
-    var y: i32 = chunk_mod.CHUNK_H - 1;
-    while (y > 60 and world.getBlock(14, y, 15) == .air) y -= 1;
-    while (y >= 60) : (y -= 1) _ = try world.setBlock(14, y, 15, .air);
-
-    // The shaft is open to the sky, and the cave next to it gets 14.
-    try std.testing.expectEqual(@as(u8, 15), world.getSkylight(14, 60, 15));
-    try std.testing.expectEqual(.air, world.getBlock(15, 62, 15));
-    try std.testing.expectEqual(@as(u8, 14), world.getSkylight(15, 62, 15));
-    // Across the borders the cave gets light, not 0. (16, 62, 15) is two
-    // steps from the shaft. (14, 62, 16) is next to the shaft.
-    try std.testing.expectEqual(.air, world.getBlock(16, 62, 15));
-    try std.testing.expectEqual(@as(u8, 13), world.getSkylight(16, 62, 15));
-    try std.testing.expectEqual(.air, world.getBlock(14, 62, 16));
-    try std.testing.expectEqual(@as(u8, 14), world.getSkylight(14, 62, 16));
 }
