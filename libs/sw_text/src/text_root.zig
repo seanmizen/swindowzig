@@ -23,6 +23,8 @@ pub const utf8 = @import("utf8.zig");
 pub const layout = @import("layout.zig");
 pub const atlas = @import("atlas.zig");
 pub const bidi = @import("bidi.zig");
+pub const caret = @import("caret.zig");
+pub const CaretLayout = caret.CaretLayout;
 
 pub const Font = @import("font.zig").Font;
 pub const Metrics = @import("font.zig").Metrics;

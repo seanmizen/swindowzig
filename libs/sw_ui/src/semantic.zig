@@ -35,6 +35,20 @@ pub const Role = enum {
     text_field,
     /// An image. The name is its description.
     image,
+    /// A slider. The name is its label, the value is its value as text, and
+    /// `range` has the numbers.
+    slider,
+    /// A screen of a screen stack: a modal layer. The name is its title.
+    dialog,
+    /// A tooltip that shows. The name is its text.
+    tooltip,
+};
+
+/// The value of a slider and its limits.
+pub const Range = struct {
+    value: f32,
+    min: f32,
+    max: f32,
 };
 
 pub const SemanticNode = struct {
@@ -44,7 +58,7 @@ pub const SemanticNode = struct {
     /// The accessible name. It points into memory that the app gave to the UI
     /// and is valid until the next `Ui.begin`.
     name: []const u8,
-    /// The value of a text field. Empty for other roles.
+    /// The value of a text field or a slider. Empty for other roles.
     value: []const u8,
     focused: bool,
     disabled: bool,
@@ -59,6 +73,10 @@ pub const SemanticNode = struct {
     bounds: Rect,
     /// Indices into `SemanticTree.nodes`, in tree order.
     children: []const u32,
+    /// More text about the node, such as its tooltip. Empty if none.
+    description: []const u8 = "",
+    /// A slider: its value and its limits. Null for other roles.
+    range: ?Range = null,
 };
 
 pub const SemanticTree = struct {

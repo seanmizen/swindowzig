@@ -62,6 +62,9 @@ pub const Batch = struct {
     vertices: std.ArrayList(Vertex) = .empty,
     indices: std.ArrayList(u32) = .empty,
     calls: std.ArrayList(DrawCall) = .empty,
+    /// When set, each shape is cut to this rectangle. A textured shape keeps
+    /// the texels of the part that stays. Null draws everything.
+    clip: ?Rect = null,
 
     pub fn deinit(self: *Batch, alloc: std.mem.Allocator) void {
         self.vertices.deinit(alloc);
@@ -70,8 +73,10 @@ pub const Batch = struct {
         self.* = .{};
     }
 
-    /// Drop all shapes. Keep the memory for the next frame.
+    /// Drop all shapes and the clip rectangle. Keep the memory for the next
+    /// frame.
     pub fn reset(self: *Batch) void {
+        self.clip = null;
         self.vertices.clearRetainingCapacity();
         self.indices.clearRetainingCapacity();
         self.calls.clearRetainingCapacity();
@@ -138,11 +143,28 @@ pub const Batch = struct {
         self: *Batch,
         alloc: std.mem.Allocator,
         texture: u32,
-        r: Rect,
-        uv0: [2]f32,
-        uv1: [2]f32,
+        rect: Rect,
+        uv_start: [2]f32,
+        uv_end: [2]f32,
         c: Color,
     ) !void {
+        var r = rect;
+        var uv0 = uv_start;
+        var uv1 = uv_end;
+        if (self.clip) |clip| {
+            if (r.w <= 0 or r.h <= 0) return;
+            const x0 = @max(r.x, clip.x);
+            const y0 = @max(r.y, clip.y);
+            const x1 = @min(r.x + r.w, clip.x + clip.w);
+            const y1 = @min(r.y + r.h, clip.y + clip.h);
+            if (x1 <= x0 or y1 <= y0) return;
+            // The uv changes in proportion to the part that is cut.
+            const du = uv_end[0] - uv_start[0];
+            const dv = uv_end[1] - uv_start[1];
+            uv0 = .{ uv_start[0] + du * (x0 - r.x) / r.w, uv_start[1] + dv * (y0 - r.y) / r.h };
+            uv1 = .{ uv_start[0] + du * (x1 - r.x) / r.w, uv_start[1] + dv * (y1 - r.y) / r.h };
+            r = .{ .x = x0, .y = y0, .w = x1 - x0, .h = y1 - y0 };
+        }
         const color = [4]f32{ c.r, c.g, c.b, c.a };
         const base: u32 = @intCast(self.vertices.items.len);
         const first_index: u32 = @intCast(self.indices.items.len);
@@ -314,6 +336,32 @@ test "reset keeps no shapes" {
     try b.fillRect(testing.allocator, .{ .x = 0, .y = 0, .w = 1, .h = 1 }, Color.white);
     try testing.expectEqual(@as(u32, 0), b.calls.items[0].first_index);
     try testing.expectEqualSlices(u32, &.{ 0, 1, 2, 0, 2, 3 }, b.indices.items);
+}
+
+test "clip: a shape outside the clip draws nothing" {
+    var b: Batch = .{};
+    defer b.deinit(testing.allocator);
+    b.clip = .{ .x = 0, .y = 0, .w = 10, .h = 10 };
+    try b.fillRect(testing.allocator, .{ .x = 20, .y = 0, .w = 5, .h = 5 }, Color.white);
+    try testing.expectEqual(@as(usize, 0), b.quadCount());
+    try testing.expectEqual(@as(usize, 0), b.calls.items.len);
+}
+
+test "clip: a shape is cut, and its uv follows the cut" {
+    var b: Batch = .{};
+    defer b.deinit(testing.allocator);
+    b.clip = .{ .x = 5, .y = 0, .w = 100, .h = 15 };
+    const t: Texture = .{ .id = 1, .width = 10, .height = 20 };
+    try b.drawTexture(testing.allocator, t, .{ .x = 0, .y = 0, .w = 10, .h = 20 }, null, Color.white);
+    const v = b.vertices.items;
+    try testing.expectEqual([2]f32{ 5, 0 }, v[0].pos);
+    try testing.expectEqual([2]f32{ 10, 15 }, v[2].pos);
+    try testing.expectEqual([2]f32{ 0.5, 0 }, v[0].uv);
+    try testing.expectEqual([2]f32{ 1, 0.75 }, v[2].uv);
+
+    // reset removes the clip.
+    b.reset();
+    try testing.expectEqual(@as(?Rect, null), b.clip);
 }
 
 test "rgba8 converts to 0..1" {
