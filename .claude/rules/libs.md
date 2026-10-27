@@ -128,6 +128,27 @@ depth test rejects hidden fragments before they shade.
   not go through the wasm memory. The WebGPU bridge owns the store, and the
   "chunks" imports fill it. A native build has no held bytes.
 
+### Network (sw_net)
+
+- `Socket.open(allocator, ctx.io, url, options)`, then `poll()` in a loop
+  each tick until it gives null. Events: `open`, `message` (the bytes stay
+  valid until the next `poll`), `closed` (code, cause, retry delay). No
+  callback calls game code (REQ-NET-001).
+- Send only in the `open` state. `close` accepts code 1000 or 3000 to 4999,
+  because the browser accepts only these codes from a page.
+- `Options.reconnect` (a `Backoff`) connects again after a drop. The delay
+  doubles to `max_ms`, and an open connection sets the count to zero
+  (REQ-NET-003).
+- Native: one network thread for each connection does all the reads and
+  writes, so the TLS state has one owner. The thread waits for data with a
+  2 ms timeout, then writes the queued frames. `wss:` uses `std.crypto.tls`
+  with the system CA bundle. Each client frame has a random mask
+  (REQ-NET-002).
+- Web: `backends/wasm/websocket.ts` (import module "sw_net"). The old module
+  "net" (`net.ts`) stays for apps that use it. A URL that starts with "/"
+  goes to the host of the page. The browser does not tell a refused upgrade
+  from a failed connect, so both give `connect_failed`.
+
 ### UI tree (sw_ui)
 
 - Each frame: `u.begin(input, w, h)`, build nodes with non-zero `u32` IDs,
@@ -243,3 +264,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_render/src/post.zig` | `PostChain`: the `rgba16float` scene target (`hdr`), then HDR effects, the tonemap, LDR effects and FXAA as frame graph passes. The last enabled link writes the screen (REQ-GPU-008, REQ-GPU-009) |
 | `libs/sw_render/src/post_plan.zig` | Post chain rules: the route of the links, the tonemap curves (CPU reference), the effect WGSL (`post.shader`). No GPU code, unit tested |
 | `libs/sw_gpu/src/fxaa.zig` | The FXAA source and quality presets. `shaderSource` sets the tokens and the bind group. `configureFXAA` and the post chain use it |
+| `libs/sw_net/src/socket.zig` | `Socket`: open, `poll`, send, close, and the reconnect. The same code for web and native. `net_root.zig` is the module root |
+| `libs/sw_net/src/native.zig` | The native transport: connect, TLS for `wss:`, the HTTP upgrade, the frame loop on one network thread |
+| `libs/sw_net/src/web.zig`, `backends/wasm/websocket.ts` | The web transport: the "sw_net" imports and the browser WebSocket. `websocket.test.ts` runs `wasm_check.zig` against a Bun server |
+| `libs/sw_net/src/frame.zig`, `handshake.zig`, `url.zig`, `backoff.zig` | Frames and fragments, the upgrade request and its check, `ws:`/`wss:` URLs, the reconnect delay (no sockets, unit tested). `socket_test.zig` runs the native client against a local server |

@@ -108,6 +108,11 @@ jobs:
         # the error on a page that is not a secure context.
         run: bun test backends/wasm/files.test.ts
 
+      - name: WebSocket bridge tests in Bun
+        # sw_net in wasm with websocket.ts, against a local Bun server:
+        # binary and text messages, the close codes, and the reconnect.
+        run: bun test backends/wasm/websocket.test.ts
+
       - name: Native build
         run: zig build native -Dexample=voxel
 

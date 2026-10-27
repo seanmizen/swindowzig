@@ -106,6 +106,7 @@ swindowzig/
 │   ├── sw_assets/      # loadBytes, PNG decode, zip reader, player files, OPFS/folder cache
 │   ├── sw_text/        # Text: TTF and bitmap font chain, bidi, atlas, measure, wrap, draw
 │   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix
+│   ├── sw_net/         # WebSocket client: browser WebSocket (web), RFC 6455 on std.Io with TLS (native)
 │   ├── sw_ui/          # UI tree: layout, focus, widgets, screen stack, on-screen keyboard, semantic tree, drawing
 │   └── sw_voxel/       # Voxel chunks: storage, light, greedy mesher, chunk pipeline
 │       ├── src/                 # Library. content.zig gives the content contract
