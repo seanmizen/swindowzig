@@ -4,13 +4,13 @@
 //   yarn test:browser
 //
 // Two web servers build two examples for the web and serve them with the
-// dev server: flat2d on port 3020 (the screen-reader mirror) and justabox
-// on port 3021 (the frame graph on the canvas). Each example has its own
+// dev server: flat2d on port 3020 (the other tests) and justabox on port
+// 3021 (the frame graph on the canvas, canvas.pw.ts). Each example has its own
 // install prefix, so the two builds do not write the same app.wasm.
 
 import { defineConfig } from '@playwright/test';
 
-const a11yPort = 3020;
+const flat2dPort = 3020;
 const canvasPort = 3021;
 
 // The headless shell of Chromium on macOS has no GPU. Its SwiftShader
@@ -42,10 +42,11 @@ export default defineConfig({
     },
   },
   projects: [
+    // Each test that does not name an example opens flat2d.
     {
-      name: 'a11y',
-      testMatch: 'a11y.pw.ts',
-      use: { baseURL: `http://localhost:${a11yPort}` },
+      name: 'flat2d',
+      testIgnore: 'canvas.pw.ts',
+      use: { baseURL: `http://localhost:${flat2dPort}` },
     },
     {
       name: 'canvas',
@@ -58,7 +59,7 @@ export default defineConfig({
       command:
         'zig build web -Dexample=flat2d && bun backends/wasm/dev-server.ts --example flat2d --no-build',
       cwd: '../..',
-      port: a11yPort,
+      port: flat2dPort,
       timeout: 300_000,
       reuseExistingServer: !process.env.CI,
     },
