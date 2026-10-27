@@ -15,6 +15,7 @@
 const std = @import("std");
 const sw_math = @import("sw_math");
 const wgsl = @import("wgsl.zig");
+const lighting_plan = @import("lighting_plan.zig");
 
 const Mat4 = sw_math.Mat4;
 const Quat = sw_math.Quat;
@@ -207,10 +208,10 @@ pub const Light = struct {
     }
 };
 
-/// The WGSL of the box model pipeline, after the shared prefix. Group 1:
-/// binding 0 is the per-draw uniforms (a ring binding), binding 1 the part
-/// records.
-pub const shader = wgsl.shader(
+/// The WGSL declarations and the vertex shader of the box model pipeline.
+/// Group 1: binding 0 is the per-draw uniforms (a ring binding), binding
+/// 1 the part records.
+const vertex_body =
     \\struct SwBoxDraw {
     \\    view_proj: mat4x4<f32>,
     \\    light_dir: vec4<f32>,
@@ -260,6 +261,12 @@ pub const shader = wgsl.shader(
     \\    return out;
     \\}
     \\
+;
+
+/// The WGSL of the box model pipeline, after the shared prefix. Group 1:
+/// binding 0 is the per-draw uniforms (a ring binding), binding 1 the part
+/// records.
+pub const shader = wgsl.shader(vertex_body ++
     \\@fragment fn fs_main(in: SwBoxOut) -> @location(0) vec4<f32> {
     \\    var l = sw_box.light_dir.xyz;
     \\    if (sw_box.info.z == 2u) {
@@ -267,6 +274,34 @@ pub const shader = wgsl.shader(
     \\    }
     \\    let d = max(dot(normalize(in.normal), l), 0.0);
     \\    var c = in.color * (sw_box.ambient.rgb + sw_box.light_color.rgb * d);
+    \\    if (sw_box.info.w != 0u) {
+    \\        c = sw_fog(c, in.world);
+    \\    }
+    \\    return vec4<f32>(c, 1.0);
+    \\}
+    \\
+);
+
+/// The bind group index of the lighting group in `shader_lit`.
+pub const lighting_group: u32 = lighting_plan.default_group;
+
+/// `shader` with the shadows and the point lights of `lighting_plan` at
+/// group 2 (REQ-GPU-016, REQ-GPU-017). A view-space draw
+/// (`CameraMode.frame_view_space`) gets no shadow and no point light.
+pub const shader_lit = lighting_plan.shader(lighting_group, vertex_body ++
+    \\@fragment fn fs_main(in: SwBoxOut) -> @location(0) vec4<f32> {
+    \\    var l = sw_box.light_dir.xyz;
+    \\    let n = normalize(in.normal);
+    \\    var shadow = 1.0;
+    \\    var points = vec3<f32>(0.0);
+    \\    if (sw_box.info.z == 2u) {
+    \\        l = (sw_frame.view * vec4<f32>(l, 0.0)).xyz;
+    \\    } else {
+    \\        shadow = sw_shadow(in.world, n);
+    \\        points = sw_point_lights(in.world, n);
+    \\    }
+    \\    let d = max(dot(n, l), 0.0);
+    \\    var c = in.color * (sw_box.ambient.rgb + sw_box.light_color.rgb * (d * shadow) + points);
     \\    if (sw_box.info.w != 0u) {
     \\        c = sw_fog(c, in.world);
     \\    }
@@ -285,6 +320,16 @@ pub fn shade(albedo: [3]f32, tint: [3]f32, normal: [3]f32, light_dir: [3]f32, li
     const d = @max(normal[0] * light_dir[0] + normal[1] * light_dir[1] + normal[2] * light_dir[2], 0.0);
     var c: [3]f32 = undefined;
     for (0..3) |i| c[i] = albedo[i] * tint[i] * (light.ambient[i] + light.color[i] * d);
+    return c;
+}
+
+/// The CPU reference of `shader_lit` before the fog: `shade` with the
+/// diffuse light times `shadow` (0 to 1), plus the point light `points`
+/// (`lighting_plan.pointLights`).
+pub fn shadeLit(albedo: [3]f32, tint: [3]f32, normal: [3]f32, light_dir: [3]f32, light: Light, shadow: f32, points: [3]f32) [3]f32 {
+    const d = @max(normal[0] * light_dir[0] + normal[1] * light_dir[1] + normal[2] * light_dir[2], 0.0);
+    var c: [3]f32 = undefined;
+    for (0..3) |i| c[i] = albedo[i] * tint[i] * (light.ambient[i] + light.color[i] * (d * shadow) + points[i]);
     return c;
 }
 
@@ -433,4 +478,20 @@ test "box models: the CPU shade lights the faces that turn to the light (REQ-GPU
     try expectPoint(.{ 0, 1, 0 }, l);
     try expectPoint(.{ 1.25, 0.625, 0 }, shade(.{ 1, 0.5, 0 }, .{ 1, 1, 1 }, .{ 0, 1, 0 }, l, light));
     try expectPoint(.{ 0.125, 0.25, 0 }, shade(.{ 1, 0.5, 0 }, .{ 0.5, 2, 1 }, .{ 0, -1, 0 }, l, light));
+}
+
+test "box models: the lit shader adds the shadow and the point lights (REQ-GPU-016, REQ-GPU-017)" {
+    try testing.expect(std.mem.startsWith(u8, shader_lit, wgsl.prefix));
+    try testing.expect(std.mem.indexOf(u8, shader_lit, "@group(2) @binding(0) var<uniform> sw_lighting: SwLighting;") != null);
+    try testing.expect(std.mem.indexOf(u8, shader_lit, "shadow = sw_shadow(in.world, n);") != null);
+    try testing.expect(std.mem.indexOf(u8, shader, "sw_shadow") == null);
+    const light: Light = .{ .dir = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 }, .ambient = .{ 0.25, 0.25, 0.25 } };
+    const l = light.unitDir();
+    const up: [3]f32 = .{ 0, 1, 0 };
+    // Full light and no point light: the same as `shade`.
+    try expectPoint(shade(.{ 1, 0.5, 0 }, .{ 1, 1, 1 }, up, l, light), shadeLit(.{ 1, 0.5, 0 }, .{ 1, 1, 1 }, up, l, light, 1, .{ 0, 0, 0 }));
+    // Full shadow: the ambient light only.
+    try expectPoint(.{ 0.25, 0.125, 0 }, shadeLit(.{ 1, 0.5, 0 }, .{ 1, 1, 1 }, up, l, light, 0, .{ 0, 0, 0 }));
+    // A point light adds to the albedo.
+    try expectPoint(.{ 0.75, 0.375, 0 }, shadeLit(.{ 1, 0.5, 0 }, .{ 1, 1, 1 }, up, l, light, 0, .{ 0.5, 0.5, 0.5 }));
 }
