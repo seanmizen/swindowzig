@@ -21,6 +21,10 @@ interface CanvasPixels {
   lit: number;
   /** The colour bytes of gridW x gridH samples of the canvas. */
   grid: number[];
+  /** The read that gave the pixels: "gpu" (a copy) or "2d" (drawImage). */
+  source: string;
+  /** The errors of the reads, for the failure message. */
+  notes: string[];
 }
 
 /**
@@ -33,22 +37,53 @@ interface Hooks {
 }
 
 /**
- * Count the canvas frames, and read the canvas texture of a frame back from
- * the GPU. The read copies the texture after the submit of the frame, in the
- * same task, before the browser shows it. So the test reads what the frame
- * graph wrote, and not the screenshot of the compositor (the Linux headless
- * shell gives a black screenshot of a WebGPU canvas).
+ * Count the canvas frames, and read the canvas texture of a frame. The read
+ * occurs after the submit of the frame, in the same task, before the browser
+ * shows the frame. So the test reads what the frame graph wrote, and not the
+ * screenshot of the compositor. The Linux headless shell gives a black
+ * screenshot of a WebGPU canvas.
+ *
+ * There are two reads. The first copies the canvas texture to a buffer on
+ * the GPU. The second draws the canvas into a 2D canvas. The test uses the
+ * GPU copy, and the 2D read if the GPU copy fails.
  */
 function instrument(grid: { w: number; h: number }): void {
   const hooks = window as unknown as Hooks;
   hooks.swCanvasFrames = 0;
   let device: GPUDevice | null = null;
+  let canvas: HTMLCanvasElement | OffscreenCanvas | null = null;
   let current: GPUTexture | null = null;
   let waiting: ((p: CanvasPixels) => void) | null = null;
+
+  const measure = (
+    data: Uint8Array | Uint8ClampedArray,
+    w: number,
+    h: number,
+    stride: number,
+  ) => {
+    let lit = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * stride + x * 4;
+        if (Math.max(data[i], data[i + 1], data[i + 2]) > 64) lit++;
+      }
+    }
+    const cells: number[] = [];
+    for (let gy = 0; gy < grid.h; gy++) {
+      for (let gx = 0; gx < grid.w; gx++) {
+        const x = Math.floor(((gx + 0.5) * w) / grid.w);
+        const y = Math.floor(((gy + 0.5) * h) / grid.h);
+        const i = y * stride + x * 4;
+        cells.push(data[i], data[i + 1], data[i + 2]);
+      }
+    }
+    return { lit: lit / (w * h), grid: cells };
+  };
 
   const configure = GPUCanvasContext.prototype.configure;
   GPUCanvasContext.prototype.configure = function (c) {
     device = c.device;
+    canvas = this.canvas;
     const usage =
       (c.usage ?? GPUTextureUsage.RENDER_ATTACHMENT) | GPUTextureUsage.COPY_SRC;
     return configure.call(this, { ...c, usage });
@@ -63,6 +98,12 @@ function instrument(grid: { w: number; h: number }): void {
   hooks.swReadCanvas = () =>
     new Promise((resolve) => {
       waiting = resolve;
+      setTimeout(() => {
+        if (waiting !== resolve) return;
+        waiting = null;
+        const notes = ['no queue submit in 5 s after the read request'];
+        resolve({ lit: 0, grid: [], source: 'none', notes });
+      }, 5_000);
     });
 
   const submit = GPUQueue.prototype.submit;
@@ -70,44 +111,71 @@ function instrument(grid: { w: number; h: number }): void {
     submit.call(this, buffers);
     const resolve = waiting;
     const tex = current;
-    if (!resolve || !tex || !device) return;
+    const dev = device;
+    if (!resolve || !tex || !dev || !canvas) return;
     waiting = null;
     const w = tex.width;
     const h = tex.height;
-    const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
-    const buffer = device.createBuffer({
-      size: bytesPerRow * h,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-    const encoder = device.createCommandEncoder();
-    encoder.copyTextureToBuffer(
-      { texture: tex },
-      { buffer, bytesPerRow },
-      { width: w, height: h },
-    );
-    submit.call(this, [encoder.finish()]);
-    buffer.mapAsync(GPUMapMode.READ).then(() => {
-      const data = new Uint8Array(buffer.getMappedRange());
-      let lit = 0;
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const i = y * bytesPerRow + x * 4;
-          if (Math.max(data[i], data[i + 1], data[i + 2]) > 64) lit++;
-        }
-      }
-      const cells: number[] = [];
-      for (let gy = 0; gy < grid.h; gy++) {
-        for (let gx = 0; gx < grid.w; gx++) {
-          const x = Math.floor(((gx + 0.5) * w) / grid.w);
-          const y = Math.floor(((gy + 0.5) * h) / grid.h);
-          const i = y * bytesPerRow + x * 4;
-          cells.push(data[i], data[i + 1], data[i + 2]);
-        }
-      }
-      buffer.unmap();
-      buffer.destroy();
-      resolve({ lit: lit / (w * h), grid: cells });
-    });
+    const notes: string[] = [];
+
+    // The 2D read.
+    let flat: CanvasPixels | null = null;
+    try {
+      const c2 = new OffscreenCanvas(w, h);
+      const ctx = c2.getContext('2d');
+      if (!ctx) throw new Error('no 2D context');
+      ctx.drawImage(canvas, 0, 0);
+      const m = measure(ctx.getImageData(0, 0, w, h).data, w, h, w * 4);
+      flat = { ...m, source: '2d', notes };
+    } catch (e) {
+      notes.push(`2d read: ${e}`);
+    }
+    const fallback = () => {
+      if (flat) resolve(flat);
+      else resolve({ lit: 0, grid: [], source: 'none', notes });
+    };
+
+    // The GPU copy.
+    try {
+      const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+      const buffer = dev.createBuffer({
+        size: bytesPerRow * h,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      dev.pushErrorScope('validation');
+      const encoder = dev.createCommandEncoder();
+      encoder.copyTextureToBuffer(
+        { texture: tex },
+        { buffer, bytesPerRow },
+        { width: w, height: h },
+      );
+      submit.call(this, [encoder.finish()]);
+      dev.popErrorScope().then((err) => {
+        if (err) notes.push(`gpu copy: ${err.message}`);
+      });
+      const timer = setTimeout(() => {
+        notes.push('gpu copy: mapAsync gave no result in 5 s');
+        fallback();
+      }, 5_000);
+      buffer.mapAsync(GPUMapMode.READ).then(
+        () => {
+          clearTimeout(timer);
+          const data = new Uint8Array(buffer.getMappedRange());
+          const m = measure(data, w, h, bytesPerRow);
+          buffer.unmap();
+          buffer.destroy();
+          resolve({ ...m, source: 'gpu', notes });
+        },
+        (e) => {
+          clearTimeout(timer);
+          notes.push(`gpu copy: ${e}`);
+          fallback();
+        },
+      );
+    } catch (e) {
+      notes.push(`gpu copy: ${e}`);
+      fallback();
+    }
   };
 }
 
@@ -155,8 +223,13 @@ test('justabox draws the spinning box on the canvas', async ({ page }) => {
   const frames = () =>
     page.evaluate(() => (window as unknown as Hooks).swCanvasFrames);
   let framesNow = 0;
+  const reads: string[] = [];
   const dump = () =>
-    `\nCanvas frames: ${framesNow}\nConsole:\n${logs.join('\n')}`;
+    `\nCanvas frames: ${framesNow}\nReads:\n${reads.join('\n')}\nConsole:\n${logs.join('\n')}`;
+  const describe = (name: string, p: CanvasPixels) =>
+    reads.push(
+      `${name}: ${p.source}, lit ${p.lit.toFixed(4)}${p.notes.map((n) => `\n  ${n}`).join('')}`,
+    );
 
   await page.goto('/');
   // With no WebGPU, justabox draws nothing. The console then tells why.
@@ -171,8 +244,10 @@ test('justabox draws the spinning box on the canvas', async ({ page }) => {
   await page.waitForTimeout(1_000);
   const handlesBefore = await gpuHandles(page);
   const first = await readCanvas(page);
+  describe('first', first);
   await page.waitForTimeout(watchMs);
   const second = await readCanvas(page);
+  describe('second', second);
   const handlesAfter = await gpuHandles(page);
   framesNow = await frames();
 
