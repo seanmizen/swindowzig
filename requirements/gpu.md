@@ -243,3 +243,58 @@ Textures, samplers and other resources of `sw_gpu`.
     ground with the CPU reference, and the ground in full fog with the sky
     at the horizon.
 - **Relations:** refines REQ-GPU-010
+
+## REQ-GPU-014 — One draw call draws all instances of one box model
+
+- **Status:** active
+- **Source:** agent:SWZ-41
+- **Origin:** #41
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the game adds instances of a box model to a layer of
+  `BoxModels`, each with one rotation for each part, the `draw` of that
+  layer shall draw all instances of the model with one draw call, each part
+  turned about its pivot and moved with its parent.
+- **Rationale:** A scene can have many animated figures. One draw call for
+  each figure costs a call into the GPU for each figure, and on the web a
+  call into JavaScript. The part matrices go into one storage buffer with
+  one staged upload, so the cost of a frame grows with the parts only.
+- **Verification:**
+  - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: a part
+    turns about its pivot and follows its parent (REQ-GPU-014)"
+  - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: validate
+    rejects a bad tree (REQ-GPU-014)"
+  - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: the mesh
+    has 36 vertices for each box, wound counter-clockwise from outside
+    (REQ-GPU-014)"
+  - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: the
+    shader structs have the layouts of the Zig records (REQ-GPU-014)"
+  - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: the CPU
+    shade lights the faces that turn to the light (REQ-GPU-014)"
+  - Demonstration — `models --check` (native) draws 67 figures, two blocks
+    and a held object, checks that the frame has 3 draw calls, and compares
+    a posed hand and two bodies with the CPU reference after the tonemap.
+- **Relations:** refines REQ-GPU-006
+
+## REQ-GPU-015 — The first-person pass draws in front of the world
+
+- **Status:** active
+- **Source:** agent:SWZ-41
+- **Origin:** #41
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While a `BoxModels` first-person pass has a depth range
+  near the near plane, the pass shall draw the instances of the
+  `.first_person` layer in front of the world geometry that the scene
+  passes drew on the same depth target.
+- **Rationale:** A held object is near the camera, and a wall or another
+  model can be nearer than the object. The object must not go into the
+  wall. The pass keeps the world depth, so a later pass can still test
+  against the world.
+- **Verification:**
+  - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: the own
+    depth range maps NDC depth into near to far (REQ-GPU-015)"
+  - Demonstration — `models --check` (native) puts a block between the
+    camera and the held object. With the depth range, the held object
+    shows. With the full depth range, the block covers it.
+- **Relations:** refines REQ-GPU-014
