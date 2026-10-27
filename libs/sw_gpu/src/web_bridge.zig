@@ -319,6 +319,24 @@ pub extern "webgpu" fn webgpuCommandEncoderBeginComputePass(
     encoder: WebGPUCommandEncoder,
 ) WebGPUComputePassEncoder;
 
+/// Copy a region of one texture to another texture on the GPU.
+pub extern "webgpu" fn webgpuCommandEncoderCopyTextureToTexture(
+    encoder: WebGPUCommandEncoder,
+    src_texture: WebGPUTexture,
+    src_mip_level: u32,
+    src_x: u32,
+    src_y: u32,
+    src_z: u32,
+    dst_texture: WebGPUTexture,
+    dst_mip_level: u32,
+    dst_x: u32,
+    dst_y: u32,
+    dst_z: u32,
+    width: u32,
+    height: u32,
+    depth: u32,
+) void;
+
 pub extern "webgpu" fn webgpuCommandEncoderFinish(
     encoder: WebGPUCommandEncoder,
 ) WebGPUCommandBuffer;

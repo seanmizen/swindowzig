@@ -100,6 +100,7 @@ pub fn build(b: *std.Build) void {
     example.root_module.addImport("sw_text", web_libs.text);
     example.root_module.addImport("sw_ui", web_libs.ui);
     example.root_module.addImport("sw_assets", web_libs.assets);
+    example.root_module.addImport("sw_render", web_libs.render);
     // sw_platform is needed by examples that drive their own wasm entry
     // (e.g. voxel, which constructs a WasmBackend directly in its
     // swindowzig_init export).
@@ -179,6 +180,7 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_text", native_libs.text);
     native_exe.root_module.addImport("sw_ui", native_libs.ui);
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
+    native_exe.root_module.addImport("sw_render", native_libs.render);
     native_exe.root_module.addOptions("chunk_build", chunk_build);
     const native_voxel = addVoxel(b, native_libs.gpu, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
     native_exe.root_module.addImport("sw_voxel", native_voxel.voxel);
@@ -261,6 +263,8 @@ pub fn build(b: *std.Build) void {
         // sw_audio: the sample type and the WAV decoder.
         "libs/sw_audio/src/sample.zig",
         "libs/sw_audio/src/wav.zig",
+        // sw_render: the frame timing of animated sprites.
+        "libs/sw_render/src/animation.zig",
     };
 
     // sw_assets: byte loading and PNG decoding. The PNG decoder is C
@@ -293,6 +297,21 @@ pub fn build(b: *std.Build) void {
         const run_unit_tests = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run_unit_tests.step);
     }
+
+    // sw_render atlas layout tests: no GPU code. The layout uses the
+    // sw_text shelf packer and the sw_gpu mip chain maths. The sw_text
+    // module brings C code (stb), so the tests link libc.
+    const render_layout_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_render/src/layout.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    render_layout_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    render_layout_tests.root_module.addImport("sw_text", web_libs.text);
+    test_step.dependOn(&b.addRunArtifact(render_layout_tests).step);
 
     // sw_text font tests: they read a real font through stb_truetype (C).
     // text.zig also needs sw_gfx2d, but its tests use no GPU.
@@ -639,6 +658,7 @@ const Libs = struct {
     ui: *std.Build.Module,
     assets: *std.Build.Module,
     voxel: *std.Build.Module,
+    render: *std.Build.Module,
     app: *std.Build.Module,
 };
 
@@ -682,13 +702,16 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     // libs/sw_voxel/src/content.zig.
     const voxel = libModule(b, exported, "sw_voxel", "libs/sw_voxel/src/sw_voxel.zig");
     voxel.addImport("sw_gpu", gpu);
+    const render = libModule(b, exported, "sw_render", "libs/sw_render/src/render_root.zig");
+    render.addImport("sw_gpu", gpu);
+    render.addImport("sw_text", text);
     const app = libModule(b, exported, "sw_app", "libs/sw_app/src/app_root.zig");
     app.addImport("sw_core", core);
     app.addImport("sw_platform", platform);
     app.addImport("sw_gpu", gpu);
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
-    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .text = text, .ui = ui, .voxel = voxel, .app = app };
+    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .text = text, .ui = ui, .voxel = voxel, .render = render, .app = app };
 }
 
 /// Compile stb_vorbis (libs/sw_audio/c) into `module`. The file needs no C

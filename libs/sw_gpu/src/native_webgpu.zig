@@ -96,6 +96,7 @@ pub extern fn wgpuDeviceCreateCommandEncoder(device: WGPUDevice, descriptor: ?*c
 pub extern fn wgpuCommandEncoderBeginRenderPass(encoder: WGPUCommandEncoder, descriptor: *const WGPURenderPassDescriptor) WGPURenderPassEncoder;
 pub extern fn wgpuCommandEncoderBeginComputePass(encoder: WGPUCommandEncoder, descriptor: ?*const WGPUComputePassDescriptor) WGPUComputePassEncoder;
 pub extern fn wgpuCommandEncoderCopyTextureToBuffer(encoder: WGPUCommandEncoder, source: *const WGPUImageCopyTexture, destination: *const WGPUImageCopyBuffer, copy_size: *const WGPUExtent3D) void;
+pub extern fn wgpuCommandEncoderCopyTextureToTexture(encoder: WGPUCommandEncoder, source: *const WGPUImageCopyTexture, destination: *const WGPUImageCopyTexture, copy_size: *const WGPUExtent3D) void;
 pub extern fn wgpuCommandEncoderFinish(encoder: WGPUCommandEncoder, descriptor: ?*const WGPUCommandBufferDescriptor) WGPUCommandBuffer;
 pub extern fn wgpuCommandEncoderRelease(encoder: WGPUCommandEncoder) void;
 pub extern fn wgpuCommandBufferRelease(buffer: WGPUCommandBuffer) void;
