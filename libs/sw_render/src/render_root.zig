@@ -39,6 +39,12 @@
 //! draw call draws all instances of one model (REQ-GPU-014). A first-person
 //! pass draws view-space models in front of the world, with their own depth
 //! range (REQ-GPU-015). See `box_models.zig`.
+//!
+//! The cloud pass draws a layer of boxes at a set height, from a shape
+//! image that the game gives, and the wind moves it (REQ-GPU-020). The
+//! precipitation pass draws rain or snow in a column around the camera,
+//! and a height map from the game stops it at the ground (REQ-GPU-021).
+//! Both use the sky light and the fog. See `weather.zig`.
 
 const atlas_mod = @import("atlas.zig");
 const box_models_mod = @import("box_models.zig");
@@ -47,6 +53,7 @@ const post_mod = @import("post.zig");
 const ring_mod = @import("ring.zig");
 const sky_mod = @import("sky.zig");
 const upload_mod = @import("upload.zig");
+const weather_mod = @import("weather.zig");
 
 /// Atlas packing with no GPU code: the cell grid, rectangles and texture
 /// coordinates.
@@ -67,6 +74,9 @@ pub const sky = @import("sky_plan.zig");
 /// Box models with no GPU code: the mesh, the pose of the parts, the WGSL
 /// and the CPU reference of the shader.
 pub const box_model = @import("box_model_plan.zig");
+/// Clouds and precipitation with no GPU code: the settings, the sky light,
+/// the WGSL and the CPU reference of the shaders.
+pub const weather = @import("weather_plan.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasBuilder = atlas_mod.AtlasBuilder;
@@ -124,3 +134,14 @@ pub const BoxModelView = box_models_mod.View;
 pub const BoxModelLight = box_models_mod.Light;
 pub const BoxModelStats = box_models_mod.Stats;
 pub const FirstPersonOptions = box_models_mod.FirstPersonOptions;
+
+pub const Clouds = weather_mod.Clouds;
+pub const CloudOptions = weather_mod.CloudOptions;
+pub const CloudSettings = weather.CloudSettings;
+pub const Precipitation = weather_mod.Precipitation;
+pub const PrecipitationOptions = weather_mod.PrecipitationOptions;
+pub const PrecipitationSettings = weather.PrecipitationSettings;
+pub const PrecipitationKind = weather.PrecipitationKind;
+pub const HeightMap = weather.HeightMap;
+pub const WeatherInput = weather.FrameInput;
+pub const WeatherLight = weather.Light;

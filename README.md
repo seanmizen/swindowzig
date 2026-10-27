@@ -125,7 +125,7 @@ zig build run -Dexample=windows   # triangle with mouse drag
 zig build run -Dexample=flat2d    # 2D renderer: rectangles, outline, textured quad
 zig build run -Dexample=mipmaps   # GPU mip levels, texture array, anisotropy (Space: sampler)
 zig build run -Dexample=atlas     # sw_render texture atlas with animated sprites
-zig build run -Dexample=sky       # sw_render sky, fog and day-night cycle (C: cube map, G: fog)
+zig build run -Dexample=sky       # sw_render sky, fog, day-night cycle, clouds and weather (C: cube map, G: fog, K: clouds, R: weather)
 zig build run -Dexample=models    # sw_render instanced box models (Space: animation, D: first-person depth range)
 ```
 

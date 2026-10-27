@@ -38,6 +38,7 @@ let canvasFormat: GPUTextureFormat | null = null;
 // libs/sw_gpu/src/types.zig. Only the formats actually
 // used by the voxel engine are populated; add more as needed.
 const TEXTURE_FORMAT_MAP: Record<number, GPUTextureFormat> = {
+  14: 'r32float',
   18: 'rgba8unorm',
   19: 'rgba8unorm-srgb',
   23: 'bgra8unorm',
