@@ -589,3 +589,92 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Verification:** Test — `libs/sw_render/src/particle_plan.zig` ›
   "particles: the cap drops the oldest particle (REQ-GPU-025)"
 - **Relations:** none
+
+## REQ-GPU-026 — A preset sets each graphics setting
+
+- **Status:** active
+- **Source:** agent:SWZ-44
+- **Origin:** #44
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When the game selects a quality preset, `sw_render`
+  shall give a `GraphicsSettings` with the render distance, the
+  anti-aliasing, the mip levels, the shadows and vsync of that preset.
+- **Rationale:** A settings menu changes one struct, and a preset is a
+  fast start for a slow or a fast machine. The game gives each value to
+  the part that uses it, for example the anti-aliasing to
+  `GPU.configureMSAA` and vsync to `GPU.setVsync`.
+- **Verification:**
+  - Test — `libs/sw_render/src/settings.zig` › "settings: each preset is
+    better than or equal to the preset below it (REQ-GPU-026)"
+  - Test — `libs/sw_render/src/settings.zig` › "settings: a preset
+    matches itself, and a changed value matches no preset (REQ-GPU-026)"
+  - Test — `libs/sw_render/src/settings.zig` › "settings: the
+    anti-aliasing gives the sw_gpu configuration (REQ-GPU-026)"
+- **Relations:** none
+
+## REQ-GPU-027 — The frame limiter holds a target frame rate
+
+- **Status:** active
+- **Source:** agent:SWZ-44
+- **Origin:** #44
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** While a frame limiter has a target frame rate, the
+  `sw_render` frame limiter shall give a wait that starts each frame one
+  interval after the start of the previous frame.
+- **Rationale:** A frame rate limit saves power and gives an even frame
+  time. The frames start at equal intervals, so a short wait after a slow
+  frame keeps the mean rate at the target. After a frame that is late by
+  more than one interval, the limiter starts again and does not try to
+  catch up.
+- **Verification:**
+  - Test — `libs/sw_render/src/frame_pacing.zig` › "frame pacing: the
+    limiter waits until the next frame start (REQ-GPU-027)"
+  - Test — `libs/sw_render/src/frame_pacing.zig` › "frame pacing: a
+    frame late by more than one interval starts again from now
+    (REQ-GPU-027)"
+- **Relations:** none
+
+## REQ-GPU-028 — GPU timestamps time each render pass
+
+- **Status:** active
+- **Source:** agent:SWZ-44
+- **Origin:** #44
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** Where the device has the timestamp query feature, while
+  a frame graph has a `PassTimer`, the frame graph shall give the GPU
+  time of each render pass of the frame.
+- **Rationale:** The CPU time of a frame does not show which pass is
+  slow on the GPU. The timer waits for the GPU to read the times, so it
+  is for a debug overlay. The web build has no timestamps yet.
+- **Verification:**
+  - Test — `libs/sw_render/src/frame_pacing.zig` › "frame pacing: GPU
+    timestamps to milliseconds (REQ-GPU-028)"
+  - Demonstration — `models --check` (native, in CI) sets a pass timer
+    when the device has timestamps. The scene, translucent, particle and
+    overlay passes must each have a time.
+- **Relations:** none
+
+## REQ-GPU-029 — The overlay draws a frame-time chart with sw_gfx2d
+
+- **Status:** active
+- **Source:** agent:SWZ-44
+- **Origin:** #44
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When the game draws the frame-time chart, `sw_render`
+  shall draw one bar for each frame time, with a height that is the frame
+  time over the chart maximum, and a line at the target frame time.
+- **Rationale:** A chart shows a frame spike that a mean value hides. A
+  bar above the target has a different colour. The chart uses the
+  sw_gfx2d renderer, so it draws in the same pass as the other 2D
+  shapes of the game.
+- **Verification:**
+  - Test — `libs/sw_render/src/perf_overlay.zig` › "perf overlay: the
+    chart draws the background, one bar for each frame and the line
+    (REQ-GPU-029)"
+  - Test — `libs/sw_render/src/perf_overlay.zig` › "perf overlay: the bar
+    height is the frame time over the chart maximum (REQ-GPU-029)"
+- **Relations:** none

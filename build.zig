@@ -430,6 +430,18 @@ pub fn build(b: *std.Build) void {
     render_particle_tests.root_module.addImport("sw_gpu", web_libs.gpu);
     render_particle_tests.root_module.addImport("sw_text", web_libs.text);
     test_step.dependOn(&b.addRunArtifact(render_particle_tests).step);
+    // sw_render frame chart tests: no GPU code. The chart uses the
+    // sw_gfx2d types, and sw_gfx2d brings C code, so the tests link libc.
+    const render_overlay_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_render/src/perf_overlay.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    render_overlay_tests.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
+    test_step.dependOn(&b.addRunArtifact(render_overlay_tests).step);
 
     // sw_render frame graph tests: the plan, the uniform ring, the staged
     // uploads, the WGSL prefix, the post chain plan, the sky plan, the box
@@ -445,6 +457,8 @@ pub fn build(b: *std.Build) void {
         "libs/sw_render/src/lighting_plan.zig",
         "libs/sw_render/src/weather_plan.zig",
         "libs/sw_render/src/translucent_plan.zig",
+        "libs/sw_render/src/settings.zig",
+        "libs/sw_render/src/frame_pacing.zig",
     };
     inline for (render_graph_test_files) |file| {
         const unit_tests = b.addTest(.{
@@ -907,6 +921,7 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     render.addImport("sw_gpu", gpu);
     render.addImport("sw_text", text);
     render.addImport("sw_math", math);
+    render.addImport("sw_gfx2d", gfx2d);
     const app = libModule(b, exported, "sw_app", "libs/sw_app/src/app_root.zig");
     app.addImport("sw_core", core);
     app.addImport("sw_platform", platform);

@@ -55,6 +55,10 @@ pub extern fn wgpuAdapterRequestDevice(
     callback: WGPURequestDeviceCallback,
     userdata: ?*anyopaque,
 ) void;
+pub extern fn wgpuAdapterHasFeature(adapter: WGPUAdapter, feature: WGPUFeatureName) u32;
+pub extern fn wgpuDeviceCreateQuerySet(device: WGPUDevice, descriptor: *const WGPUQuerySetDescriptor) WGPUQuerySet;
+pub extern fn wgpuQuerySetDestroy(query_set: WGPUQuerySet) void;
+pub extern fn wgpuQuerySetRelease(query_set: WGPUQuerySet) void;
 pub extern fn wgpuDeviceGetQueue(device: WGPUDevice) WGPUQueue;
 pub extern fn wgpuDevicePoll(device: WGPUDevice, wait: u32, wrapped_submission_index: ?*const anyopaque) u32;
 
@@ -97,6 +101,8 @@ pub extern fn wgpuCommandEncoderBeginRenderPass(encoder: WGPUCommandEncoder, des
 pub extern fn wgpuCommandEncoderBeginComputePass(encoder: WGPUCommandEncoder, descriptor: ?*const WGPUComputePassDescriptor) WGPUComputePassEncoder;
 pub extern fn wgpuCommandEncoderCopyTextureToBuffer(encoder: WGPUCommandEncoder, source: *const WGPUImageCopyTexture, destination: *const WGPUImageCopyBuffer, copy_size: *const WGPUExtent3D) void;
 pub extern fn wgpuCommandEncoderCopyTextureToTexture(encoder: WGPUCommandEncoder, source: *const WGPUImageCopyTexture, destination: *const WGPUImageCopyTexture, copy_size: *const WGPUExtent3D) void;
+pub extern fn wgpuCommandEncoderCopyBufferToBuffer(encoder: WGPUCommandEncoder, source: WGPUBuffer, source_offset: u64, destination: WGPUBuffer, destination_offset: u64, size: u64) void;
+pub extern fn wgpuCommandEncoderResolveQuerySet(encoder: WGPUCommandEncoder, query_set: WGPUQuerySet, first_query: u32, query_count: u32, destination: WGPUBuffer, destination_offset: u64) void;
 pub extern fn wgpuCommandEncoderFinish(encoder: WGPUCommandEncoder, descriptor: ?*const WGPUCommandBufferDescriptor) WGPUCommandBuffer;
 pub extern fn wgpuCommandEncoderRelease(encoder: WGPUCommandEncoder) void;
 pub extern fn wgpuCommandBufferRelease(buffer: WGPUCommandBuffer) void;
@@ -892,6 +898,18 @@ pub const WGPURenderPassDepthStencilAttachment = extern struct {
     stencil_store_op: WGPUStoreOp = .undefined,
     stencil_clear_value: u32 = 0,
     stencil_read_only: u32 = 0,
+};
+
+pub const WGPUQueryType = enum(u32) {
+    occlusion = 0,
+    timestamp = 1,
+};
+
+pub const WGPUQuerySetDescriptor = extern struct {
+    next_in_chain: ?*const WGPUChainedStruct = null,
+    label: ?[*:0]const u8 = null,
+    type: WGPUQueryType,
+    count: u32,
 };
 
 pub const WGPURenderPassTimestampWrites = extern struct {

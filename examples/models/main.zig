@@ -26,6 +26,12 @@
 // (REQ-GPU-024). The check uses two fixed particles in place of the
 // emitter.
 //
+// A performance overlay at the top left draws a chart of the frame times
+// with sw_gfx2d (REQ-GPU-029). When the device has GPU timestamps, a pass
+// timer times each pass of the frame graph (REQ-GPU-028). T writes the
+// pass times to the log. F sets or removes a limit of 30 frames each
+// second (REQ-GPU-027).
+//
 // Keys: Space stops or starts the animation. D turns the first-person
 // depth range on or off. L turns the shadows on or off (REQ-GPU-018). P
 // turns the point light on or off. Left and Right change the time of day.
@@ -38,7 +44,9 @@
 // under the point light. It checks the draw calls and the instance
 // counts. The pixel through the two translucent quads must be the CPU
 // blend of the far quad, then the near quad, over the ground. The same
-// test is done for two particles, in one draw call. It exits
+// test is done for two particles, in one draw call. The background of
+// the overlay must have its colour. When the device has GPU timestamps,
+// each render pass must have a time. It exits
 // with 0 (pass) or 1 (fail).
 const std = @import("std");
 const sw = @import("sw_app");
@@ -46,6 +54,7 @@ const builtin = @import("builtin");
 const sw_math = @import("sw_math");
 const gpu_mod = @import("sw_gpu");
 const sw_render = @import("sw_render");
+const sw_gfx2d = @import("sw_gfx2d");
 
 const Mat4 = sw_math.Mat4;
 const Quat = sw_math.Quat;
@@ -205,6 +214,16 @@ fn sparkAt(t: f32) [3]f32 {
     for (0..3) |i| c[i] = eye[i] + t * (spark_ground[i] - eye[i]);
     return c;
 }
+var overlay: ?sw_gfx2d.Renderer = null;
+var timer: ?sw_render.PassTimer = null;
+var frame_times: sw_render.FrameTimes = .{};
+var limiter: sw_render.FrameLimiter = .{};
+var last_frame_ns: ?u64 = null;
+const chart_options: sw_render.FrameChartOptions = .{
+    .rect = .{ .x = 8, .y = 8, .w = 128, .h = 40 },
+    .background = .{ .r = 0.1, .g = 0.1, .b = 0.4 },
+};
+
 var figure: sw_render.BoxModelId = undefined;
 var block: sw_render.BoxModelId = undefined;
 var held: sw_render.BoxModelId = undefined;
@@ -374,7 +393,21 @@ const Callbacks = struct {
             spark_system.?.spawn(.{ .pos = sparkAt(spark_at[1]), .size = 0.15, .color = spark_color[1], .life = 1000 });
             spark_system.?.spawn(.{ .pos = sparkAt(spark_at[0]), .size = 0.15, .color = spark_color[0], .life = 1000 });
         }
-        std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range. L: shadows. P: point light. Left/Right: time.", .{figure_count});
+        // The performance overlay draws on the screen after the post chain.
+        overlay = try sw_gfx2d.Renderer.init(allocator, gpu, .{});
+        try g.addPass(.{
+            .name = "overlay",
+            .order = 2000,
+            .attachments = .{ .colors = &.{.{ .target = .screen, .load_op = .load }} },
+            .callback = .plain(drawOverlay),
+        });
+        if (gpu.supportsTimestamps()) {
+            timer = try sw_render.PassTimer.init(allocator, gpu, .{});
+            g.setTimer(&timer.?);
+        } else {
+            std.log.info("models: the device has no GPU timestamps. The pass timer is off.", .{});
+        }
+        std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range. L: shadows. P: point light. Left/Right: time. T: pass times. F: frame limit.", .{figure_count});
     }
 
     pub fn tick(ctx: *sw.Context) !void {
@@ -390,6 +423,12 @@ const Callbacks = struct {
             if (lighting) |*l| l.setShadowsEnabled(shadows_on);
         }
         if (in.keyPressed(.P)) point_light_on = !point_light_on;
+        if (in.keyPressed(.F)) limiter.setTarget(if (limiter.target_fps == null) 30 else null);
+        if (in.keyPressed(.T)) {
+            if (timer) |*t| {
+                for (t.times()) |pt| std.log.info("models: pass {s}: {d:.3} ms", .{ pt.name, pt.ms });
+            }
+        }
         if (in.keyDown(.Left)) time_of_day -= 0.1 / 60.0;
         if (in.keyDown(.Right)) time_of_day += 0.1 / 60.0;
         if (anim_on) {
@@ -436,9 +475,15 @@ const Callbacks = struct {
             }
             gpu.present();
         }
+        pace(ctx);
     }
 
     pub fn shutdown(ctx: *sw.Context) !void {
+        if (graph) |*g| g.setTimer(null);
+        if (timer) |*t| t.deinit();
+        timer = null;
+        if (overlay) |*o| o.deinit();
+        overlay = null;
         if (glass) |*gl| gl.deinit();
         glass = null;
         if (sparks) |*s| s.deinit();
@@ -469,6 +514,30 @@ fn frameUniforms(w_px: u32, h_px: u32) sw_render.FrameUniforms {
         .view_proj = proj.mul(view).data,
         .camera_pos = .{ eye[0], eye[1], eye[2], 1 },
     };
+}
+
+/// Keep the frame time for the chart, and wait for the frame limit.
+/// Native only: the web build has no clock here.
+fn pace(ctx: *sw.Context) void {
+    const io = ctx.io orelse return;
+    if (check_mode) {
+        // Fixed times: the check does not depend on the speed of the
+        // machine.
+        frame_times.push(10);
+        return;
+    }
+    const now: u64 = @intCast(@max(std.Io.Timestamp.now(io, .awake).toNanoseconds(), 0));
+    if (last_frame_ns) |last| frame_times.push(@as(f32, @floatFromInt(now -| last)) / std.time.ns_per_ms);
+    const wait_ns = limiter.wait(now);
+    if (wait_ns > 0) io.sleep(.fromNanoseconds(wait_ns), .awake) catch {};
+    last_frame_ns = @intCast(@max(std.Io.Timestamp.now(io, .awake).toNanoseconds(), 0));
+}
+
+fn drawOverlay(pass: *sw_render.Pass) !void {
+    const o = &overlay.?;
+    o.beginFrame(pass.width, pass.height, 1);
+    try sw_render.drawFrameChart(o, &frame_times, chart_options);
+    try o.flush(pass.render.?);
 }
 
 fn drawScene(pass: *sw_render.Pass) !void {
@@ -661,6 +730,7 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
     ok = checkShadows(step, frame, pixels, w, h) and ok;
     ok = checkGlass(step, frame, pixels, w, h) and ok;
     ok = checkSparks(step, frame, pixels, w, h) and ok;
+    ok = checkOverlay(step, pixels, w) and ok;
     return ok;
 }
 
@@ -803,5 +873,32 @@ fn checkSparks(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w
         std.log.err("models: {s}: the particles used {d} draw calls, not 1", .{ step.name, sparks.?.draw_calls });
         ok = false;
     }
+    return ok;
+}
+
+/// The overlay background at the top left, and the pass times when the
+/// device has GPU timestamps.
+fn checkOverlay(step: Step, pixels: []const u8, w: u32) bool {
+    var ok = true;
+    const bg = chart_options.background;
+    const want: [3]u8 = .{ @intFromFloat(@round(bg.r * 255)), @intFromFloat(@round(bg.g * 255)), @intFromFloat(@round(bg.b * 255)) };
+    ok = expectPixel(step, "overlay background", pixels, w, .{ 9, 9 }, want) and ok;
+    const t = if (timer) |*pt| pt else return ok;
+    for ([_][]const u8{ "scene", "sw_translucent", "sw_particles", "overlay" }) |name| {
+        const ms = t.find(name) orelse {
+            std.log.err("models: {s}: the pass timer has no time for the pass {s}", .{ step.name, name });
+            ok = false;
+            continue;
+        };
+        if (!(ms >= 0 and ms < 10_000)) {
+            std.log.err("models: {s}: the pass {s} has the time {d} ms", .{ step.name, name, ms });
+            ok = false;
+        }
+    }
+    if (!(t.total() > 0)) {
+        std.log.err("models: {s}: the sum of the pass times is {d} ms, not more than 0", .{ step.name, t.total() });
+        ok = false;
+    }
+    std.log.info("models: {s}: {d} passes timed, {d:.3} ms on the GPU", .{ step.name, t.times().len, t.total() });
     return ok;
 }

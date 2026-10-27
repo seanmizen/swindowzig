@@ -41,6 +41,10 @@
 | [`REQ-GPU-023`](gpu.md#req-gpu-023--the-translucent-pass-sorts-its-quads-from-far-to-near) | The translucent pass sorts its quads from far to near | active | functional | P2 | agent:SWZ-35 |
 | [`REQ-GPU-024`](gpu.md#req-gpu-024--particles-draw-as-camera-facing-quads-in-one-draw-call-far-to-near) | Particles draw as camera-facing quads in one draw call, far to near | active | functional | P3 | agent:SWZ-42 |
 | [`REQ-GPU-025`](gpu.md#req-gpu-025--a-full-particle-system-drops-its-oldest-particle) | A full particle system drops its oldest particle | active | functional | P3 | agent:SWZ-42 |
+| [`REQ-GPU-026`](gpu.md#req-gpu-026--a-preset-sets-each-graphics-setting) | A preset sets each graphics setting | active | functional | P3 | agent:SWZ-44 |
+| [`REQ-GPU-027`](gpu.md#req-gpu-027--the-frame-limiter-holds-a-target-frame-rate) | The frame limiter holds a target frame rate | active | functional | P3 | agent:SWZ-44 |
+| [`REQ-GPU-028`](gpu.md#req-gpu-028--gpu-timestamps-time-each-render-pass) | GPU timestamps time each render pass | active | functional | P3 | agent:SWZ-44 |
+| [`REQ-GPU-029`](gpu.md#req-gpu-029--the-overlay-draws-a-frame-time-chart-with-sw_gfx2d) | The overlay draws a frame-time chart with sw_gfx2d | active | functional | P3 | agent:SWZ-44 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -117,6 +121,10 @@ graph TD
   REQ_GPU_023["REQ-GPU-023<br/>The translucent pass sorts its quads from far to near"]
   REQ_GPU_024["REQ-GPU-024<br/>Particles draw as camera-facing quads in one draw call, far to near"]
   REQ_GPU_025["REQ-GPU-025<br/>A full particle system drops its oldest particle"]
+  REQ_GPU_026["REQ-GPU-026<br/>A preset sets each graphics setting"]
+  REQ_GPU_027["REQ-GPU-027<br/>The frame limiter holds a target frame rate"]
+  REQ_GPU_028["REQ-GPU-028<br/>GPU timestamps time each render pass"]
+  REQ_GPU_029["REQ-GPU-029<br/>The overlay draws a frame-time chart with sw_gfx2d"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]

@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 6. Skipped: 0. Not started: 9.
+- Done: 7. Skipped: 0. Not started: 8.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -148,3 +148,39 @@ ticket of #102, in the order of the batch.
   (36 bytes for each vertex, 6 vertices for each particle). That is
   216 KB for 1000 particles. A GPU-side billboard (instancing) costs less
   if a game needs many more particles.
+
+## #44 graphics settings, frame pacing and a performance overlay
+
+- Status: done
+- Commit: see `git log --grep SWZ-44`
+- Not run here:
+  - `GPU.setVsync` with a real window. The sandbox has no display, so the
+    surface was not configured again with the `immediate` present mode.
+  - The F (frame limit) and T (pass times) keys of the `models` example.
+  - GPU timestamps on the web. The web build reports no timestamp feature,
+    so `PassTimer.init` gives `error.TimestampsNotSupported` there.
+- What ran: `models --check` passed on lavapipe. lavapipe has the
+  timestamp feature, so the check timed 10 render passes (32.8 ms) with
+  the shadows on and 7 passes with the shadows off. The overlay background
+  pixel is `{26, 26, 102}`, difference 0.
+- Expected changes:
+  - quad hash: no change
+  - goldens: none
+- CI changes needed: none. The `models --check` step runs the new check.
+  On a CI GPU with no timestamp feature, the check logs that the pass
+  timer is off and does not fail.
+- Requirements: REQ-GPU-026, REQ-GPU-027, REQ-GPU-028, REQ-GPU-029
+- Open questions:
+  - wgpu-native does not give the timestamp period of the queue.
+    `PassTimerOptions.period_ns` is 1 by default, which is correct for
+    lavapipe and most desktop drivers. Some GPUs (Apple, some mobile) use
+    another period.
+  - The settings struct is data. The game gives each value to its part
+    (`configureMSAA`, `setVsync`, `Lighting`, the atlas mip count). The
+    voxel demo does not use the struct yet.
+- Risks:
+  - The native device now asks for the timestamp feature when the adapter
+    has it. This changes the device of each native app. The voxel gate,
+    smoke test and goldens ran after the change.
+  - `PassTimer.collect` waits for the GPU each frame. Use the timer only
+    for debug.

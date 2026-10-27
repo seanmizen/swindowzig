@@ -321,6 +321,10 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_render/src/translucent_plan.zig` | The sort, the sort state, the blend and depth states, the WGSL, and the CPU blend `over` (no GPU code, unit tested) |
 | `libs/sw_render/src/particles.zig` | `Particles`: the particle pass. `update(&system, ParticleCamera.fromView(frame.view, eye))` each frame builds the quads far to near, and the pass draws them in one draw call, with a texture (null: white) (REQ-GPU-024) |
 | `libs/sw_render/src/particle_plan.zig` | `System` (fixed size, the cap drops the oldest, REQ-GPU-025), `Emitter` (rate, speed, spread, life, seed), `step` (gravity, drag, life), `buildQuads`, the WGSL (no GPU code, unit tested) |
+| `libs/sw_render/src/settings.zig` | `GraphicsSettings` and `Preset` (low, medium, high, ultra): render distance, anti-aliasing, mip levels, shadows, vsync, frame limit (REQ-GPU-026, unit tested) |
+| `libs/sw_render/src/frame_pacing.zig` | `FrameLimiter` (`wait(now_ns)` gives the ns to sleep, REQ-GPU-027), `FrameTimes` (ring with average, max, percentile), `timestampMs` (no GPU code, unit tested) |
+| `libs/sw_render/src/gpu_timing.zig` | `PassTimer`: GPU time of each render pass from timestamp queries. `graph.setTimer(&timer)`, then `timer.times()` after `execute`. Needs `gpu.supportsTimestamps()`; native only (REQ-GPU-028) |
+| `libs/sw_render/src/perf_overlay.zig` | `drawFrameChart(&gfx2d_renderer, &frame_times, .{ .rect = ... })`: the frame-time chart (REQ-GPU-029, unit tested) |
 | `libs/sw_gpu/src/fxaa.zig` | The FXAA source and quality presets. `shaderSource` sets the tokens and the bind group. `configureFXAA` and the post chain use it |
 | `libs/sw_net/src/socket.zig` | `Socket`: open, `poll`, send, close, and the reconnect. The same code for web and native. `net_root.zig` is the module root |
 | `libs/sw_net/src/native.zig` | The native transport: connect, TLS for `wss:`, the HTTP upgrade, the frame loop on one network thread |
