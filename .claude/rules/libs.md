@@ -198,3 +198,6 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_assets/src/assets.zig` | `loadBytes(allocator, path_or_url)` returns a `Request`. `request.poll()` gives `.pending`, `.bytes` or `.failed`, and never waits. Native: a thread reads a file in the base directory (`useDirectory`/`useDirectoryPath`), and an `http(s)://` URL fails with `UnsupportedUrl`. Web: `fetch` through `backends/wasm/assets.ts` |
 | `libs/sw_assets/src/png.zig` | `decodePng(allocator, bytes)` gives RGBA8 `Image`. It calls stb_image (`libs/sw_assets/c/`, licence in `THIRD_PARTY_NOTICES.md`) |
 | `libs/sw_gfx2d` `Renderer.createTextureFromPng` | Decode PNG bytes and upload them as a texture |
+| `libs/sw_render/src/layout.zig` | Atlas packing on a grid of power-of-two cells (the `sw_text` shelf packer), UV rectangles, and `compose` (no GPU code, unit tested) |
+| `libs/sw_render/src/animation.zig` | Frame timing of animated sprites: `imageAt`, `Player.advance` (no GPU code, unit tested) |
+| `libs/sw_render/src/atlas.zig` | `AtlasBuilder` and `Atlas`: textures, mip levels with `MipmapGenerator`, and `update`, which copies changed frames with `copyTextureToTexture` (REQ-GPU-003, REQ-GPU-004) |

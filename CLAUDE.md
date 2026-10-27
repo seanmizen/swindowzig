@@ -104,12 +104,14 @@ swindowzig/
 │   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
 │   ├── sw_assets/      # loadBytes (async, native + fetch) and PNG decode (stb_image)
 │   ├── sw_text/        # TTF text (stb_truetype): atlas, measure, wrap, draw
+│   ├── sw_render/      # Texture atlas with mip levels and animated sprites
 │   └── sw_ui/          # UI tree: layout, keyboard focus, semantic tree, drawing
 ├── examples/
 │   ├── justabox/       # Default: single spinning colored box
 │   ├── windows/        # Triangle with mouse drag
 │   ├── flat2d/         # sw_gfx2d + sw_text + sw_ui demo: shapes, text, a keyboard menu
 │   ├── mipmaps/        # GPU mip levels, a texture array, anisotropic sampling. `--check` tests it
+│   ├── atlas/          # sw_render atlas and animated sprites. `--check` tests it
 │   └── voxel/          # Voxel chunk demo (16×256×16)
 └── backends/
     └── wasm/           # Web platform boot + dev server

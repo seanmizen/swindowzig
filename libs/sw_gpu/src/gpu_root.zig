@@ -30,6 +30,7 @@ pub const PipelineLayout = gpu_mod.PipelineLayout;
 pub const CommandEncoder = gpu_mod.CommandEncoder;
 pub const RenderPassEncoder = gpu_mod.RenderPassEncoder;
 pub const CommandBuffer = gpu_mod.CommandBuffer;
+pub const TextureCopy = gpu_mod.TextureCopy;
 
 // Type definitions (re-exported from types.zig)
 pub const BufferUsage = types_mod.BufferUsage;

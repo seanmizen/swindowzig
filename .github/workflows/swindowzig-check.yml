@@ -116,6 +116,16 @@ jobs:
           zig build native -Dexample=mipmaps
           ./zig-out/bin/mipmaps --check
 
+      - name: Texture atlas and animated sprites (atlas --check)
+        # The example builds an atlas with sw_render, reads each mip level
+        # back, then moves the time forward and checks the GPU copies of
+        # the animated sprites (REQ-GPU-003, REQ-GPU-004). The web build
+        # must compile too.
+        run: |
+          zig build web -Dexample=atlas
+          zig build native -Dexample=atlas
+          ./zig-out/bin/atlas --check
+
       - name: Screen-reader mirror in Chromium (flat2d)
         # Playwright opens flat2d with WebGPU, moves the focus with Tab, and
         # reads the accessibility tree (REQ-A11Y-001). Chromium uses its own
