@@ -131,7 +131,7 @@ const Lights = struct {
             const dcx, const dcz = stages.offsetOf(s);
             hood[s] = self.data(cx + dcx, cz + dcz);
         }
-        return stages.mesh(a, &hood, ao, lighting);
+        return stages.meshWith(a, &hood, cx, cz, .{ .ao = ao, .lighting = lighting });
     }
 
     fn deinit(self: *Lights) void {

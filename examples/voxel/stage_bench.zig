@@ -322,7 +322,7 @@ fn benchStages(allocator: std.mem.Allocator, world: *const world_mod.World) !Sta
                     hood[s] = .{ .blocks = &blocks[at(cx + dcx, cz + dcz)], .light = &light[at(cx + dcx, cz + dcz)].? };
                 }
                 const t0 = nowNs();
-                var m = try stages.mesh(allocator, &hood, .moore, .skylight);
+                var m = try stages.meshWith(allocator, &hood, cx, cz, .{ .ao = .moore, .lighting = .skylight });
                 defer m.deinit(allocator);
                 t += nowNs() - t0;
                 if (r == 0) {

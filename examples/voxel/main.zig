@@ -922,6 +922,10 @@ const State = struct {
     /// A change at runtime goes through Scheduler.setMeshOptions, because
     /// skylight is baked per-vertex at mesh time, same as AO.
     lighting_mode: gpu_mod.LightingMode = .skylight,
+    /// Smooth light, parsed from --smooth-light=<on|off>. Off gives flat
+    /// light: each face takes the light of the cell in front of it
+    /// (sw_voxel REQ-VOXEL-008). Default: on.
+    smooth_light: bool = true,
     /// Block type emitted by right-click placement. Parsed from
     /// `--place-block=<stone|glowstone>`; default stone preserves prior
     /// behaviour. Introduced alongside phase-3 block light so the
@@ -1339,6 +1343,17 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--smooth-light=")) {
+            const val = arg["--smooth-light=".len..];
+            if (std.mem.eql(u8, val, "on")) {
+                state.smooth_light = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.smooth_light = false;
+            } else {
+                std.log.err("--smooth-light: invalid value '{s}'. Accepted: on, off", .{val});
+                fatalExit(1);
+            }
+        }
         if (std.mem.startsWith(u8, arg, "--frustum=")) {
             const val = std.mem.sliceTo(arg["--frustum=".len..], 0);
             if (frustum_mod.Strategy.fromString(val)) |s| {
@@ -1418,6 +1433,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     });
     std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
     std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
+    std.log.info("Smooth light (post-parse): {}", .{state.smooth_light});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
     std.log.info("World seed: {d}", .{state.world_seed});
     if (state.frustum_fov_auto) {
@@ -1457,6 +1473,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // starts before the loading screen, and the loading screen uses it
     // (D6, D7). The first frame plans the loading of the spawn area.
     state.scheduler = scheduler_mod.Scheduler.init(ctx.allocator(), state.render_distance, state.ao_strategy, state.lighting_mode);
+    state.scheduler.setSmoothLight(state.smooth_light);
     try startExecutor(ctx);
     state.last_frame = .{};
 

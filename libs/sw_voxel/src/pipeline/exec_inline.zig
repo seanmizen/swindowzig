@@ -211,7 +211,7 @@ pub const Inline = struct {
         errdefer sched.abandon(started);
         const id = self.next_id;
         self.next_id +%= 1;
-        const msg = try protocol.encodeJob(self.allocator, id, started.message(sched.ao, sched.lighting));
+        const msg = try protocol.encodeJob(self.allocator, id, started.messageFor(sched));
         defer self.allocator.free(msg);
         self.traffic.jobs += 1;
         self.traffic.job_bytes += msg.len;

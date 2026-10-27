@@ -163,6 +163,78 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
     the third-person eye at a wall of blocks (REQ-VOXEL-007)"
 - **Relations:** depends-on REQ-VOXEL-006
 
+## REQ-VOXEL-008 — Each corner gets AO and smooth light
+
+- **Status:** active
+- **Source:** agent:SWZ-33
+- **Origin:** #33
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The `sw_voxel` mesher shall give each corner of a full
+  cube face, and of a model quad on the side of its cell, an ambient
+  occlusion value from its 3 neighbour blocks and a smooth light value
+  (the mean light of the 4 cells at the corner, from the light engine),
+  unless the mesher options turn AO or smooth light off.
+- **Rationale:** AO darkens the inner corners, and smooth light gives a
+  gradient in place of a step at each cell. A demo must show the scene
+  with each one on and off, so the options turn them off: AO 1 on each
+  corner, and flat light (the light of the cell in front of the face). A
+  model quad off the cell grid gets flat light and AO 1, because the
+  corner samples do not touch it.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/mesher.zig` › "a corner gets its AO from its
+    3 neighbour blocks: 0 to 3 occluders (REQ-VOXEL-008)"
+  - Test — `libs/sw_voxel/src/mesher.zig` › "smooth light is the mean light
+    of the 4 cells at each corner (REQ-VOXEL-008)"
+  - Test — `libs/sw_voxel/src/mesher.zig` › "smooth light off gives each
+    face the light of the cell in front of it (REQ-VOXEL-008)"
+  - Test — `libs/sw_voxel/src/mesher.zig` › "a model quad on the cell grid
+    gets AO and smooth light, a quad off the grid gets flat light
+    (REQ-VOXEL-008)"
+- **Relations:** depends-on REQ-VOXEL-003
+
+## REQ-VOXEL-009 — The content gives the tint colours
+
+- **Status:** active
+- **Source:** agent:SWZ-33
+- **Origin:** #33
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** Where the content module gives a tint function, the
+  `sw_voxel` mesher shall give each quad with a tint index the colour of
+  that function for its block, tint index and world cell.
+- **Rationale:** Grass and leaves change colour with the position (for
+  example by biome). The game owns the colours, so the engine calls a
+  content function. The colours go into tint records at the start of the
+  quad stream, so the 16-byte quad format does not grow, and a mesh with
+  no tint keeps its bytes.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/mesher.zig` › "quads with a tint index get
+    the tint colour of the content (REQ-VOXEL-009)"
+  - Test — `examples/voxel/stages_test.zig` › "stages: mesh gives the
+    quads of the greedy mesher through the World getter" (the demo tints
+    grass tops and leaves, so the stage must give the tints of World)
+- **Relations:** refines REQ-VOXEL-001
+
+## REQ-VOXEL-010 — Greedy meshing merges only equal faces
+
+- **Status:** active
+- **Source:** agent:SWZ-33
+- **Origin:** #33
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The `sw_voxel` greedy mesher shall merge two faces only
+  when their block, AO, light and tint are equal, and the same on the 4
+  corners of each face.
+- **Rationale:** A merged quad has the values of one cell on its 4
+  corners. If it merged faces with other values, the AO, the light or the
+  colour would be wrong, and seams would show between the quads.
+- **Verification:** Test — `libs/sw_voxel/src/mesher.zig` › "greedy faces
+  with different AO, light or tint do not merge (REQ-VOXEL-010)"
+- **Relations:**
+  - refines REQ-VOXEL-008
+  - refines REQ-VOXEL-009
+
 ## REQ-VOXEL-011 — A saved region gives the same blocks when it loads
 
 - **Status:** active

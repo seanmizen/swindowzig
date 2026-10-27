@@ -72,6 +72,22 @@
 //!       comptime-known. The collision boxes are separate from the model.
 //!       The moving boxes and the ray cast of `collision.zig` use them.
 //!
+//! The content module can declare tint colours (REQ-VOXEL-009). With no
+//! declaration, no quad has a tint:
+//!
+//!   pub fn tint(block: Block, tint_index: u8, x: i32, y: i32, z: i32) [3]u8
+//!       The tint colour (red, green, blue, 0 to 255) of a quad with tint
+//!       index `tint_index` of `block` in the world cell (x, y, z). The
+//!       shader multiplies the colour of the quad by tint / 255. The
+//!       result must be a pure function of the arguments (P2): the chunk
+//!       workers and main must make the same mesh. A model quad gets its
+//!       tint index from its `BakedQuad.tint_index`.
+//!   pub fn tintIndex(block: Block, face: sw_voxel.model.Face) i8
+//!       The tint index of one face of a full cube, or -1 for no tint.
+//!       sw_voxel calls it at comptime for each block type and face, so
+//!       the result must be comptime-known. With no declaration, no full
+//!       cube has a tint. It needs `tint`.
+//!
 //! The content module can declare the height of the world. With no
 //! declaration, the world is y 0 to 255:
 //!
@@ -119,6 +135,26 @@ pub fn model(comptime block: Block) ?*const model_mod.BakedModel {
 /// Comptime only: `collision.zig` makes a table.
 pub fn collision(comptime block: Block) ?[]const collision_mod.CellBox {
     return if (@hasDecl(c, "collision")) c.collision(block) else null;
+}
+
+/// True when the content gives tint colours (REQ-VOXEL-009).
+pub const has_tint: bool = @hasDecl(c, "tint");
+
+/// The tint colour of a quad with tint index `tint_index` of `block` in
+/// the world cell (x, y, z). Call it only when `has_tint` is true.
+pub inline fn tint(block: Block, tint_index: u8, x: i32, y: i32, z: i32) [3]u8 {
+    return c.tint(block, tint_index, x, y, z);
+}
+
+/// The tint index of one face of a full cube, or -1. Comptime only: the
+/// mesher uses the table of `models.zig`.
+pub fn tintIndex(comptime block: Block, comptime face: model_mod.Face) i8 {
+    return if (@hasDecl(c, "tintIndex")) c.tintIndex(block, face) else -1;
+}
+
+comptime {
+    if (@hasDecl(c, "tintIndex") and !has_tint)
+        @compileError("sw_voxel_content.tintIndex needs sw_voxel_content.tint");
 }
 
 comptime {

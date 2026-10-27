@@ -137,7 +137,8 @@ pub const Edit = struct {
 ///   0  u8      stage
 ///   1  u8      AO strategy (mesh)
 ///   2  u8      lighting mode (mesh)
-///   3  u8      flags: bit 0 = send the blocks back (generate)
+///   3  u8      flags: bit 0 = send the blocks back (generate),
+///              bit 1 = flat light, smooth light off (mesh)
 ///   4  i32     cx
 ///   8  i32     cz
 ///   12 u32     reserved, 0
@@ -152,6 +153,8 @@ pub const Job = struct {
     /// Generate: the Result also holds the blocks, for the simulation
     /// radius of main (C6).
     want_blocks: bool = false,
+    /// Mesh: false gives flat light (REQ-VOXEL-008).
+    smooth_light: bool = true,
     blocks: [SLOTS]Version = @splat(0),
     light: [SLOTS]Version = @splat(0),
 };
@@ -357,7 +360,7 @@ pub fn encodeJob(allocator: std.mem.Allocator, id: u32, job: Job) ![]u8 {
     o.int(u8, @backingInt(job.stage));
     o.int(u8, @backingInt(job.ao));
     o.int(u8, @backingInt(job.lighting));
-    o.int(u8, @intFromBool(job.want_blocks));
+    o.int(u8, @as(u8, @intFromBool(job.want_blocks)) | (@as(u8, @intFromBool(!job.smooth_light)) << 1));
     o.int(i32, job.cx);
     o.int(i32, job.cz);
     o.int(u32, 0);
@@ -559,8 +562,9 @@ pub fn decode(bytes: []const u8) DecodeError!Decoded {
                 .cz = 0,
             };
             const flags = b.int(u8);
-            if (flags & ~@as(u8, 1) != 0) return error.BadField;
+            if (flags & ~@as(u8, 3) != 0) return error.BadField;
             j.want_blocks = flags & 1 != 0;
+            j.smooth_light = flags & 2 == 0;
             j.cx = b.int(i32);
             j.cz = b.int(i32);
             if (b.int(u32) != 0) return error.BadField;

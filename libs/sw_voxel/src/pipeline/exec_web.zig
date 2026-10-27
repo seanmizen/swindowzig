@@ -363,7 +363,7 @@ pub const Web = struct {
             const id = self.next_id;
             self.next_id +%= 1;
             if (self.next_id == 0) self.next_id = 1;
-            const msg = try protocol.encodeJob(self.allocator, id, started.message(sched.ao, sched.lighting));
+            const msg = try protocol.encodeJob(self.allocator, id, started.messageFor(sched));
             defer self.allocator.free(msg);
             try self.jobs.put(self.allocator, id, .{ .started = started, .slot = slot });
             if (!self.transport.post(slot, msg)) {

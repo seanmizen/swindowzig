@@ -81,6 +81,75 @@ pub fn model(block: Block) ?*const model_mod.BakedModel {
     };
 }
 
+/// The tint index of each face of a full cube (sw_voxel REQ-VOXEL-009):
+/// the top of grass and each face of leaves have tint 0. voxel.wgsl draws
+/// these faces white, so the tint gives their colour.
+pub fn tintIndex(block: Block, face: model_mod.Face) i8 {
+    return switch (block) {
+        .grass => if (face == .py) 0 else -1,
+        .leaves => 0,
+        else => -1,
+    };
+}
+
+/// The number of steps of the slow grass colour change. Fewer steps let the
+/// greedy mesher merge more faces: it merges only faces of one colour.
+pub const TINT_STEPS: f32 = 8.0;
+
+/// The tint colour of grass tops and leaves at block (x, z): a slow change
+/// over tens of blocks from dry yellow-green to deep green, in TINT_STEPS
+/// steps. It does not use the seed, so each world has the same colours.
+pub fn tint(block: Block, tint_index: u8, x: i32, y: i32, z: i32) [3]u8 {
+    _ = tint_index;
+    _ = y;
+    const base: [3]f32 = switch (block) {
+        .leaves => .{ 0.18, 0.50, 0.12 },
+        else => .{ 0.4, 0.8, 0.2 },
+    };
+    const raw = valueNoise(@as(f32, @floatFromInt(x)) + 0.5, @as(f32, @floatFromInt(z)) + 0.5, 24.0);
+    const lush = @round(raw * TINT_STEPS) / TINT_STEPS;
+    const dry = [3]f32{ 1.22, 0.98, 0.80 };
+    const deep = [3]f32{ 0.82, 1.02, 1.12 };
+    var out: [3]u8 = undefined;
+    for (0..3) |k| {
+        const v = base[k] * (dry[k] + (deep[k] - dry[k]) * lush);
+        out[k] = @intFromFloat(@round(std.math.clamp(v, 0.0, 1.0) * 255.0));
+    }
+    return out;
+}
+
+/// A hash of a 2D lattice point to 0..1, in steps of 1/255.
+fn latticeHash(px: u32, pz: u32) f32 {
+    var h: u32 = px *% 1664525 +% pz *% 1013904223 +% (0x5EED ^ 0xDEADBEEF);
+    h ^= h >> 16;
+    h *%= 2246822519;
+    h ^= h >> 13;
+    h *%= 3266489917;
+    h ^= h >> 16;
+    return @as(f32, @floatFromInt(h & 0xFF)) / 255.0;
+}
+
+/// Smooth 2D value noise in 0..1, one lattice point per `cell` blocks.
+fn valueNoise(px: f32, pz: f32, cell: f32) f32 {
+    const qx = px / cell;
+    const qz = pz / cell;
+    const ix = @floor(qx);
+    const iz = @floor(qz);
+    const fx = qx - ix;
+    const fz = qz - iz;
+    const ux = fx * fx * (3.0 - 2.0 * fx);
+    const uz = fz * fz * (3.0 - 2.0 * fz);
+    const cx: u32 = @bitCast(@as(i32, @intFromFloat(ix)));
+    const cz: u32 = @bitCast(@as(i32, @intFromFloat(iz)));
+    const a = latticeHash(cx, cz);
+    const b = latticeHash(cx +% 1, cz);
+    const d = latticeHash(cx, cz +% 1);
+    const e = latticeHash(cx +% 1, cz +% 1);
+    const top = a + (b - a) * ux;
+    const bottom = d + (e - d) * ux;
+    return top + (bottom - top) * uz;
+}
+
 /// The settings of the terrain generator. `seed` is the world seed.
 pub const GenConfig = world_gen.WorldGenConfig;
 

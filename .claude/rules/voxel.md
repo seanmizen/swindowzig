@@ -42,6 +42,11 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
   step-up), `raycast` (a DDA, REQ-VOXEL-007) and `CameraRayTest` (the
   wall stop of the `sw_math` camera). The demo player and its ray cast do
   not use them yet.
+- The content can give tint colours (REQ-VOXEL-009): `tint(block,
+  tint_index, x, y, z) [3]u8` (a pure function), and `tintIndex(block,
+  face) i8` for the faces of full cubes (comptime). A model quad takes
+  its tint index from its `BakedQuad`. The demo tints grass tops and
+  leaves, and voxel.wgsl draws them white times the tint.
 - `build.zig` wires it with `addVoxel`. The demo gives
   `examples/voxel/content.zig`. The unit tests of the library give
   `libs/sw_voxel/testing/content.zig`, with numbered blocks.
@@ -64,7 +69,10 @@ were already correct.
   31 of word 3 set, and an index into `models.gpu_table` in place of the
   face and the size. The game uploads the table one time (the demo binds
   it at group 2). A quad with a cull face is not drawn next to a full
-  cube (REQ-VOXEL-002). `mesher.zig` has the layout. The upload writes the bytes of
+  cube (REQ-VOXEL-002). When a quad has a tint, the stream starts with
+  tint records (word 3 bits 24-30 = 127) that hold the colours of the
+  tint slots, and each quad holds its slot in the same bits. The shader
+  draws no triangle for a tint record. `mesher.zig` has the layout. The upload writes the bytes of
   the worker result to the GPU as they are, and main keeps no copy (C5).
   Main keeps only `world.MeshInfo`: the quad count, the y range and the
   mesh hash.
@@ -73,9 +81,17 @@ were already correct.
   edge, `updateBoundaryNeighbors` also meshes the neighbour chunk.
 - The hardware depth test is always on. Main draws the chunks front to
   back and does not sort the quads.
+- Each corner gets AO from its 3 neighbour blocks and smooth light: the
+  mean `lightAt` of the 4 cells at the corner (REQ-VOXEL-008). A model
+  quad on the side of its cell gets the values of the full face at its
+  corners. A model quad off the grid gets flat light and AO 1.
+  `MeshOptions` (`generateMeshWith`) turns AO (`.ao = .none`) and smooth
+  light (`.smooth_light = false`) off. The greedy mesher merges only
+  faces with equal AO, light and tint (REQ-VOXEL-010).
 - `bench_mesher` (`zig build bench-mesher -Doptimize=ReleaseFast`) hashes
-  the packed quads of a fixed world. The quad hash is `4b4f00654f783b36`.
-  A mesher change that must not change the output must keep this hash.
+  the packed quads of a fixed world. The quad hash is `8c11e81d4ec42623`
+  (the demo tints changed it from `4b4f00654f783b36`). A mesher change
+  that must not change the output must keep this hash.
 
 ### Chunk stages (libs/sw_voxel/src/pipeline/stages.zig)
 
@@ -142,6 +158,7 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--seed=<u64>` | World seed. **Default: 0.** Generation mixes the seed into each random source: the height and biome noise, the caves, the trees and the glowstone. Seed 0 gives the terrain from before the seed existed. Native only. The web build uses seed 0. `zig build terrain-hash` builds a tool that prints the block hash of a 9×9 hilly area for each seed, from native and from wasm. CI compares the two. |
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (per-vertex Mojang face-plane AO), `moore` (**default** — extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
 | `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation. Caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block updates the light incrementally (`light.update`), then meshes the chunk again. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
+| `--smooth-light=<on\|off>` | Smooth light of the mesher. `on` (default): each corner gets the mean light of the 4 cells at the corner. `off`: flat light, each face gets the light of the cell in front of it (REQ-VOXEL-008). Goes through `Scheduler.setSmoothLight`. |
 | `--place-block=<type>` | Block type emitted by right-click placement. Accepted: `stone` (default) and `glowstone`. Added with phase-3 block light so `tests/glowstone_cave.tas` can place an emitter from a TAS without needing an in-game block picker UI. |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete. If a TAS is running, waits for the TAS to finish. Then waits for the chunk scheduler to be idle (`Scheduler.isIdle`), so the captured state does not depend on timing. |
 | `--debug-page=<general\|pipeline>` | The first page of the debug overlay. `pipeline` shows the chunk pipeline counters (C12). Cmd+P (Ctrl+P) changes the page at runtime. |
