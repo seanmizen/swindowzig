@@ -32,6 +32,9 @@
 | [`REQ-GPU-013`](gpu.md#req-gpu-013--the-web-canvas-has-the-screen-format-of-the-zig-side) | The web canvas has the screen format of the Zig side | active | functional | P1 | agent:SWZ-68 |
 | [`REQ-GPU-014`](gpu.md#req-gpu-014--one-draw-call-draws-all-instances-of-one-box-model) | One draw call draws all instances of one box model | active | functional | P2 | agent:SWZ-41 |
 | [`REQ-GPU-015`](gpu.md#req-gpu-015--the-first-person-pass-draws-in-front-of-the-world) | The first-person pass draws in front of the world | active | functional | P2 | agent:SWZ-41 |
+| [`REQ-GPU-016`](gpu.md#req-gpu-016--a-cascaded-shadow-map-shadows-the-scene-from-one-directional-light) | A cascaded shadow map shadows the scene from one directional light | active | functional | P2 | agent:SWZ-38 |
+| [`REQ-GPU-017`](gpu.md#req-gpu-017--the-lit-passes-add-the-point-lights-of-the-frame) | The lit passes add the point lights of the frame | active | functional | P2 | agent:SWZ-38 |
+| [`REQ-GPU-018`](gpu.md#req-gpu-018--a-setting-turns-the-shadows-off) | A setting turns the shadows off | active | functional | P2 | agent:SWZ-38 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -90,6 +93,9 @@ graph TD
   REQ_GPU_013["REQ-GPU-013<br/>The web canvas has the screen format of the Zig side"]
   REQ_GPU_014["REQ-GPU-014<br/>One draw call draws all instances of one box model"]
   REQ_GPU_015["REQ-GPU-015<br/>The first-person pass draws in front of the world"]
+  REQ_GPU_016["REQ-GPU-016<br/>A cascaded shadow map shadows the scene from one directional light"]
+  REQ_GPU_017["REQ-GPU-017<br/>The lit passes add the point lights of the frame"]
+  REQ_GPU_018["REQ-GPU-018<br/>A setting turns the shadows off"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -131,6 +137,10 @@ graph TD
   REQ_GPU_013 -->|refines| REQ_GPU_005
   REQ_GPU_014 -->|refines| REQ_GPU_006
   REQ_GPU_015 -->|refines| REQ_GPU_014
+  REQ_GPU_016 -->|refines| REQ_GPU_005
+  REQ_GPU_016 -->|refines| REQ_GPU_014
+  REQ_GPU_017 -->|refines| REQ_GPU_006
+  REQ_GPU_018 -->|refines| REQ_GPU_016
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
   REQ_TEXT_004 -->|refines| REQ_TEXT_001
@@ -147,11 +157,12 @@ graph TD
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
-- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013
-- `REQ-GPU-006` — refined-by REQ-GPU-014
+- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
+- `REQ-GPU-006` — refined-by REQ-GPU-014, refined-by REQ-GPU-017
 - `REQ-GPU-008` — refined-by REQ-GPU-010
 - `REQ-GPU-010` — refined-by REQ-GPU-011
-- `REQ-GPU-014` — refined-by REQ-GPU-015
+- `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
+- `REQ-GPU-016` — refined-by REQ-GPU-018
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
 - `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
