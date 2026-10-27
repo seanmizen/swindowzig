@@ -35,6 +35,14 @@ with "Texture binding N expects dimension = D1, but given a view with dimension 
 `createBindGroupLayout` now uses explicit switch maps for both `.texture.view_dimension`
 and `.storage_texture.view_dimension`. Do not use raw `@intFromEnum` for these.
 
+### TextureFormat enum mismatch (fixed in gpu.zig — toNativeTextureFormat)
+`types.TextureFormat` keeps the numbers that the web bridge uses
+(`TEXTURE_FORMAT_MAP` in `backends/wasm/webgpu.ts`). From `rgb10a2unorm` on,
+they are not the `webgpu.h` numbers: `.rgba16float` is 0x1F, and 0x1F in
+`webgpu.h` is `RG32Sint`. Every native call uses `toNativeTextureFormat()`
+(the table is `types.nativeTextureFormat`). Do not use raw `@intFromEnum`
+for a texture format.
+
 ### CompareFunction enum mismatch (fixed in gpu.zig — createRenderPipeline)
 `types.CompareFunction` starts at 0 (`never=0, less=1, …, always=7`), but native
 `WGPUCompareFunction` has `undefined=0, never=1, less=2, …, always=8`. Additionally,
@@ -186,6 +194,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_math/src/mat4.zig` | 4×4 matrix: `perspective()`, `lookAt()`, multiply |
 | `libs/sw_math/src/vec3.zig` | Vec3 ops. `vec2.zig` and `vec4.zig` have the same ops. `Mat4.mulVec4` multiplies a Vec4 |
 | `libs/sw_math/src/quat.zig` | `Quat`: `fromAxisAngle`, `mul`, `rotate`, `slerp`, `toMat4` (same rotation direction as `Mat4.rotationX/Y/Z`) |
+| `libs/sw_math/src/camera.zig` | `camera.Controller`: first-person and third-person modes, look smoothing, a field-of-view boost. Pure: `update(input, dt, ray_test)` gives the view and projection matrices. The game gives a `RayTest` that stops the third-person eye at walls (REQ-CAMERA-001, REQ-CAMERA-002) |
 | `libs/sw_math/src/aabb.zig`, `ray.zig`, `plane.zig` | `Aabb` (closed box: union, intersect, contains, expand, expandTowards), `Ray` (against an `Aabb` or a `Plane`), `Plane` (signed distance, `classifyAabb` for culling) |
 | `libs/sw_gfx2d/src/batch.zig` | 2D shapes to vertices, indices and draw calls (no GPU code, unit tested) |
 | `libs/sw_gfx2d/src/projection.zig` | Pixel projection, origin top left, and `dpi_scale` maths |
@@ -216,3 +225,6 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_render/src/plan.zig` | Frame graph rules: target sizes, pass order, attachment checks (no GPU code, unit tested) |
 | `libs/sw_render/src/ring.zig`, `upload.zig` | `UniformRing` (per-draw uniforms at dynamic offsets, one write per frame) and `Uploads` (staged buffer writes, merged). No new buffer each frame (REQ-GPU-006) |
 | `libs/sw_render/src/wgsl.zig` | The shared WGSL prefix (`sw_frame` at group 0) and `FrameUniforms` (REQ-GPU-007) |
+| `libs/sw_render/src/post.zig` | `PostChain`: the `rgba16float` scene target (`hdr`), then HDR effects, the tonemap, LDR effects and FXAA as frame graph passes. The last enabled link writes the screen (REQ-GPU-008, REQ-GPU-009) |
+| `libs/sw_render/src/post_plan.zig` | Post chain rules: the route of the links, the tonemap curves (CPU reference), the effect WGSL (`post.shader`). No GPU code, unit tested |
+| `libs/sw_gpu/src/fxaa.zig` | The FXAA source and quality presets. `shaderSource` sets the tokens and the bind group. `configureFXAA` and the post chain use it |

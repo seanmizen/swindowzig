@@ -12,6 +12,8 @@
 | [`REQ-A11Y-005`](a11y.md#req-a11y-005--an-unchanged-tree-is-not-sent-to-js) | An unchanged tree is not sent to JS | active | quality | P1 | sean |
 | [`REQ-AUDIO-001`](audio.md#req-audio-001--the-waveform-api-does-not-change) | The waveform API does not change | active | constraint | P1 | agent:SWZ-48 |
 | [`REQ-AUDIO-002`](audio.md#req-audio-002--a-stream-does-not-decode-all-of-its-data) | A stream does not decode all of its data | active | quality | P1 | agent:SWZ-48 |
+| [`REQ-CAMERA-001`](camera.md#req-camera-001--the-camera-result-does-not-depend-on-the-frame-rate) | The camera result does not depend on the frame rate | active | quality | P2 | agent:SWZ-43 |
+| [`REQ-CAMERA-002`](camera.md#req-camera-002--the-camera-controller-reads-no-platform-input) | The camera controller reads no platform input | active | constraint | P2 | agent:SWZ-43 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -19,6 +21,8 @@
 | [`REQ-GPU-005`](gpu.md#req-gpu-005--the-frame-graph-runs-the-passes-in-a-set-order-on-targets-that-follow-the-window) | The frame graph runs the passes in a set order on targets that follow the window | active | functional | P1 | agent:SWZ-29 |
 | [`REQ-GPU-006`](gpu.md#req-gpu-006--per-frame-data-uses-no-new-gpu-buffer-each-frame) | Per-frame data uses no new GPU buffer each frame | active | constraint | P1 | agent:SWZ-29 |
 | [`REQ-GPU-007`](gpu.md#req-gpu-007--the-wgsl-prefix-matches-the-frame-uniforms) | The WGSL prefix matches the frame uniforms | active | constraint | P1 | agent:SWZ-29 |
+| [`REQ-GPU-008`](gpu.md#req-gpu-008--the-scene-renders-to-an-hdr-target-and-a-tonemap-writes-display-colour) | The scene renders to an HDR target, and a tonemap writes display colour | active | functional | P2 | agent:SWZ-30 |
+| [`REQ-GPU-009`](gpu.md#req-gpu-009--the-post-chain-runs-its-passes-in-order-and-fxaa-is-one-link) | The post chain runs its passes in order, and FXAA is one link | active | functional | P2 | agent:SWZ-30 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -37,6 +41,8 @@ graph TD
   REQ_A11Y_005["REQ-A11Y-005<br/>An unchanged tree is not sent to JS"]
   REQ_AUDIO_001["REQ-AUDIO-001<br/>The waveform API does not change"]
   REQ_AUDIO_002["REQ-AUDIO-002<br/>A stream does not decode all of its data"]
+  REQ_CAMERA_001["REQ-CAMERA-001<br/>The camera result does not depend on the frame rate"]
+  REQ_CAMERA_002["REQ-CAMERA-002<br/>The camera controller reads no platform input"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
@@ -44,6 +50,8 @@ graph TD
   REQ_GPU_005["REQ-GPU-005<br/>The frame graph runs the passes in a set order on targets that follow the window"]
   REQ_GPU_006["REQ-GPU-006<br/>Per-frame data uses no new GPU buffer each frame"]
   REQ_GPU_007["REQ-GPU-007<br/>The WGSL prefix matches the frame uniforms"]
+  REQ_GPU_008["REQ-GPU-008<br/>The scene renders to an HDR target, and a tonemap writes display colour"]
+  REQ_GPU_009["REQ-GPU-009<br/>The post chain runs its passes in order, and FXAA is one link"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -56,6 +64,8 @@ graph TD
   REQ_A11Y_005 -->|refines| REQ_A11Y_001
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
+  REQ_GPU_008 -->|refines| REQ_GPU_005
+  REQ_GPU_009 -->|refines| REQ_GPU_005
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
 ```
 
@@ -64,4 +74,5 @@ graph TD
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
+- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
