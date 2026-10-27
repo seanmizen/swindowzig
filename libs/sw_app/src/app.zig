@@ -38,6 +38,15 @@ pub const Config = struct {
     /// Command-line arguments, from init.minimal.args. Callbacks get them as
     /// ctx.args. The web build has none.
     args: []const [:0]const u8 = &.{},
+    /// Native: when true, the GPU surface has the pixel size of the window
+    /// (device pixels), and the engine configures it again after each size
+    /// change: a resize, a change of the window mode, or a move to a monitor
+    /// with another DPI scale (REQ-PLATFORM-003). The GPU resources of the
+    /// game that have the surface size (depth, MSAA and FXAA targets) must
+    /// follow `getSurfaceWidth` and `getSurfaceHeight`. When false (the
+    /// default), the surface keeps `size`. The web canvas always follows the
+    /// window.
+    surface_follows_window: bool = false,
     /// Tick timing mode. Default .realtime follows wall clock.
     /// Use .unlimited to run as fast as possible (pairs naturally with headless).
     tick_timing: TickTiming = .realtime,
@@ -112,7 +121,11 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
     var gpu_device: gpu_mod.GPU = .{};
     if (!config.headless) {
         const window = backend.getWindow();
-        gpu_device.init(window, config.size.w, config.size.h) catch |err| {
+        const info = backend.getWindowInfo();
+        const follow = config.surface_follows_window and info.width > 0 and info.height > 0;
+        const surface_w = if (follow) info.width else config.size.w;
+        const surface_h = if (follow) info.height else config.size.h;
+        gpu_device.init(window, surface_w, surface_h) catch |err| {
             std.log.warn("GPU initialization failed: {}, running without rendering", .{err});
         };
     } else if (config.headless_gpu) {
@@ -155,6 +168,13 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
     while (running) {
         // Poll events (platform pushes with tick_id=0 = "pending")
         try backend.pollEvents(&event_bus);
+
+        // The surface follows the window pixel size: a resize, full screen,
+        // or a monitor with another DPI scale (REQ-PLATFORM-003).
+        if (config.surface_follows_window and !config.headless) {
+            const info = backend.getWindowInfo();
+            gpu_device.resizeSurface(info.width, info.height);
+        }
 
         // Check for shutdown by scanning all pending events directly
         for (event_bus.events.items) |ev| {

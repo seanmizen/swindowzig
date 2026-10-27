@@ -16,6 +16,9 @@ pub const action = @import("action.zig");
 // Re-export commonly used types
 pub const Event = event.Event;
 pub const EventPayload = event.EventPayload;
+pub const ClipboardEvent = event.ClipboardEvent;
+pub const ClipboardEventKind = event.ClipboardEventKind;
+pub const ClipboardStatus = event.ClipboardStatus;
 pub const KeyCode = event.KeyCode;
 pub const MouseButton = event.MouseButton;
 pub const Modifiers = event.Modifiers;
