@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 10. Skipped: 3. Not started: 2.
+- Done: 11. Skipped: 3. Not started: 1.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -358,3 +358,33 @@ ticket of #102, in the order of the batch.
   instead of a count? A time needs a GPU timestamp of each upload.
 - Risks: during gameplay, a burst of new meshes takes more frames to show.
   The meshes in view show first.
+
+## #61 web TextureView.release keeps the JS handle
+
+- Status: done
+- Commit: see `git log --grep SWZ-61`
+- What changed:
+  - The fix was already on `main` from #68: `TextureView.release()` on the
+    web calls `webgpuTextureViewRelease`, and the browser test
+    `canvas.pw.ts` reads the handle count.
+  - New: the headless stub (`headless-app.ts`) counts the canvas views
+    that are live. `headless.ts` fails when a canvas view is live after
+    the last frame. This test runs in CI with no browser.
+- What ran:
+  - `bun backends/wasm/headless.ts` with the pool: 1544 views made, 0
+    live. With `--workers 0`: 777 views made, 0 live.
+  - A stub that does not release the views: the test fails with "777
+    canvas views are live after the last frame".
+- Use after `release()`: none. Each example (`flat2d`, `atlas`,
+  `mipmaps`, `windows`, `voxel`), the frame graph and `apps/action`
+  (`game/src/render.zig`) release the view after the submit.
+  `apps/voxel.seanmizen.com` in seanorepo builds the voxel example of
+  swindowzig, and has no Zig code of its own.
+- Not run here: the browser test `canvas.pw.ts`.
+- Expected changes:
+  - quad hash: no change
+  - goldens: none
+- CI changes needed: none. The CI step `headless.ts` runs the new check.
+- Requirements: REQ-GPU-012 (a second test)
+- Open questions: none.
+- Risks: none.

@@ -9,7 +9,8 @@
 //   - The storage and asset imports are the real ones.
 //   - The WebGPU buffer imports are a stub that records each buffer and each
 //     write (StubGpu), and checks the WebGPU rules of writeBuffer. The tests
-//     use it to check the mesh uploads (C5).
+//     use it to check the mesh uploads (C5). The stub also counts the canvas
+//     views that are live (REQ-GPU-012).
 //   - Each other import (WebGPU, canvas, audio) does nothing, and returns a
 //     new handle.
 
@@ -72,6 +73,13 @@ export class StubGpu {
   /** Writes from held bytes, also when `record` is false. */
   heldWrites = 0;
   frame = 0;
+  /**
+   * The canvas views that the bridge gave and did not release. Each frame
+   * gets one view and releases it after the submit (REQ-GPU-012).
+   */
+  readonly liveViews = new Set<number>();
+  /** The canvas views that the bridge gave, from the start. */
+  viewsMade = 0;
 
   constructor(
     private nextHandle: () => number,
@@ -127,6 +135,17 @@ export class StubGpu {
           this.error(`destroy of buffer ${handle}, which is not live`);
         if (b) b.destroyed = true;
         this.destroyed++;
+      },
+      webgpuGetCurrentTextureView: (): number => {
+        const handle = this.nextHandle();
+        this.liveViews.add(handle);
+        this.viewsMade++;
+        return handle;
+      },
+      webgpuTextureViewRelease: (handle: number): void => {
+        // The stub records only the canvas views. A release of another
+        // view (for example a mip level) is correct.
+        this.liveViews.delete(handle);
       },
       webgpuCreateBindGroup: (): number => {
         this.bindGroups++;

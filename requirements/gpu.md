@@ -259,8 +259,11 @@ Textures, samplers and other resources of `sw_gpu`.
   releases these objects at the same points. Before this requirement, the
   bridge kept about six handles for each frame, with the canvas texture of
   each frame. The memory of the page increased while the game ran.
-- **Verification:** Test — `backends/wasm/tests/canvas.pw.ts` › "justabox
-  draws the spinning box on the canvas"
+- **Verification:**
+  - Test — `backends/wasm/tests/canvas.pw.ts` › "justabox draws the
+    spinning box on the canvas"
+  - Test — `backends/wasm/headless.ts` › step 8: no canvas view is live
+    after the last frame
 - **Relations:** refines REQ-GPU-005
 
 ## REQ-GPU-013 — The web canvas has the screen format of the Zig side
