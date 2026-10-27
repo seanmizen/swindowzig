@@ -4,17 +4,17 @@
 Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS/Linux).
 
 <!-- progress:start -->
-![engine progress](https://img.shields.io/badge/engine-35.9%25-1D76DB)
+![engine progress](https://img.shields.io/badge/engine-41.0%25-1D76DB)
 
-**Engine: 35.9% complete** `███████░░░░░░░░░░░░░` (14 of 39 issues)
+**Engine: 41.0% complete** `████████░░░░░░░░░░░░` (16 of 39 issues)
 
 | State | Issues |
 |---|---|
-| done | 14 |
-| in-review | 3 |
-| in-progress | 2 |
+| done | 16 |
+| in-review | 2 |
+| in-progress | 3 |
 | ready | 16 |
-| backlog | 4 |
+| backlog | 2 |
 
 A GitHub workflow writes this block from the
 [`engine` issues](https://github.com/seanmizen/swindowzig/issues?q=label%3Aengine).
@@ -125,6 +125,7 @@ zig build run -Dexample=windows   # triangle with mouse drag
 zig build run -Dexample=flat2d    # 2D renderer: rectangles, outline, textured quad
 zig build run -Dexample=mipmaps   # GPU mip levels, texture array, anisotropy (Space: sampler)
 zig build run -Dexample=atlas     # sw_render texture atlas with animated sprites
+zig build run -Dexample=sky       # sw_render sky, fog and day-night cycle (C: cube map, G: fog)
 ```
 
 ### Voxel Demo — CLI Flags

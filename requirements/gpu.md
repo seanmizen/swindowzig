@@ -135,8 +135,11 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Rationale:** Each pass reads the camera and the viewport from one
   binding. If the WGSL struct and the Zig struct differ, every shader reads
   wrong values with no error.
-- **Verification:** Test — `libs/sw_render/src/wgsl.zig` › "wgsl: SwFrame
-  in the prefix has the layout of FrameUniforms (REQ-GPU-007)"
+- **Verification:**
+  - Test — `libs/sw_render/src/wgsl.zig` › "wgsl: SwFrame in the prefix
+    has the layout of FrameUniforms (REQ-GPU-007)"
+  - Test — `libs/sw_render/src/wgsl.zig` › "wgsl: SwSky in the prefix has
+    the layout of SkyUniforms (REQ-GPU-007)"
 - **Relations:** none
 
 ## REQ-GPU-008 — The scene renders to an HDR target, and a tonemap writes display colour
@@ -189,6 +192,57 @@ Textures, samplers and other resources of `sw_gpu`.
   - Demonstration — `justabox --check` (native, in CI) turns FXAA off and
     checks that FXAA changed the box edges and nothing else.
 - **Relations:** refines REQ-GPU-005
+
+## REQ-GPU-010 — The sky pass draws the sky from a time of day
+
+- **Status:** active
+- **Source:** agent:SWZ-36
+- **Origin:** #36
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While a `Sky` of `sw_render` is in a frame graph, the sky
+  pass shall draw a gradient, a sun disc, a moon disc and stars at night, or
+  a cube map in place of the gradient, with the colours of the CPU reference
+  `sky.passColor` at the time of day of the sky.
+- **Rationale:** The sun, the moon, the sky colours and the stars must
+  agree with the time of day that the game sets. One CPU reference lets a
+  test check the shader, and gives the game the same colours for its own
+  light.
+- **Verification:**
+  - Test — `libs/sw_render/src/sky_plan.zig` › "sky: the time of day moves
+    the sun and the moon (REQ-GPU-010)"
+  - Test — `libs/sw_render/src/sky_plan.zig` › "sky: the colours follow the
+    sun, and the stars show at night only (REQ-GPU-010)"
+  - Test — `libs/sw_render/src/sky_plan.zig` › "sky: the gradient goes from
+    the horizon to the zenith, and the sun is a disc (REQ-GPU-010)"
+  - Test — `libs/sw_render/src/sky_plan.zig` › "sky: the stars turn with
+    the sun, and a part of the cells have a star (REQ-GPU-010)"
+  - Demonstration — `sky --check` (native, in CI) reads the screen back at
+    noon, at sunrise, at midnight and with the cube map, and compares the
+    sky with the CPU reference after the tonemap.
+- **Relations:** refines REQ-GPU-008
+
+## REQ-GPU-011 — The distance fog fades into the sky colour at the horizon
+
+- **Status:** active
+- **Source:** agent:SWZ-36
+- **Origin:** #36
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a scene shader calls `sw_fog` from the shared WGSL
+  prefix, the fog shall mix the colour into the fog colour from the fog
+  start to the fog end that the game sets, with the sky colour at the
+  horizon as the default fog colour.
+- **Rationale:** A far object in full fog must have the colour of the sky
+  behind it. If the fog colour and the sky differ, the edge of the view
+  distance shows as a line.
+- **Verification:**
+  - Test — `libs/sw_render/src/sky_plan.zig` › "sky: the fog uses the
+    horizon colour, from the start to the end (REQ-GPU-011)"
+  - Demonstration — `sky --check` (native, in CI) compares the fogged
+    ground with the CPU reference, and the ground in full fog with the sky
+    at the horizon.
+- **Relations:** refines REQ-GPU-010
 
 ## REQ-GPU-012 — The web bridge keeps no surface view or command object from an earlier frame
 

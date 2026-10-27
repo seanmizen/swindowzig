@@ -272,6 +272,12 @@ pub const FrameGraph = struct {
         return self.targets[id.index()].texture.?;
     }
 
+    /// The texture format of a target. `.screen` has `Options.screen_format`.
+    pub fn targetFormat(self: *const FrameGraph, id: TargetId) gpu_mod.TextureFormat {
+        if (id == .screen) return self.options.screen_format;
+        return self.targets[id.index()].desc.format;
+    }
+
     /// The size of a target in pixels, after the first `execute`.
     pub fn size(self: *const FrameGraph, id: TargetId) Extent {
         if (id == .screen) return self.surface;

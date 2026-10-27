@@ -457,6 +457,45 @@ pub const GPU = struct {
         self.height = height;
     }
 
+    /// Give the surface a new size in pixels. Native: configure the wgpu
+    /// surface again. Web: record the canvas size, as `setSurfaceSize`
+    /// does. A zero size (a minimised window) and the same size do nothing.
+    /// Call it between frames, not between `getCurrentTextureView` and
+    /// `present`. The MSAA and FXAA targets keep their size: call
+    /// `configureMSAA` or `configureFXAA` again (REQ-PLATFORM-003).
+    pub fn resizeSurface(self: *GPU, width: u32, height: u32) void {
+        if (width == 0 or height == 0) return;
+        if (width == self.width and height == self.height) return;
+        if (comptime is_wasm) {
+            self.width = width;
+            self.height = height;
+            return;
+        } else {
+            // Headless-offscreen mode has no surface: its texture keeps
+            // its size.
+            if (!self.isReady() or self.surface == null) return;
+            const surface_config = surfaceConfiguration(self.device, width, height);
+            native.wgpuSurfaceConfigure(self.surface, &surface_config);
+            self.width = width;
+            self.height = height;
+        }
+    }
+
+    fn surfaceConfiguration(device: native.WGPUDevice, width: u32, height: u32) native.WGPUSurfaceConfiguration {
+        return .{
+            .next_in_chain = null,
+            .device = device,
+            .format = .bgra8unorm,
+            .usage = native.WGPUTextureUsage_RenderAttachment | native.WGPUTextureUsage_CopySrc,
+            .view_format_count = 0,
+            .view_formats = null,
+            .alpha_mode = .auto,
+            .width = width,
+            .height = height,
+            .present_mode = .fifo,
+        };
+    }
+
     /// Initialize WebGPU (call once at startup)
     pub fn init(self: *GPU, window: ?*anyopaque, width: u32, height: u32) !void {
         if (self.state != .uninitialized) return;
@@ -553,18 +592,7 @@ pub const GPU = struct {
 
             if (!headless_offscreen) {
                 // Configure surface (modern API, replaces swap chain)
-                const surface_config = native.WGPUSurfaceConfiguration{
-                    .next_in_chain = null,
-                    .device = device_result.device.?,
-                    .format = .bgra8unorm,
-                    .usage = native.WGPUTextureUsage_RenderAttachment | native.WGPUTextureUsage_CopySrc,
-                    .view_format_count = 0,
-                    .view_formats = null,
-                    .alpha_mode = .auto,
-                    .width = width,
-                    .height = height,
-                    .present_mode = .fifo,
-                };
+                const surface_config = surfaceConfiguration(device_result.device.?, width, height);
                 native.wgpuSurfaceConfigure(surface, &surface_config);
             }
 

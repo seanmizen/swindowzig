@@ -16,10 +16,16 @@
 // - The text field uses the platform input method: focus it, then type. A
 //   dead key works: the accent key, then "e", gives the committed "é". The
 //   arrow keys, Home and End move the caret, Shift selects, and Ctrl (or Cmd)
-//   with A, C, X and V selects all, copies, cuts and pastes.
+//   with A, C, X and V selects all, copies, cuts and pastes. Copy and paste
+//   use the system clipboard: copy in the field, paste in another program,
+//   and back.
 // - "Keyboard" opens an on-screen keyboard that fills the text field.
 //
 // The focused node has a yellow ring.
+//
+// Window and cursor: Alt+Enter goes to full screen and back. Alt+M changes
+// the cursor mode: normal, hidden, locked. A line at the top left shows the
+// modes, the DPI scale and the last clipboard event.
 const std = @import("std");
 const builtin = @import("builtin");
 const sw = @import("sw_app");
@@ -60,6 +66,9 @@ const config: sw.Config = .{
     .title = "flat2d",
     .size = .{ .w = 800, .h = 600 },
     .tick_hz = 60,
+    // The surface has the pixel size of the window, also after full screen
+    // or a move to another monitor.
+    .surface_follows_window = true,
 };
 
 const checker_size = 16;
@@ -90,6 +99,8 @@ var accent: usize = 0;
 var volume: f32 = 0.7;
 var level: usize = 0;
 var keyboard: sw_ui.osk.Keyboard = .{};
+var cursor_mode: sw.CursorMode = .normal;
+var last_clipboard: ?sw.ClipboardEvent = null;
 
 const Screen = enum { settings, keyboard };
 var screens: sw_ui.ScreenStack(Screen, 4) = .{};
@@ -315,6 +326,52 @@ fn handleUiEvents(ctx: *sw.Context, u: *sw_ui.Ui) void {
     if (!wanted and ctx.isTextInputActive()) ctx.stopTextInput();
 }
 
+/// Alt+Enter: full screen and back. Alt+M: the next cursor mode. Each
+/// clipboard event goes to the log and to the status line.
+fn windowKeys(ctx: *sw.Context) void {
+    const input = ctx.input();
+    if (input.mods.alt and input.keyPressed(.Enter)) {
+        ctx.setWindowMode(if (ctx.windowMode() == .fullscreen) .windowed else .fullscreen);
+    }
+    if (input.mods.alt and input.keyPressed(.M)) {
+        cursor_mode = switch (cursor_mode) {
+            .normal => .hidden,
+            .hidden => .locked,
+            .locked => .normal,
+        };
+        ctx.setCursorMode(cursor_mode);
+    }
+    // The browser ends the pointer lock on Escape. Follow it.
+    if (cursor_mode == .locked and !ctx.isCursorLocked() and input.keyPressed(.Escape)) {
+        cursor_mode = .normal;
+        ctx.setCursorMode(.normal);
+    }
+    if (input.clipboard) |c| {
+        last_clipboard = c;
+        std.log.info("flat2d: clipboard {s}: {s}, {d} bytes", .{ @tagName(c.kind), @tagName(c.status), c.len });
+    }
+}
+
+/// The status line: the window mode, the cursor mode, the DPI scale and the
+/// last clipboard event.
+fn statusLine(ctx: *sw.Context, buf: []u8) []const u8 {
+    const win = ctx.window();
+    var clip_buf: [48]u8 = undefined;
+    const clip = if (last_clipboard) |c|
+        std.fmt.bufPrint(&clip_buf, "{s} {s}", .{ @tagName(c.kind), @tagName(c.status) }) catch "?"
+    else
+        "none";
+    return std.fmt.bufPrint(buf, "Alt+Enter {s}   Alt+M cursor {s}{s}   {d}x{d} @ {d:.2}x   clipboard: {s}", .{
+        @tagName(ctx.windowMode()),
+        @tagName(cursor_mode),
+        if (cursor_mode == .locked and !ctx.isCursorLocked()) " (not locked)" else "",
+        win.width,
+        win.height,
+        win.dpi_scale,
+        clip,
+    }) catch "";
+}
+
 // sprite.png: `sprite_request` is set while the load runs, `sprite` when the
 // texture is ready.
 var sprite_request: ?assets.Request = null;
@@ -380,13 +437,18 @@ const Callbacks = struct {
         if (text_renderer) |*tr| {
             ui_state = sw_ui.Ui.init(ctx.allocator(), sw_ui.draw.measurer(tr), .{});
         }
-        if (ui_state) |*u| u.setFocus(ids.accent_item);
+        if (ui_state) |*u| {
+            u.setFocus(ids.accent_item);
+            // Copy and paste of the text fields use the system clipboard.
+            u.clipboard = sw_ui.Clipboard.platform(ctx);
+        }
         sprite_request = try assets.loadBytes(ctx.allocator(), "sprite.png");
         std.log.info("flat2d: GPU ready", .{});
     }
 
     pub fn tick(ctx: *sw.Context) !void {
         ticks +%= 1;
+        windowKeys(ctx);
 
         const u = if (ui_state) |*p| p else return;
         const win = ctx.window();
@@ -451,6 +513,9 @@ const Callbacks = struct {
                 .color = gfx.Color.rgba8(250, 210, 80, 255),
             });
             try r.strokeRect(.{ .x = paragraph_x - 4, .y = 72, .w = paragraph_width + 8, .h = size.h + 8 }, 1, gfx.Color.rgba8(90, 90, 110, 255));
+
+            var status_buf: [160]u8 = undefined;
+            _ = try tr.draw(r, statusLine(ctx, &status_buf), 8, 8, .{ .size = 12, .color = gfx.Color.rgba8(170, 170, 190, 255) });
         }
 
         // The UI is drawn last, over everything else.
