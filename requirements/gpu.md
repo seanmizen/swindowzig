@@ -208,3 +208,21 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Verification:** Test — `backends/wasm/tests/canvas.pw.ts` › "justabox
   draws the spinning box on the canvas"
 - **Relations:** refines REQ-GPU-005
+
+## REQ-GPU-013 — The web canvas has the screen format of the Zig side
+
+- **Status:** active
+- **Source:** agent:SWZ-68
+- **Origin:** #68
+- **Type:** functional
+- **Priority:** P1
+- **Statement:** When the web build configures the canvas, the WebGPU bridge
+  shall use `bgra8unorm`, the screen format of the Zig pipelines.
+- **Rationale:** The preferred canvas format is `rgba8unorm` on Linux and
+  Android. With that format, each pipeline that writes the screen failed
+  validation, and the canvas stayed black. Every WebGPU canvas supports
+  `bgra8unorm`. The cost is one copy for each frame on a device that
+  prefers `rgba8unorm`.
+- **Verification:** Test — `backends/wasm/tests/canvas.pw.ts` › "justabox
+  draws the spinning box on the canvas" (CI runs it on Linux)
+- **Relations:** refines REQ-GPU-005

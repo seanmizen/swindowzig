@@ -89,7 +89,19 @@ export async function initWebGPU(
     throw new Error('Failed to get WebGPU context');
   }
 
-  const format = navigator.gpu.getPreferredCanvasFormat();
+  // The Zig side draws the screen in bgra8unorm on native and on the web
+  // (FrameGraph.Options.screen_format, the post chain, sw_gfx2d). The
+  // preferred canvas format is rgba8unorm on Linux and Android. A canvas in
+  // that format makes each pipeline that writes the screen fail validation,
+  // and the canvas stays black. Every WebGPU canvas supports bgra8unorm. On
+  // a device that prefers rgba8unorm, the browser adds one copy for each
+  // frame (REQ-GPU-013).
+  const format: GPUTextureFormat = 'bgra8unorm';
+  if (navigator.gpu.getPreferredCanvasFormat() !== format) {
+    console.log(
+      `[WebGPU] The canvas uses ${format}, not the preferred format ${navigator.gpu.getPreferredCanvasFormat()}`,
+    );
+  }
   context.configure({
     device,
     format,

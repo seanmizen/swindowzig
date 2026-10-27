@@ -90,7 +90,23 @@ test('justabox draws the spinning box on the canvas', async ({ page }) => {
     logs.push(`pageerror: ${e.message}`);
     gpuErrors.push(`pageerror: ${e.message}`);
   });
-  const dump = () => `\nConsole:\n${logs.join('\n')}`;
+  // Count the canvas textures that the page gets: one for each frame.
+  await page.addInitScript(() => {
+    const w = window as unknown as { swCanvasFrames: number };
+    w.swCanvasFrames = 0;
+    const get = GPUCanvasContext.prototype.getCurrentTexture;
+    GPUCanvasContext.prototype.getCurrentTexture = function () {
+      w.swCanvasFrames++;
+      return get.call(this);
+    };
+  });
+  const frames = () =>
+    page.evaluate(
+      () => (window as unknown as { swCanvasFrames: number }).swCanvasFrames,
+    );
+  let framesNow = 0;
+  const dump = () =>
+    `\nCanvas frames: ${framesNow}\nConsole:\n${logs.join('\n')}`;
 
   await page.goto('/');
   // With no WebGPU, justabox draws nothing. The console then tells why.
@@ -108,6 +124,13 @@ test('justabox draws the spinning box on the canvas', async ({ page }) => {
   await page.waitForTimeout(watchMs);
   const second = await readCanvas(page);
   const handlesAfter = await gpuHandles(page);
+  framesNow = await frames();
+
+  expect(gpuErrors, `WebGPU errors in the console.${dump()}`).toEqual([]);
+  expect(
+    framesNow,
+    `the frame graph drew few frames.${dump()}`,
+  ).toBeGreaterThan(10);
 
   // The box is on the canvas: the canvas is not all black, and not one
   // colour. The faces are bright and the background is dark.
@@ -128,6 +151,4 @@ test('justabox draws the spinning box on the canvas', async ({ page }) => {
     handlesAfter - handlesBefore,
     `the WebGPU bridge keeps ${handlesAfter - handlesBefore} more handles after ${watchMs} ms`,
   ).toBeLessThan(16);
-
-  expect(gpuErrors, `WebGPU errors in the console.${dump()}`).toEqual([]);
 });

@@ -125,7 +125,8 @@ depth test rejects hidden fragments before they shade.
   writes to them, and checks the rules of `writeBuffer` (`StubGpu`).
 - Web: the bridge (`backends/wasm/webgpu.ts`) drops the handle of a view,
   an encoder, a pass and a command buffer where native releases the object.
-  So a frame adds no handle (REQ-GPU-012). `yarn test:browser` runs the
+  So a frame adds no handle (REQ-GPU-012). The canvas is always
+  `bgra8unorm`, the screen format of the Zig side (REQ-GPU-013). `yarn test:browser` runs the
   Playwright tests: `canvas.pw.ts` checks the pixels of justabox on the
   canvas, and `a11y.pw.ts` checks flat2d. `yarn test:a11y` runs the same.
 - Web: `gpu.writeBufferHeld` writes bytes that JS holds
