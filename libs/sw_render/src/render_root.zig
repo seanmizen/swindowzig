@@ -51,6 +51,11 @@
 //! precipitation pass draws rain or snow in a column around the camera,
 //! and a height map from the game stops it at the ground (REQ-GPU-021).
 //! Both use the sky light and the fog. See `weather.zig`.
+//!
+//! The translucent pass draws quads after the opaque pass, with the depth
+//! test on and the depth write off (REQ-GPU-022). It sorts the quads from
+//! far to near when the camera moves a set distance (REQ-GPU-023). See
+//! `translucent.zig`.
 
 const atlas_mod = @import("atlas.zig");
 const box_models_mod = @import("box_models.zig");
@@ -59,6 +64,7 @@ const lighting_mod = @import("lighting.zig");
 const post_mod = @import("post.zig");
 const ring_mod = @import("ring.zig");
 const sky_mod = @import("sky.zig");
+const translucent_mod = @import("translucent.zig");
 const upload_mod = @import("upload.zig");
 const weather_mod = @import("weather.zig");
 
@@ -87,6 +93,9 @@ pub const lighting = @import("lighting_plan.zig");
 /// Clouds and precipitation with no GPU code: the settings, the sky light,
 /// the WGSL and the CPU reference of the shaders.
 pub const weather = @import("weather_plan.zig");
+/// The translucent pass with no GPU code: the sort, the states and the
+/// CPU reference of the blend.
+pub const translucent = @import("translucent_plan.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasBuilder = atlas_mod.AtlasBuilder;
@@ -162,3 +171,8 @@ pub const PrecipitationKind = weather.PrecipitationKind;
 pub const HeightMap = weather.HeightMap;
 pub const WeatherInput = weather.FrameInput;
 pub const WeatherLight = weather.Light;
+pub const Translucent = translucent_mod.Translucent;
+pub const TranslucentOptions = translucent_mod.Options;
+pub const TranslucentPassOptions = translucent_mod.PassOptions;
+pub const TranslucentVertex = translucent.Vertex;
+pub const TranslucentQuad = translucent.Quad;

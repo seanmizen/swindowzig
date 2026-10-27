@@ -37,6 +37,8 @@
 | [`REQ-GPU-018`](gpu.md#req-gpu-018--a-setting-turns-the-shadows-off) | A setting turns the shadows off | active | functional | P2 | agent:SWZ-38 |
 | [`REQ-GPU-020`](gpu.md#req-gpu-020--the-cloud-layer-moves-with-the-wind-and-takes-its-shape-from-the-game) | The cloud layer moves with the wind and takes its shape from the game | active | functional | P3 | agent:SWZ-37 |
 | [`REQ-GPU-021`](gpu.md#req-gpu-021--rain-and-snow-fall-around-the-camera-and-stop-at-the-height-map) | Rain and snow fall around the camera and stop at the height map | active | functional | P3 | agent:SWZ-37 |
+| [`REQ-GPU-022`](gpu.md#req-gpu-022--translucent-quads-draw-after-the-opaque-scene-with-no-depth-write) | Translucent quads draw after the opaque scene with no depth write | active | functional | P2 | agent:SWZ-35 |
+| [`REQ-GPU-023`](gpu.md#req-gpu-023--the-translucent-pass-sorts-its-quads-from-far-to-near) | The translucent pass sorts its quads from far to near | active | functional | P2 | agent:SWZ-35 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -109,6 +111,8 @@ graph TD
   REQ_GPU_018["REQ-GPU-018<br/>A setting turns the shadows off"]
   REQ_GPU_020["REQ-GPU-020<br/>The cloud layer moves with the wind and takes its shape from the game"]
   REQ_GPU_021["REQ-GPU-021<br/>Rain and snow fall around the camera and stop at the height map"]
+  REQ_GPU_022["REQ-GPU-022<br/>Translucent quads draw after the opaque scene with no depth write"]
+  REQ_GPU_023["REQ-GPU-023<br/>The translucent pass sorts its quads from far to near"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -165,6 +169,7 @@ graph TD
   REQ_GPU_018 -->|refines| REQ_GPU_016
   REQ_GPU_020 -->|refines| REQ_GPU_011
   REQ_GPU_021 -->|refines| REQ_GPU_011
+  REQ_GPU_023 -->|depends-on| REQ_GPU_022
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
   REQ_TEXT_004 -->|refines| REQ_TEXT_001
@@ -196,6 +201,7 @@ graph TD
 - `REQ-GPU-011` — refined-by REQ-GPU-020, refined-by REQ-GPU-021
 - `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
 - `REQ-GPU-016` — refined-by REQ-GPU-018
+- `REQ-GPU-022` — required-by REQ-GPU-023
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
 - `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-009

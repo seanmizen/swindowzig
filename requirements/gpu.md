@@ -493,3 +493,54 @@ Textures, samplers and other resources of `sw_gpu`.
     covers has the CPU reference colour, and each particle under the height
     map leaves the background.
 - **Relations:** refines REQ-GPU-011
+
+## REQ-GPU-022 — Translucent quads draw after the opaque scene with no depth write
+
+- **Status:** active
+- **Source:** agent:SWZ-35
+- **Origin:** #35
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While a `Translucent` of `sw_render` is in a frame graph,
+  the translucent pass shall draw its quads after the opaque pass with the
+  depth test on and the depth write off.
+- **Rationale:** An opaque surface in front of a translucent quad must hide
+  it, so the depth test stays on. A translucent quad must not hide a
+  translucent quad behind it, so the pass writes no depth. The blend puts
+  each quad over the colour of the scene.
+- **Verification:**
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: the
+    depth test is on and the depth write is off (REQ-GPU-022)"
+  - Demonstration — `models --check` (native, in CI) draws a translucent
+    quad under the ground. The pixel through the quads has the CPU blend
+    with no colour of that quad.
+- **Relations:** none
+
+## REQ-GPU-023 — The translucent pass sorts its quads from far to near
+
+- **Status:** active
+- **Source:** agent:SWZ-35
+- **Origin:** #35
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the camera moves the resort distance or more from
+  the position of the last sort, the translucent pass of `sw_render` shall
+  sort its quads from far to near.
+- **Rationale:** A blend gives the correct colour only when the nearer
+  quad draws over the further quads. A sort for each frame costs time
+  with no gain while the camera stays near the same position, so the pass
+  sorts only after a set distance. The sort changes only the index list,
+  so the vertices stay on the GPU.
+- **Verification:**
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: the
+    sort puts the furthest quad first, and ties keep their order
+    (REQ-GPU-023)"
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: a
+    camera on the other side reverses the order (REQ-GPU-023)"
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: the
+    sort runs again only after the camera moves the resort distance
+    (REQ-GPU-023)"
+  - Demonstration — `models --check` (native, in CI) gives the quads near
+    quad first. The pixel through the two quads has the CPU blend of the
+    far quad, then the near quad.
+- **Relations:** depends-on REQ-GPU-022

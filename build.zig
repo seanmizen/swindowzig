@@ -431,6 +431,7 @@ pub fn build(b: *std.Build) void {
         "libs/sw_render/src/box_model_plan.zig",
         "libs/sw_render/src/lighting_plan.zig",
         "libs/sw_render/src/weather_plan.zig",
+        "libs/sw_render/src/translucent_plan.zig",
     };
     inline for (render_graph_test_files) |file| {
         const unit_tests = b.addTest(.{

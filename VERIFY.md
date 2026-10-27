@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 4. Skipped: 0. Not started: 11.
+- Done: 5. Skipped: 0. Not started: 10.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -99,3 +99,30 @@ ticket of #102, in the order of the batch.
   for a fluid. A section test used a pattern that missed some block
   counts (23 types gave 13 palette entries). The test content now has 25
   types, so the pattern changed to one that covers each count up to 128.
+
+## #35 translucent pass with back-to-front sort
+
+- Status: done, with one acceptance criterion open (see below)
+- Commit: see `git log --grep SWZ-35`
+- Not run here: nothing. `models --check` passed on lavapipe: the pixel
+  through the two quads is `{179, 88, 210}`, difference 0 from the CPU
+  blend.
+- Expected changes:
+  - quad hash: no change (no voxel change)
+  - goldens: none. The voxel demo does not change.
+- CI changes needed: none. The `models --check` step runs the new check.
+- Requirements: REQ-GPU-022, REQ-GPU-023
+- Open questions:
+  - Not done: "The voxel demo shows correct overlap of two translucent
+    blocks." The voxel demo does not use `sw_render`, and the mesher has
+    no translucent blocks. A voxel version needs a translucent block in
+    the content, a separate translucent quad stream in the mesh result
+    (with the protocol and the upload), and a sort on main. Main keeps no
+    copy of the quads (C5), so the sort needs the quad centres from the
+    worker. That is a larger change than this ticket. The two-quad
+    overlap is in `models --check` now. Decide if the voxel part is a new
+    ticket.
+  - The default order of the pass is 55: after the clouds (50) and
+    before the rain and snow (60).
+- Risks: `Translucent.addPass` keeps a pointer to the `Translucent`, so
+  the game must keep it at one address (the same rule as `BoxModels`).

@@ -16,6 +16,11 @@
 // the sky (REQ-GPU-016). A point light moves near the ground in front of
 // the figures (REQ-GPU-017).
 //
+// Two translucent quads float over the ground at the left, and a third
+// is under the ground. The translucent pass draws them after the opaque
+// scene, from far to near, with the depth test on and the depth write off
+// (REQ-GPU-022, REQ-GPU-023). The ground hides the third quad.
+//
 // Keys: Space stops or starts the animation. D turns the first-person
 // depth range on or off. L turns the shadows on or off (REQ-GPU-018). P
 // turns the point light on or off. Left and Right change the time of day.
@@ -26,7 +31,9 @@
 // reference of the shader after the CPU tonemap: the figures, the ground
 // in the shadow of a figure, the same ground in light, and the ground
 // under the point light. It checks the draw calls and the instance
-// counts. It exits with 0 (pass) or 1 (fail).
+// counts. The pixel through the two translucent quads must be the CPU
+// blend of the far quad, then the near quad, over the ground. It exits
+// with 0 (pass) or 1 (fail).
 const std = @import("std");
 const sw = @import("sw_app");
 const builtin = @import("builtin");
@@ -166,6 +173,7 @@ var post: ?sw_render.PostChain = null;
 var sky: ?sw_render.Sky = null;
 var lighting: ?sw_render.Lighting = null;
 var models: ?sw_render.BoxModels = null;
+var glass: ?sw_render.Translucent = null;
 var figure: sw_render.BoxModelId = undefined;
 var block: sw_render.BoxModelId = undefined;
 var held: sw_render.BoxModelId = undefined;
@@ -179,6 +187,29 @@ var time_of_day: f32 = check_time;
 
 const first_person_view: sw_render.BoxModelView = .{ .depth_range = .{ 0, 0.01 }, .fog = false };
 const no_range_view: sw_render.BoxModelView = .{ .depth_range = .{ 0, 1 }, .fog = false };
+
+/// The ground point behind the translucent quads. No figure shades it, and
+/// the point light does not reach it.
+const glass_ground: [3]f32 = .{ -1.0, 0, 2.5 };
+/// The quads: red at alpha 0.5 (far), blue at alpha 0.5 (near), and a
+/// green quad under the ground. Each one is on the line from the eye to
+/// `glass_ground`, at this part of the line.
+const glass_at = [3]f32{ 0.6, 0.4, 1.3 };
+const glass_color = [3][4]f32{ .{ 1, 0, 0, 0.5 }, .{ 0, 0, 1, 0.5 }, .{ 0, 1, 0, 0.8 } };
+
+/// A square quad of side 0.2 that faces +Z, at part `t` of the line from
+/// the eye to `glass_ground`.
+fn glassQuad(t: f32, color: [4]f32) sw_render.TranslucentQuad {
+    var c: [3]f32 = undefined;
+    for (0..3) |i| c[i] = eye[i] + t * (glass_ground[i] - eye[i]);
+    const h: f32 = 0.1;
+    return .{
+        .{ .pos = .{ c[0] - h, c[1] - h, c[2] }, .color = color },
+        .{ .pos = .{ c[0] + h, c[1] - h, c[2] }, .color = color },
+        .{ .pos = .{ c[0] + h, c[1] + h, c[2] }, .color = color },
+        .{ .pos = .{ c[0] - h, c[1] + h, c[2] }, .color = color },
+    };
+}
 
 fn v3(a: [3]f32) Vec3 {
     return .{ .x = a[0], .y = a[1], .z = a[2] };
@@ -295,6 +326,13 @@ const Callbacks = struct {
         block = try m.addModel(.{ .parts = &block_parts });
         held = try m.addModel(.{ .parts = &held_parts });
         try m.addFirstPersonPass(.{ .color = p.hdr, .depth = depth, .view = first_person_view });
+
+        // The translucent quads, near quad first, so that only the sort
+        // gives the correct blend.
+        glass = try sw_render.Translucent.init(allocator, g, .{ .color_format = p.hdr_format, .max_quads = 4 });
+        const gl = &glass.?;
+        try gl.setQuads(&.{ glassQuad(glass_at[1], glass_color[1]), glassQuad(glass_at[0], glass_color[0]), glassQuad(glass_at[2], glass_color[2]) });
+        try gl.addPass(.{ .color = p.hdr, .depth = depth });
         std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range. L: shadows. P: point light. Left/Right: time.", .{figure_count});
     }
 
@@ -343,6 +381,7 @@ const Callbacks = struct {
             try l.setPointLights(&.{});
         }
         try l.update(f);
+        try glass.?.update(eye);
         if (try g.execute(f)) {
             if (comptime !builtin.cpu.arch.isWasm()) {
                 if (check_mode) try checkFrame(ctx, f);
@@ -353,6 +392,8 @@ const Callbacks = struct {
 
     pub fn shutdown(ctx: *sw.Context) !void {
         _ = ctx;
+        if (glass) |*gl| gl.deinit();
+        glass = null;
         if (models) |*m| m.deinit();
         models = null;
         if (lighting) |*l| l.deinit();
@@ -567,6 +608,7 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
         ok = expectPixel(step, "block in front of the held object", pixels, w, held_xy, faceColor(frame, .{ 1, 1, 1 }, block_tint, block_face, true)) and ok;
     }
     ok = checkShadows(step, frame, pixels, w, h) and ok;
+    ok = checkGlass(step, frame, pixels, w, h) and ok;
     return ok;
 }
 
@@ -641,6 +683,43 @@ fn checkShadows(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, 
     std.log.info("models: {s}: the point light adds {d}", .{ step.name, gain });
     if (gain < 60) {
         std.log.err("models: {s}: the point light must make the ground brighter", .{step.name});
+        ok = false;
+    }
+    return ok;
+}
+
+/// The pixel through the translucent quads: the CPU blend of the far red
+/// quad, then the near blue quad, over the ground. The green quad under
+/// the ground must not show (REQ-GPU-022, REQ-GPU-023).
+fn checkGlass(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: u32, h: u32) bool {
+    var ok = true;
+    const up: [3]f32 = .{ 0, 1, 0 };
+    const lt = lighting.?;
+    const light = models.?.getLight();
+    const l = lt.lightDirection();
+    for (front_x) |x| {
+        if (sw_render.lighting.rayHitsBox(glass_ground, l, .{ x - 0.7, 0, -0.3 }, .{ x + 1.8, 2.8, 0.3 })) {
+            std.log.err("models: the glass ground point {any} is behind a figure", .{glass_ground});
+            ok = false;
+        }
+    }
+    const points = sw_render.lighting.pointLights(lt.uniforms(), glass_ground, up);
+    var ground = box_model.shadeLit(.{ 1, 1, 1 }, ground_tint, up, l, light, 1, points);
+    ground = sw_render.sky.applyFog(frame.sky, ground, distance(glass_ground, eye));
+    const red_c: [3]f32 = .{ glass_color[0][0], glass_color[0][1], glass_color[0][2] };
+    const blue_c: [3]f32 = .{ glass_color[1][0], glass_color[1][1], glass_color[1][2] };
+    const blend = sw_render.translucent.over;
+    const want = display(blend(blend(ground, red_c, glass_color[0][3]), blue_c, glass_color[1][3]));
+    const xy = project(frame.view_proj, glass_ground, w, h);
+    ok = expectPixel(step, "ground through the translucent quads", pixels, w, xy, want) and ok;
+    const got = pixelAt(pixels, w, xy);
+    // The near quad is blue: blue is over red.
+    if (got[2] <= got[0]) {
+        std.log.err("models: {s}: the translucent quads drew near to far", .{step.name});
+        ok = false;
+    }
+    if (glass.?.sort_count != 1) {
+        std.log.err("models: {s}: the quads sorted {d} times. The camera does not move, so they must sort one time", .{ step.name, glass.?.sort_count });
         ok = false;
     }
     return ok;
