@@ -138,3 +138,54 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Verification:** Test — `libs/sw_render/src/wgsl.zig` › "wgsl: SwFrame
   in the prefix has the layout of FrameUniforms (REQ-GPU-007)"
 - **Relations:** none
+
+## REQ-GPU-008 — The scene renders to an HDR target, and a tonemap writes display colour
+
+- **Status:** active
+- **Source:** agent:SWZ-30
+- **Origin:** #30
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a game makes a `PostChain` of `sw_render`, the
+  tonemap pass of the chain shall map the linear colour of the
+  `rgba16float` scene target to display colour with the exposure, the curve
+  and the sRGB encode of the CPU reference `post.tonemapChannel`.
+- **Rationale:** Light, sky and fog give colour values over 1. An 8-bit
+  target clips them. One tonemap at the end of the frame keeps the detail,
+  and one CPU reference lets a test check the shader with no GPU.
+- **Verification:**
+  - Test — `libs/sw_render/src/post_plan.zig` › "post: the tonemap curves
+    map HDR colour into 0 to 1 (REQ-GPU-008)"
+  - Test — `libs/sw_render/src/post_plan.zig` › "post: the sRGB encode
+    (REQ-GPU-008)"
+  - Test — `libs/sw_render/src/post_plan.zig` › "post: SwTonemap in the
+    tonemap shader has the layout of TonemapUniforms (REQ-GPU-008)"
+  - Demonstration — `justabox --check` (native, in CI) reads the screen
+    back and compares the background with the CPU reference.
+- **Relations:** refines REQ-GPU-005
+
+## REQ-GPU-009 — The post chain runs its passes in order, and FXAA is one link
+
+- **Status:** active
+- **Source:** agent:SWZ-30
+- **Origin:** #30
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While a `PostChain` runs, the chain shall run its enabled
+  links (the HDR effects, the tonemap, the LDR effects, then FXAA) as frame
+  graph passes in that sequence, with each link on the output of the
+  enabled link before it and the last enabled link on the screen.
+- **Rationale:** Sky, fog, shadows and the graphics settings add passes to
+  this chain. One route that skips the disabled links stops each feature
+  from wiring its own targets. FXAA uses the same shader source as
+  `GPU.configureFXAA`, so the two paths cannot drift.
+- **Verification:**
+  - Test — `libs/sw_render/src/post_plan.zig` › "post: the links run in
+    sequence, and each reads the output of the one before (REQ-GPU-009)"
+  - Test — `libs/sw_render/src/post_plan.zig` › "post: a disabled link is
+    skipped, and the route closes the gap (REQ-GPU-009)"
+  - Test — `libs/sw_gpu/src/fxaa.zig` › "fxaa: the group token sets the
+    group of the scene texture and sampler (REQ-GPU-009)"
+  - Demonstration — `justabox --check` (native, in CI) turns FXAA off and
+    checks that FXAA changed the box edges and nothing else.
+- **Relations:** refines REQ-GPU-005

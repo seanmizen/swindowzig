@@ -135,6 +135,17 @@ jobs:
           zig build native -Dexample=atlas
           ./zig-out/bin/atlas --check
 
+      - name: HDR target, tonemap and FXAA (justabox --check)
+        # The box draws into the HDR target. The post chain runs the
+        # tonemap and FXAA. The example reads the screen back, compares the
+        # background with the CPU tonemap, and checks that FXAA changes the
+        # box edges only (REQ-GPU-008, REQ-GPU-009). The web build must
+        # compile too.
+        run: |
+          zig build web -Dexample=justabox
+          zig build native -Dexample=justabox
+          ./zig-out/bin/justabox --check
+
       - name: Screen-reader mirror in Chromium (flat2d)
         # Playwright opens flat2d with WebGPU, moves the focus with Tab, and
         # reads the accessibility tree (REQ-A11Y-001). Chromium uses its own

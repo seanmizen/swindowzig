@@ -249,18 +249,23 @@ pub fn build(b: *std.Build) void {
         // GPU code.
         "libs/sw_gpu/src/mip_chain.zig",
         "libs/sw_gpu/src/types.zig",
+        "libs/sw_gpu/src/fxaa.zig",
         // sw_gfx2d: the batching and the projection maths have no GPU code.
         "libs/sw_gfx2d/src/batch.zig",
         "libs/sw_gfx2d/src/projection.zig",
-        // sw_text: UTF-8, measuring and wrapping, the atlas packer and the
-        // bidirectional algorithm.
+        // sw_text: UTF-8, measuring and wrapping, the atlas packer, the
+        // bidirectional algorithm and the caret geometry.
         "libs/sw_text/src/utf8.zig",
         "libs/sw_text/src/layout.zig",
         "libs/sw_text/src/atlas.zig",
         "libs/sw_text/src/bidi.zig",
-        // sw_ui: the tree, layout, focus and semantic tree have no GPU or font
-        // code. draw.zig is built with the examples.
+        "libs/sw_text/src/caret.zig",
+        // sw_ui: the tree, layout, focus, semantic tree, on-screen keyboard
+        // and screen stack have no GPU or font code. draw.zig is built with
+        // the examples.
         "libs/sw_ui/src/ui.zig",
+        "libs/sw_ui/src/osk.zig",
+        "libs/sw_ui/src/screen.zig",
         // sw_audio: the sample type and the WAV decoder.
         "libs/sw_audio/src/sample.zig",
         "libs/sw_audio/src/wav.zig",
@@ -366,12 +371,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(render_layout_tests).step);
 
     // sw_render frame graph tests: the plan, the uniform ring, the staged
-    // uploads and the WGSL prefix. No GPU code runs.
+    // uploads, the WGSL prefix and the post chain plan. No GPU code runs.
     const render_graph_test_files = [_][]const u8{
         "libs/sw_render/src/plan.zig",
         "libs/sw_render/src/ring.zig",
         "libs/sw_render/src/upload.zig",
         "libs/sw_render/src/wgsl.zig",
+        "libs/sw_render/src/post_plan.zig",
     };
     inline for (render_graph_test_files) |file| {
         const unit_tests = b.addTest(.{

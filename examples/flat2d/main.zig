@@ -4,11 +4,22 @@
 // also loads sprite.png (next to this file) with sw_assets and draws it.
 // Drawing is in logical pixels, origin at the top left.
 //
-// The UI (sw_ui) is a menu and a text field. It works with the keyboard only:
-// Tab and Shift+Tab move focus, the arrow keys move inside the list, Enter and
-// Space activate, and Escape opens or closes the menu. The text field uses the
-// platform input method: focus it, then type. A dead key works: the accent key,
-// then "e", gives the committed "é". The focused node has a yellow ring.
+// The UI (sw_ui) shows each widget. It works with the keyboard and the mouse:
+// Tab and Shift+Tab move focus, the arrow keys move inside a list and change
+// a slider, Enter and Space activate, and Escape closes the top screen or
+// opens and closes the menu. A click focuses and activates, a drag moves a
+// slider or a scroll bar or selects text, and the wheel scrolls a list.
+//
+// - The menu: a list, a live status text, and buttons with tooltips.
+// - "Settings" opens a screen (a screen stack) with a slider and a scroll
+//   list of 30 levels.
+// - The text field uses the platform input method: focus it, then type. A
+//   dead key works: the accent key, then "e", gives the committed "é". The
+//   arrow keys, Home and End move the caret, Shift selects, and Ctrl (or Cmd)
+//   with A, C, X and V selects all, copies, cuts and pastes.
+// - "Keyboard" opens an on-screen keyboard that fills the text field.
+//
+// The focused node has a yellow ring.
 const std = @import("std");
 const builtin = @import("builtin");
 const sw = @import("sw_app");
@@ -76,6 +87,13 @@ var name_storage: [64]u8 = undefined;
 var name_value: sw_ui.TextValue = .{ .buffer = &name_storage };
 var menu_open = true;
 var accent: usize = 0;
+var volume: f32 = 0.7;
+var level: usize = 0;
+var keyboard: sw_ui.osk.Keyboard = .{};
+
+const Screen = enum { settings, keyboard };
+var screens: sw_ui.ScreenStack(Screen, 4) = .{};
+const level_count = 30;
 
 const ids = struct {
     const main_area: u32 = 1;
@@ -87,8 +105,26 @@ const ids = struct {
     const open: u32 = 7;
     const bottom: u32 = 8;
     const name_field: u32 = 9;
+    const settings: u32 = 10;
+    const keyboard_button: u32 = 11;
+    const settings_screen: u32 = 20;
+    const settings_panel: u32 = 21;
+    const settings_title: u32 = 22;
+    const volume_row: u32 = 23;
+    const volume_label: u32 = 24;
+    const volume_slider: u32 = 25;
+    const volume_text: u32 = 26;
+    const levels: u32 = 27;
+    const back: u32 = 28;
+    const keyboard_screen: u32 = 30;
+    const keyboard_panel: u32 = 31;
+    const keyboard_field: u32 = 32;
     /// The list items are accent_item + index.
     const accent_item: u32 = 100;
+    /// The levels are level_item + index.
+    const level_item: u32 = 200;
+    /// The on-screen keyboard uses osk to osk + sw_ui.osk.id_span - 1.
+    const osk: u32 = 1000;
 };
 
 const Accent = struct { name: []const u8, color: gfx.Color };
@@ -101,6 +137,11 @@ const accents = [_]Accent{
 /// The engine input in the form that the UI reads.
 fn uiInput(ctx: *sw.Context) sw_ui.Input {
     const input = ctx.input();
+    // The shortcut modifier: Ctrl, or Cmd on macOS.
+    const shortcut = input.mods.ctrl or input.mods.super;
+    // The web gives the wheel in pixels and SDL in lines. The UI reads lines
+    // of 40 pixels (Theme.scroll_step).
+    const wheel_lines = if (builtin.cpu.arch.isWasm()) input.wheel.delta_y / 40 else input.wheel.delta_y;
     return .{
         .keys = .{
             .tab = input.keyPressed(.Tab),
@@ -112,18 +153,28 @@ fn uiInput(ctx: *sw.Context) sw_ui.Input {
             .space = input.keyPressed(.Space),
             .escape = input.keyPressed(.Escape),
             .backspace = input.keyPressed(.Backspace),
+            .home = input.keyPressed(.Home),
+            .end = input.keyPressed(.End),
+            .delete = input.keyPressed(.Delete),
+            .select_all = shortcut and input.keyPressed(.A),
+            .copy = shortcut and input.keyPressed(.C),
+            .cut = shortcut and input.keyPressed(.X),
+            .paste = shortcut and input.keyPressed(.V),
         },
         .shift = input.mods.shift,
         .pointer_x = input.mouse.x,
         .pointer_y = input.mouse.y,
         .pointer_pressed = input.buttonPressed(.left),
+        .pointer_down = input.buttonDown(.left),
+        .wheel_y = wheel_lines,
         .text = input.text.text(),
         .composition = input.composition.text(),
     };
 }
 
 /// Build the UI of this frame: the menu (or a button that opens it) in the
-/// middle, and the text field at the bottom.
+/// middle, the text field at the bottom, then each screen of the stack over
+/// them.
 fn buildUi(u: *sw_ui.Ui, input: sw_ui.Input, width: f32, height: f32) !void {
     try u.begin(input, width, height);
 
@@ -138,39 +189,103 @@ fn buildUi(u: *sw_ui.Ui, input: sw_ui.Input, width: f32, height: f32) !void {
         u.endContainer();
         // A live region: assistive technology announces the change.
         try u.addText(ids.status, try u.print("Accent: {s}", .{accents[accent].name}), .{ .live = true });
-        try u.addButton(ids.close, "Close menu", .{});
+        try u.addButton(ids.close, "Close menu", .{ .tooltip = "Escape also closes the menu" });
+        try u.addButton(ids.settings, "Settings", .{ .tooltip = "A slider and a long list" });
         u.endContainer();
     } else {
         try u.addButton(ids.open, "Open menu (Esc)", .{});
     }
     u.endContainer();
 
-    try u.beginRow(ids.bottom, .{ .w = .fill, .padding = 16 });
+    try u.beginRow(ids.bottom, .{ .w = .fill, .padding = 16, .gap = 8 });
     try u.addTextField(ids.name_field, "Name", &name_value, .{ .w = .fill });
+    try u.addButton(ids.keyboard_button, "Keyboard", .{ .tooltip = "Type with an on-screen keyboard" });
     u.endContainer();
+
+    for (screens.items()) |entry| switch (entry.screen) {
+        .settings => try buildSettings(u),
+        .keyboard => try buildKeyboard(u),
+    };
 
     try u.finish();
 }
 
+/// The settings screen: a slider and a scroll list.
+fn buildSettings(u: *sw_ui.Ui) !void {
+    try u.beginScreen(ids.settings_screen, "Settings", .{ .w = .fill, .h = .fill, .main_align = .center, .cross_align = .center });
+    try u.beginColumn(ids.settings_panel, .{ .padding = 16, .gap = 8, .panel = true });
+    try u.addText(ids.settings_title, "Settings: Esc goes back", .{});
+
+    const percent = try u.print("{d:.0}%", .{volume * 100});
+    try u.beginRow(ids.volume_row, .{ .gap = 8, .cross_align = .center });
+    try u.addText(ids.volume_label, "Volume", .{});
+    try u.addSlider(ids.volume_slider, "Volume", &volume, .{ .min = 0, .max = 1, .step = 0.05, .text = percent }, .{
+        .tooltip = "Left and Right change it, or drag it",
+    });
+    try u.addText(ids.volume_text, percent, .{});
+    u.endContainer();
+
+    try u.beginScrollList(ids.levels, "Level", .{ .w = .fill, .h = .{ .fixed = 160 } });
+    for (0..level_count) |i| {
+        const name = try u.print("Level {d}", .{i + 1});
+        try u.addListItem(ids.level_item + @as(u32, @intCast(i)), name, .{ .w = .fill, .selected = i == level });
+    }
+    u.endContainer();
+
+    try u.addButton(ids.back, "Back", .{});
+    u.endContainer();
+    u.endContainer();
+}
+
+/// The on-screen keyboard screen. Its text field shows the same text as the
+/// field at the bottom.
+fn buildKeyboard(u: *sw_ui.Ui) !void {
+    try u.beginScreen(ids.keyboard_screen, "On-screen keyboard", .{ .w = .fill, .h = .fill, .main_align = .end, .cross_align = .center, .padding = 16 });
+    try u.beginColumn(ids.keyboard_panel, .{ .padding = 12, .gap = 8, .panel = true, .cross_align = .center });
+    try u.addTextField(ids.keyboard_field, "Name", &name_value, .{ .w = .{ .fixed = 420 } });
+    try keyboard.build(u, ids.osk, .{});
+    u.endContainer();
+    u.endContainer();
+}
+
 /// React to the events of the UI.
 fn handleUiEvents(ctx: *sw.Context, u: *sw_ui.Ui) void {
+    // The on-screen keyboard reads its own key presses.
+    if (screens.top() == .keyboard) {
+        const r = keyboard.apply(u, ids.osk, &name_value);
+        if (r.changed) std.log.info("flat2d: name = \"{s}\"", .{name_value.slice()});
+        if (r.done) _ = screens.pop(u);
+    }
+
     for (u.frameEvents()) |e| {
         switch (e.kind) {
             .activate => {
                 if (e.id >= ids.accent_item and e.id < ids.accent_item + @as(u32, accents.len)) {
                     accent = e.id - ids.accent_item;
+                } else if (e.id >= ids.level_item and e.id < ids.level_item + level_count) {
+                    level = e.id - ids.level_item;
+                    std.log.info("flat2d: level {d}", .{level + 1});
                 } else if (e.id == ids.close) {
                     menu_open = false;
                     u.setFocus(ids.open);
                 } else if (e.id == ids.open) {
                     menu_open = true;
                     u.setFocus(ids.accent_item + @as(u32, @intCast(accent)));
+                } else if (e.id == ids.settings) {
+                    screens.push(u, .settings) catch {};
+                } else if (e.id == ids.keyboard_button) {
+                    screens.push(u, .keyboard) catch {};
+                } else if (e.id == ids.back) {
+                    _ = screens.pop(u);
                 }
             },
             .cancel => {
-                // Escape leaves the text field first. Otherwise it toggles the menu.
+                // Escape closes the top screen, then leaves the text field.
+                // Otherwise it toggles the menu.
                 const in_field = if (u.focused()) |f| f == ids.name_field else false;
-                if (in_field) {
+                if (screens.pop(u) != null) {
+                    // The screen closed.
+                } else if (in_field) {
                     u.clearFocus();
                 } else if (menu_open) {
                     menu_open = false;
@@ -180,7 +295,13 @@ fn handleUiEvents(ctx: *sw.Context, u: *sw_ui.Ui) void {
                     u.setFocus(ids.accent_item + @as(u32, @intCast(accent)));
                 }
             },
-            .changed => std.log.info("flat2d: name = \"{s}\"", .{name_value.slice()}),
+            .changed => {
+                if (e.id == ids.volume_slider) {
+                    std.log.info("flat2d: volume = {d:.2}", .{volume});
+                } else {
+                    std.log.info("flat2d: name = \"{s}\"", .{name_value.slice()});
+                }
+            },
             .submit => {
                 std.log.info("flat2d: name submitted \"{s}\"", .{name_value.slice()});
                 name_value.clear();

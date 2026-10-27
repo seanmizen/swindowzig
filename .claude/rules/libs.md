@@ -35,6 +35,14 @@ with "Texture binding N expects dimension = D1, but given a view with dimension 
 `createBindGroupLayout` now uses explicit switch maps for both `.texture.view_dimension`
 and `.storage_texture.view_dimension`. Do not use raw `@intFromEnum` for these.
 
+### TextureFormat enum mismatch (fixed in gpu.zig — toNativeTextureFormat)
+`types.TextureFormat` keeps the numbers that the web bridge uses
+(`TEXTURE_FORMAT_MAP` in `backends/wasm/webgpu.ts`). From `rgb10a2unorm` on,
+they are not the `webgpu.h` numbers: `.rgba16float` is 0x1F, and 0x1F in
+`webgpu.h` is `RG32Sint`. Every native call uses `toNativeTextureFormat()`
+(the table is `types.nativeTextureFormat`). Do not use raw `@intFromEnum`
+for a texture format.
+
 ### CompareFunction enum mismatch (fixed in gpu.zig — createRenderPipeline)
 `types.CompareFunction` starts at 0 (`never=0, less=1, …, always=7`), but native
 `WGPUCompareFunction` has `undefined=0, never=1, less=2, …, always=8`. Additionally,
@@ -127,9 +135,18 @@ depth test rejects hidden fragments before they shade.
   `submit`). Draw with `sw_ui.draw.draw`. Read `u.semanticTree()` for assistive
   technology.
 - Focus: Tab and Shift+Tab in tree order. A list is one tab stop, and Up and
-  Down move inside it. Enter and Space activate. Escape sends `cancel`.
+  Down move inside it. A container with `Opts.arrows` is one tab stop, and
+  the arrow keys move by position in it (the on-screen keyboard). Enter and
+  Space activate. Escape sends `cancel`.
 - Text field: when `u.wantsTextInput()` changes, call `ctx.startTextInput()` or
-  `ctx.stopTextInput()`. The app owns the text (`sw_ui.TextValue`).
+  `ctx.stopTextInput()`. The app owns the text (`sw_ui.TextValue`), with its
+  caret and selection. The app maps Ctrl or Cmd with A, C, X, V to
+  `Keys.select_all`, `copy`, `cut`, `paste`. `Ui.clipboard` is null until the
+  platform has a clipboard: then the fields of one `Ui` share one inside it.
+- Widgets: `addSlider`, `beginScrollList` (wheel in `Input.wheel_y` lines,
+  drag with `Input.pointer_down`), `Opts.tooltip`, `beginScreen` (a modal
+  layer over its parent) with `ScreenStack` (it keeps the focus of each
+  screen), and `osk.Keyboard`. `flat2d` shows each one.
 - A string that the app gives to a node must stay valid until the next
   `begin`. `u.print` makes one in a per-frame buffer.
 - Web: `finish` sends the semantic tree to `backends/wasm/a11y.ts` when it
@@ -188,7 +205,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_math/src/quat.zig` | `Quat`: `fromAxisAngle`, `mul`, `rotate`, `slerp`, `toMat4` (same rotation direction as `Mat4.rotationX/Y/Z`) |
 | `libs/sw_math/src/camera.zig` | `camera.Controller`: first-person and third-person modes, look smoothing, a field-of-view boost. Pure: `update(input, dt, ray_test)` gives the view and projection matrices. The game gives a `RayTest` that stops the third-person eye at walls (REQ-CAMERA-001, REQ-CAMERA-002) |
 | `libs/sw_math/src/aabb.zig`, `ray.zig`, `plane.zig` | `Aabb` (closed box: union, intersect, contains, expand, expandTowards), `Ray` (against an `Aabb` or a `Plane`), `Plane` (signed distance, `classifyAabb` for culling) |
-| `libs/sw_gfx2d/src/batch.zig` | 2D shapes to vertices, indices and draw calls (no GPU code, unit tested) |
+| `libs/sw_gfx2d/src/batch.zig` | 2D shapes to vertices, indices and draw calls. `clip` cuts each shape and its uv to a rectangle (`Renderer.setClip`). No GPU code, unit tested |
 | `libs/sw_gfx2d/src/projection.zig` | Pixel projection, origin top left, and `dpi_scale` maths |
 | `libs/sw_gfx2d/src/renderer.zig` | `Renderer`: pipeline, buffers, textures, `updateTexture`, `flush` into a render pass |
 | `libs/sw_text/src/text.zig` | `TextRenderer`: glyph atlas pages filled on first use, `draw`, `drawWrapped`, `measure`. A font chain (`addFont`, `addBitmapFont`, `initBitmap`). Each line goes through `bidi` before it is drawn |
@@ -196,12 +213,14 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_text/src/bitmap_font.zig`, `face.zig` | `BitmapFont`: a glyph sheet in equal cells and a width table. `Face` is a TTF or a bitmap font. `ChainMetrics` finds the first face that has a code point |
 | `libs/sw_text/src/bidi.zig` | The Unicode bidirectional algorithm (UAX #9): levels, line reordering, mirroring. It passes all of `BidiTest.txt` and `BidiCharacterTest.txt`. Data in `bidi_tables.zig`, made by `libs/sw_text/tools/gen_bidi_tables.py`. No Arabic shaping |
 | `libs/sw_text/src/layout.zig` | Measuring and wrapping for any metrics type (no font, no GPU, unit tested) |
+| `libs/sw_text/src/caret.zig` | `CaretLayout`: the caret x at a byte offset, the offset at an x, and the box of each code point of one line after bidi reordering. `TextRenderer.caretLayout` makes one (no GPU, unit tested) |
 | `libs/sw_text/src/utf8.zig`, `atlas.zig` | UTF-8 decoder (bad bytes give U+FFFD) and the shelf packer for the atlas |
-| `libs/sw_ui/src/ui.zig` | `Ui`: immediate-mode tree (row, column, text, button, list, list item, text field, image), small layout (fixed, fit, fill, padding, gap, alignment), keyboard focus, events, and the semantic tree. No GPU or font code, unit tested |
+| `libs/sw_ui/src/ui.zig` | `Ui`: immediate-mode tree (row, column, text, button, list, scroll list, list item, text field, slider, image, screen, tooltips), small layout (fixed, fit, fill, padding, gap, alignment), keyboard focus, pointer drags, events, and the semantic tree. `TextValue` has the caret and selection. No GPU or font code, unit tested |
+| `libs/sw_ui/src/screen.zig`, `osk.zig` | `ScreenStack`: a stack of screens that gives the focus back on `pop`. `osk.Keyboard`: an on-screen keyboard of buttons that fills a `TextValue`. Unit tested |
 | `libs/sw_ui/src/semantic.zig` | `SemanticTree`: plain data (role, name, value, focused, disabled, selected, live, changed, bounds, children) for a backend such as the web screen-reader mirror |
 | `libs/sw_ui/src/web_mirror.zig` | Encodes the semantic tree for the web screen-reader mirror (`backends/wasm/a11y.ts`), and sends it only when it changes |
 | `libs/sw_app/src/web_entry.zig` | `exportWeb`: the `swindowzig_init` and `swindowzig_frame` exports for an app that uses `sw.run`. `webLogFn` for `std.log` on wasm |
-| `libs/sw_ui/src/draw.zig` | Draws the tree with sw_gfx2d and sw_text, with a focus ring. `measurer(&text_renderer)` gives the UI its text size |
+| `libs/sw_ui/src/draw.zig` | Draws the tree with sw_gfx2d and sw_text, with a focus ring and the tooltip. A scroll list cuts its children (`Renderer.setClip`). `measurer(&text_renderer)` gives the UI its text size and bidi caret positions |
 | `libs/sw_voxel/src/sw_voxel.zig` | Voxel chunks: storage, light, greedy mesher, World, frustum, chunk pipeline. The game gives the module `sw_voxel_content` (`content.zig` has the contract). `.claude/rules/voxel.md` has the file map |
 | `libs/sw_assets/src/assets.zig` | `loadBytes(allocator, path_or_url)` returns a `Request`. `request.poll()` gives `.pending`, `.bytes` or `.failed`, and never waits. Native: a thread reads a file in the base directory (`useDirectory`/`useDirectoryPath`), and an `http(s)://` URL fails with `UnsupportedUrl`. Web: `fetch` through `backends/wasm/assets.ts` |
 | `libs/sw_assets/src/zip.zig` | `zip.Archive.open(allocator, bytes, .{})` reads the central directory only (REQ-ASSETS-001). `read`/`readName`/`readInto` decompress one stored or deflate entry (`std.compress.flate`). Zip64, data descriptors, bytes before the archive. Fixtures in `libs/sw_assets/testdata` |
@@ -221,3 +240,6 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_render/src/plan.zig` | Frame graph rules: target sizes, pass order, attachment checks (no GPU code, unit tested) |
 | `libs/sw_render/src/ring.zig`, `upload.zig` | `UniformRing` (per-draw uniforms at dynamic offsets, one write per frame) and `Uploads` (staged buffer writes, merged). No new buffer each frame (REQ-GPU-006) |
 | `libs/sw_render/src/wgsl.zig` | The shared WGSL prefix (`sw_frame` at group 0) and `FrameUniforms` (REQ-GPU-007) |
+| `libs/sw_render/src/post.zig` | `PostChain`: the `rgba16float` scene target (`hdr`), then HDR effects, the tonemap, LDR effects and FXAA as frame graph passes. The last enabled link writes the screen (REQ-GPU-008, REQ-GPU-009) |
+| `libs/sw_render/src/post_plan.zig` | Post chain rules: the route of the links, the tonemap curves (CPU reference), the effect WGSL (`post.shader`). No GPU code, unit tested |
+| `libs/sw_gpu/src/fxaa.zig` | The FXAA source and quality presets. `shaderSource` sets the tokens and the bind group. `configureFXAA` and the post chain use it |
