@@ -105,6 +105,8 @@ const server = serve({
       '/storage': './backends/wasm/storage.ts',
       '/assets.js': './backends/wasm/assets.ts',
       '/assets': './backends/wasm/assets.ts',
+      '/files.js': './backends/wasm/files.ts',
+      '/files': './backends/wasm/files.ts',
       '/a11y.js': './backends/wasm/a11y.ts',
       '/a11y': './backends/wasm/a11y.ts',
       '/net.js': './backends/wasm/net.ts',
