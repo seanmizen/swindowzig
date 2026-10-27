@@ -11,6 +11,7 @@ pub const serialize = @import("serialize.zig");
 pub const record = @import("record.zig");
 pub const replay = @import("replay.zig");
 pub const tas = @import("tas.zig");
+pub const action = @import("action.zig");
 
 // Re-export commonly used types
 pub const Event = event.Event;
@@ -26,6 +27,12 @@ pub const Recorder = record.Recorder;
 pub const Replayer = replay.Replayer;
 pub const TasScript = tas.TasScript;
 pub const TasCommand = tas.TasCommand;
+pub const ActionMap = action.ActionMap;
+pub const ActionState = action.ActionState;
+pub const Binding = action.Binding;
+pub const BindingCapture = action.BindingCapture;
+pub const InputSource = action.Source;
+pub const MouseSettings = action.MouseSettings;
 
 test {
     std.testing.refAllDecls(@This());
