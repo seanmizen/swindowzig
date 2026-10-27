@@ -438,16 +438,24 @@ function createWebGPUImports(
 
       const shader = device.createShaderModule({ code });
 
-      // Log shader compilation errors
-      shader.getCompilationInfo().then((info) => {
-        for (const message of info.messages) {
-          if (message.type === 'error') {
-            console.error(
-              `[WebGPU] Shader compilation error: ${message.message}`,
-            );
+      // Log shader compilation errors.
+      shader
+        .getCompilationInfo()
+        .then((info) => {
+          for (const message of info.messages) {
+            if (message.type === 'error') {
+              console.error(
+                `[WebGPU] Shader compilation error: ${message.message}`,
+              );
+            }
           }
-        }
-      });
+        })
+        .catch(() => {
+          // If the page closes while this query is pending, Chromium rejects
+          // the promise with "Instance dropped error in getCompilationInfo".
+          // The page is gone, so there is nothing to log. Without this catch,
+          // the rejection is an unhandled page error.
+        });
 
       return createHandle(shader);
     },
