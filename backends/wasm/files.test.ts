@@ -286,3 +286,84 @@ describe('cache', () => {
     expect(t.outText()).toBe('InvalidName');
   });
 });
+
+// Voxel region files (REQ-VOXEL-011): sw_voxel saves 4 regions to the
+// OPFS cache and loads them again. `zig build region-check-wasm` builds
+// libs/sw_voxel/testing/region_wasm_check.zig.
+describe('voxel region files in OPFS', () => {
+  type RegionCheck = {
+    memory: WebAssembly.Memory;
+    check_out_ptr(): number;
+    check_out_len(): number;
+    check_region_save(): number;
+    check_region_save_poll(): number;
+    check_region_load(): number;
+    check_region_load_poll(): number;
+  };
+  let regionModule: WebAssembly.Module;
+
+  beforeAll(() => {
+    const prefix = mkdtempSync(join(tmpdir(), 'sw-region-'));
+    const build = Bun.spawnSync(
+      ['zig', 'build', 'region-check-wasm', '--prefix', prefix],
+      { cwd: root },
+    );
+    if (build.exitCode !== 0) throw new Error(build.stderr.toString());
+    regionModule = new WebAssembly.Module(
+      readFileSync(join(prefix, 'bin/region_check.wasm')),
+    );
+  }, 600_000);
+
+  test('a save and a load give the same blocks', async () => {
+    const opfs = fakeOpfs();
+    let memory: WebAssembly.Memory | null = null;
+    const files = createFileImports(
+      () => {
+        if (!memory) throw new Error('no memory');
+        return memory;
+      },
+      {
+        isSecureContext: () => true,
+        getDirectory: async () => opfs as unknown as FileSystemDirectoryHandle,
+      },
+    );
+    const wasm = new WebAssembly.Instance(regionModule, { files })
+      .exports as unknown as RegionCheck;
+    memory = wasm.memory;
+    const error = () =>
+      new TextDecoder().decode(
+        new Uint8Array(
+          wasm.memory.buffer,
+          wasm.check_out_ptr(),
+          wasm.check_out_len(),
+        ),
+      );
+    const until = async (poll: () => number): Promise<number> => {
+      for (let i = 0; i < 1000; i++) {
+        const rc = poll();
+        if (rc !== 1) return rc;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      throw new Error('the request did not finish');
+    };
+
+    // No file yet: the load gives "missing".
+    expect(wasm.check_region_load()).toBe(0);
+    expect(await until(() => wasm.check_region_load_poll())).toBe(3);
+
+    expect(wasm.check_region_save()).toBe(0);
+    const saved = await until(() => wasm.check_region_save_poll());
+    expect(saved === 2 ? '' : error()).toBe('');
+    const dir = opfs.dirs.get(CACHE_DIR) as { files: Map<string, Uint8Array> };
+    expect([...dir.files.keys()].sort()).toEqual([
+      'check.r.-1.-1',
+      'check.r.-1.0',
+      'check.r.0.-1',
+      'check.r.0.0',
+    ]);
+
+    expect(wasm.check_region_load()).toBe(0);
+    const loaded = await until(() => wasm.check_region_load_poll());
+    expect(loaded === 2 ? '' : `${loaded} ${error()}`).toBe('');
+  });
+});
