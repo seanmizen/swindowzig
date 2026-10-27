@@ -4,9 +4,11 @@
 // valid in non-uniform control flow (loops, conditionals).  No vertex buffer is
 // required; positions are generated from @builtin(vertex_index).
 //
-// Bind group 0:
-//   binding 0 — texture_2d<f32>  (scene colour, bgra8unorm, same size as swapchain)
+// Bind group __FXAA_GROUP__ (the engine sets the number, see `fxaa.zig`):
+//   binding 0 — texture_2d<f32>  (scene colour, same size as the output)
 //   binding 1 — sampler           (linear, clamp_to_edge)
+// `GPU.configureFXAA` uses group 0. The sw_render post chain uses group 1,
+// because group 0 holds the frame uniforms there.
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -28,19 +30,19 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     return out;
 }
 
-@group(0) @binding(0) var t_scene: texture_2d<f32>;
-@group(0) @binding(1) var s_scene: sampler;
+@group(__FXAA_GROUP__) @binding(0) var t_scene: texture_2d<f32>;
+@group(__FXAA_GROUP__) @binding(1) var s_scene: sampler;
 
 // ── FXAA constants ────────────────────────────────────────────────────────────
 //
 // EDGE_THRESHOLD, SUBPIX_CAP, and SEARCH_STEPS are QUALITY-TIER KNOBS.
-// The engine substitutes the `__FXAA_*__` placeholder tokens at pipeline
-// create time (see `configureFXAA` in `gpu.zig`) based on the selected
+// The engine substitutes the FXAA placeholder tokens at pipeline
+// create time (see `shaderSource` in `fxaa.zig`) based on the selected
 // `FxaaQuality` — low/medium/high maps to roughly FXAA 3.11 preset 12/25/39.
 //
 // Keep the placeholder strings unique; they are substituted via plain
 // text replacement, not a real preprocessor. Do not rename without also
-// updating `configureFXAA`.
+// updating `fxaa.zig`.
 
 // Minimum local contrast below which FXAA is skipped (protects dark areas).
 const EDGE_THRESHOLD_MIN: f32 = 0.0312;

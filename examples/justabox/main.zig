@@ -1,10 +1,17 @@
 // justabox - A single colored box that slowly spins.
 // Dead simple. MEGA KISS. No camera movement, no input, no complexity.
 //
-// It draws with the sw_render frame graph: one pass to the screen. The
-// frame uniforms of the WGSL prefix give the view and projection, and the
-// uniform ring gives the model matrix (REQ-GPU-005, REQ-GPU-006,
-// REQ-GPU-007).
+// It draws with the sw_render frame graph. The box pass draws into the HDR
+// target of the post chain, with linear colour. The chain then runs the
+// tonemap and FXAA, and FXAA writes the screen (REQ-GPU-008,
+// REQ-GPU-009). The frame uniforms of the WGSL prefix give the view and
+// projection, and the uniform ring gives the model matrix (REQ-GPU-005,
+// REQ-GPU-006, REQ-GPU-007).
+//
+// Native `--check`: no window. The example draws frames through the chain,
+// reads the screen back, and exits with 0 (pass) or 1 (fail). The
+// background must have the tonemapped clear colour of the CPU reference,
+// and FXAA must change the box edges and nothing else.
 const std = @import("std");
 const sw = @import("sw_app");
 const builtin = @import("builtin");
@@ -12,17 +19,34 @@ const sw_math = @import("sw_math");
 const gpu_mod = @import("sw_gpu");
 const sw_render = @import("sw_render");
 
-// Freestanding WASM has no std.process.Init, so the web build gets a main
-// with no parameters. The native build passes Io to the app (ctx.io).
+pub const std_options: std.Options = .{
+    .logFn = if (builtin.cpu.arch.isWasm()) sw.webLogFn else std.log.defaultLog,
+};
+
 pub const main = if (builtin.cpu.arch.isWasm()) mainWasm else mainNative;
 
-fn mainWasm() !void {
-    try sw.run(config, Callbacks);
+// The browser does not call main. backends/wasm/loader.ts calls the exports
+// that exportWeb makes.
+fn mainWasm() void {}
+
+comptime {
+    if (builtin.cpu.arch.isWasm()) sw.exportWeb(config, Callbacks);
 }
+
+var check_mode = false;
 
 fn mainNative(init: std.process.Init) !void {
     var c = config;
     c.io = init.io;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--check")) {
+            check_mode = true;
+            c.headless = true;
+            c.headless_gpu = true;
+            c.tick_timing = .unlimited;
+        }
+    }
     try sw.run(c, Callbacks);
 }
 
@@ -89,6 +113,7 @@ var sorted_indices: [36]u16 = undefined;
 var face_order: [num_faces]usize = .{ 0, 1, 2, 3, 4, 5 };
 
 var graph: ?sw_render.FrameGraph = null;
+var post: ?sw_render.PostChain = null;
 var pipeline: ?sw.gpu_types.RenderPipeline = null;
 var vertex_buffer: ?gpu_mod.Buffer = null;
 var index_buffer: ?gpu_mod.Buffer = null;
@@ -103,7 +128,7 @@ var last_frame_time: u64 = 0;
 /// The per-draw uniforms, from the uniform ring.
 const Draw = extern struct { model: [16]f32 };
 
-const shader_code = sw_render.wgsl.shader(
+const shader_code = sw_render.wgsl.shader(std.fmt.comptimePrint("const hdr_boost: f32 = {d:.1};\n", .{hdr_boost}) ++
     \\struct Draw { model: mat4x4<f32> }
     \\@group(1) @binding(0) var<uniform> draw: Draw;
     \\
@@ -123,9 +148,18 @@ const shader_code = sw_render.wgsl.shader(
     \\}
     \\
     \\@fragment fn fs_main(in: VSOut) -> @location(0) vec4f {
-    \\    return vec4f(in.color, 1.0);
+    \\    // The HDR target holds linear colour. The face colours are
+    \\    // display colours, so decode them, and make them brighter than 1.
+    \\    return vec4f(pow(in.color, vec3f(2.2)) * hdr_boost, 1.0);
     \\}
 );
+
+/// The face colours are multiplied by this value in the HDR target. The
+/// tonemap maps the values over 1 back into the display range.
+const hdr_boost = 2.0;
+
+/// The clear colour of the HDR target, in linear colour.
+const clear_linear: [3]f32 = .{ 0.006, 0.006, 0.012 };
 
 const Callbacks = struct {
     pub fn init(ctx: *sw.Context) !void {
@@ -147,14 +181,17 @@ const Callbacks = struct {
         });
         gpu.writeBuffer(index_buffer.?, 0, std.mem.sliceAsBytes(&sorted_indices));
 
-        // The frame graph: one pass that clears the screen and draws the box.
+        // The frame graph: one pass that clears the HDR target and draws
+        // the box. The post chain then runs the tonemap and FXAA.
         graph = try sw_render.FrameGraph.init(ctx.allocator(), gpu, .{ .ring_capacity = 4096 });
         const g = &graph.?;
+        post = try sw_render.PostChain.init(ctx.allocator(), g, .{ .fxaa = .medium });
+        const p = &post.?;
         try g.addPass(.{
             .name = "box",
             .attachments = .{ .colors = &.{.{
-                .target = .screen,
-                .clear_value = .{ .r = 0.08, .g = 0.08, .b = 0.12, .a = 1.0 },
+                .target = p.hdr,
+                .clear_value = .{ .r = clear_linear[0], .g = clear_linear[1], .b = clear_linear[2], .a = 1.0 },
             }} },
             .callback = .plain(drawBox),
         });
@@ -196,7 +233,7 @@ const Callbacks = struct {
                 .module = &shader,
                 .entry_point = "fs_main",
                 .targets = &[_]sw.gpu_types.ColorTargetState{.{
-                    .format = .bgra8unorm,
+                    .format = p.hdr_format,
                 }},
             },
             .primitive = .{
@@ -216,6 +253,8 @@ const Callbacks = struct {
 
     pub fn tick(ctx: *sw.Context) !void {
         _ = ctx;
+        // The check draws a box that does not move.
+        if (check_mode) return;
         angle += 0.01; // ~0.6 deg/frame at 60hz = one full rotation per ~10 seconds
     }
 
@@ -226,7 +265,7 @@ const Callbacks = struct {
 
         // Frame limiting
         const now = ctx.timeNs();
-        if (last_frame_time > 0) {
+        if (last_frame_time > 0 and !check_mode) {
             const elapsed = now - last_frame_time;
             if (elapsed < frame_time_ns) {
                 if (ctx.io) |io| io.sleep(.fromNanoseconds(frame_time_ns - elapsed), .awake) catch {};
@@ -254,18 +293,98 @@ const Callbacks = struct {
         buildIndices();
         try g.uploads.write(index_buffer.?, 0, std.mem.sliceAsBytes(&sorted_indices));
 
-        // Render: the graph runs the box pass and submits.
+        // Render: the graph runs the box pass and the post chain, and
+        // submits.
         if (try g.execute(.{ .view = view.data, .proj = proj.data, .view_proj = proj.mul(view).data })) {
+            if (comptime !builtin.cpu.arch.isWasm()) {
+                if (check_mode) try checkFrame(ctx);
+            }
             gpu.present();
         }
     }
 
     pub fn shutdown(ctx: *sw.Context) !void {
         _ = ctx;
+        if (post) |*p| p.deinit();
+        post = null;
         if (graph) |*g| g.deinit();
         graph = null;
     }
 };
+
+// =============================================================================
+// Native check: the frame after the post chain
+// =============================================================================
+
+var check_frame: u32 = 0;
+var with_fxaa: ?[]u8 = null;
+
+/// Frame 3 reads the screen with FXAA on, then turns FXAA off. Frame 4
+/// reads the screen with FXAA off, compares the two, and exits.
+fn checkFrame(ctx: *sw.Context) !void {
+    check_frame += 1;
+    if (check_frame < 3) return;
+    const allocator = ctx.allocator();
+    const gpu = ctx.gpu();
+    const pixels = try gpu.captureFrame(allocator);
+    if (check_frame == 3) {
+        with_fxaa = pixels;
+        try post.?.setFxaa(null);
+        return;
+    }
+    defer allocator.free(pixels);
+    const ok = comparePixels(with_fxaa.?, pixels, gpu.getSurfaceWidth(), gpu.getSurfaceHeight());
+    allocator.free(with_fxaa.?);
+    std.process.exit(if (ok) 0 else 1);
+}
+
+fn comparePixels(fxaa: []const u8, plain: []const u8, width: u32, height: u32) bool {
+    var ok = true;
+    // The background: the clear colour after the tonemap (ACES, exposure
+    // 1, sRGB encode), from the CPU reference. The capture is BGRA.
+    const tonemap: sw_render.Tonemap = .{};
+    var want: [3]u8 = undefined;
+    for (0..3) |c| {
+        const v = sw_render.post.tonemapChannel(clear_linear[c], tonemap, true);
+        want[c] = @intFromFloat(@round(v * 255.0));
+    }
+    const corner = plain[0..4];
+    const got: [3]u8 = .{ corner[2], corner[1], corner[0] };
+    for (0..3) |c| {
+        const d = @abs(@as(i32, got[c]) - @as(i32, want[c]));
+        if (d > 2) {
+            std.log.err("justabox: background is {any}, the tonemapped clear colour is {any}", .{ got, want });
+            ok = false;
+            break;
+        }
+    }
+    if (!std.mem.eql(u8, fxaa[0..4], corner)) {
+        std.log.err("justabox: FXAA changed the flat background", .{});
+        ok = false;
+    }
+
+    // The box: the centre pixel is not the background.
+    const centre = ((height / 2) * width + width / 2) * 4;
+    if (std.mem.eql(u8, plain[centre..][0..4], corner)) {
+        std.log.err("justabox: the box is not at the centre of the screen", .{});
+        ok = false;
+    }
+
+    // FXAA changes some pixels (the box edges), and few of them.
+    var changed: usize = 0;
+    var i: usize = 0;
+    while (i < plain.len) : (i += 4) {
+        if (!std.mem.eql(u8, plain[i..][0..3], fxaa[i..][0..3])) changed += 1;
+    }
+    const total = @as(usize, width) * height;
+    std.log.info("justabox: FXAA changed {d} of {d} pixels", .{ changed, total });
+    if (changed == 0 or changed * 20 > total) {
+        std.log.err("justabox: FXAA must change the box edges only", .{});
+        ok = false;
+    }
+    std.log.info("justabox: check {s}", .{if (ok) "passed" else "FAILED"});
+    return ok;
+}
 
 /// The box pass: the frame graph began the render pass on the screen.
 fn drawBox(pass: *sw_render.Pass) !void {
