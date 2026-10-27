@@ -101,7 +101,7 @@ swindowzig/
 │   │   ├── native_webgpu.zig    # C bindings for wgpu-native
 │   │   ├── types.zig            # Shared descriptor types
 │   │   └── web_bridge.zig       # WASM JS bindings
-│   ├── sw_math/        # Vec3, Mat4, perspective(), lookAt()
+│   ├── sw_math/        # Vec2-4, Mat4, Quat, Aabb, Ray, Plane, perspective(), lookAt()
 │   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
 │   ├── sw_assets/      # loadBytes (async, native + fetch) and PNG decode (stb_image)
 │   ├── sw_text/        # Text: TTF and bitmap font chain, bidi, atlas, measure, wrap, draw
