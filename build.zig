@@ -345,6 +345,31 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_unit_tests.step);
     }
 
+    // sw_net: the frame codec, the handshake, the URL parser, the backoff,
+    // and the native client against a local server that the test starts.
+    const net_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_net/src/net_root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(net_tests).step);
+    // The web build of sw_net must compile and link for wasm32-freestanding.
+    // backends/wasm/websocket.test.ts runs the same program with the bridge.
+    const net_wasm = b.addExecutable(.{
+        .name = "net_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_net/src/wasm_check.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    net_wasm.root_module.addImport("sw_net", web_libs.net);
+    net_wasm.entry = .disabled;
+    net_wasm.rdynamic = true;
+    test_step.dependOn(&net_wasm.step);
+
     // sw_platform input settings: a save and a load through the file store.
     // The test makes an sw_core ActionMap.
     const input_settings_tests = b.addTest(.{
@@ -768,6 +793,7 @@ const Libs = struct {
     text: *std.Build.Module,
     ui: *std.Build.Module,
     assets: *std.Build.Module,
+    net: *std.Build.Module,
     voxel: *std.Build.Module,
     render: *std.Build.Module,
     app: *std.Build.Module,
@@ -799,6 +825,8 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     const math = libModule(b, exported, "sw_math", "libs/sw_math/src/math_root.zig");
     const assets = libModule(b, exported, "sw_assets", "libs/sw_assets/src/assets_root.zig");
     addAssetsC(b, assets);
+    // sw_net: WebSocket client. No other library module.
+    const net = libModule(b, exported, "sw_net", "libs/sw_net/src/net_root.zig");
     const gfx2d = libModule(b, exported, "sw_gfx2d", "libs/sw_gfx2d/src/gfx2d_root.zig");
     gfx2d.addImport("sw_gpu", gpu);
     gfx2d.addImport("sw_assets", assets);
@@ -822,7 +850,7 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     app.addImport("sw_gpu", gpu);
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
-    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .text = text, .ui = ui, .voxel = voxel, .render = render, .app = app };
+    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .net = net, .text = text, .ui = ui, .voxel = voxel, .render = render, .app = app };
 }
 
 /// Compile stb_vorbis (libs/sw_audio/c) into `module`. The file needs no C

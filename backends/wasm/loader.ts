@@ -33,6 +33,7 @@ import { attachFileDrop, createFileImports } from './files';
 import { createNetImports } from './net';
 import { createStorageImports } from './storage';
 import { type GPUBridge, initWebGPU } from './webgpu';
+import { createWebSocketImports } from './websocket';
 import {
   CursorStyle,
   createWindowImports,
@@ -287,6 +288,8 @@ export function createImports(
     a11y: createA11yImports(getMemory),
     // Files from the player and the OPFS cache (sw_assets files and cache).
     files: createFileImports(getMemory),
+    // The WebSocket of libs/sw_net (websocket.ts). The game polls the events.
+    sw_net: createWebSocketImports(getMemory),
   } as WebAssembly.Imports;
 }
 
