@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 9. Skipped: 3. Not started: 3.
+- Done: 10. Skipped: 3. Not started: 2.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -321,3 +321,40 @@ ticket of #102, in the order of the batch.
     walk, pure and tested, plus the box culling call. Part 2: draw
     ranges for each section in the renderer, and the cave benchmark.
 - Risks: none. No code changed.
+
+## #55 chunk streaming with priority
+
+- Status: done
+- Commit: see `git log --grep SWZ-55`
+- What changed:
+  - The scheduler already had the load and unload radius with one band
+    of hysteresis, and the classes sim, edit, view and other. The batch
+    did not change these.
+  - New: `sw_voxel.streaming.pickUploads` sorts the waiting mesh uploads
+    (in view first, then nearest) and keeps a number of them. The voxel
+    demo uploads at most 24 meshes in one frame during gameplay. The
+    loading screen has no limit.
+  - The scheduler gives the class sim to the light of the ring around
+    the simulation radius and to the blocks to 4 chunks from the player.
+    Before, only the jobs inside the simulation radius had the class.
+- What ran: the voxel gate. Goldens 10 passed, `stage_match=yes`, the
+  headless TAS and the smoke test passed.
+- New test: `scheduler_test.zig` moves the camera one chunk east every 2
+  frames for 60 frames, with about 12 jobs each frame. A chunk in the 3
+  by 3 square around the player has no mesh for at most 2 frames.
+  Measured, before the class change: holes of 40 frames at 12 jobs each
+  frame. After: 0 frames at 12 jobs, and long holes again at 9 jobs or
+  fewer.
+- Not run here:
+  - A play test with a real window. The upload limit is a constant, not
+    a measured time, because the upload time on lavapipe is not the time
+    on a real GPU.
+- Expected changes:
+  - quad hash: no change
+  - goldens: none
+- CI changes needed: none. `zig build test` runs the new tests.
+- Requirements: REQ-VOXEL-017, REQ-VOXEL-018
+- Open questions: should the upload limit be a time (for example 2 ms)
+  instead of a count? A time needs a GPU timestamp of each upload.
+- Risks: during gameplay, a burst of new meshes takes more frames to show.
+  The meshes in view show first.

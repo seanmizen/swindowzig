@@ -138,9 +138,11 @@ test "scheduler: jobs run in priority order" {
         try std.testing.expect(@backingInt(j.class) >= @backingInt(prev.class));
         if (j.class == prev.class) try std.testing.expect(j.dist_sq >= prev.dist_sq);
     }
-    // 3 before 4: a chunk in view comes before a nearer chunk out of view.
-    const in_view = indexOf(q, .generate, 4, 0).?;
-    const out_of_view = indexOf(q, .generate, -3, 0).?;
+    // 3 before 4: a chunk in view comes before a chunk out of view at the
+    // same distance. The blocks to 4 chunks from the player feed the
+    // simulation radius, so these chunks are 5 chunks away.
+    const in_view = indexOf(q, .generate, 5, 0).?;
+    const out_of_view = indexOf(q, .generate, -5, 0).?;
     try std.testing.expectEqual(scheduler_mod.Class.view, q[in_view].class);
     try std.testing.expectEqual(scheduler_mod.Class.other, q[out_of_view].class);
     try std.testing.expect(in_view < out_of_view);
@@ -152,14 +154,15 @@ test "scheduler: jobs run in priority order" {
     f.sched.setRenderDistance(&f.world, 4);
     try f.sched.plan(&f.world);
     const q2 = f.sched.queue.items;
-    // The light of the 3×3 around (2, 0) is stale. The chunks with cx = 1
-    // are in the simulation radius (class 1). The others are class 2.
+    // The light of the 3×3 around (2, 0) is stale. The chunks with cx <= 2
+    // give light to the meshes of the simulation radius (class 1). The
+    // others are class 2.
     var stale: usize = 0;
     for (q2, 0..) |j, i| {
         if (j.class != .sim and j.class != .edit) continue;
         try std.testing.expectEqual(scheduler_mod.Stage.light, j.stage);
         try std.testing.expect(@abs(j.cx - 2) <= 1 and @abs(j.cz) <= 1);
-        try std.testing.expectEqual(if (j.cx == 1) scheduler_mod.Class.sim else scheduler_mod.Class.edit, j.class);
+        try std.testing.expectEqual(if (j.cx <= 2) scheduler_mod.Class.sim else scheduler_mod.Class.edit, j.class);
         try std.testing.expectEqual(stale, i);
         stale += 1;
     }
@@ -314,4 +317,46 @@ test "scheduler: the ready check and the simulation radius" {
     defer want.deinit(a);
     const have = &f.world.get(5, -3).?.chunk.blocks;
     for (0..chunk_mod.BLOCKS_PER_CHUNK) |i| try std.testing.expectEqual(want.get(i), have.get(i));
+}
+
+/// A clock that moves one tick at each read. The Inline executor reads it
+/// four times for each job, so a budget of 4 * n ticks runs about n jobs.
+var ticks: u64 = 0;
+fn countingClock() u64 {
+    ticks += 1;
+    return ticks;
+}
+
+test "scheduler: a fast camera leaves no long hole near the player (REQ-VOXEL-018)" {
+    const a = std.testing.allocator;
+    const r = 4;
+    const f = try Fixture.init(a, r);
+    defer f.deinit(a);
+    try f.idle();
+    // The camera moves one chunk east every 2 frames, and each frame runs
+    // about 12 jobs: less than all the work of the render distance, so the
+    // far chunks fall behind. A hole is a chunk in the 3 by 3 square around
+    // the player with no current mesh. The light and the blocks ahead of
+    // the square have the class of the simulation, so a hole stays short.
+    // With fewer than 10 jobs each frame, the holes get longer.
+    const jobs_per_frame = 12;
+    const max_hole_frames = 2;
+    var hole: [3][3]u32 = @splat(@splat(0));
+    var worst: u32 = 0;
+    var frame: i32 = 0;
+    while (frame < 60) : (frame += 1) {
+        const cx = @divTrunc(frame, 2);
+        f.sched.setCenter(cx, 0);
+        _ = try f.exec.runFrame(&f.sched, &f.world, countingClock, ticks + 4 * jobs_per_frame);
+        for (0..3) |i| for (0..3) |j| {
+            const x = cx + @as(i32, @intCast(i)) - 1;
+            const z = @as(i32, @intCast(j)) - 1;
+            const meshed = if (f.world.get(x, z)) |lc| f.sched.meshCurrent(&f.world, lc) else false;
+            hole[i][j] = if (meshed) 0 else hole[i][j] + 1;
+            worst = @max(worst, hole[i][j]);
+        };
+    }
+    try std.testing.expect(worst <= max_hole_frames);
+    try f.idle();
+    try f.expectDesiredMeshes();
 }

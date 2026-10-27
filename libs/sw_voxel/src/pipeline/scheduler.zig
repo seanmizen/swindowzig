@@ -88,7 +88,18 @@ pub const Region = struct {
     }
 
     pub fn sim(dx: i32, dz: i32) bool {
-        return shrink(dx, SIM_RADIUS) == 0 and shrink(dz, SIM_RADIUS) == 0;
+        return simFeed(dx, dz, 0);
+    }
+
+    /// The chunk is in the simulation square made larger by `slack`. The
+    /// mesh of a chunk in the square needs the light of the next ring
+    /// (slack 1), and that light needs the blocks of the ring after it
+    /// (slack 2). The plan gives these jobs the class of the simulation,
+    /// so a fast player does not wait for the far chunks. The blocks use
+    /// slack 3: one more ring starts before the player gets near it
+    /// (REQ-VOXEL-018).
+    pub fn simFeed(dx: i32, dz: i32, slack: i32) bool {
+        return shrink(dx, SIM_RADIUS + slack) == 0 and shrink(dz, SIM_RADIUS + slack) == 0;
     }
 
     /// Main needs the blocks of the chunk (C6). `extra` makes the square
@@ -715,11 +726,11 @@ pub const Scheduler = struct {
                     const class: Class = if (sim) .sim else if (lc.mesh_inputs != null) .edit else if (inView(cells, i, side, 0)) .view else .other;
                     try self.queue.append(self.allocator, .{ .stage = .mesh, .cx = cx, .cz = cz, .class = class, .dist_sq = d2 });
                 } else if (Region.light(dx, dz, r) and !c.light_ok and self.ring(cells, i, side, .blocks)) {
-                    const class: Class = if (sim) .sim else if (lc.light_inputs != null) .edit else if (inView(cells, i, side, 1)) .view else .other;
+                    const class: Class = if (Region.simFeed(dx, dz, 1)) .sim else if (lc.light_inputs != null) .edit else if (inView(cells, i, side, 1)) .view else .other;
                     try self.queue.append(self.allocator, .{ .stage = .light, .cx = cx, .cz = cz, .class = class, .dist_sq = d2 });
                 }
             } else if (Region.blocks(dx, dz, r)) {
-                const class: Class = if (sim) .sim else if (inView(cells, i, side, 2)) .view else .other;
+                const class: Class = if (Region.simFeed(dx, dz, 3)) .sim else if (inView(cells, i, side, 2)) .view else .other;
                 try self.queue.append(self.allocator, .{ .stage = .generate, .cx = cx, .cz = cz, .class = class, .dist_sq = d2, .want_blocks = Region.prefetch(dx, dz, 0) });
             }
             // C6: main gets the blocks of the prefetch radius from a worker.

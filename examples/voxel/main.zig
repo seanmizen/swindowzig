@@ -235,6 +235,7 @@ const VoxelVertex = mesher_mod.VoxelVertex;
 const world_mod = @import("sw_voxel").world;
 const world_gen = @import("voxel_content").world_gen;
 const clock = @import("sw_voxel").clock;
+const streaming = @import("sw_voxel").streaming;
 const stages = @import("sw_voxel").stages;
 const scheduler_mod = @import("sw_voxel").scheduler;
 const exec_inline = @import("sw_voxel").exec_inline;
@@ -4104,15 +4105,42 @@ fn logGpuMeshStats() void {
 }
 
 /// Upload the new mesh of each chunk that has one (`LoadedChunk.upload`).
+/// The most mesh uploads in one frame during gameplay (REQ-VOXEL-017). The
+/// loading screen has no limit. The chunks in view and the near chunks
+/// upload first, and the others wait for the next frame.
+const MAX_UPLOADS_PER_FRAME: usize = 24;
+
 fn uploadNewMeshes(g: *gpu_mod.GPU) void {
     var upload_us: i128 = 0;
     var upload_chunks: usize = 0;
+    var candidates: std.ArrayList(streaming.Candidate) = .empty;
+    defer candidates.deinit(state.allocator);
+    var keys: std.ArrayList(world_mod.ChunkKey) = .empty;
+    defer keys.deinit(state.allocator);
+    const pcx, const pcz = playerChunk();
+    const view = captureFrustum();
     var it = state.world.chunks.iterator();
     while (it.next()) |entry| {
         const lc = entry.value_ptr.*;
         if (lc.upload == null) continue;
+        const dx = lc.cx - pcx;
+        const dz = lc.cz - pcz;
+        candidates.append(state.allocator, .{
+            .in_view = chunkInView(&view, lc.cx, lc.cz),
+            .dist_sq = dx * dx + dz * dz,
+            .index = keys.items.len,
+        }) catch break;
+        keys.append(state.allocator, entry.key_ptr.*) catch {
+            _ = candidates.pop();
+            break;
+        };
+    }
+    const budget: ?usize = if (state.world_loading) null else MAX_UPLOADS_PER_FRAME;
+    for (streaming.pickUploads(candidates.items, budget)) |c| {
+        const key = keys.items[c.index];
+        const lc = state.world.chunks.get(key) orelse continue;
         const t0 = perfNowNs();
-        const gop = state.chunk_gpu.getOrPut(entry.key_ptr.*) catch continue;
+        const gop = state.chunk_gpu.getOrPut(key) catch continue;
         if (!gop.found_existing) gop.value_ptr.* = .{};
         uploadChunkMesh(g, lc, gop.value_ptr) catch |err| {
             // The bytes stay, and the next frame tries again.

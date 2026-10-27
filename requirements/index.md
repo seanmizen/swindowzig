@@ -84,6 +84,8 @@
 | [`REQ-VOXEL-014`](voxel.md#req-voxel-014--a-fluid-surface-has-a-height-at-each-corner) | A fluid surface has a height at each corner | active | functional | P2 | agent:SWZ-34 |
 | [`REQ-VOXEL-015`](voxel.md#req-voxel-015--two-cells-of-one-fluid-have-no-face-between-them) | Two cells of one fluid have no face between them | active | functional | P2 | agent:SWZ-34 |
 | [`REQ-VOXEL-016`](voxel.md#req-voxel-016--the-texture-of-a-fluid-surface-follows-the-flow) | The texture of a fluid surface follows the flow | active | functional | P3 | agent:SWZ-34 |
+| [`REQ-VOXEL-017`](voxel.md#req-voxel-017--the-mesh-uploads-of-one-frame-have-a-limit-and-a-priority) | The mesh uploads of one frame have a limit and a priority | active | quality | P2 | agent:SWZ-55 |
+| [`REQ-VOXEL-018`](voxel.md#req-voxel-018--a-fast-player-has-no-long-hole-near-the-player) | A fast player has no long hole near the player | active | quality | P2 | agent:SWZ-55 |
 
 ## Dependency graph
 
@@ -168,6 +170,8 @@ graph TD
   REQ_VOXEL_014["REQ-VOXEL-014<br/>A fluid surface has a height at each corner"]
   REQ_VOXEL_015["REQ-VOXEL-015<br/>Two cells of one fluid have no face between them"]
   REQ_VOXEL_016["REQ-VOXEL-016<br/>The texture of a fluid surface follows the flow"]
+  REQ_VOXEL_017["REQ-VOXEL-017<br/>The mesh uploads of one frame have a limit and a priority"]
+  REQ_VOXEL_018["REQ-VOXEL-018<br/>A fast player has no long hole near the player"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001

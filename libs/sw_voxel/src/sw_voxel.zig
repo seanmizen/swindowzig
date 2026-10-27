@@ -55,6 +55,8 @@ pub const exec_inline = @import("pipeline/exec_inline.zig");
 pub const exec_threads = if (builtin.cpu.arch == .wasm32) struct {} else @import("pipeline/exec_threads.zig");
 /// The WorkerPool executor: the main side of the Web Worker pool (C9).
 pub const exec_web = @import("pipeline/exec_web.zig");
+/// The upload budget of the chunk meshes (REQ-VOXEL-017).
+pub const streaming = @import("pipeline/streaming.zig");
 /// The exports of chunks.wasm, the chunk worker of the web build (C9).
 pub const chunk_worker = @import("pipeline/chunk_worker_main.zig");
 
@@ -79,4 +81,5 @@ test {
     _ = exec_inline;
     _ = exec_threads;
     _ = exec_web;
+    _ = streaming;
 }

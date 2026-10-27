@@ -360,3 +360,41 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   - Test — `libs/sw_voxel/src/fluid.zig` › "a cell next to a lower cell
     has a flowing top in the direction of the drop (REQ-VOXEL-016)"
 - **Relations:** refines REQ-VOXEL-014
+
+## REQ-VOXEL-017 — The mesh uploads of one frame have a limit and a priority
+
+- **Status:** active
+- **Source:** agent:SWZ-55
+- **Origin:** #55
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** During gameplay, the voxel demo shall upload at most
+  `MAX_UPLOADS_PER_FRAME` chunk meshes in one frame, the chunks in view
+  first and then the nearest chunks.
+- **Rationale:** One install of the chunk pipeline can give many new
+  meshes. Each mesh is a GPU upload, and many uploads in one frame make
+  a frame spike. The meshes that wait upload in the next frames. The
+  loading screen has no limit.
+- **Verification:** Test — `libs/sw_voxel/src/pipeline/streaming.zig` ›
+  "streaming: the upload budget keeps the chunks in view, nearest first
+  (REQ-VOXEL-017)"
+- **Relations:** none
+
+## REQ-VOXEL-018 — A fast player has no long hole near the player
+
+- **Status:** active
+- **Source:** agent:SWZ-55
+- **Origin:** #55
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** When the chunk pipeline runs fewer jobs in one frame
+  than the render distance needs, the scheduler shall give the jobs for
+  the meshes of the simulation radius the first class.
+- **Rationale:** The mesh of a chunk near the player needs the light of
+  the next ring and the blocks of the ring after it. When only the mesh
+  has the first class, a fast player gets to the chunk before its light
+  and blocks. The blocks start one ring early.
+- **Verification:** Test — `examples/voxel/scheduler_test.zig` ›
+  "scheduler: a fast camera leaves no long hole near the player
+  (REQ-VOXEL-018)"
+- **Relations:** none
