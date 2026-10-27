@@ -4,14 +4,14 @@
 Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS/Linux).
 
 <!-- progress:start -->
-![engine progress](https://img.shields.io/badge/engine-33.3%25-1D76DB)
+![engine progress](https://img.shields.io/badge/engine-35.9%25-1D76DB)
 
-**Engine: 33.3% complete** `███████░░░░░░░░░░░░░` (13 of 39 issues)
+**Engine: 35.9% complete** `███████░░░░░░░░░░░░░` (14 of 39 issues)
 
 | State | Issues |
 |---|---|
-| done | 13 |
-| in-review | 2 |
+| done | 14 |
+| in-review | 1 |
 | in-progress | 3 |
 | ready | 15 |
 | backlog | 6 |
