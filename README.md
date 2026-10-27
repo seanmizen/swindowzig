@@ -11,10 +11,10 @@ Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS
 | State | Issues |
 |---|---|
 | done | 23 |
-| in-review | 1 |
+| in-review | 2 |
 | in-progress | 2 |
 | ready | 11 |
-| backlog | 2 |
+| backlog | 1 |
 
 A GitHub workflow writes this block from the
 [`engine` issues](https://github.com/seanmizen/swindowzig/issues?q=label%3Aengine).
