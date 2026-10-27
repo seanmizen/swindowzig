@@ -2,7 +2,8 @@
 //! 16 × 16 × 16 block sections, skylight and block light), the greedy
 //! mesher and the model mesher, the pure chunk stages, the chunk scheduler,
 //! the chunk protocol, the executors (Inline, ThreadPool and the Web Worker
-//! pool), the frustum cull, and the collision of boxes and rays.
+//! pool), the frustum cull, the collision of boxes and rays, and the region
+//! files that save and load the blocks.
 //!
 //! sw_voxel knows no block names and no terrain. The game gives them in a
 //! content module: `content.zig` gives the contract and the build wiring.
@@ -25,6 +26,9 @@ pub const model = @import("model.zig");
 pub const models = @import("models.zig");
 /// The chunks of main, with versions and cross-chunk light.
 pub const world = @import("world.zig");
+/// Region files: the compressed blocks of a square of chunks, for save
+/// and load (REQ-VOXEL-011).
+pub const region = @import("region.zig");
 /// The chunk cull: cone, sphere and frustum.
 pub const frustum = @import("frustum.zig");
 /// Collision: the boxes of each block, moving boxes with step-up, and the
@@ -61,6 +65,7 @@ test {
     _ = model;
     _ = models;
     _ = world;
+    _ = region;
     _ = frustum;
     _ = collision;
     _ = stages;

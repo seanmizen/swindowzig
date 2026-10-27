@@ -622,11 +622,50 @@ pub fn build(b: *std.Build) void {
         test_dims.addOption(i32, "min_y", d[0]);
         test_dims.addOption(u32, "height", d[1]);
         voxel_lib_tests.content.addImport("sw_voxel_test_dims", test_dims.createModule());
+        // The committed version 1 region file for this world height
+        // (REQ-VOXEL-012).
+        voxel_lib_tests.voxel.addAnonymousImport("region_v1_fixture", .{
+            .root_source_file = b.path(std.fmt.comptimePrint("libs/sw_voxel/testing/region_v1_{d}_{d}.bin", .{ d[0], d[1] })),
+        });
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{
             .root_module = voxel_lib_tests.voxel,
             .name = std.fmt.comptimePrint("sw_voxel_{d}_{d}", .{ d[0], d[1] }),
         })).step);
+        // Region files through the native folder of sw_assets.cache
+        // (REQ-VOXEL-011). One world height is sufficient.
+        if (d[0] == 0) {
+            const region_store_tests = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("libs/sw_voxel/testing/region_store_test.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .link_libc = true,
+                }),
+            });
+            region_store_tests.root_module.addImport("sw_voxel", voxel_lib_tests.voxel);
+            region_store_tests.root_module.addImport("sw_assets", web_libs.assets);
+            test_step.dependOn(&b.addRunArtifact(region_store_tests).step);
+        }
     }
+    // Region files in wasm through the OPFS cache of sw_assets
+    // (REQ-VOXEL-011). zig build test compiles it.
+    // backends/wasm/files.test.ts runs it with a fake OPFS.
+    const region_wasm = b.addExecutable(.{
+        .name = "region_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_voxel/testing/region_wasm_check.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    addVoxelDemo(region_wasm.root_module, web_voxel);
+    region_wasm.root_module.addImport("sw_assets", web_libs.assets);
+    region_wasm.entry = .disabled;
+    region_wasm.rdynamic = true;
+    region_wasm.stack_size = 16 * 1024 * 1024;
+    test_step.dependOn(&region_wasm.step);
+    const region_wasm_step = b.step("region-check-wasm", "Build zig-out/bin/region_check.wasm: the region file test of backends/wasm/files.test.ts");
+    region_wasm_step.dependOn(&b.addInstallArtifact(region_wasm, .{}).step);
     // The demo content (examples/voxel/content.zig): the GenConfig bytes
     // and the world_gen tests.
     const demo_content_tests = addVoxel(b, web_libs, .{
