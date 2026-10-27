@@ -30,6 +30,8 @@
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
 | [`REQ-INPUT-004`](input.md#req-input-004--saved-input-settings-load-in-a-newer-version) | Saved input settings load in a newer version | active | functional | P2 | agent:SWZ-49 |
+| [`REQ-INPUT-005`](input.md#req-input-005--gamepads-are-recorded-input-that-binds-to-actions) | Gamepads are recorded input that binds to actions | active | functional | P2 | agent:SWZ-50 |
+| [`REQ-INPUT-006`](input.md#req-input-006--old-recordings-still-play) | Old recordings still play | active | constraint | P1 | agent:SWZ-50 |
 | [`REQ-PLATFORM-001`](platform.md#req-platform-001--a-refused-pointer-lock-does-not-stop-the-game) | A refused pointer lock does not stop the game | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-002`](platform.md#req-platform-002--clipboard-results-arrive-as-events) | Clipboard results arrive as events | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-003`](platform.md#req-platform-003--the-canvas-and-the-surface-follow-the-device-pixel-ratio) | The canvas and the surface follow the device pixel ratio | active | functional | P2 | agent:SWZ-45 |
@@ -65,6 +67,8 @@ graph TD
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
   REQ_INPUT_004["REQ-INPUT-004<br/>Saved input settings load in a newer version"]
+  REQ_INPUT_005["REQ-INPUT-005<br/>Gamepads are recorded input that binds to actions"]
+  REQ_INPUT_006["REQ-INPUT-006<br/>Old recordings still play"]
   REQ_PLATFORM_001["REQ-PLATFORM-001<br/>A refused pointer lock does not stop the game"]
   REQ_PLATFORM_002["REQ-PLATFORM-002<br/>Clipboard results arrive as events"]
   REQ_PLATFORM_003["REQ-PLATFORM-003<br/>The canvas and the surface follow the device pixel ratio"]

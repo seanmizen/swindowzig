@@ -38,6 +38,10 @@ pub const core_types = struct {
     pub const Binding = core.Binding;
     pub const BindingCapture = core.BindingCapture;
     pub const MouseSettings = core.MouseSettings;
+    pub const GamepadSettings = core.GamepadSettings;
+    pub const GamepadState = core.GamepadState;
+    pub const GamepadButton = core.GamepadButton;
+    pub const GamepadAxis = core.GamepadAxis;
 };
 
 /// Platform backend types (internal use).

@@ -1,5 +1,7 @@
 const std = @import("std");
-const Event = @import("event.zig").Event;
+const event = @import("event.zig");
+const Event = event.Event;
+const InputSnapshot = @import("input.zig").InputSnapshot;
 const Bus = @import("bus.zig").Bus;
 const serialize = @import("serialize.zig");
 const Deserializer = serialize.Deserializer;
@@ -188,4 +190,68 @@ test "Replayer pause and resume" {
 
     replayer.unpause();
     try std.testing.expectEqual(ReplayState.playing, replayer.state);
+}
+
+test "Replayer plays a version 1 recording (REQ-INPUT-006)" {
+    // testdata/recording_v1.swev: a file that the version 1 serializer
+    // wrote, before the gamepad events. Do not make it again.
+    const bytes = @embedFile("testdata/recording_v1.swev");
+    var reader: std.Io.Reader = .fixed(bytes);
+    var replayer = try Replayer.init(std.testing.allocator, &reader);
+    defer replayer.deinit();
+    try std.testing.expectEqual(@as(u32, 1), replayer.header.version);
+    try std.testing.expectEqual(@as(u32, 120), replayer.header.tick_hz);
+    try replayer.loadAll();
+    try std.testing.expectEqual(@as(usize, 5), replayer.events.items.len);
+
+    var bus = Bus.init(std.testing.allocator);
+    defer bus.deinit();
+    var snap = InputSnapshot.init();
+    replayer.play();
+
+    try replayer.feedTick(1, &bus);
+    snap.updateFromEvents(bus.eventsForTick(1));
+    try std.testing.expect(snap.keyPressed(.W));
+
+    try replayer.feedTick(2, &bus);
+    snap.updateFromEvents(bus.eventsForTick(2));
+    try std.testing.expect(snap.keyDown(.W));
+    try std.testing.expect(snap.buttonPressed(.left));
+
+    try replayer.feedTick(3, &bus);
+    snap.updateFromEvents(bus.eventsForTick(3));
+    try std.testing.expect(snap.keyReleased(.W));
+
+    try replayer.feedTick(4, &bus);
+    snap.updateFromEvents(bus.eventsForTick(4));
+    try std.testing.expectEqual(event.ClipboardEventKind.read, snap.clipboard.?.kind);
+    try std.testing.expectEqual(@as(u32, 5), snap.clipboard.?.len);
+    try std.testing.expect(!snap.anyGamepad());
+    try std.testing.expectEqual(ReplayState.finished, replayer.state);
+}
+
+test "Replayer plays gamepad input into the snapshot (REQ-INPUT-005)" {
+    var write_buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer write_buffer.deinit();
+    var ser = serialize.Serializer.init(&write_buffer.writer);
+    try ser.writeHeader(120);
+    try ser.writeEvent(Event.init(1, 0, 0, .{ .gamepad_connection = .{ .pad = 0, .connected = true } }));
+    try ser.writeEvent(Event.init(1, 0, 1, .{ .gamepad_button = .{ .pad = 0, .button = .east, .down = true } }));
+    try ser.writeEvent(Event.init(2, 0, 0, .{ .gamepad_axis = .{ .pad = 0, .axis = .right_x, .value = 1 } }));
+
+    var reader: std.Io.Reader = .fixed(write_buffer.written());
+    var replayer = try Replayer.init(std.testing.allocator, &reader);
+    defer replayer.deinit();
+    try replayer.loadAll();
+
+    var bus = Bus.init(std.testing.allocator);
+    defer bus.deinit();
+    var snap = InputSnapshot.init();
+    replayer.play();
+    try replayer.feedTick(1, &bus);
+    snap.updateFromEvents(bus.eventsForTick(1));
+    try std.testing.expect(snap.gamepad(0).buttonPressed(.east));
+    try replayer.feedTick(2, &bus);
+    snap.updateFromEvents(bus.eventsForTick(2));
+    try std.testing.expectEqual(@as(f32, 1), snap.gamepad(0).rawAxis(.right_x));
 }

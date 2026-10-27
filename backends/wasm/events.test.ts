@@ -5,6 +5,8 @@ import { keyNumber, wheelDeltas } from './events';
 // CI runs this file. The import adds the window, cursor and clipboard tests
 // of the web backend (REQ-PLATFORM-001, REQ-PLATFORM-002, REQ-PLATFORM-003).
 import './window.test';
+// The gamepad tests of the web backend (REQ-INPUT-005).
+import './gamepad.test';
 
 describe('keyNumber', () => {
   test('letters and digits follow the layout', () => {
