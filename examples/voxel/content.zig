@@ -38,6 +38,9 @@ pub const Block = enum(u8) {
     /// Sand block. Used as the surface layer in desert biomes.
     /// No special physics (falling sand is out of scope for terrain generation).
     sand = 8,
+    /// A half block: the lower half of the cell. It has a baked model
+    /// (`model`), so the model mesher meshes it. Hotbar slot 5 places it.
+    slab = 9,
     debug_marker = 99,
 };
 const BlockType = Block;
@@ -47,6 +50,24 @@ pub fn emission(block: Block) u8 {
     return switch (block) {
         .glowstone => chunk.MAX_BLOCK_LIGHT,
         else => 0,
+    };
+}
+
+const model_mod = sw_voxel.model;
+
+/// The quads of the half block: a box from y 0 to y 0.5. The top is inside
+/// the cell, so it has no cull face. The texture coordinates are in block
+/// units, as on a greedy face, so the shader gives the half block the same
+/// texel grid as a full block.
+const slab_quads = model_mod.box(.{ 0, 0, 0 }, .{ 1, 0.5, 1 }, @splat(model_mod.BoxFace{}));
+const slab_model: model_mod.BakedModel = .{ .quads = &slab_quads };
+
+/// The baked model of `block`, or null for a full cube. Only the half block
+/// has a model.
+pub fn model(block: Block) ?*const model_mod.BakedModel {
+    return switch (block) {
+        .slab => &slab_model,
+        else => null,
     };
 }
 

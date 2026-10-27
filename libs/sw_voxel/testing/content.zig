@@ -42,6 +42,29 @@ pub const Block = enum(u8) {
     b20 = 20,
 };
 
+const model_mod = sw_voxel.model;
+
+/// b19: a half block, a box from y 0 to y 0.5 with its top inside the cell.
+const half_quads = model_mod.box(.{ 0, 0, 0 }, .{ 1, 0.5, 1 }, @splat(model_mod.BoxFace{}));
+/// b20: one plane through the middle of the cell, with a quad on each side
+/// and no cull face. The light comes from above.
+const plane_quads = [2]model_mod.BakedQuad{
+    .{ .pos = .{ .{ 0, 0, 0.5 }, .{ 1, 0, 0.5 }, .{ 1, 1, 0.5 }, .{ 0, 1, 0.5 } }, .uv = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } }, .face = .py, .tint_index = 0, .shade = false },
+    .{ .pos = .{ .{ 1, 0, 0.5 }, .{ 0, 0, 0.5 }, .{ 0, 1, 0.5 }, .{ 1, 1, 0.5 } }, .uv = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } }, .face = .py, .tint_index = 0, .shade = false },
+};
+const half_model: model_mod.BakedModel = .{ .quads = &half_quads };
+const plane_model: model_mod.BakedModel = .{ .quads = &plane_quads };
+
+/// b19 and b20 have models. The generator does not place them, so the
+/// terrain is full cubes only.
+pub fn model(block: Block) ?*const model_mod.BakedModel {
+    return switch (block) {
+        .b19 => &half_model,
+        .b20 => &plane_model,
+        else => null,
+    };
+}
+
 /// Only `emitter` gives light.
 pub fn emission(block: Block) u8 {
     return if (block == .emitter) chunk.MAX_BLOCK_LIGHT else 0;
