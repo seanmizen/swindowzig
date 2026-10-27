@@ -11,8 +11,8 @@ Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS
 | State | Issues |
 |---|---|
 | done | 21 |
-| in-review | 2 |
-| in-progress | 2 |
+| in-review | 3 |
+| in-progress | 1 |
 | ready | 13 |
 | backlog | 1 |
 
