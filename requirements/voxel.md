@@ -297,3 +297,66 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
 - **Verification:** Test — `libs/sw_voxel/src/region.zig` › "a damaged
   chunk fails alone (REQ-VOXEL-013)"
 - **Relations:** depends-on REQ-VOXEL-011
+
+## REQ-VOXEL-014 — A fluid surface has a height at each corner
+
+- **Status:** active
+- **Source:** agent:SWZ-34
+- **Origin:** #34
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** Where the content gives a fluid and a level for a block,
+  the `sw_voxel` fluid mesher shall give the top surface of each cell of
+  that block a height at each corner from the levels of the cells at the
+  corner.
+- **Rationale:** A fluid that flows down a slope must show the slope, and
+  two cells next to each other must meet at one height with no gap. A
+  corner height is the mean height of the 4 cells at the corner, so two
+  cells that share an edge give it the same height. A cell under the same
+  fluid is full. The greedy mesher cannot make a quad with 4 heights, so
+  fluids have their own vertex stream.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/fluid.zig` › "the corner heights go down
+    from a full cell to a low cell (REQ-VOXEL-014)"
+  - Test — `libs/sw_voxel/src/fluid.zig` › "one full fluid cell has 6
+    faces, and its top surface is at the surface height (REQ-VOXEL-014)"
+  - Test — `libs/sw_voxel/src/fluid.zig` › "the content gives a fluid
+    and a level for each fluid block (REQ-VOXEL-014)"
+- **Relations:** none
+
+## REQ-VOXEL-015 — Two cells of one fluid have no face between them
+
+- **Status:** active
+- **Source:** agent:SWZ-34
+- **Origin:** #34
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When two cells next to each other hold the same fluid,
+  the `sw_voxel` fluid mesher shall make no face between the two cells.
+- **Rationale:** A face inside a body of fluid shows as a dark plane in a
+  translucent fluid, and it costs fill rate. Two different fluids keep
+  the faces between them.
+- **Verification:** Test — `libs/sw_voxel/src/fluid.zig` › "two cells of
+  one fluid have no face between them, two fluids do (REQ-VOXEL-015)"
+- **Relations:** refines REQ-VOXEL-014
+
+## REQ-VOXEL-016 — The texture of a fluid surface follows the flow
+
+- **Status:** active
+- **Source:** agent:SWZ-34
+- **Origin:** #34
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When a fluid cell has a lower or an open side cell, the
+  `sw_voxel` fluid mesher shall turn the UVs of the top surface so that
+  the texture v axis points along the flow.
+- **Rationale:** A moving texture that follows the slope shows the
+  direction of the flow. The flow is the sum of the drops to the side
+  cells. A cell with no flow keeps the UVs of the cell and the still
+  texture.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/fluid.zig` › "the top UVs follow the flow
+    direction (REQ-VOXEL-016)"
+  - Test — `libs/sw_voxel/src/fluid.zig` › "a cell next to a lower cell
+    has a flowing top in the direction of the drop (REQ-VOXEL-016)"
+- **Relations:** refines REQ-VOXEL-014

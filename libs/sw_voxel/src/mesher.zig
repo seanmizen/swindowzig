@@ -3,6 +3,7 @@ const chunk_mod = @import("chunk.zig");
 const model_mod = @import("model.zig");
 const section_mod = @import("section.zig");
 const models = @import("models.zig");
+const fluid = @import("fluid.zig");
 const content = @import("content.zig");
 const gpu_mod = @import("sw_gpu");
 const Chunk = chunk_mod.Chunk;
@@ -141,9 +142,14 @@ fn isSolid(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i3
     const lx = wx - world_ox;
     const lz = wz - world_oz;
     if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
-        return chunk.resolveBlockRaw(lx, wy, lz) != .air;
+        return occludes(chunk.resolveBlockRaw(lx, wy, lz));
     }
-    return getter.getBlock(wx, wy + MIN_Y, wz) != .air;
+    return occludes(getter.getBlock(wx, wy + MIN_Y, wz));
+}
+
+/// True when `block` darkens the AO of a corner: not air and not a fluid.
+inline fn occludes(block: BlockType) bool {
+    return block != .air and !fluid.isFluid(block);
 }
 
 fn aoValue(s1: bool, s2: bool, c: bool) f32 {

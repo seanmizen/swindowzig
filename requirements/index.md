@@ -69,6 +69,9 @@
 | [`REQ-VOXEL-011`](voxel.md#req-voxel-011--a-saved-region-gives-the-same-blocks-when-it-loads) | A saved region gives the same blocks when it loads | active | functional | P2 | agent:SWZ-52 |
 | [`REQ-VOXEL-012`](voxel.md#req-voxel-012--a-later-format-reads-the-region-files-of-version-1) | A later format reads the region files of version 1 | active | constraint | P2 | agent:SWZ-52 |
 | [`REQ-VOXEL-013`](voxel.md#req-voxel-013--a-damaged-chunk-in-a-region-file-fails-alone) | A damaged chunk in a region file fails alone | active | functional | P2 | agent:SWZ-52 |
+| [`REQ-VOXEL-014`](voxel.md#req-voxel-014--a-fluid-surface-has-a-height-at-each-corner) | A fluid surface has a height at each corner | active | functional | P2 | agent:SWZ-34 |
+| [`REQ-VOXEL-015`](voxel.md#req-voxel-015--two-cells-of-one-fluid-have-no-face-between-them) | Two cells of one fluid have no face between them | active | functional | P2 | agent:SWZ-34 |
+| [`REQ-VOXEL-016`](voxel.md#req-voxel-016--the-texture-of-a-fluid-surface-follows-the-flow) | The texture of a fluid surface follows the flow | active | functional | P3 | agent:SWZ-34 |
 
 ## Dependency graph
 
@@ -138,6 +141,9 @@ graph TD
   REQ_VOXEL_011["REQ-VOXEL-011<br/>A saved region gives the same blocks when it loads"]
   REQ_VOXEL_012["REQ-VOXEL-012<br/>A later format reads the region files of version 1"]
   REQ_VOXEL_013["REQ-VOXEL-013<br/>A damaged chunk in a region file fails alone"]
+  REQ_VOXEL_014["REQ-VOXEL-014<br/>A fluid surface has a height at each corner"]
+  REQ_VOXEL_015["REQ-VOXEL-015<br/>Two cells of one fluid have no face between them"]
+  REQ_VOXEL_016["REQ-VOXEL-016<br/>The texture of a fluid surface follows the flow"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -174,6 +180,8 @@ graph TD
   REQ_VOXEL_010 -->|refines| REQ_VOXEL_009
   REQ_VOXEL_012 -->|depends-on| REQ_VOXEL_011
   REQ_VOXEL_013 -->|depends-on| REQ_VOXEL_011
+  REQ_VOXEL_015 -->|refines| REQ_VOXEL_014
+  REQ_VOXEL_016 -->|refines| REQ_VOXEL_014
 ```
 
 ## Derived reverse links
@@ -196,3 +204,4 @@ graph TD
 - `REQ-VOXEL-008` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-009` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
+- `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016

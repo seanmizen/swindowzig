@@ -376,7 +376,8 @@ test "a full section: each cell set, every width" {
     for (2..n_kinds + 1) |n| {
         const all = comptime std.enums.values(BlockType);
         var cells: [CELLS]BlockType = undefined;
-        for (&cells, 0..) |*c, i| c.* = all[(i * 7 + i / 13) % n];
+        // The pattern holds each of the n types for each n up to 128.
+        for (&cells, 0..) |*c, i| c.* = all[(i * 7 + i / 13 + i / 91) % n];
         var by_set: Section = .{};
         defer by_set.deinit(a);
         for (cells, 0..) |b, i| try by_set.set(a, i, b);

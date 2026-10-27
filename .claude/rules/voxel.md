@@ -47,6 +47,13 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
   face) i8` for the faces of full cubes (comptime). A model quad takes
   its tint index from its `BakedQuad`. The demo tints grass tops and
   leaves, and voxel.wgsl draws them white times the tint.
+- The content can give fluids (REQ-VOXEL-014): `fluid(block)` returns a
+  `sw_voxel.fluid.Level` (the fluid 1 to 255, the level 1 to 8) or null.
+  A fluid block is not a full cube: the greedy mesher skips it, and it
+  does not darken AO. `fluid.generate(chunk, &fluid_mesh, ox, oz,
+  getter)` makes its quads (`fluid.Vertex`, 4 for each quad) with corner
+  heights and flow UVs. The chunk pipeline and the demo do not use it
+  yet.
 - `build.zig` wires it with `addVoxel`. The demo gives
   `examples/voxel/content.zig`. The unit tests of the library give
   `libs/sw_voxel/testing/content.zig`, with numbered blocks.
@@ -482,6 +489,7 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `models.zig` | The models of the content as comptime tables: `isCube`, `hasModel`, `quads`, `gpu_table` |
 | `region.zig` | Region files: 16 × 16 chunks, each compressed (zlib), with an offset table and a format version. `Store(sw_assets.cache)` saves and loads them. The file has no light (REQ-VOXEL-011 to 013) |
 | `frustum.zig` | Chunk cull strategies: none, sphere, cone, frustum |
+| `fluid.zig` | The fluid surface mesher: corner heights, no face between cells of one fluid, flow UVs (REQ-VOXEL-014 to 016) |
 | `clock.zig` | Monotonic clock for the perf logs. main sets `clock.io` |
 | `pipeline/stages.zig` | The pure chunk stages: generate, light, mesh (C2), and versions (C3) |
 | `pipeline/scheduler.zig` | The chunk scheduler: desired state, priority, version checks, eviction, edits (C8) |

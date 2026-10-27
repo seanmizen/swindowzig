@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 3. Skipped: 0. Not started: 12.
+- Done: 4. Skipped: 0. Not started: 11.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -71,3 +71,31 @@ ticket of #102, in the order of the batch.
 - Risks: the flag now accepts each block name of `content.zig`, not only
   `stone` and `glowstone`. It puts the block in hotbar slot 1.
   `State.place_block` is gone.
+
+## #34 fluid surface mesher
+
+- Status: done
+- Commit: see `git log --grep SWZ-34`
+- Not run here: nothing that the ticket touches. The demo has no fluid
+  blocks, so no frame changes.
+- Expected changes:
+  - quad hash: no change (`8c11e81d4ec42623`). The demo content has no
+    fluid, and `fluid.isFluid` is comptime false then.
+  - goldens: none (10 of 10 passed)
+- CI changes needed: none
+- Requirements: REQ-VOXEL-014, REQ-VOXEL-015, REQ-VOXEL-016
+- Open questions:
+  - The fluid mesher is a library function: `fluid.generate` gives a
+    separate vertex stream (`fluid.Vertex`, 24 bytes, 4 for each quad).
+    The chunk pipeline (`stages.mesh`, the protocol) and the demo do not
+    call it yet. A demo with water needs a fluid block in
+    `content.zig`, a fluid stream in the mesh result, and a WGSL pass.
+    Decide if that is a new ticket.
+  - The content contract has a new optional declaration:
+    `fluid(block) ?sw_voxel.fluid.Level`. A fluid block keeps the
+    default `collision` and `opacity` of a full cube unless the content
+    gives them.
+- Risks: `models.isCube` and the AO test (`mesher.isSolid`) are now false
+  for a fluid. A section test used a pattern that missed some block
+  counts (23 types gave 13 palette entries). The test content now has 25
+  types, so the pattern changed to one that covers each count up to 128.
