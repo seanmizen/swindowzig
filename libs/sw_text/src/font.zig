@@ -2,6 +2,7 @@
 //! GPU code.
 
 const std = @import("std");
+const bidi = @import("bidi.zig");
 
 extern fn sw_ttf_set_allocator(
     alloc_fn: *const fn (usize) callconv(.c) ?*anyopaque,
@@ -141,13 +142,14 @@ pub const Metrics = struct {
     size: f32,
 
     /// Pen movement for a code point, in pixels. A tab is four spaces. Control
-    /// characters have no width. A code point with no glyph has the width of
-    /// the replacement box.
+    /// characters have no width, and direction controls with no glyph have no
+    /// width. Another code point with no glyph has the width of the
+    /// replacement box.
     pub fn advance(self: Metrics, codepoint: u21) f32 {
         if (codepoint == '\t') return 4 * self.advance(' ');
         if (codepoint < 0x20 or (codepoint >= 0x7F and codepoint < 0xA0)) return 0;
         const glyph = self.font.glyphIndex(codepoint);
-        if (glyph == 0) return missing_advance * self.size;
+        if (glyph == 0) return if (bidi.isFormat(codepoint)) 0 else missing_advance * self.size;
         return self.font.advance(glyph, self.size);
     }
 

@@ -104,7 +104,7 @@ swindowzig/
 │   ├── sw_math/        # Vec3, Mat4, perspective(), lookAt()
 │   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
 │   ├── sw_assets/      # loadBytes (async, native + fetch) and PNG decode (stb_image)
-│   ├── sw_text/        # TTF text (stb_truetype): atlas, measure, wrap, draw
+│   ├── sw_text/        # Text: TTF and bitmap font chain, bidi, atlas, measure, wrap, draw
 │   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix
 │   ├── sw_ui/          # UI tree: layout, keyboard focus, semantic tree, drawing
 │   └── sw_voxel/       # Voxel chunks: storage, light, greedy mesher, chunk pipeline
