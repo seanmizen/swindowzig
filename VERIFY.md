@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 9. Skipped: 1. Not started: 5.
+- Done: 9. Skipped: 2. Not started: 4.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -262,8 +262,8 @@ ticket of #102, in the order of the batch.
 - Reason: the ticket does not fit in the time limit of one ticket. It has
   three large parts:
   - a generic `sw_jobs` pool from `pipeline/exec_threads.zig` and
-    `pipeline/exec_web.zig`, with tests for order, cancel and shutdown;
-  - the move of `sw_voxel` to it, with `stage_match=yes`;
+    `pipeline/exec_web.zig`, with tests for order, cancel and shutdown.
+  - the move of `sw_voxel` to it, with `stage_match=yes`.
   - a SharedArrayBuffer mode in `backends/wasm/worker-pool.ts`.
 - Open questions:
   - `backends/wasm/worker-pool.ts` says "No SharedArrayBuffer and no wasm
@@ -276,4 +276,25 @@ ticket of #102, in the order of the batch.
   - Proposal: split the ticket. Part 1: native `sw_jobs` and the move of
     `exec_threads.zig`. Part 2: the web side and the SharedArrayBuffer
     decision.
+- Risks: none. No code changed.
+
+## #39 far terrain level of detail in sw_voxel
+
+- Status: skipped
+- Commit: see `git log --grep SWZ-39`
+- Reason: the ticket does not fit in the time limit of one ticket. A
+  pure stage that makes a coarse mesh is small. But "chunks past a set
+  distance use" it needs changes to the chunk pipeline design:
+  - the mesh Job message (`protocol.zig`) needs the level, so the
+    protocol version changes, and `worker_world.zig` must handle it.
+  - the scheduler must keep the mesh level of each chunk, and remesh a
+    chunk when the player moves it over a level border.
+  - the border between two levels needs skirts or a stitch, and a test
+    that finds no gap in a rendered frame.
+- Open questions:
+  - Can a coarse quad use the current PackedQuad format? A quad of
+    factor 2, 4 or 8 fits in the chunk-local position and size fields.
+    The light and the AO of a coarse quad need a rule.
+  - Proposal: split the ticket. Part 1: the pure LOD stage, with skirts
+    and tests. Part 2: the scheduler and the protocol.
 - Risks: none. No code changed.
