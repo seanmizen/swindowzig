@@ -25,9 +25,14 @@
 //! ring and staged uploads give the per-frame data with no new buffer
 //! each frame (REQ-GPU-006). The shared WGSL prefix gives each pass the
 //! frame uniforms at group 0 (REQ-GPU-007). See `frame_graph.zig`.
+//!
+//! The post chain adds an `rgba16float` scene target to a frame graph, and
+//! runs the HDR effects, the tonemap, the LDR effects and FXAA as graph
+//! passes (REQ-GPU-008, REQ-GPU-009). See `post.zig`.
 
 const atlas_mod = @import("atlas.zig");
 const frame_graph_mod = @import("frame_graph.zig");
+const post_mod = @import("post.zig");
 const ring_mod = @import("ring.zig");
 const upload_mod = @import("upload.zig");
 
@@ -41,6 +46,9 @@ pub const animation = @import("animation.zig");
 pub const plan = @import("plan.zig");
 /// The shared WGSL prefix and the frame uniforms.
 pub const wgsl = @import("wgsl.zig");
+/// The post chain with no GPU code: the route of the links, the tonemap
+/// curves, and the WGSL of the effects (`post.shader`).
+pub const post = @import("post_plan.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasBuilder = atlas_mod.AtlasBuilder;
@@ -56,6 +64,7 @@ pub const FrameGraph = frame_graph_mod.FrameGraph;
 pub const FrameGraphOptions = frame_graph_mod.Options;
 pub const Pass = frame_graph_mod.Pass;
 pub const PassDesc = frame_graph_mod.PassDesc;
+pub const PassId = frame_graph_mod.PassId;
 pub const Callback = frame_graph_mod.Callback;
 pub const TargetId = plan.TargetId;
 pub const TargetDesc = plan.TargetDesc;
@@ -67,3 +76,11 @@ pub const DepthAttachment = plan.DepthAttachment;
 pub const FrameUniforms = wgsl.FrameUniforms;
 pub const UniformRing = ring_mod.UniformRing;
 pub const Uploads = upload_mod.Uploads;
+
+pub const PostChain = post_mod.PostChain;
+pub const PostOptions = post_mod.Options;
+pub const PostEffectDesc = post_mod.EffectDesc;
+pub const PostEffectId = post_mod.EffectId;
+pub const PostParams = post_mod.Params;
+pub const Tonemap = post_mod.Tonemap;
+pub const TonemapCurve = post_mod.Curve;

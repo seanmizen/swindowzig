@@ -21,6 +21,8 @@
 | [`REQ-GPU-005`](gpu.md#req-gpu-005--the-frame-graph-runs-the-passes-in-a-set-order-on-targets-that-follow-the-window) | The frame graph runs the passes in a set order on targets that follow the window | active | functional | P1 | agent:SWZ-29 |
 | [`REQ-GPU-006`](gpu.md#req-gpu-006--per-frame-data-uses-no-new-gpu-buffer-each-frame) | Per-frame data uses no new GPU buffer each frame | active | constraint | P1 | agent:SWZ-29 |
 | [`REQ-GPU-007`](gpu.md#req-gpu-007--the-wgsl-prefix-matches-the-frame-uniforms) | The WGSL prefix matches the frame uniforms | active | constraint | P1 | agent:SWZ-29 |
+| [`REQ-GPU-008`](gpu.md#req-gpu-008--the-scene-renders-to-an-hdr-target-and-a-tonemap-writes-display-colour) | The scene renders to an HDR target, and a tonemap writes display colour | active | functional | P2 | agent:SWZ-30 |
+| [`REQ-GPU-009`](gpu.md#req-gpu-009--the-post-chain-runs-its-passes-in-order-and-fxaa-is-one-link) | The post chain runs its passes in order, and FXAA is one link | active | functional | P2 | agent:SWZ-30 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -46,6 +48,8 @@ graph TD
   REQ_GPU_005["REQ-GPU-005<br/>The frame graph runs the passes in a set order on targets that follow the window"]
   REQ_GPU_006["REQ-GPU-006<br/>Per-frame data uses no new GPU buffer each frame"]
   REQ_GPU_007["REQ-GPU-007<br/>The WGSL prefix matches the frame uniforms"]
+  REQ_GPU_008["REQ-GPU-008<br/>The scene renders to an HDR target, and a tonemap writes display colour"]
+  REQ_GPU_009["REQ-GPU-009<br/>The post chain runs its passes in order, and FXAA is one link"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -56,6 +60,8 @@ graph TD
   REQ_A11Y_005 -->|refines| REQ_A11Y_001
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
+  REQ_GPU_008 -->|refines| REQ_GPU_005
+  REQ_GPU_009 -->|refines| REQ_GPU_005
 ```
 
 ## Derived reverse links
@@ -63,3 +69,4 @@ graph TD
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
+- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009

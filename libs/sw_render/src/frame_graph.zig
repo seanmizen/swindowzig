@@ -120,6 +120,16 @@ const Target = struct {
 const PassEntry = struct {
     desc: PassDesc,
     colors: [plan.max_colors]plan.ColorAttachment,
+    enabled: bool = true,
+};
+
+/// The handle of one pass, from `FrameGraph.findPass`.
+pub const PassId = enum(u8) {
+    _,
+
+    pub fn index(self: PassId) usize {
+        return @backingInt(self);
+    }
 };
 
 pub const FrameGraph = struct {
@@ -215,6 +225,34 @@ pub const FrameGraph = struct {
         self.unchecked = true;
     }
 
+    /// The first pass with the name `name`.
+    pub fn findPass(self: *const FrameGraph, name: []const u8) ?PassId {
+        for (self.passes[0..self.pass_count], 0..) |p, i| {
+            if (std.mem.eql(u8, p.desc.name, name)) return @fromBackingInt(@as(u8, @intCast(i)));
+        }
+        return null;
+    }
+
+    /// Run the pass in each frame (true), or skip it (false). A new pass
+    /// runs. A skipped pass does not get the surface view.
+    pub fn setPassEnabled(self: *FrameGraph, id: PassId, enabled: bool) void {
+        self.passes[id.index()].enabled = enabled;
+    }
+
+    pub fn isPassEnabled(self: *const FrameGraph, id: PassId) bool {
+        return self.passes[id.index()].enabled;
+    }
+
+    /// Give a pass new attachments. The graph copies the list, and checks
+    /// it at the next `execute`.
+    pub fn setPassAttachments(self: *FrameGraph, id: PassId, attachments: plan.Attachments) plan.Error!void {
+        if (attachments.colors.len > plan.max_colors) return error.TooManyColors;
+        const p = &self.passes[id.index()];
+        p.desc.attachments = attachments;
+        @memcpy(p.colors[0..attachments.colors.len], attachments.colors);
+        self.unchecked = true;
+    }
+
     pub fn findTarget(self: *const FrameGraph, name: []const u8) ?TargetId {
         for (self.targets[0..self.target_count], 0..) |t, i| {
             if (std.mem.eql(u8, t.desc.name, name)) return TargetId.fromIndex(i);
@@ -260,7 +298,7 @@ pub const FrameGraph = struct {
 
         var uses_screen = false;
         for (self.passes[0..self.pass_count]) |*p| {
-            if (plan.usesScreen(attachmentsOf(p))) uses_screen = true;
+            if (p.enabled and plan.usesScreen(attachmentsOf(p))) uses_screen = true;
         }
         if (uses_screen) self.screen_view = try gpu.getCurrentTextureView();
         defer if (self.screen_view) |v| {
@@ -275,6 +313,7 @@ pub const FrameGraph = struct {
 
         const encoder = try gpu.createCommandEncoder();
         for (sequence[0..self.pass_count]) |i| {
+            if (!self.passes[i].enabled) continue;
             try self.runPass(encoder, &self.passes[i]);
         }
 
