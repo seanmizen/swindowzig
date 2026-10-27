@@ -104,6 +104,8 @@ pub extern "webgpu" fn webgpuCreateTextureView(
 ) WebGPUTextureView;
 
 pub extern "webgpu" fn webgpuTextureDestroy(texture: WebGPUTexture) void;
+/// Drop the JS handle of a texture view. A view has no destroy in WebGPU.
+pub extern "webgpu" fn webgpuTextureViewRelease(view: WebGPUTextureView) void;
 
 pub extern "webgpu" fn webgpuWriteTexture(
     queue: WebGPUQueue,
@@ -133,6 +135,7 @@ pub extern "webgpu" fn webgpuCreateSampler(
     lod_min: f32,
     lod_max: f32,
     compare: u32, // CompareFunction or 0 for none
+    max_anisotropy: u32, // 1 = no anisotropic filtering
 ) WebGPUSampler;
 
 // Shader Operations

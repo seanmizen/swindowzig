@@ -109,6 +109,7 @@ swindowzig/
 │   ├── justabox/       # Default: single spinning colored box
 │   ├── windows/        # Triangle with mouse drag
 │   ├── flat2d/         # sw_gfx2d + sw_text + sw_ui demo: shapes, text, a keyboard menu
+│   ├── mipmaps/        # GPU mip levels, a texture array, anisotropic sampling. `--check` tests it
 │   └── voxel/          # Voxel chunk demo (16×256×16)
 └── backends/
     └── wasm/           # Web platform boot + dev server
