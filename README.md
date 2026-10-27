@@ -13,8 +13,8 @@ Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS
 | done | 16 |
 | in-review | 2 |
 | in-progress | 2 |
-| ready | 15 |
-| backlog | 4 |
+| ready | 17 |
+| backlog | 2 |
 
 A GitHub workflow writes this block from the
 [`engine` issues](https://github.com/seanmizen/swindowzig/issues?q=label%3Aengine).
