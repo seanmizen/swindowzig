@@ -7,7 +7,11 @@ pub const null_backend = @import("null_backend.zig");
 pub const storage = @import("storage.zig");
 pub const input_settings = @import("input_settings.zig");
 
+pub const clipboard = @import("clipboard.zig");
+
 pub const WindowInfo = platform.WindowInfo;
+pub const WindowMode = platform.WindowMode;
+pub const CursorMode = platform.CursorMode;
 pub const Backend = backend.Backend;
 
 pub const storageGet = storage.storageGet;

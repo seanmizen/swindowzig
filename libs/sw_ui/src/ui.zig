@@ -448,6 +448,29 @@ pub const Clipboard = struct {
     /// returns. A platform that gets the text in a paste event gives the text
     /// of that event.
     readFn: *const fn (context: ?*anyopaque) []const u8,
+
+    /// The platform clipboard of a `sw_app` Context: copy and cut write
+    /// the system clipboard, and paste reads it. `ctx` is a pointer that
+    /// stays valid while the `Ui` uses the clipboard. The call also turns
+    /// off the paste as typed text of the web (`setPasteAsText(false)`), so
+    /// a paste does not insert the text two times. On the web, the browser
+    /// gives the text of a paste (Ctrl+V or Cmd+V) to the platform before
+    /// the frame that has `Keys.paste`.
+    pub fn platform(ctx: anytype) Clipboard {
+        const Ctx = @typeInfo(@TypeOf(ctx)).pointer.child;
+        ctx.setPasteAsText(false);
+        const fns = struct {
+            fn write(context: ?*anyopaque, text: []const u8) void {
+                const c: *Ctx = @ptrCast(@alignCast(context.?));
+                c.setClipboardText(text);
+            }
+            fn read(context: ?*anyopaque) []const u8 {
+                const c: *Ctx = @ptrCast(@alignCast(context.?));
+                return c.clipboardText();
+            }
+        };
+        return .{ .context = ctx, .writeFn = fns.write, .readFn = fns.read };
+    }
 };
 
 pub const Error = std.mem.Allocator.Error || error{
@@ -2527,6 +2550,45 @@ test "text field: a platform clipboard takes the place of the clipboard in the U
     try std.testing.expectEqualStrings("pasted", test_field.slice());
     try runFrame(&u, .{ .keys = .{ .paste = true } }, buildFields);
     try std.testing.expectEqualStrings("pastedpa", test_field.slice());
+}
+
+const FakeContext = struct {
+    text: [32]u8 = undefined,
+    len: usize = 0,
+    paste_as_text: bool = true,
+
+    pub fn setPasteAsText(self: *FakeContext, on: bool) void {
+        self.paste_as_text = on;
+    }
+    pub fn setClipboardText(self: *FakeContext, text: []const u8) void {
+        @memcpy(self.text[0..text.len], text);
+        self.len = text.len;
+    }
+    pub fn clipboardText(self: *FakeContext) []const u8 {
+        return self.text[0..self.len];
+    }
+};
+
+test "text field: Clipboard.platform uses the clipboard of the context" {
+    var u = testUi();
+    defer u.deinit();
+    var fake: FakeContext = .{};
+    u.clipboard = Clipboard.platform(&fake);
+    try std.testing.expect(!fake.paste_as_text);
+    var a: [16]u8 = undefined;
+    var b: [16]u8 = undefined;
+    test_field = .{ .buffer = &a };
+    test_second = .{ .buffer = &b };
+    _ = test_field.append("copy me");
+
+    u.setFocus(2);
+    try runFrame(&u, .{ .keys = .{ .select_all = true, .copy = true } }, buildFields);
+    try std.testing.expectEqualStrings("copy me", fake.clipboardText());
+    // Text from another program arrives in the platform clipboard.
+    fake.setClipboardText("other");
+    try runFrame(&u, tab_key, buildFields);
+    try runFrame(&u, .{ .keys = .{ .paste = true } }, buildFields);
+    try std.testing.expectEqualStrings("other", test_second.slice());
 }
 
 test "text field: a click puts the caret, and a drag selects" {

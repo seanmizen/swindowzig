@@ -245,6 +245,8 @@ pub fn build(b: *std.Build) void {
         "libs/sw_core/src/tas.zig",
         "libs/sw_core/src/action.zig",
         "libs/sw_platform/src/storage.zig",
+        // sw_platform: the DPI scale and the window and cursor mode numbers.
+        "libs/sw_platform/src/platform.zig",
         // sw_gpu: the mip chain maths and the descriptor checks have no
         // GPU code.
         "libs/sw_gpu/src/mip_chain.zig",
@@ -317,6 +319,24 @@ pub fn build(b: *std.Build) void {
     });
     input_settings_tests.root_module.addImport("sw_core", web_libs.core);
     test_step.dependOn(&b.addRunArtifact(input_settings_tests).step);
+
+    // sw_platform clipboard state and the null backend: the clipboard
+    // results arrive as sw_core events (REQ-PLATFORM-002).
+    const platform_core_tests = [_][]const u8{
+        "libs/sw_platform/src/clipboard.zig",
+        "libs/sw_platform/src/null_backend.zig",
+    };
+    inline for (platform_core_tests) |file| {
+        const t = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        t.root_module.addImport("sw_core", web_libs.core);
+        test_step.dependOn(&b.addRunArtifact(t).step);
+    }
 
     // sw_render atlas layout tests: no GPU code. The layout uses the
     // sw_text shelf packer and the sw_gpu mip chain maths. The sw_text

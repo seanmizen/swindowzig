@@ -99,6 +99,11 @@ jobs:
         # The key numbers and the wheel deltas that events.ts sends.
         run: bun test backends/wasm/events.test.ts
 
+      - name: Web window, cursor and clipboard tests in Bun
+        # A refused pointer lock does not stop the game, full screen, the
+        # device pixel ratio watch, and the clipboard events.
+        run: bun test backends/wasm/window.test.ts
+
       - name: Web audio mixer pump tests in Bun
         # The blocks that sw_audio mixes play on the audio clock with no gap.
         run: bun test backends/wasm/audio.test.ts
