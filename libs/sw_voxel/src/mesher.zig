@@ -6,6 +6,7 @@ const BlockType = chunk_mod.BlockType;
 const BlockGetter = chunk_mod.BlockGetter;
 const CHUNK_W = chunk_mod.CHUNK_W;
 const CHUNK_H = chunk_mod.CHUNK_H;
+const MIN_Y = chunk_mod.MIN_Y;
 pub const AOStrategy = gpu_mod.AOStrategy;
 pub const LightingMode = gpu_mod.LightingMode;
 
@@ -30,10 +31,10 @@ pub const Mesh = struct {
     allocator: std.mem.Allocator,
     /// One PackedQuad per quad, in the order the mesher makes them.
     quads: std.ArrayList(PackedQuad),
-    /// The lowest and the highest y of the quads, for the frustum cull.
-    /// With no quads, y_min is CHUNK_H and y_max is 0.
-    y_min: f32 = CHUNK_H,
-    y_max: f32 = 0,
+    /// The lowest and the highest world y of the quads, for the frustum
+    /// cull. With no quads, y_min is MIN_Y + CHUNK_H and y_max is MIN_Y.
+    y_min: f32 = EMPTY_Y_MIN,
+    y_max: f32 = EMPTY_Y_MAX,
 
     pub fn init(allocator: std.mem.Allocator) Mesh {
         return .{ .allocator = allocator, .quads = .empty };
@@ -49,8 +50,8 @@ pub const Mesh = struct {
 
     pub fn clear(self: *Mesh) void {
         self.quads.clearRetainingCapacity();
-        self.y_min = CHUNK_H;
-        self.y_max = 0;
+        self.y_min = EMPTY_Y_MIN;
+        self.y_max = EMPTY_Y_MAX;
     }
 
     /// Release ALL host-side mesh allocations back to the allocator. Unlike
@@ -63,8 +64,8 @@ pub const Mesh = struct {
     /// this Mesh works and grows the storage again as it appends.
     pub fn freeHostBuffers(self: *Mesh) void {
         self.quads.clearAndFree(self.allocator);
-        self.y_min = CHUNK_H;
-        self.y_max = 0;
+        self.y_min = EMPTY_Y_MIN;
+        self.y_max = EMPTY_Y_MAX;
     }
 
     /// Append one quad that spans y_lo..y_hi.
@@ -74,6 +75,10 @@ pub const Mesh = struct {
         self.y_max = @max(self.y_max, y_hi);
     }
 };
+
+/// The y range of a mesh with no quads: y_min above y_max.
+pub const EMPTY_Y_MIN: f32 = MIN_Y + CHUNK_H;
+pub const EMPTY_Y_MAX: f32 = MIN_Y;
 
 const BlockPos = struct { x: i32, y: i32, z: i32 };
 
@@ -115,7 +120,7 @@ fn shouldRenderFace(chunk: *const Chunk, getter: BlockGetter, lx: i32, ly: i32, 
         return chunk.resolveBlockRaw(nx, ny, nz) == .air;
     }
     // Slow path: neighbour in adjacent chunk — world HashMap lookup
-    return getter.getBlock(world_ox + nx, ny, world_oz + nz) == .air;
+    return getter.getBlock(world_ox + nx, ny + MIN_Y, world_oz + nz) == .air;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +135,7 @@ fn isSolid(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i3
     if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
         return chunk.resolveBlockRaw(lx, wy, lz) != .air;
     }
-    return getter.getBlock(wx, wy, wz) != .air;
+    return getter.getBlock(wx, wy + MIN_Y, wz) != .air;
 }
 
 fn aoValue(s1: bool, s2: bool, c: bool) f32 {
@@ -752,7 +757,7 @@ fn skylightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world
     if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
         return chunk.skylight.get(@intCast(lx), @intCast(wy), @intCast(lz));
     }
-    return getter.getSkylight(wx, wy, wz);
+    return getter.getSkylight(wx, wy + MIN_Y, wz);
 }
 
 /// Per-vertex skylight brightness for a face.
@@ -898,7 +903,7 @@ fn blockLightSample(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, wor
     if (lx >= 0 and lx < CHUNK_W and wy >= 0 and wy < CHUNK_H and lz >= 0 and lz < CHUNK_W) {
         return chunk.block_light.get(@intCast(lx), @intCast(wy), @intCast(lz));
     }
-    return getter.getBlockLight(wx, wy, wz);
+    return getter.getBlockLight(wx, wy + MIN_Y, wz);
 }
 
 /// Per-vertex block-light brightness for a face.
@@ -1154,11 +1159,12 @@ fn emitGreedyQuad(
         cell.sky,
         cell.bl,
     );
-    // The y range: a y face is one plane, the other faces span h blocks of y.
+    // The world y range: a y face is one plane, the other faces span h
+    // blocks of y.
     const y_lo: f32, const y_hi: f32 = switch (face) {
-        .py => .{ @floatFromInt(d + 1), @floatFromInt(d + 1) },
-        .ny => .{ @floatFromInt(d), @floatFromInt(d) },
-        else => .{ @floatFromInt(ja), @floatFromInt(ja + h) },
+        .py => .{ @floatFromInt(MIN_Y + d + 1), @floatFromInt(MIN_Y + d + 1) },
+        .ny => .{ @floatFromInt(MIN_Y + d), @floatFromInt(MIN_Y + d) },
+        else => .{ @floatFromInt(MIN_Y + ja), @floatFromInt(MIN_Y + ja + h) },
     };
     try mesh.addQuad(q, y_lo, y_hi);
 }
@@ -1188,8 +1194,8 @@ fn greedyFaceExtents(face: Face) struct { i_max: i32, j_max: i32, d_max: i32 } {
     };
 }
 
-/// One row of a greedy slice as bits: bit j in word j / 64 (j < 256).
-const Row = [4]u64;
+/// One row of a greedy slice as bits: bit j in word j / 64 (j < CHUNK_H).
+const Row = chunk_mod.Col;
 
 fn rowGet(r: Row, j: usize) bool {
     return (r[j / 64] >> @intCast(j % 64)) & 1 != 0;
@@ -1200,7 +1206,9 @@ fn rowSet(r: *Row, j: usize) void {
 }
 
 fn rowAndNot(a: Row, b: Row) Row {
-    return .{ a[0] & ~b[0], a[1] & ~b[1], a[2] & ~b[2], a[3] & ~b[3] };
+    var out: Row = undefined;
+    inline for (0..chunk_mod.COL_WORDS) |k| out[k] = a[k] & ~b[k];
+    return out;
 }
 
 fn lowestBit(r: Row) ?usize {
@@ -1233,38 +1241,42 @@ const RowBits = struct {
 /// The result is the same as shouldRenderFace for every block, so the greedy
 /// pass computes cells only where a face is visible.
 const VisibleFaces = struct {
-    /// [face][x][z]: 256 bits over y, bit y in word y / 64.
-    masks: [6][CHUNK_W][CHUNK_W][4]u64,
-    /// [face]: bit d is set when slice d has a visible face (d < 256).
-    nonempty: [6][4]u64,
+    /// [face][x][z]: CHUNK_H bits over y, bit y in word y / 64.
+    masks: [6][CHUNK_W][CHUNK_W]Col,
+    /// [face]: bit d is set when slice d has a visible face (d < CHUNK_H).
+    nonempty: [6]Col,
 
-    const Col = [4]u64;
+    const Col = chunk_mod.Col;
+    const zero: Col = @splat(0);
+    /// The word and the bit of the top cell (y = CHUNK_H - 1).
+    const TOP_WORD = (CHUNK_H - 1) / 64;
+    const TOP_BIT: u6 = (CHUNK_H - 1) % 64;
 
     fn compute(allocator: std.mem.Allocator, chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i32) !*VisibleFaces {
-        comptime std.debug.assert(CHUNK_H == 256);
         const self = try allocator.create(VisibleFaces);
         var solid: [CHUNK_W][CHUNK_W]Col = undefined;
         chunk.solidColumns(&solid);
 
         for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
             const s = solid[x][z];
-            // +Y: neighbour above. Bit 255 has its neighbour out of the chunk.
+            // +Y: neighbour above. The top bit has its neighbour out of the
+            // chunk.
             var up = andNot(s, shiftDown(s));
-            up[3] &= ~(@as(u64, 1) << 63);
+            up[TOP_WORD] &= ~(@as(u64, 1) << TOP_BIT);
             // -Y: neighbour below. Bit 0 has its neighbour out of the chunk.
             var down = andNot(s, shiftUp(s));
             down[0] &= ~@as(u64, 1);
             self.masks[@backingInt(Face.py)][x][z] = up;
             self.masks[@backingInt(Face.ny)][x][z] = down;
-            self.masks[@backingInt(Face.px)][x][z] = if (x + 1 < CHUNK_W) andNot(s, solid[x + 1][z]) else .{ 0, 0, 0, 0 };
-            self.masks[@backingInt(Face.nx)][x][z] = if (x > 0) andNot(s, solid[x - 1][z]) else .{ 0, 0, 0, 0 };
-            self.masks[@backingInt(Face.pz)][x][z] = if (z + 1 < CHUNK_W) andNot(s, solid[x][z + 1]) else .{ 0, 0, 0, 0 };
-            self.masks[@backingInt(Face.nz)][x][z] = if (z > 0) andNot(s, solid[x][z - 1]) else .{ 0, 0, 0, 0 };
+            self.masks[@backingInt(Face.px)][x][z] = if (x + 1 < CHUNK_W) andNot(s, solid[x + 1][z]) else zero;
+            self.masks[@backingInt(Face.nx)][x][z] = if (x > 0) andNot(s, solid[x - 1][z]) else zero;
+            self.masks[@backingInt(Face.pz)][x][z] = if (z + 1 < CHUNK_W) andNot(s, solid[x][z + 1]) else zero;
+            self.masks[@backingInt(Face.nz)][x][z] = if (z > 0) andNot(s, solid[x][z - 1]) else zero;
 
             // Faces with the neighbour out of the chunk: ask shouldRenderFace.
             const xi: i32 = @intCast(x);
             const zi: i32 = @intCast(z);
-            if (s[3] >> 63 != 0 and shouldRenderFace(chunk, getter, xi, CHUNK_H - 1, zi, world_ox, world_oz, .py)) self.masks[@backingInt(Face.py)][x][z][3] |= @as(u64, 1) << 63;
+            if (s[TOP_WORD] >> TOP_BIT & 1 != 0 and shouldRenderFace(chunk, getter, xi, CHUNK_H - 1, zi, world_ox, world_oz, .py)) self.masks[@backingInt(Face.py)][x][z][TOP_WORD] |= @as(u64, 1) << TOP_BIT;
             if (s[0] & 1 != 0 and shouldRenderFace(chunk, getter, xi, 0, zi, world_ox, world_oz, .ny)) self.masks[@backingInt(Face.ny)][x][z][0] |= 1;
             inline for (.{ Face.px, Face.nx, Face.pz, Face.nz }) |face| {
                 const at_edge = switch (face) {
@@ -1285,15 +1297,17 @@ const VisibleFaces = struct {
             }
         };
         for (0..6) |f| {
-            var any: Col = .{ 0, 0, 0, 0 };
+            var any: Col = zero;
             for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
                 const c = self.masks[f][x][z];
                 switch (@as(Face, @fromBackingInt(@intCast(f)))) {
                     // y faces: slice d is layer y = d, so OR the columns.
-                    .py, .ny => any = .{ any[0] | c[0], any[1] | c[1], any[2] | c[2], any[3] | c[3] },
+                    .py, .ny => {
+                        inline for (0..chunk_mod.COL_WORDS) |k| any[k] |= c[k];
+                    },
                     // x faces: slice d is x = d. z faces: slice d is z = d.
-                    .px, .nx => if (c[0] | c[1] | c[2] | c[3] != 0) rowSet(&any, x),
-                    .pz, .nz => if (c[0] | c[1] | c[2] | c[3] != 0) rowSet(&any, z),
+                    .px, .nx => if (!isZero(c)) rowSet(&any, x),
+                    .pz, .nz => if (!isZero(c)) rowSet(&any, z),
                 }
             };
             self.nonempty[f] = any;
@@ -1315,7 +1329,7 @@ const VisibleFaces = struct {
             .px, .nx => self.masks[f][du][ii], // i = Z, j = Y: the column (x = d, z = ii)
             .pz, .nz => self.masks[f][ii][du], // i = X, j = Y: the column (x = ii, z = d)
             .py, .ny => blk: { // i = X, j = Z: bit d of each column (x = ii, z = jj)
-                var r: Row = .{ 0, 0, 0, 0 };
+                var r: Row = zero;
                 for (0..CHUNK_W) |z| {
                     if (rowGet(self.masks[f][ii][z], du)) r[0] |= @as(u64, 1) << @intCast(z);
                 }
@@ -1330,27 +1344,33 @@ const VisibleFaces = struct {
     }
 
     fn andNot(a: Col, b: Col) Col {
-        return .{ a[0] & ~b[0], a[1] & ~b[1], a[2] & ~b[2], a[3] & ~b[3] };
+        return rowAndNot(a, b);
+    }
+
+    fn isZero(c: Col) bool {
+        var any: u64 = 0;
+        inline for (0..chunk_mod.COL_WORDS) |k| any |= c[k];
+        return any == 0;
     }
 
     /// Bit y of the result is bit y + 1 of `c` (the block above).
     fn shiftDown(c: Col) Col {
-        return .{
-            (c[0] >> 1) | (c[1] << 63),
-            (c[1] >> 1) | (c[2] << 63),
-            (c[2] >> 1) | (c[3] << 63),
-            c[3] >> 1,
-        };
+        var out: Col = undefined;
+        inline for (0..chunk_mod.COL_WORDS) |k| {
+            out[k] = c[k] >> 1;
+            if (k + 1 < chunk_mod.COL_WORDS) out[k] |= c[k + 1] << 63;
+        }
+        return out;
     }
 
     /// Bit y of the result is bit y - 1 of `c` (the block below).
     fn shiftUp(c: Col) Col {
-        return .{
-            c[0] << 1,
-            (c[1] << 1) | (c[0] >> 63),
-            (c[2] << 1) | (c[1] >> 63),
-            (c[3] << 1) | (c[2] >> 63),
-        };
+        var out: Col = undefined;
+        inline for (0..chunk_mod.COL_WORDS) |k| {
+            out[k] = c[k] << 1;
+            if (k > 0) out[k] |= c[k - 1] >> 63;
+        }
+        return out;
     }
 };
 
@@ -1443,7 +1463,7 @@ pub fn generateMesh(
             // Cells are computed only where `present` has a bit, so the cell
             // grid needs no clear: a cell is read only where its bit is set.
             var present: [CHUNK_W]Row = undefined;
-            var visited_rows: [CHUNK_W]Row = @splat(.{ 0, 0, 0, 0 });
+            var visited_rows: [CHUNK_W]Row = @splat(@splat(0));
             for (0..i_max_usz) |ii| present[ii] = vis.sliceRow(face, d, @intCast(ii));
 
             // ---- populate cells for the visible faces ----
@@ -1533,11 +1553,13 @@ pub fn generateMesh(
 // in Zig, so a test can check the decode.
 //
 // Layout (bit 0 = LSB). The cell is the block that owns the face, relative to
-// the chunk origin. W and H are the quad size along the face's in-plane axes.
-//   word 0: cell x (4) | cell y (8) | cell z (4) | face (3) | W-1 (4) | H-1 (8)
+// the chunk origin: x and z local, y local (0 is world y MIN_Y). W and H are
+// the quad size along the face's in-plane axes.
+//   word 0: cell x (4) | cell y bits 0-7 (8) | cell z (4) | face (3) | W-1 (4) | H-1 (8)
 //   words 1-3: 12 six-bit light fields, 5 + 5 + 2 per word, in this order:
 //              ao0..3, sky0..3, bl0..3
-//   word 3, bits 12-19: block type. Bits 20-31: 0.
+//   word 3, bits 12-19: block type. Bits 20-23: cell y bits 8-11, 0 in a
+//   column of 256 cells or less. Bits 24-31: 0.
 // ao = field / 42, sky = field / 60, block light = field / 60. Every value the
 // mesher makes is one of these ratios, so the decode gives the same f32.
 
@@ -1604,18 +1626,25 @@ fn packQuad(face: Face, cell: [3]u32, w: u32, h: u32, block_type: u32, ao: [4]f3
         fields[8 + c] = quantize(bl[c], LIGHT_STEPS);
     }
     var q: PackedQuad = .{ 0, 0, 0, 0 };
-    q[0] = cell[0] | (cell[1] << 4) | (cell[2] << 12) | (@as(u32, @backingInt(face)) << 16) |
+    q[0] = cell[0] | ((cell[1] & 0xFF) << 4) | (cell[2] << 12) | (@as(u32, @backingInt(face)) << 16) |
         ((w - 1) << 19) | ((h - 1) << 23);
     for (fields, 0..) |f, i| q[1 + i / 5] |= f << @intCast(6 * (i % 5));
     q[3] |= (block_type & 0xFF) << 12;
+    q[3] |= (cell[1] >> 8) << 20;
     return q;
 }
 
-/// Decode corner `corner` (0..3) of a packed quad. Mirrors vs_chunk.
+/// The local y of the cell of a packed quad.
+pub fn cellY(q: PackedQuad) u32 {
+    return ((q[0] >> 4) & 0xFF) | (((q[3] >> 20) & 0xF) << 8);
+}
+
+/// Decode corner `corner` (0..3) of a packed quad, in world coordinates.
+/// Mirrors vs_chunk.
 pub fn unpackCorner(q: PackedQuad, corner: usize, world_ox: i32, world_oz: i32) VoxelVertex {
     const cell = [3]i32{
         @intCast(q[0] & 0xF),
-        @intCast((q[0] >> 4) & 0xFF),
+        @intCast(cellY(q)),
         @intCast((q[0] >> 12) & 0xF),
     };
     const face: u3 = @intCast((q[0] >> 16) & 0x7);
@@ -1624,7 +1653,7 @@ pub fn unpackCorner(q: PackedQuad, corner: usize, world_ox: i32, world_oz: i32) 
     const fl = face_layouts[face];
     var pos = [3]f32{
         @floatFromInt(cell[0] + world_ox),
-        @floatFromInt(cell[1]),
+        @floatFromInt(cell[1] + MIN_Y),
         @floatFromInt(cell[2] + world_oz),
     };
     if (fl.positive) pos[fl.normal_axis] += 1;
@@ -1655,9 +1684,10 @@ const TestGetter = struct {
 
     fn local(self: *const TestGetter, x: i32, y: i32, z: i32) ?[3]i32 {
         const lx = x - self.ox;
+        const ly = y - MIN_Y;
         const lz = z - self.oz;
-        if (lx < 0 or lz < 0 or lx >= CHUNK_W or lz >= CHUNK_W or y < 0 or y >= CHUNK_H) return null;
-        return .{ lx, y, lz };
+        if (lx < 0 or lz < 0 or lx >= CHUNK_W or lz >= CHUNK_W or ly < 0 or ly >= CHUNK_H) return null;
+        return .{ lx, ly, lz };
     }
     fn block(ctx: *const anyopaque, x: i32, y: i32, z: i32) BlockType {
         const self: *const TestGetter = @ptrCast(@alignCast(ctx));
@@ -1707,11 +1737,11 @@ test "each packed quad decodes to the face, block and light of its cell" {
         defer mesh.deinit();
         try generateMesh(&chunk, &mesh, ox, oz, tg.getter(), ao, .skylight);
         try std.testing.expect(mesh.quadCount() > 0);
-        var y_min: f32 = CHUNK_H;
-        var y_max: f32 = 0;
+        var y_min: f32 = EMPTY_Y_MIN;
+        var y_max: f32 = EMPTY_Y_MAX;
         for (mesh.quads.items) |q| {
             const lx: i32 = @intCast(q[0] & 0xF);
-            const ly: i32 = @intCast((q[0] >> 4) & 0xFF);
+            const ly: i32 = @intCast(cellY(q));
             const lz: i32 = @intCast((q[0] >> 12) & 0xF);
             const face: Face = @fromBackingInt(@as(u3, @intCast((q[0] >> 16) & 0x7)));
             const block = chunk.getBlock(lx, ly, lz);
@@ -1732,4 +1762,43 @@ test "each packed quad decodes to the face, block and light of its cell" {
         try std.testing.expectEqual(y_min, mesh.y_min);
         try std.testing.expectEqual(y_max, mesh.y_max);
     }
+}
+
+test "a packed quad keeps a cell y above 255" {
+    for ([_]u32{ 0, 255, 256, 300, 4095 }) |y| {
+        const q = packQuad(.px, .{ 3, y, 9 }, 2, 5, 1, @splat(1), @splat(1), @splat(0));
+        try std.testing.expectEqual(y, cellY(q));
+        const corner = unpackCorner(q, 0, 0, 0);
+        try std.testing.expectEqual(@as(f32, @floatFromInt(@as(i32, @intCast(y)) + MIN_Y)), corner.pos[1]);
+    }
+}
+
+test "faces at the bottom and the top of the column" {
+    const allocator = std.testing.allocator;
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
+    // One block at local y 0 and one at the top cell, in two sections.
+    try chunk.setBlock(2, 0, 3, .solid);
+    try chunk.setBlock(5, CHUNK_H - 1, 7, .solid);
+    try chunk.computeSkylight();
+    try chunk.computeBlockLight();
+    const tg = TestGetter{ .chunk = &chunk, .ox = 0, .oz = 0 };
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try generateMesh(&chunk, &mesh, 0, 0, tg.getter(), .classic, .skylight);
+    // Each block shows 6 faces: the getter gives air above and below.
+    try std.testing.expectEqual(@as(usize, 12), mesh.quadCount());
+    var low: usize = 0;
+    var high: usize = 0;
+    for (mesh.quads.items) |q| {
+        switch (cellY(q)) {
+            0 => low += 1,
+            CHUNK_H - 1 => high += 1,
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 6), low);
+    try std.testing.expectEqual(@as(usize, 6), high);
+    try std.testing.expectEqual(@as(f32, MIN_Y), mesh.y_min);
+    try std.testing.expectEqual(@as(f32, MIN_Y + CHUNK_H), mesh.y_max);
 }

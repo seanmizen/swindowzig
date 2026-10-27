@@ -1,6 +1,8 @@
 const std = @import("std");
 const clock = @import("clock.zig");
 const content = @import("content.zig");
+const section_mod = @import("section.zig");
+pub const Section = section_mod.Section;
 
 /// Horizontal (X/Z) edge length of a chunk, in blocks. Compile-time constant;
 /// all chunk-sized allocations, index math, AABB extents, and the mesher's
@@ -15,7 +17,24 @@ const content = @import("content.zig");
 /// `tests/flatland_forward.tas` with `--profile-csv` and the CSV reflects
 /// the new size.
 pub const CHUNK_W = 16;
-pub const CHUNK_H = 256; // Y dimension
+/// Y dimension: the number of cells in a column. The content sets it
+/// (`content.height`, default 256). A column is CHUNK_H / 16 sections.
+pub const CHUNK_H: comptime_int = content.height;
+/// The world y of local y 0. The content sets it (`content.min_y`, default
+/// 0). Chunk, PalettedBlocks, LightGrid and the mesh cells use local y
+/// (0 to CHUNK_H - 1). World, BlockGetter, the scheduler edits and the
+/// mesh y range use world y: world y = local y + MIN_Y.
+pub const MIN_Y: comptime_int = content.min_y;
+/// Number of 16-cell sections in a column.
+pub const SECTION_COUNT = CHUNK_H / section_mod.SIZE;
+/// Number of u64 words in a bit column over y (`solidColumns`).
+pub const COL_WORDS = (CHUNK_H + 63) / 64;
+/// A bit column over y: bit y in word y / 64.
+pub const Col = [COL_WORDS]u64;
+
+comptime {
+    std.debug.assert(CHUNK_W == section_mod.SIZE);
+}
 
 /// The block types of the game (`content.zig`). Value 0 is `.air`.
 pub const BlockType = content.Block;
@@ -51,260 +70,112 @@ pub fn emissionLevel(block: BlockType) u8 {
 /// Total blocks in a column.
 pub const BLOCKS_PER_CHUNK: usize = CHUNK_W * CHUNK_H * CHUNK_W;
 
-/// Flat linear index for a block position within a chunk. Matches the
-/// `packBlockIdx` layout used by `mesher.zig` so a mesher-computed index
-/// can be reused verbatim when the mesher wants to look up the block type.
+/// Flat linear index for a block position within a chunk: the index of
+/// `DenseBlocks` and `PalettedBlocks.get`. y is local.
 pub inline fn blockLinearIdx(x: i32, y: i32, z: i32) usize {
     return @as(usize, @intCast(x)) * (CHUNK_H * CHUNK_W) +
         @as(usize, @intCast(y)) * CHUNK_W +
         @as(usize, @intCast(z));
 }
 
-/// Palette-compressed block storage for a single chunk.
+/// A cell of a chunk as one integer: its `blockLinearIdx`. The light queues
+/// hold cells in this type (u16 for a 256-high column).
+const CellId = std.math.IntFittingRange(0, BLOCKS_PER_CHUNK - 1);
+
+inline fn cellId(x: usize, y: usize, z: usize) CellId {
+    return @intCast(x * (CHUNK_H * CHUNK_W) + y * CHUNK_W + z);
+}
+
+inline fn cellXyz(v: CellId) [3]usize {
+    const i: usize = v;
+    return .{ i / (CHUNK_H * CHUNK_W), (i / CHUNK_W) % CHUNK_H, i % CHUNK_W };
+}
+
+/// The blocks of a chunk: a column of SECTION_COUNT paletted sections
+/// (`section.zig`), from local y 0 upward. Section s holds local y 16 × s
+/// to 16 × s + 15. Each section has its own palette and index width, so
+/// open air above the terrain and solid rock below it are sections with
+/// no index array.
 ///
-/// A paletted chunk tracks which `BlockType`s actually appear in the column
-/// and stores per-block indices into that palette in a packed `[]u64` bit
-/// array. Bit width is chosen from palette size:
-///
-///   palette size | bits_per_entry | raw block_bytes (48×256×48)
-///   ------------ | -------------- | ---------------------------
-///      1         |   0 (uniform)  |      0   (single-constant, no data)
-///      2         |   1            |  73 728
-///      3–4       |   2            | 147 456
-///      5–8       |   3            | 221 184  (aligned-pack: 21 entries/u64)
-///      9–16      |   4            | 294 912
-///     17–32      |   5            | 368 640  (12 entries/u64)
-///     33–64      |   6            | 442 368  (10 entries/u64)
-///     65–128     |   7            | 516 096  (9 entries/u64)
-///    129–256     |   8            | 589 824  (8 entries/u64)
-///
-/// "Aligned packing" means each `u64` holds `floor(64 / bits)` entries side
-/// by side with no entry crossing a word boundary. A handful of bits are
-/// wasted per word for widths 3/5/6/7 — we trade that for trivial get/set.
-///
-/// Palette entries are append-only in insertion order. The engine never
-/// shrinks the palette: once a block type has been seen in a chunk it stays
-/// in the table, and growing past a power-of-two boundary triggers a single
-/// full re-pack into a wider `data` array. (Shrink/compact is explicitly
-/// out of scope for this pass — see `docs/memory.md` for the ranking.)
-///
-/// Invariants:
-///   - `palette_len >= 1` always (slot 0 is `.air` after `init`).
-///   - `bits_per_entry == 0` iff `palette_len == 1` iff `data.len == 0`.
-///     All reads in that state return `palette[0]` without touching `data`.
+/// The cell index of `get` and `set` is `blockLinearIdx`. `getAt` and
+/// `setAt` take the local cell coordinates.
 pub const PalettedBlocks = struct {
-    /// Up to 256 distinct block types — matches `BlockType`'s `u8` width so
-    /// the palette can never overflow. Unused slots hold `.air` as a
-    /// harmless sentinel. Fixed-size so palette growth never allocates; the
-    /// only heap path is growing `data` when `bits_per_entry` increases.
-    palette: [256]BlockType = @splat(.air),
-    palette_len: u16 = 1,
-    bits_per_entry: u8 = 0,
-    data: []u64 = &[_]u64{},
-
-    /// Return min bits needed to index a palette of `palette_size` entries.
-    /// A uniform chunk (size 1) needs zero bits — we don't even allocate.
-    pub fn minBitsFor(palette_size: usize) u8 {
-        if (palette_size <= 1) return 0;
-        var b: u8 = 1;
-        var cap: usize = 2;
-        while (cap < palette_size) : (b += 1) cap *= 2;
-        return b;
-    }
-
-    /// Entries per u64 for aligned-pack layout. Only valid when bits > 0.
-    inline fn entriesPerWord(bits: u8) usize {
-        return 64 / @as(usize, bits);
-    }
-
-    /// Number of u64 words needed to hold BLOCKS_PER_CHUNK entries at the
-    /// given bit width. Only valid when bits > 0.
-    pub inline fn wordCountFor(bits: u8) usize {
-        const epw = entriesPerWord(bits);
-        return (BLOCKS_PER_CHUNK + epw - 1) / epw;
-    }
+    sections: [SECTION_COUNT]Section = @splat(.{}),
 
     pub fn deinit(self: *PalettedBlocks, allocator: std.mem.Allocator) void {
-        if (self.data.len > 0) allocator.free(self.data);
-        self.* = .{};
+        for (&self.sections) |*sec| sec.deinit(allocator);
     }
 
-    /// Total RAM footprint of this paletted block array, in bytes. Counts
-    /// the u64 backing store plus the fixed-size palette (256 BlockType
-    /// slots = 256 bytes) so the number is comparable across chunks.
+    /// Bytes of the block storage: the section structs and their heap
+    /// arrays.
     pub fn sizeBytes(self: *const PalettedBlocks) usize {
-        return @sizeOf([256]BlockType) + self.data.len * @sizeOf(u64);
+        var n: usize = @sizeOf(PalettedBlocks);
+        for (&self.sections) |*sec| n += sec.heapBytes();
+        return n;
     }
 
-    /// Look up a block by linear index (see `blockLinearIdx`). Caller is
-    /// responsible for bounds; OOB is UB in the sense that it will happily
-    /// read past the end of `data` if the index is wrong.
+    /// The largest palette of the sections.
+    pub fn paletteLen(self: *const PalettedBlocks) usize {
+        var n: usize = 0;
+        for (&self.sections) |*sec| n = @max(n, sec.len);
+        return n;
+    }
+
+    /// The largest index width of the sections.
+    pub fn maxBits(self: *const PalettedBlocks) u8 {
+        var n: u8 = 0;
+        for (&self.sections) |*sec| n = @max(n, sec.bits);
+        return n;
+    }
+
+    /// The block at local cell (x, y, z). The caller makes sure that the
+    /// cell is in the chunk.
+    pub inline fn getAt(self: *const PalettedBlocks, x: usize, y: usize, z: usize) BlockType {
+        return self.sections[y >> 4].get(section_mod.cellIndex(x, y & 15, z));
+    }
+
+    /// The block at linear index `idx` (see `blockLinearIdx`).
     pub inline fn get(self: *const PalettedBlocks, idx: usize) BlockType {
-        // Uniform fast path — every cell resolves to the single palette entry.
-        if (self.bits_per_entry == 0) return self.palette[0];
-        const bits: usize = self.bits_per_entry;
-        const epw: usize = 64 / bits;
-        const word = idx / epw;
-        const slot = idx % epw;
-        const bit_off: u6 = @intCast(slot * bits);
-        const mask: u64 = (@as(u64, 1) << @intCast(bits)) - 1;
-        const pi: usize = @intCast((self.data[word] >> bit_off) & mask);
-        return self.palette[pi];
+        const x = idx / (CHUNK_H * CHUNK_W);
+        const y = (idx / CHUNK_W) % CHUNK_H;
+        return self.getAt(x, y, idx % CHUNK_W);
     }
 
-    /// Write a block by linear index. Grows the palette and re-packs `data`
-    /// if needed. Allocation only happens when `bits_per_entry` increases
-    /// (at most `ceil(log2(256)) = 8` times over the lifetime of a chunk).
-    pub fn set(
-        self: *PalettedBlocks,
-        allocator: std.mem.Allocator,
-        idx: usize,
-        block: BlockType,
-    ) !void {
-        // Find the block in the palette; append if new.
-        var pi: usize = self.palette_len; // sentinel "not found"
-        for (self.palette[0..self.palette_len], 0..) |b, i| {
-            if (b == block) {
-                pi = i;
-                break;
-            }
-        }
-        if (pi == self.palette_len) {
-            // New entry — palette is a fixed-size array, so append is
-            // just a write + length bump. Bit width might need to grow.
-            self.palette[self.palette_len] = block;
-            self.palette_len += 1;
-            const required = minBitsFor(self.palette_len);
-            if (required > self.bits_per_entry) {
-                try self.grow(allocator, required);
-            }
-        }
-
-        // Uniform chunk: still palette_len == 1, pi must be 0, nothing to write.
-        if (self.bits_per_entry == 0) return;
-
-        const bits: usize = self.bits_per_entry;
-        const epw: usize = 64 / bits;
-        const word = idx / epw;
-        const slot = idx % epw;
-        const bit_off: u6 = @intCast(slot * bits);
-        const mask: u64 = (@as(u64, 1) << @intCast(bits)) - 1;
-        const old_word = self.data[word];
-        const cleared = old_word & ~(mask << bit_off);
-        self.data[word] = cleared | ((@as(u64, @intCast(pi)) & mask) << bit_off);
+    /// Set local cell (x, y, z). The section palette grows when the block
+    /// type is new in the section, and then it can allocate.
+    pub fn setAt(self: *PalettedBlocks, allocator: std.mem.Allocator, x: usize, y: usize, z: usize, block: BlockType) !void {
+        try self.sections[y >> 4].set(allocator, section_mod.cellIndex(x, y & 15, z), block);
     }
 
-    /// Allocate a wider `data` array and re-pack every entry from the
-    /// current layout into it. Called only from `set` on palette overflow.
-    /// When growing from bits=0 (uniform) the new array is all-zeros, which
-    /// correctly re-maps every block to palette[0] == the previous uniform
-    /// value (slot 0 never moves).
-    fn grow(self: *PalettedBlocks, allocator: std.mem.Allocator, new_bits: u8) !void {
-        const new_word_count = wordCountFor(new_bits);
-        const new_data = try allocator.alloc(u64, new_word_count);
-        @memset(new_data, 0);
-
-        const old_bits = self.bits_per_entry;
-        if (old_bits > 0) {
-            const old_epw: usize = 64 / @as(usize, old_bits);
-            const new_epw: usize = 64 / @as(usize, new_bits);
-            const old_mask: u64 = (@as(u64, 1) << @intCast(old_bits)) - 1;
-            var i: usize = 0;
-            while (i < BLOCKS_PER_CHUNK) : (i += 1) {
-                const ow = i / old_epw;
-                const os = i % old_epw;
-                const o_off: u6 = @intCast(os * @as(usize, old_bits));
-                const val = (self.data[ow] >> o_off) & old_mask;
-
-                const nw = i / new_epw;
-                const ns = i % new_epw;
-                const n_off: u6 = @intCast(ns * @as(usize, new_bits));
-                new_data[nw] |= val << n_off;
-            }
-        }
-
-        if (self.data.len > 0) allocator.free(self.data);
-        self.data = new_data;
-        self.bits_per_entry = new_bits;
+    /// Set the block at linear index `idx` (see `blockLinearIdx`).
+    pub fn set(self: *PalettedBlocks, allocator: std.mem.Allocator, idx: usize, block: BlockType) !void {
+        const x = idx / (CHUNK_H * CHUNK_W);
+        const y = (idx / CHUNK_W) % CHUNK_H;
+        try self.setAt(allocator, x, y, idx % CHUNK_W, block);
     }
 
     /// Write `table[block]` for each cell into `out`, in `blockLinearIdx`
-    /// order. It reads the packed data once in storage order. The bit width
-    /// is a comptime value in the inner loop, so the compiler unrolls each
-    /// word. The light stage (pipeline/stages.zig) reads its cells this way.
+    /// order. The light stage (pipeline/stages.zig) reads its cells this
+    /// way. Each section decodes in 16 runs of 256 cells.
     pub fn decode(self: *const PalettedBlocks, table: *const [256]u8, out: *[BLOCKS_PER_CHUNK]u8) void {
-        if (self.bits_per_entry == 0) {
-            @memset(out, table[@backingInt(self.palette[0])]);
-            return;
-        }
-        var value: [256]u8 = @splat(0);
-        for (self.palette[0..self.palette_len], 0..) |b, i| value[i] = table[@backingInt(b)];
-        switch (self.bits_per_entry) {
-            inline 1...8 => |bits| self.decodeBits(bits, &value, out),
-            else => unreachable,
+        for (&self.sections, 0..) |*sec, s| {
+            sec.decodeRuns(table, out[s * section_mod.RUN ..].ptr, CHUNK_H * CHUNK_W);
         }
     }
 
-    fn decodeBits(self: *const PalettedBlocks, comptime bits: u6, value: *const [256]u8, out: *[BLOCKS_PER_CHUNK]u8) void {
-        const epw: usize = 64 / @as(usize, bits);
-        const mask: u64 = (@as(u64, 1) << bits) - 1;
-        const full_words = BLOCKS_PER_CHUNK / epw;
-        var idx: usize = 0;
-        for (self.data[0..full_words]) |word| {
-            var w = word;
-            inline for (0..epw) |k| {
-                out[idx + k] = value[@intCast(w & mask)];
-                w >>= bits;
-            }
-            idx += epw;
-        }
-        // The last word can be part full.
-        if (full_words < self.data.len) {
-            var w = self.data[full_words];
-            while (idx < BLOCKS_PER_CHUNK) : (idx += 1) {
-                out[idx] = value[@intCast(w & mask)];
-                w >>= bits;
-            }
-        }
-    }
-
-    /// Pack a dense block buffer into a new paletted store, in one pass.
-    /// Palette slot 0 is `.air`. The other block types follow in the order
-    /// of their first cell. `get` gives back each value of `dense`.
+    /// Pack a dense block buffer into sections, one pass for each section.
+    /// `get` gives back each value of `dense`.
     pub fn fromDense(allocator: std.mem.Allocator, dense: *const DenseBlocks) !PalettedBlocks {
         var out: PalettedBlocks = .{};
-        const none: u8 = 0xFF;
-        // Palette index of each block type, or `none`.
-        var index_of: [256]u8 = @splat(none);
-        index_of[@backingInt(BlockType.air)] = 0;
-        for (dense) |b| {
-            if (index_of[@backingInt(b)] != none) continue;
-            index_of[@backingInt(b)] = @intCast(out.palette_len);
-            out.palette[out.palette_len] = b;
-            out.palette_len += 1;
-        }
-        const bits = minBitsFor(out.palette_len);
-        if (bits == 0) return out;
-
-        const data = try allocator.alloc(u64, wordCountFor(bits));
-        const epw = entriesPerWord(bits);
-        const shift: u6 = @intCast(bits);
-        var idx: usize = 0;
-        for (data) |*word| {
-            const end = @min(idx + epw, BLOCKS_PER_CHUNK);
-            // Pack the last entry of the word first, so that each entry
-            // goes in at its slot × bits offset.
-            var w: u64 = 0;
-            var i = end;
-            while (i > idx) {
-                i -= 1;
-                w = (w << shift) | index_of[@backingInt(dense[i])];
+        errdefer out.deinit(allocator);
+        var cells: [section_mod.CELLS]BlockType = undefined;
+        for (&out.sections, 0..) |*sec, s| {
+            for (0..CHUNK_W) |x| {
+                const src = dense[x * CHUNK_H * CHUNK_W + s * section_mod.RUN ..][0..section_mod.RUN];
+                @memcpy(cells[x * section_mod.RUN ..][0..section_mod.RUN], src);
             }
-            word.* = w;
-            idx = end;
+            sec.* = try Section.fromCells(allocator, &cells);
         }
-        out.data = data;
-        out.bits_per_entry = bits;
         return out;
     }
 };
@@ -316,6 +187,11 @@ pub const DenseBlocks = [BLOCKS_PER_CHUNK]BlockType;
 /// A dense light grid, [x][y][z]: what the light passes compute into.
 pub const DenseLight = [CHUNK_W][CHUNK_H][CHUNK_W]u8;
 
+/// True when bit y of column (x, z) of `cols` is set (see `solidColumns`).
+inline fn isSolid(cols: *const [CHUNK_W][CHUNK_W]Col, x: usize, y: usize, z: usize) bool {
+    return (cols[x][z][y >> 6] >> @intCast(y & 63)) & 1 != 0;
+}
+
 /// Pass 3 of `Chunk.computeSkylightWithNeighbors`: seed our edge cells from
 /// the neighbours (order -X, +X, -Z, +Z), then spread. The seeds have mixed
 /// levels, so the queue is not in level order. A cell can go in the queue
@@ -323,26 +199,26 @@ pub const DenseLight = [CHUNK_W][CHUNK_H][CHUNK_W]u8;
 /// queue at most once, so a ring of one entry per cell is enough.
 fn seedSkylightFromNeighbours(
     sky: *DenseLight,
-    solid: *const [CHUNK_W][CHUNK_W][4]u64,
-    queue: *[CHUNK_W * CHUNK_H * CHUNK_W]u16,
+    solid: *const [CHUNK_W][CHUNK_W]Col,
+    queue: *[BLOCKS_PER_CHUNK]CellId,
     nbs: [4]?*const Chunk,
 ) void {
-    const N = CHUNK_W * CHUNK_H * CHUNK_W;
+    const N = BLOCKS_PER_CHUNK;
     const Ring = struct {
-        queue: *[N]u16,
+        queue: *[N]CellId,
         in_queue: [N / 64]u64 = @splat(0),
         head: usize = 0,
         count: usize = 0,
 
         fn push(r: *@This(), x: usize, y: usize, z: usize) void {
-            const v: u16 = @intCast((x << 12) | (y << 4) | z);
+            const v = cellId(x, y, z);
             const bit = @as(u64, 1) << @intCast(v & 63);
             if (r.in_queue[v >> 6] & bit != 0) return;
             r.in_queue[v >> 6] |= bit;
             r.queue[(r.head + r.count) % N] = v;
             r.count += 1;
         }
-        fn pop(r: *@This()) u16 {
+        fn pop(r: *@This()) CellId {
             const v = r.queue[r.head];
             r.head = (r.head + 1) % N;
             r.count -= 1;
@@ -350,12 +226,6 @@ fn seedSkylightFromNeighbours(
             return v;
         }
     };
-    const isSolid = struct {
-        fn f(cols: *const [CHUNK_W][CHUNK_W][4]u64, x: usize, y: usize, z: usize) bool {
-            return (cols[x][z][y >> 6] >> @intCast(y & 63)) & 1 != 0;
-        }
-    }.f;
-
     var ring = Ring{ .queue = queue };
     const W = CHUNK_W;
     for (nbs, 0..) |maybe_nb, side| {
@@ -377,10 +247,7 @@ fn seedSkylightFromNeighbours(
     }
 
     while (ring.count > 0) {
-        const v = ring.pop();
-        const x: usize = v >> 12;
-        const y: usize = (v >> 4) & 0xFF;
-        const z: usize = v & 0xF;
+        const x, const y, const z = cellXyz(ring.pop());
         const level = sky[x][y][z];
         if (level < 2) continue;
         const target = level - 1;
@@ -410,10 +277,10 @@ fn seedSkylightFromNeighbours(
 pub const LightGrid = struct {
     pub const SECTION_H = 16;
     pub const SECTIONS = CHUNK_H / SECTION_H;
-    const Section = [CHUNK_W][SECTION_H][CHUNK_W]u8;
+    const Cells = [CHUNK_W][SECTION_H][CHUNK_W]u8;
 
     /// Per section: the array, or null when every cell is `fill`.
-    arrays: [SECTIONS]?*Section = @splat(null),
+    arrays: [SECTIONS]?*Cells = @splat(null),
     fill: [SECTIONS]u8 = @splat(0),
 
     pub inline fn get(self: *const LightGrid, x: usize, y: usize, z: usize) u8 {
@@ -441,7 +308,7 @@ pub const LightGrid = struct {
                 self.fill[s] = v;
                 continue;
             }
-            const arr = self.arrays[s] orelse try allocator.create(Section);
+            const arr = self.arrays[s] orelse try allocator.create(Cells);
             self.arrays[s] = arr;
             for (0..CHUNK_W) |x| {
                 @memcpy(std.mem.asBytes(&arr[x]), std.mem.asBytes(dense[x][y0..][0..SECTION_H]));
@@ -493,7 +360,7 @@ pub const LightGrid = struct {
         errdefer out.deinit(allocator);
         for (self.arrays, 0..) |a, s| {
             if (a) |arr| {
-                const copy = try allocator.create(Section);
+                const copy = try allocator.create(Cells);
                 copy.* = arr.*;
                 out.arrays[s] = copy;
             }
@@ -505,7 +372,7 @@ pub const LightGrid = struct {
     pub fn bytes(self: *const LightGrid) usize {
         var n: usize = 0;
         for (self.arrays) |a| {
-            if (a != null) n += @sizeOf(Section);
+            if (a != null) n += @sizeOf(Cells);
         }
         return n;
     }
@@ -580,22 +447,23 @@ pub const Chunk = struct {
         return self.blockDataBytes() + self.skylightBytes();
     }
 
-    /// Current number of distinct block types present in this chunk.
-    /// Useful for the per-chunk size log line and for tests that want to
-    /// assert palette-fit behaviour.
+    /// The largest palette of the sections of this chunk. The per-chunk
+    /// size log line reads it.
     pub fn paletteLen(self: *const Chunk) usize {
-        return self.blocks.palette_len;
+        return self.blocks.paletteLen();
     }
 
+    /// The largest index width of the sections of this chunk.
     pub fn bitsPerEntry(self: *const Chunk) u8 {
-        return self.blocks.bits_per_entry;
+        return self.blocks.maxBits();
     }
 
+    /// The block at local cell (x, y, z), or `.air` outside the chunk.
     pub fn getBlock(self: *const Chunk, x: i32, y: i32, z: i32) BlockType {
         if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) {
             return .air;
         }
-        return self.blocks.get(blockLinearIdx(x, y, z));
+        return self.resolveBlockRaw(x, y, z);
     }
 
     /// Bounds-free block read. Caller MUST guarantee `0 <= x < CHUNK_W`,
@@ -606,44 +474,57 @@ pub const Chunk = struct {
     /// so the compiler can fold it into the mesher's hot loops without an
     /// extra call.
     pub inline fn resolveBlockRaw(self: *const Chunk, x: i32, y: i32, z: i32) BlockType {
-        return self.blocks.get(blockLinearIdx(x, y, z));
+        return self.blocks.getAt(@intCast(x), @intCast(y), @intCast(z));
     }
 
-    /// For each column (x, z), a 256-bit mask over y: bit y is set when the
-    /// block is not air. It reads the packed data once in storage order, with
-    /// no division per block, so it is much faster than 65 536 getBlock calls.
-    pub fn solidColumns(self: *const Chunk, out: *[CHUNK_W][CHUNK_W][4]u64) void {
-        comptime std.debug.assert(CHUNK_W == 16 and CHUNK_H == 256);
-        const pb = &self.blocks;
-        if (pb.bits_per_entry == 0) {
-            const fill: u64 = if (pb.palette[0] == .air) 0 else ~@as(u64, 0);
-            for (out) |*row| for (row) |*col| {
-                col.* = .{ fill, fill, fill, fill };
-            };
-            return;
-        }
-        var solid: [256]bool = undefined;
-        for (pb.palette, 0..) |b, i| solid[i] = b != .air;
+    /// For each column (x, z), a bit mask over local y: bit y is set when
+    /// the block is not air. It reads each section once in storage order,
+    /// with no division per block, so it is much faster than a getBlock
+    /// call for each cell. A section with one block type sets 16 bits of
+    /// each column at a time.
+    pub fn solidColumns(self: *const Chunk, out: *[CHUNK_W][CHUNK_W]Col) void {
         for (out) |*row| for (row) |*col| {
-            col.* = .{ 0, 0, 0, 0 };
+            col.* = @splat(0);
         };
-        const bits: u6 = @intCast(pb.bits_per_entry);
+        for (&self.blocks.sections, 0..) |*sec, s| {
+            const y0 = s * section_mod.SIZE;
+            const word = y0 >> 6;
+            const shift: u6 = @intCast(y0 & 63);
+            if (sec.bits == 0) {
+                if (sec.single == .air) continue;
+                for (out) |*row| for (row) |*col| {
+                    col[word] |= @as(u64, 0xFFFF) << shift;
+                };
+                continue;
+            }
+            var solid: [256]bool = @splat(false);
+            for (sec.palette(), 0..) |b, i| solid[i] = b != .air;
+            switch (sec.bits) {
+                inline 1, 2, 4, 8 => |bits| solidSectionBits(bits, sec, &solid, out, word, shift),
+                else => unreachable,
+            }
+        }
+    }
+
+    fn solidSectionBits(
+        comptime bits: u8,
+        sec: *const Section,
+        solid: *const [256]bool,
+        out: *[CHUNK_W][CHUNK_W]Col,
+        word: usize,
+        shift: u6,
+    ) void {
         const epw: usize = 64 / @as(usize, bits);
         const mask: u64 = (@as(u64, 1) << bits) - 1;
-        var idx: usize = 0;
-        for (pb.data) |word| {
-            var w = word;
-            var k: usize = 0;
-            while (k < epw and idx < BLOCKS_PER_CHUNK) : (k += 1) {
+        for (sec.indices(), 0..) |packed_word, wi| {
+            var w = packed_word;
+            inline for (0..epw) |k| {
                 if (solid[@intCast(w & mask)]) {
-                    // idx = x * (H * W) + y * W + z
-                    const x = idx >> 12;
-                    const y = (idx >> 4) & 0xFF;
-                    const z = idx & 0xF;
-                    out[x][z][y >> 6] |= @as(u64, 1) << @intCast(y & 63);
+                    // Cell index = x * 256 + y * 16 + z (section.cellIndex).
+                    const i = wi * epw + k;
+                    out[i >> 8][i & 15][word] |= @as(u64, 1) << @intCast(shift + ((i >> 4) & 15));
                 }
                 w >>= bits;
-                idx += 1;
             }
         }
     }
@@ -652,7 +533,7 @@ pub const Chunk = struct {
         if (x < 0 or x >= CHUNK_W or y < 0 or y >= CHUNK_H or z < 0 or z >= CHUNK_W) {
             return;
         }
-        try self.blocks.set(self.allocator, blockLinearIdx(x, y, z), block);
+        try self.blocks.setAt(self.allocator, @intCast(x), @intCast(y), @intCast(z), block);
     }
 
     /// Read the skylight at (x, y, z) using local chunk coordinates.
@@ -724,21 +605,15 @@ pub const Chunk = struct {
         //    level, so a cell gets its final value when it is first set.
         // Only sky cells next to an air cell at 0 can give light, so only
         // they go in the queue first. Solidity comes from bit masks.
-        comptime std.debug.assert(CHUNK_W == 16 and CHUNK_H == 256);
-        var solid: [CHUNK_W][CHUNK_W][4]u64 = undefined;
+        var solid: [CHUNK_W][CHUNK_W]Col = undefined;
         self.solidColumns(&solid);
-        const isSolid = struct {
-            fn f(cols: *const [CHUNK_W][CHUNK_W][4]u64, x: usize, y: usize, z: usize) bool {
-                return (cols[x][z][y >> 6] >> @intCast(y & 63)) & 1 != 0;
-            }
-        }.f;
 
         // Pass 1: column seed. top[x][z] = the y above the highest solid block.
         var top: [CHUNK_W][CHUNK_W]u16 = undefined;
         for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| {
             const c = solid[x][z];
             var t: u16 = 0;
-            var w: usize = 4;
+            var w: usize = COL_WORDS;
             while (w > 0) {
                 w -= 1;
                 if (c[w] != 0) {
@@ -750,9 +625,9 @@ pub const Chunk = struct {
             for (0..CHUNK_H) |y| sky[x][y][z] = if (y >= t) MAX_SKYLIGHT else 0;
         };
 
-        // Queue of cells, packed x << 12 | y << 4 | z. A cell enters at most
-        // once, so CHUNK_W * CHUNK_H * CHUNK_W entries are enough.
-        var queue: [CHUNK_W * CHUNK_H * CHUNK_W]u16 = undefined;
+        // Queue of cells (`cellId`). A cell enters at most once, so
+        // BLOCKS_PER_CHUNK entries are enough.
+        var queue: [BLOCKS_PER_CHUNK]CellId = undefined;
         var head: usize = 0;
         var tail: usize = 0;
 
@@ -770,18 +645,15 @@ pub const Chunk = struct {
             if (z > 0) hi = @max(hi, top[x][z - 1]);
             if (z + 1 < CHUNK_W) hi = @max(hi, top[x][z + 1]);
             for (t..@min(hi, CHUNK_H)) |y| {
-                queue[tail] = @intCast((x << 12) | (y << 4) | z);
+                queue[tail] = cellId(x, y, z);
                 tail += 1;
             }
         };
 
         // Pass 2: breadth-first spread.
         while (head < tail) {
-            const v = queue[head];
+            const x, const y, const z = cellXyz(queue[head]);
             head += 1;
-            const x: usize = v >> 12;
-            const y: usize = (v >> 4) & 0xFF;
-            const z: usize = v & 0xF;
             const level = sky[x][y][z];
             if (level < 2) continue;
             const target = level - 1;
@@ -797,7 +669,7 @@ pub const Chunk = struct {
                 if (isSolid(&solid, nxu, nyu, nzu)) continue;
                 if (sky[nxu][nyu][nzu] >= target) continue;
                 sky[nxu][nyu][nzu] = target;
-                queue[tail] = @intCast((nxu << 12) | (nyu << 4) | nzu);
+                queue[tail] = cellId(nxu, nyu, nzu);
                 tail += 1;
             }
         }

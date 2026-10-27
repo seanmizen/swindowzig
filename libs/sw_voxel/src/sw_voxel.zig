@@ -1,5 +1,5 @@
 //! sw_voxel: voxel chunks for games. It holds the chunk storage (paletted
-//! blocks, skylight and block light), the greedy mesher, the pure chunk
+//! 16 × 16 × 16 block sections, skylight and block light), the greedy mesher, the pure chunk
 //! stages, the chunk scheduler, the chunk protocol, the executors (Inline,
 //! ThreadPool and the Web Worker pool) and the frustum cull.
 //!
@@ -10,7 +10,9 @@ const builtin = @import("builtin");
 
 /// The content of the game: block type, emission and generator.
 pub const content = @import("content.zig");
-/// One chunk: blocks, skylight and block light.
+/// One paletted block section of 16 × 16 × 16 cells.
+pub const section = @import("section.zig");
+/// One chunk: a column of sections, skylight and block light.
 pub const chunk = @import("chunk.zig");
 /// The greedy mesher: chunk blocks to packed quads.
 pub const mesher = @import("mesher.zig");
@@ -42,6 +44,7 @@ pub const chunk_worker = @import("pipeline/chunk_worker_main.zig");
 
 test {
     _ = content;
+    _ = section;
     _ = chunk;
     _ = mesher;
     _ = world;

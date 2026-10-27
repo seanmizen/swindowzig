@@ -4,6 +4,7 @@ const content = @import("content.zig");
 const stages = @import("pipeline/stages.zig");
 const protocol = @import("pipeline/protocol.zig");
 const mesh_bytes = @import("pipeline/mesh_bytes.zig");
+const mesher_mod = @import("mesher.zig");
 const Chunk = chunk_mod.Chunk;
 const Version = stages.Version;
 const Inputs = stages.Inputs;
@@ -44,9 +45,9 @@ pub const ChunkMap = std.HashMap(ChunkKey, *LoadedChunk, ChunkKey.HashContext, s
 pub const MeshInfo = struct {
     quad_count: u32 = 0,
     /// The y range of the quads, for the frustum cull. With no quads, y_min
-    /// is CHUNK_H and y_max is 0.
-    y_min: f32 = chunk_mod.CHUNK_H,
-    y_max: f32 = 0,
+    /// is mesher.EMPTY_Y_MIN and y_max is mesher.EMPTY_Y_MAX.
+    y_min: f32 = mesher_mod.EMPTY_Y_MIN,
+    y_max: f32 = mesher_mod.EMPTY_Y_MAX,
     /// protocol.meshHash of the quad bytes. The tests compare meshes by it.
     hash: u64 = 0,
 
@@ -175,6 +176,13 @@ pub const LoadedChunk = struct {
 };
 
 pub const World = struct {
+    /// The lowest world y (the content setting `min_y`). World, BlockGetter
+    /// and the scheduler edits take world y.
+    pub const min_y: i32 = chunk_mod.MIN_Y;
+    /// The number of cells in a column (the content setting `height`). The
+    /// world is y `min_y` to `min_y + height - 1`.
+    pub const height: u32 = chunk_mod.CHUNK_H;
+
     allocator: std.mem.Allocator,
     chunks: ChunkMap,
     /// The render distance in chunks (circular radius). The fog and the
@@ -263,7 +271,7 @@ pub const World = struct {
     /// order (P2).
     pub fn applyEditLog(self: *const World, cx: i32, cz: i32, blocks: *chunk_mod.PalettedBlocks) !void {
         const list = self.edits.get(.{ .cx = cx, .cz = cz }) orelse return;
-        for (list.items) |e| try blocks.set(self.allocator, chunk_mod.blockLinearIdx(e.x, e.y, e.z), e.block);
+        for (list.items) |e| try blocks.setAt(self.allocator, e.x, e.y, e.z, e.block);
     }
 
     /// Remove chunk (cx, cz) and free it. The GPU buffers belong to main.
@@ -413,7 +421,7 @@ pub const World = struct {
 
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
-        return lc.chunk.getBlock(lx, wy, lz);
+        return lc.chunk.getBlock(lx, wy - chunk_mod.MIN_Y, lz);
     }
 
     /// The reference path: set a block at world-space coordinates and relight
@@ -430,7 +438,7 @@ pub const World = struct {
         // Paletted chunk — setBlock can allocate when the palette grows
         // past a power-of-two boundary. Propagate the error instead of
         // swallowing it; OOM here is the caller's problem, not ours.
-        try lc_ptr.*.chunk.setBlock(lx, wy, lz, block);
+        try lc_ptr.*.chunk.setBlock(lx, wy - chunk_mod.MIN_Y, lz, block);
 
         // Live horizontal neighbours (null if unloaded), for the relight.
         const nb_xn = self.chunks.get(.{ .cx = cx - 1, .cz = cz });
@@ -480,16 +488,17 @@ pub const World = struct {
     /// getBlockLight returns 0 for unloaded chunks (no false emitter glow).
     /// Only skylight uses MAX_SKYLIGHT because it has a global source (the sun).
     pub fn getSkylight(self: *const World, wx: i32, wy: i32, wz: i32) u8 {
-        if (wy >= chunk_mod.CHUNK_H) return chunk_mod.MAX_SKYLIGHT;
+        const ly = wy - chunk_mod.MIN_Y;
+        if (ly >= chunk_mod.CHUNK_H) return chunk_mod.MAX_SKYLIGHT;
         // Below the world is dark, also under a missing chunk, as in a loaded
         // chunk (Chunk.getSkylight) and in SnapshotGetter.
-        if (wy < 0) return 0;
+        if (ly < 0) return 0;
         const cx = chunkCoordOf(wx);
         const cz = chunkCoordOf(wz);
         const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return chunk_mod.MISSING_SKYLIGHT;
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
-        return lc.chunk.getSkylight(lx, wy, lz);
+        return lc.chunk.getSkylight(lx, ly, lz);
     }
 
     /// Get the block-light at world-space coordinates. Returns 0 for any
@@ -501,7 +510,7 @@ pub const World = struct {
         const lc = self.chunks.get(.{ .cx = cx, .cz = cz }) orelse return chunk_mod.MISSING_BLOCK_LIGHT;
         const lx = wx - cx * chunk_mod.CHUNK_W;
         const lz = wz - cz * chunk_mod.CHUNK_W;
-        return lc.chunk.getBlockLight(lx, wy, lz);
+        return lc.chunk.getBlockLight(lx, wy - chunk_mod.MIN_Y, lz);
     }
 
     /// Returns a BlockGetter backed by this World (queries world coords).

@@ -514,12 +514,23 @@ pub fn build(b: *std.Build) void {
 
     // sw_voxel unit tests, with the test content (libs/sw_voxel/testing):
     // the chunk storage, the light, the mesher, World and the frustum.
-    const voxel_lib_tests = addVoxel(b, web_libs.gpu, .{
-        .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig"),
-        .target = target,
-        .optimize = optimize,
-    }, .{ .root_source_file = b.path("libs/sw_voxel/testing/content.zig") });
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = voxel_lib_tests.voxel })).step);
+    // They run two times: with the default world height (y 0 to 255), and
+    // with a tall world (y -64 to 319) to test the height setting.
+    inline for (.{ .{ 0, 256 }, .{ -64, 384 } }) |d| {
+        const voxel_lib_tests = addVoxel(b, web_libs.gpu, .{
+            .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig"),
+            .target = target,
+            .optimize = optimize,
+        }, .{ .root_source_file = b.path("libs/sw_voxel/testing/content.zig") });
+        const test_dims = b.addOptions();
+        test_dims.addOption(i32, "min_y", d[0]);
+        test_dims.addOption(u32, "height", d[1]);
+        voxel_lib_tests.content.addImport("sw_voxel_test_dims", test_dims.createModule());
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{
+            .root_module = voxel_lib_tests.voxel,
+            .name = std.fmt.comptimePrint("sw_voxel_{d}_{d}", .{ d[0], d[1] }),
+        })).step);
+    }
     // The demo content (examples/voxel/content.zig): the GenConfig bytes
     // and the world_gen tests.
     const demo_content_tests = addVoxel(b, web_libs.gpu, .{

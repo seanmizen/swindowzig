@@ -150,7 +150,7 @@ inline fn windowIdx(x: usize, y: usize, z: usize) u32 {
 
 /// The skylight and block light of the middle chunk of `window`.
 ///
-/// It lights a window of 44 × 256 × 44 cells: the middle chunk and 14 cells
+/// It lights a window of 44 × CHUNK_H × 44 cells: the middle chunk and 14 cells
 /// of each neighbour. The rules are the rules of `Chunk.computeSkylight` and
 /// `Chunk.computeBlockLight`, on the whole window:
 ///
@@ -270,9 +270,12 @@ pub const LightScratch = struct {
                     max_top = @max(max_top, t);
                 }
             }
-            // Emitters, only for a chunk with an emissive block in its palette.
+            // Emitters, only for a chunk with an emissive block in the
+            // palette of a section.
             var any = false;
-            for (pb.palette[0..pb.palette_len]) |b| any = any or chunk_mod.emissionLevel(b) > 0;
+            for (&pb.sections) |*sec| {
+                for (sec.palette()) |b| any = any or chunk_mod.emissionLevel(b) > 0;
+            }
             if (!any) continue;
             for (rx.lo..rx.hi) |wx| {
                 const lx = rx.local0 + wx - rx.lo;
@@ -407,7 +410,7 @@ pub const LightScratch = struct {
         self.spread(&self.sky, tail);
     }
 
-    /// Copy the middle 16 × 256 × 16 cells of `grid` into `out`. Rows at and
+    /// Copy the middle 16 × CHUNK_H × 16 cells of `grid` into `out`. Rows at and
     /// above `y_hi` get `above`.
     fn extract(self: *const LightScratch, grid: *const [WINDOW_CELLS]u8, above: u8, out: *DenseLight) void {
         for (0..CHUNK_W) |x| {
@@ -447,7 +450,8 @@ pub const Neighbourhood = [SLOTS]ChunkData;
 /// The output of `mesh`. The caller owns `quads`.
 pub const MeshResult = struct {
     quads: []PackedQuad,
-    /// The y range of the quads. With no quads, y_min is CHUNK_H and y_max is 0.
+    /// The world y range of the quads. With no quads, y_min is
+    /// `mesher.EMPTY_Y_MIN` and y_max is `mesher.EMPTY_Y_MAX`.
     y_min: f32,
     y_max: f32,
 
@@ -484,9 +488,9 @@ pub fn mesh(
     };
 }
 
-/// A BlockGetter in the local coordinates of the middle chunk, backed by
-/// the neighbourhood. Outside the world (y < 0 or y >= CHUNK_H) it gives
-/// the values of World.
+/// A BlockGetter backed by the neighbourhood. x and z are local to the
+/// middle chunk, and y is world y, as for World. Outside the world it
+/// gives the values of World.
 const HoodGetter = struct {
     view: *const chunk_mod.Chunk,
     hood: *const Neighbourhood,
@@ -513,18 +517,20 @@ const HoodGetter = struct {
         return .outside;
     }
 
-    fn getBlock(ctx: *const anyopaque, x: i32, y: i32, z: i32) BlockType {
+    fn getBlock(ctx: *const anyopaque, x: i32, wy: i32, z: i32) BlockType {
         const self: *const HoodGetter = @ptrCast(@alignCast(ctx));
+        const y = wy - chunk_mod.MIN_Y;
         if (y < 0 or y >= CHUNK_H) return .air;
         return switch (self.locate(x, z)) {
             .center => self.view.resolveBlockRaw(x, y, z),
-            .cell => |c| c.data.blocks.get(chunk_mod.blockLinearIdx(c.x, y, c.z)),
+            .cell => |c| c.data.blocks.getAt(@intCast(c.x), @intCast(y), @intCast(c.z)),
             .outside => chunk_mod.MISSING_BLOCK,
         };
     }
 
-    fn getSkylight(ctx: *const anyopaque, x: i32, y: i32, z: i32) u8 {
+    fn getSkylight(ctx: *const anyopaque, x: i32, wy: i32, z: i32) u8 {
         const self: *const HoodGetter = @ptrCast(@alignCast(ctx));
+        const y = wy - chunk_mod.MIN_Y;
         if (y >= CHUNK_H) return MAX_SKYLIGHT;
         if (y < 0) return 0;
         return switch (self.locate(x, z)) {
@@ -534,8 +540,9 @@ const HoodGetter = struct {
         };
     }
 
-    fn getBlockLight(ctx: *const anyopaque, x: i32, y: i32, z: i32) u8 {
+    fn getBlockLight(ctx: *const anyopaque, x: i32, wy: i32, z: i32) u8 {
         const self: *const HoodGetter = @ptrCast(@alignCast(ctx));
+        const y = wy - chunk_mod.MIN_Y;
         if (y < 0 or y >= CHUNK_H) return 0;
         return switch (self.locate(x, z)) {
             .center => self.view.getBlockLight(x, y, z),
