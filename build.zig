@@ -243,6 +243,7 @@ pub fn build(b: *std.Build) void {
         "libs/sw_core/src/record.zig",
         "libs/sw_core/src/replay.zig",
         "libs/sw_core/src/tas.zig",
+        "libs/sw_core/src/action.zig",
         "libs/sw_platform/src/storage.zig",
         // sw_gpu: the mip chain maths and the descriptor checks have no
         // GPU code.
@@ -299,6 +300,18 @@ pub fn build(b: *std.Build) void {
         const run_unit_tests = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run_unit_tests.step);
     }
+
+    // sw_platform input settings: a save and a load through the file store.
+    // The test makes an sw_core ActionMap.
+    const input_settings_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_platform/src/input_settings.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    input_settings_tests.root_module.addImport("sw_core", web_libs.core);
+    test_step.dependOn(&b.addRunArtifact(input_settings_tests).step);
 
     // sw_render atlas layout tests: no GPU code. The layout uses the
     // sw_text shelf packer and the sw_gpu mip chain maths. The sw_text

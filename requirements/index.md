@@ -21,6 +21,8 @@
 | [`REQ-GPU-007`](gpu.md#req-gpu-007--the-wgsl-prefix-matches-the-frame-uniforms) | The WGSL prefix matches the frame uniforms | active | constraint | P1 | agent:SWZ-29 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
+| [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
+| [`REQ-INPUT-004`](input.md#req-input-004--saved-input-settings-load-in-a-newer-version) | Saved input settings load in a newer version | active | functional | P2 | agent:SWZ-49 |
 
 ## Dependency graph
 
@@ -42,6 +44,8 @@ graph TD
   REQ_GPU_007["REQ-GPU-007<br/>The WGSL prefix matches the frame uniforms"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
+  REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
+  REQ_INPUT_004["REQ-INPUT-004<br/>Saved input settings load in a newer version"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001

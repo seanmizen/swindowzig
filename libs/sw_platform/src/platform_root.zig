@@ -5,6 +5,7 @@ pub const wasm_canvas = @import("wasm_canvas.zig");
 pub const native_sdl = @import("native_sdl.zig");
 pub const null_backend = @import("null_backend.zig");
 pub const storage = @import("storage.zig");
+pub const input_settings = @import("input_settings.zig");
 
 pub const WindowInfo = platform.WindowInfo;
 pub const Backend = backend.Backend;
@@ -12,3 +13,6 @@ pub const Backend = backend.Backend;
 pub const storageGet = storage.storageGet;
 pub const storageSet = storage.storageSet;
 pub const storageDelete = storage.storageDelete;
+
+pub const saveInputSettings = input_settings.save;
+pub const loadInputSettings = input_settings.load;
