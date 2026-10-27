@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 9. Skipped: 2. Not started: 4.
+- Done: 9. Skipped: 3. Not started: 3.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -297,4 +297,27 @@ ticket of #102, in the order of the batch.
     The light and the AO of a coarse quad need a rule.
   - Proposal: split the ticket. Part 1: the pure LOD stage, with skirts
     and tests. Part 2: the scheduler and the protocol.
+- Risks: none. No code changed.
+
+## #40 occlusion culling and cave culling for chunks and entities
+
+- Status: skipped
+- Commit: see `git log --grep SWZ-40`
+- Reason: the ticket does not fit in the time limit of one ticket. The
+  flood fill of the faces of a section and the walk from the camera
+  section are pure, but the renderer draws one mesh for each chunk
+  column, not one mesh for each 16-cell section. Cave culling needs:
+  - the face connections of each section in the mesh result (a
+    protocol change).
+  - a mesh for each section, or a draw range for each section, in the
+    voxel renderer.
+  - a benchmark in a cave that compares the drawn chunks and the frame
+    (a golden image with culling on and off).
+- Open questions:
+  - The occlusion queries need the timestamp-style query support of
+    `sw_gpu` (#44 added timestamp query sets). Occlusion query sets are
+    not in `sw_gpu` yet.
+  - Proposal: split the ticket. Part 1: the section face graph and the
+    walk, pure and tested, plus the box culling call. Part 2: draw
+    ranges for each section in the renderer, and the cave benchmark.
 - Risks: none. No code changed.
