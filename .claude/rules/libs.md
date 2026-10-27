@@ -102,6 +102,22 @@ depth test rejects hidden fragments before they shade.
   The punctuation and navigation keys follow the physical key on the web
   (`KeyboardEvent.code`) and on SDL (the scancode) (REQ-INPUT-002).
 
+### Gamepads
+
+- Events `gamepad_connection`, `gamepad_button`, `gamepad_axis` (tags 12 to
+  14). `input().gamepad(slot)` (4 slots) has the buttons and the raw axes.
+  `stick(.left, settings)` and `trigger` apply the dead zones
+  (`GamepadSettings`). `Binding.gamepadButton(.south)` and
+  `Binding.gamepadAxis(.left_x, positive)` bind them to actions. The
+  `ActionMap.gamepad` field has the dead zones (REQ-INPUT-005).
+- A recording is version 2. The reader also reads version 1 (REQ-INPUT-006).
+  A new event type increases `serialize.VERSION`.
+- Native: SDL game controllers in `native_sdl.zig`. Web:
+  `backends/wasm/gamepad.ts` reads the Gamepad API once per frame, before
+  `swindowzig_frame`, and calls the exports of `web_gamepad.zig`.
+- TAS: `gamepad_down south`, `gamepad_up south`, `gamepad_axis left_x -0.5`,
+  each with an optional slot at the end.
+
 ### Text input (IME)
 
 - `ctx.startTextInput()` and `ctx.stopTextInput()` turn the platform input
@@ -133,6 +149,27 @@ depth test rejects hidden fragments before they shade.
   (`backends/wasm/held-bytes.ts`, by handle) to a GPU buffer. The bytes do
   not go through the wasm memory. The WebGPU bridge owns the store, and the
   "chunks" imports fill it. A native build has no held bytes.
+
+### Network (sw_net)
+
+- `Socket.open(allocator, ctx.io, url, options)`, then `poll()` in a loop
+  each tick until it gives null. Events: `open`, `message` (the bytes stay
+  valid until the next `poll`), `closed` (code, cause, retry delay). No
+  callback calls game code (REQ-NET-001).
+- Send only in the `open` state. `close` accepts code 1000 or 3000 to 4999,
+  because the browser accepts only these codes from a page.
+- `Options.reconnect` (a `Backoff`) connects again after a drop. The delay
+  doubles to `max_ms`, and an open connection sets the count to zero
+  (REQ-NET-003).
+- Native: one network thread for each connection does all the reads and
+  writes, so the TLS state has one owner. The thread waits for data with a
+  2 ms timeout, then writes the queued frames. `wss:` uses `std.crypto.tls`
+  with the system CA bundle. Each client frame has a random mask
+  (REQ-NET-002).
+- Web: `backends/wasm/websocket.ts` (import module "sw_net"). The old module
+  "net" (`net.ts`) stays for apps that use it. A URL that starts with "/"
+  goes to the host of the page. The browser does not tell a refused upgrade
+  from a failed connect, so both give `connect_failed`.
 
 ### Window, cursor and clipboard
 
@@ -215,8 +252,9 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_core/src/event.zig` | `Event` union — all input/system event variants |
 | `libs/sw_core/src/bus.zig` | Event bus: push/subscribe per tick |
 | `libs/sw_core/src/input.zig` | Keyboard/mouse snapshot, edge detection |
-| `libs/sw_core/src/action.zig` | `ActionMap(Action)`: game actions with default bindings (keys, mouse buttons, modifiers), rebinding, `BindingCapture` for a rebind menu, `MouseSettings` (sensitivity, invert). `update(ctx.input())` once per tick (REQ-INPUT-003). A new input kind is a new `Source` member |
+| `libs/sw_core/src/action.zig` | `ActionMap(Action)`: game actions with default bindings (keys, mouse buttons, gamepad buttons and axes, modifiers), rebinding, `BindingCapture` for a rebind menu, `MouseSettings` (sensitivity, invert). `update(ctx.input())` once per tick (REQ-INPUT-003). A new input kind is a new `Source` member |
 | `libs/sw_core/src/record.zig` | Record events to a TAS file |
+| `libs/sw_platform/src/gamepad.zig` | Gamepad slots by platform ID, and the SDL axis scaling (no platform code, unit tested) |
 | `libs/sw_core/src/replay.zig` | Replay events from a TAS file |
 | `libs/sw_core/src/tas.zig` | TAS file format (parse/write) |
 | `libs/sw_gpu/src/gpu.zig` | Main GPU API — `GPU` struct, all `create*` / `begin*` / `submit` methods |
@@ -274,4 +312,10 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_render/src/post_plan.zig` | Post chain rules: the route of the links, the tonemap curves (CPU reference), the effect WGSL (`post.shader`). No GPU code, unit tested |
 | `libs/sw_render/src/sky.zig` | `Sky`: the sky pass (gradient, sun, moon, stars, or a `CubeMap`) before the scene on one target. `setTime` (0 midnight, 0.5 noon), then `frame.sky = try sky.update()` each frame. Scene passes on the target use `load_op = .load` (REQ-GPU-010) |
 | `libs/sw_render/src/sky_plan.zig` | The time of day, the sky colours (`Palette`), `Fog`, and the CPU reference of the sky shader and of the WGSL helpers `sw_sky_color` and `sw_fog` (no GPU code, unit tested) (REQ-GPU-010, REQ-GPU-011) |
+| `libs/sw_render/src/box_models.zig` | `BoxModels`: trees of boxes, one draw call for all instances of one model. Each frame: `clear`, `add(layer, model, .{ .transform, .rotations, .tint })`, then `draw(pass, .world, .{})`. `addFirstPersonPass` draws the `.first_person` layer (view space) with its own depth range (REQ-GPU-014, REQ-GPU-015) |
+| `libs/sw_render/src/box_model_plan.zig` | Box models with no GPU code: `validate`, `buildMesh`, `pose` (`parent * T(pivot) * R * T(-pivot)`), the record layouts, the WGSL and the CPU `shade` (unit tested) |
 | `libs/sw_gpu/src/fxaa.zig` | The FXAA source and quality presets. `shaderSource` sets the tokens and the bind group. `configureFXAA` and the post chain use it |
+| `libs/sw_net/src/socket.zig` | `Socket`: open, `poll`, send, close, and the reconnect. The same code for web and native. `net_root.zig` is the module root |
+| `libs/sw_net/src/native.zig` | The native transport: connect, TLS for `wss:`, the HTTP upgrade, the frame loop on one network thread |
+| `libs/sw_net/src/web.zig`, `backends/wasm/websocket.ts` | The web transport: the "sw_net" imports and the browser WebSocket. `websocket.test.ts` runs `wasm_check.zig` against a Bun server |
+| `libs/sw_net/src/frame.zig`, `handshake.zig`, `url.zig`, `backoff.zig` | Frames and fragments, the upgrade request and its check, `ws:`/`wss:` URLs, the reconnect delay (no sockets, unit tested). `socket_test.zig` runs the native client against a local server |

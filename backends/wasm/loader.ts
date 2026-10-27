@@ -30,9 +30,11 @@ import {
   type WasmExports,
 } from './events';
 import { attachFileDrop, createFileImports } from './files';
+import { browserGamepads, type GamepadExports, GamepadPoller } from './gamepad';
 import { createNetImports } from './net';
 import { createStorageImports } from './storage';
 import { type GPUBridge, initWebGPU } from './webgpu';
+import { createWebSocketImports } from './websocket';
 import {
   CursorStyle,
   createWindowImports,
@@ -287,6 +289,8 @@ export function createImports(
     a11y: createA11yImports(getMemory),
     // Files from the player and the OPFS cache (sw_assets files and cache).
     files: createFileImports(getMemory),
+    // The WebSocket of libs/sw_net (websocket.ts). The game polls the events.
+    sw_net: createWebSocketImports(getMemory),
   } as WebAssembly.Imports;
 }
 
@@ -432,6 +436,14 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
 
   attachEventListeners(canvas, exports, { disableContextMenu });
   if (fileDrop) attachFileDrop(window);
+  // The Gamepad API has no input events: read the gamepads once per frame,
+  // before the frame (REQ-INPUT-005).
+  const gamepads = new GamepadPoller(
+    exports as unknown as GamepadExports,
+    (msg) => console.warn(msg),
+    logPrefix,
+  );
+  const readGamepads = browserGamepads(logPrefix);
 
   if (lockOnClick) {
     canvas.addEventListener('click', () => {
@@ -483,6 +495,7 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
   const tick = (ts: number): void => {
     if ((window.devicePixelRatio || 1) !== lastRatio) onRatioChange();
     try {
+      gamepads.poll(readGamepads());
       frame(ts);
     } catch (err) {
       console.error(`${logPrefix} swindowzig_frame threw:`, err);

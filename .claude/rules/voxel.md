@@ -20,6 +20,10 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
   as the module `sw_voxel_content`: `Block` (an `enum(u8)` with `air = 0`),
   `emission`, `GenConfig` (with `seed: u64`), `generate`, and the
   `GenConfig` bytes of the Hello message.
+- The content can give the opacity of a block ID, 0 to 15: `opacity(block)`
+  (REQ-VOXEL-003). With no declaration, air is 0 and all other blocks are
+  15. `light.zig` has the light rules and makes tables of `opacity` and
+  `emission` at comptime.
 - The content can declare the world height: `min_y` and `height`
   (multiples of 16, default 0 and 256). Chunk, PalettedBlocks, LightGrid
   and the mesh cells use local y (0 to `CHUNK_H - 1`). World, BlockGetter,
@@ -29,8 +33,8 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
 - The content can give a baked model for a block ID: `model(block)`
   returns a `*const sw_voxel.model.BakedModel` or null (REQ-VOXEL-001).
   `models.zig` makes the tables at comptime. A block with no model is a
-  full cube. For light and AO, a block with a model is the same as a
-  full cube.
+  full cube. For AO, a block with a model is the same as a full cube.
+  For light, it has the opacity of its block ID.
 - `build.zig` wires it with `addVoxel`. The demo gives
   `examples/voxel/content.zig`. The unit tests of the library give
   `libs/sw_voxel/testing/content.zig`, with numbered blocks.
@@ -73,7 +77,18 @@ were already correct.
   workers (`pipeline/worker_world.zig`) run them.
 - `light` lights a window 44 cells wide (16 + 2 × 14) from the blocks of
   the 3×3 chunks. It gives the same light as World after all 3×3
-  neighbours load. `mesh` reads at most `BORDER` (3) cells of each
+  neighbours load. With `light.ordered` (each opacity 0 or 15, one
+  emission level), the queue is in order of level. Else a ring queue takes
+  a cell again when it gets brighter.
+- An edit changes the light incrementally (`light.update`, REQ-VOXEL-005):
+  World.setBlock, and a chunk worker when its cache has the current light
+  of the 3×3 chunks around the edit. The light stays within 14 cells of
+  the edit, so the 3×3 chunks are sufficient (`light.Region`).
+- `LightGrid` holds 4 bits per cell, per 16-high section. A uniform section
+  has no array. After `set`, call `compact`, so that `eql` and
+  `protocol.lightHash` see one form for each light.
+- The mesher reads the light of a cell with `Chunk.lightAt` or
+  `BlockGetter.lightAt` (`light.CellLight`). `mesh` reads at most `BORDER` (3) cells of each
   neighbour. A read further than that stops debug builds.
 - `Inputs` records the versions that a job reads (C3). Install a result
   only when `Inputs.isCurrent` is true.
@@ -105,7 +120,7 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
 | `--seed=<u64>` | World seed. **Default: 0.** Generation mixes the seed into each random source: the height and biome noise, the caves, the trees and the glowstone. Seed 0 gives the terrain from before the seed existed. Native only. The web build uses seed 0. `zig build terrain-hash` builds a tool that prints the block hash of a 9×9 hilly area for each seed, from native and from wasm. CI compares the two. |
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (per-vertex Mojang face-plane AO), `moore` (**default** — extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
-| `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation. Caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block triggers a full-chunk `computeSkylight()` + `computeBlockLight()` + mesh regen. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
+| `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation. Caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block updates the light incrementally (`light.update`), then meshes the chunk again. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
 | `--place-block=<type>` | Block type emitted by right-click placement. Accepted: `stone` (default) and `glowstone`. Added with phase-3 block light so `tests/glowstone_cave.tas` can place an emitter from a TAS without needing an in-game block picker UI. |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete. If a TAS is running, waits for the TAS to finish. Then waits for the chunk scheduler to be idle (`Scheduler.isIdle`), so the captured state does not depend on timing. |
 | `--debug-page=<general\|pipeline>` | The first page of the debug overlay. `pipeline` shows the chunk pipeline counters (C12). Cmd+P (Ctrl+P) changes the page at runtime. |
@@ -421,7 +436,8 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `sw_voxel.zig` | The module root. It names each file below |
 | `content.zig` | The content contract: what the game module `sw_voxel_content` must declare |
 | `section.zig` | `Section`: 16 × 16 × 16 cells, a palette and indices of 0, 1, 2, 4 or 8 bits. One block type has no index array |
-| `chunk.zig` | `Chunk`: `PalettedBlocks` (a column of sections), skylight, block light, `setBlock`/`getBlock`, `generateTerrain` (calls `content.generate`). `CHUNK_H` and `MIN_Y` come from the content |
+| `chunk.zig` | `Chunk`: `PalettedBlocks` (a column of sections), skylight, block light (`LightGrid`), `setBlock`/`getBlock`, `lightAt`, `generateTerrain` (calls `content.generate`). `CHUNK_H` and `MIN_Y` come from the content |
+| `light.zig` | The light rules: opacity and emission tables, `CellLight`, the incremental update (`update`, `Region`) |
 | `world.zig` | Multi-chunk world, chunk map, chunk versions, `World.init(allocator, gen_config, render_distance)` |
 | `mesher.zig` | Greedy quad mesher and model mesher (writes `PackedQuad` and model quad records), `cornerBits` for a shader |
 | `model.zig` | `BakedQuad`, `BakedModel`, the `box` and `rotateY` helpers, `GpuQuad` (the GPU format of a baked quad) |

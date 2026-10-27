@@ -442,9 +442,9 @@ The fix, in `world.zig`:
    relights only the channels where an edge can make a cell across the
    border brighter (`canSeed`), so most new chunks cost nothing extra.
 3. `World.spreadLight` follows changes: when the edge light of a relit
-   chunk changes, the chunk on that side is relit too. `World.setBlock`
-   uses the same path, so a dig or a placement updates the light on both
-   sides of a border.
+   chunk changes, the chunk on that side is relit too. (`World.setBlock`
+   used the same path. It now uses the incremental update: see the next
+   section.)
 4. The async path installs a worker result, then calls `relightSeams`. A
    chunk that got new light, or that was meshed with a neighbour missing,
    stays `mesh_dirty` and gets a new mesh.
@@ -455,3 +455,32 @@ every generated chunk has the light of a neighbour-seeded recompute, and
 that a shaft dug into a cave at (14, 60, 15) lights the cave across both
 borders.
 
+
+## Opacity and the incremental update (landed)
+
+`libs/sw_voxel/src/light.zig` holds the light rules (REQ-VOXEL-003,
+REQ-VOXEL-004):
+
+- The content gives the opacity of each block ID, 0 to 15
+  (`opacity(block)`), and its emission. With no `opacity`, air is 0 and all
+  other blocks are 15: the rules of the sections above.
+- Light that goes into a cell loses max(1, opacity) levels. A cell with
+  opacity 15 gets no light. A cell with opacity 0 lets light through as
+  air does. The demo gives the half block opacity 0, so the face of a full
+  cube next to it is not dark.
+- A cell is a sky source (15) when no cell above it in its column has an
+  opacity more than 0. So sky light falls straight down without loss, and
+  spreads to the sides with a loss of 1.
+- `LightGrid` holds 4 bits per cell, per 16-high section.
+
+An edit does not light the chunks again from the start (REQ-VOXEL-005).
+`light.update` removes the light that can come from the edited cell: a
+neighbour with less light than the removed cell goes too, and a 15 under a
+removed 15 goes for sky light. Then the sources in the removed cells light
+again, and the light fills in from the cells at the border of the removed
+area. The change stays within 14 cells of the edit, so `light.Region`
+holds only the 3×3 chunks around it. `World.setBlock` and the chunk
+workers use it. A worker updates its cached light only when the light of
+all 3×3 chunks is current. Else it drops the light, and the next light job
+lights the 44-cell window again. Tests in `light.zig` check that the
+incremental light equals the light stage after random edits.

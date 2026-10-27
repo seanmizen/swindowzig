@@ -6,6 +6,11 @@ const platform = @import("platform.zig");
 // Window modes, cursor modes and the clipboard (REQ-PLATFORM-001,
 // REQ-PLATFORM-002).
 const web_window = @import("web_window.zig");
+// The gamepad exports (REQ-INPUT-005). backends/wasm/gamepad.ts calls them.
+const web_gamepad = @import("web_gamepad.zig");
+comptime {
+    _ = web_gamepad;
+}
 
 // Global event queue for WASM event handlers
 var global_event_queue: ?*std.ArrayList(core.Event) = null;

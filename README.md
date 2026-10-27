@@ -4,17 +4,17 @@
 Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS/Linux).
 
 <!-- progress:start -->
-![engine progress](https://img.shields.io/badge/engine-41.0%25-1D76DB)
+![engine progress](https://img.shields.io/badge/engine-51.3%25-1D76DB)
 
-**Engine: 41.0% complete** `████████░░░░░░░░░░░░` (16 of 39 issues)
+**Engine: 51.3% complete** `██████████░░░░░░░░░░` (20 of 39 issues)
 
 | State | Issues |
 |---|---|
-| done | 16 |
-| in-review | 2 |
+| done | 20 |
+| in-review | 1 |
 | in-progress | 3 |
-| ready | 16 |
-| backlog | 2 |
+| ready | 14 |
+| backlog | 1 |
 
 A GitHub workflow writes this block from the
 [`engine` issues](https://github.com/seanmizen/swindowzig/issues?q=label%3Aengine).
@@ -126,6 +126,7 @@ zig build run -Dexample=flat2d    # 2D renderer: rectangles, outline, textured q
 zig build run -Dexample=mipmaps   # GPU mip levels, texture array, anisotropy (Space: sampler)
 zig build run -Dexample=atlas     # sw_render texture atlas with animated sprites
 zig build run -Dexample=sky       # sw_render sky, fog and day-night cycle (C: cube map, G: fog)
+zig build run -Dexample=models    # sw_render instanced box models (Space: animation, D: first-person depth range)
 ```
 
 ### Voxel Demo — CLI Flags
@@ -197,7 +198,7 @@ exe.root_module.addImport("sw_app", swindowzig.module("sw_app"));
 ```
 
 The package exports `sw_core`, `sw_platform`, `sw_gpu`, `sw_audio`, `sw_math`,
-`sw_gfx2d` and `sw_app`. The `platform` option picks the platform of these modules:
+`sw_gfx2d`, `sw_net` and `sw_app`. The `platform` option picks the platform of these modules:
 `web` (the default, no SDL) or `native` (SDL2 from `addTranslateC`):
 
 ```zig

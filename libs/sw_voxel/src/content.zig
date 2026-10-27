@@ -15,10 +15,12 @@
 //!
 //!   pub const Block = enum(u8) { air = 0, ... };
 //!       The block types. `air` (value 0) is the empty cell: it gives no
-//!       light, stops no light, and has no faces. All other blocks stop
-//!       light. A block with no model is a full cube.
+//!       light, stops no light, and has no faces. A block with no model is
+//!       a full cube.
 //!   pub fn emission(block: Block) u8
 //!       The block light that `block` gives, 0 to `chunk.MAX_BLOCK_LIGHT`.
+//!       `air` must give 0. sw_voxel calls it at comptime for each block
+//!       type, so the result must be comptime-known.
 //!   pub const GenConfig = struct { seed: u64, ... };
 //!       The settings of the generator. The pipeline sends it to each
 //!       chunk worker in the Hello message.
@@ -39,8 +41,23 @@
 //!       The baked model of `block`, or null for a full cube. sw_voxel
 //!       calls it at comptime for each block type, so the result must be
 //!       comptime-known. The model mesher meshes a block with a model, and
-//!       the greedy mesher meshes the full cubes. For light and ambient
-//!       occlusion, a block with a model is the same as a full cube.
+//!       the greedy mesher meshes the full cubes. For ambient occlusion, a
+//!       block with a model is the same as a full cube. For light, it has
+//!       the `opacity` of its block ID.
+//!
+//! The content module can declare the opacity of its blocks
+//! (REQ-VOXEL-003). With no declaration, `air` has opacity 0 and every
+//! other block has opacity 15:
+//!
+//!   pub fn opacity(block: Block) u8
+//!       The light that a cell of `block` stops, 0 to 15. Light that goes
+//!       into the cell loses max(1, opacity) levels, so opacity 15 stops
+//!       all light, and opacity 0 lets light through like air. Sky light
+//!       goes straight down with no loss only through cells with opacity
+//!       0. `air` must have opacity 0. sw_voxel calls it at comptime for
+//!       each block type, so the result must be comptime-known. Give a
+//!       slab or a plant a low opacity, so that the face of a full cube
+//!       next to it gets light.
 //!
 //! The content module can declare the height of the world. With no
 //! declaration, the world is y 0 to 255:
@@ -71,6 +88,13 @@ pub inline fn emission(block: Block) u8 {
     return c.emission(block);
 }
 
+/// The light that a cell of `block` stops, 0 to 15 (REQ-VOXEL-003). With
+/// no `opacity` in the content, `air` is 0 and all other blocks are 15.
+pub inline fn opacity(block: Block) u8 {
+    if (@hasDecl(c, "opacity")) return c.opacity(block);
+    return if (block == .air) 0 else 15;
+}
+
 /// The baked model of `block`, or null for a full cube. Comptime only:
 /// the mesher uses the tables of `models.zig`.
 pub fn model(comptime block: Block) ?*const model_mod.BakedModel {
@@ -89,4 +113,12 @@ comptime {
         @compileError("sw_voxel_content.height must be a multiple of 16, 16 to 4096");
     if (@mod(min_y, 16) != 0)
         @compileError("sw_voxel_content.min_y must be a multiple of 16");
+    @setEvalBranchQuota(100_000);
+    for (info.@"enum".field_values) |v| {
+        const b: Block = @fromBackingInt(v);
+        if (opacity(b) > 15) @compileError("sw_voxel_content.opacity must be 0 to 15");
+        if (emission(b) > 15) @compileError("sw_voxel_content.emission must be 0 to 15");
+    }
+    if (opacity(.air) != 0) @compileError("sw_voxel_content.opacity(.air) must be 0");
+    if (emission(.air) != 0) @compileError("sw_voxel_content.emission(.air) must be 0");
 }

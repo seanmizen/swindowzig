@@ -5,6 +5,7 @@ const backend_mod = @import("backend.zig");
 const platform = @import("platform.zig");
 const storage = @import("storage.zig");
 const clipboard = @import("clipboard.zig");
+const gamepad = @import("gamepad.zig");
 
 // The SDL2 headers, translated by build.zig (addTranslateC on sdl.h).
 const sdl = @import("sdl");
@@ -15,6 +16,10 @@ pub const SDL2Backend = struct {
     start_time: i64,
     window_info: platform.WindowInfo,
     clipboard: clipboard.ClipboardState = .{},
+    /// The slot of each open game controller, by SDL instance ID
+    /// (REQ-INPUT-005).
+    pad_slots: gamepad.Slots(sdl.SDL_JoystickID, core.max_gamepads) = .{},
+    pads: [core.max_gamepads]?*sdl.SDL_GameController = @splat(null),
 
     pub fn create(allocator: std.mem.Allocator, title: []const u8, width: u32, height: u32) !backend_mod.Backend {
         const self = try allocator.create(SDL2Backend);
@@ -47,6 +52,13 @@ pub const SDL2Backend = struct {
         if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) < 0) {
             std.log.err("SDL_Init failed: {s}", .{sdl.SDL_GetError()});
             return error.SDLInitFailed;
+        }
+
+        // Game controllers. SDL sends SDL_CONTROLLERDEVICEADDED for each
+        // controller that is connected now, and for each one that connects
+        // later. Without the subsystem the game continues with no gamepads.
+        if (sdl.SDL_InitSubSystem(sdl.SDL_INIT_GAMECONTROLLER) < 0) {
+            std.log.warn("SDL game controller init failed: {s}. Gamepads are not available.", .{sdl.SDL_GetError()});
         }
 
         // Create window
@@ -106,6 +118,7 @@ pub const SDL2Backend = struct {
     fn deinit(ptr: *anyopaque) void {
         const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
         self.clipboard.deinit(self.allocator);
+        for (self.pads) |pad| if (pad) |gc| sdl.SDL_GameControllerClose(gc);
         sdl.SDL_DestroyWindow(self.window);
         sdl.SDL_Quit();
         self.allocator.destroy(self);
@@ -201,6 +214,38 @@ pub const SDL2Backend = struct {
                     });
                 },
 
+                sdl.SDL_CONTROLLERDEVICEADDED => try self.openPad(bus, now_ns, event.cdevice.which),
+
+                sdl.SDL_CONTROLLERDEVICEREMOVED => {
+                    // For a removal, `which` is the instance ID.
+                    const slot = self.pad_slots.disconnect(event.cdevice.which) orelse continue;
+                    if (self.pads[slot]) |gc| sdl.SDL_GameControllerClose(gc);
+                    self.pads[slot] = null;
+                    try bus.push(0, now_ns, .{ .gamepad_connection = .{ .pad = slot, .connected = false } });
+                },
+
+                sdl.SDL_CONTROLLERBUTTONDOWN, sdl.SDL_CONTROLLERBUTTONUP => {
+                    const b = event.cbutton;
+                    const slot = self.pad_slots.find(b.which) orelse continue;
+                    const button = sdlPadButton(b.button) orelse continue;
+                    try bus.push(0, now_ns, .{ .gamepad_button = .{
+                        .pad = slot,
+                        .button = button,
+                        .down = event.type == sdl.SDL_CONTROLLERBUTTONDOWN,
+                    } });
+                },
+
+                sdl.SDL_CONTROLLERAXISMOTION => {
+                    const a = event.caxis;
+                    const slot = self.pad_slots.find(a.which) orelse continue;
+                    const axis = sdlPadAxis(a.axis) orelse continue;
+                    const value = switch (axis) {
+                        .left_trigger, .right_trigger => gamepad.triggerFromSdl(a.value),
+                        else => gamepad.stickFromSdl(a.value),
+                    };
+                    try bus.push(0, now_ns, .{ .gamepad_axis = .{ .pad = slot, .axis = axis, .value = value } });
+                },
+
                 sdl.SDL_TEXTINPUT => {
                     // The bus drops this while text input is off.
                     const text_event = event.text;
@@ -235,6 +280,69 @@ pub const SDL2Backend = struct {
         }
 
         try self.clipboard.flush(bus, getTime(ptr));
+    }
+
+    /// Open the game controller at SDL device index `index`, and give it a
+    /// slot. A controller with no free slot stays closed.
+    fn openPad(self: *SDL2Backend, bus: *core.Bus, now_ns: u64, index: i32) !void {
+        const gc = sdl.SDL_GameControllerOpen(index) orelse {
+            std.log.warn("SDL_GameControllerOpen failed: {s}", .{sdl.SDL_GetError()});
+            return;
+        };
+        const id = sdl.SDL_JoystickInstanceID(sdl.SDL_GameControllerGetJoystick(gc));
+        if (self.pad_slots.find(id)) |_| {
+            // SDL can report the same controller two times. The open above
+            // added one reference, so close it.
+            sdl.SDL_GameControllerClose(gc);
+            return;
+        }
+        const slot = self.pad_slots.connect(id) orelse {
+            std.log.warn("gamepad: {d} gamepads are connected. The engine ignores the new one.", .{core.max_gamepads});
+            sdl.SDL_GameControllerClose(gc);
+            return;
+        };
+        self.pads[slot] = gc;
+        std.log.info("gamepad {d} connected: {s}", .{ slot, cName(sdl.SDL_GameControllerName(gc)) });
+        try bus.push(0, now_ns, .{ .gamepad_connection = .{ .pad = slot, .connected = true } });
+    }
+
+    fn cName(name: [*c]const u8) []const u8 {
+        if (name == null) return "(no name)";
+        return std.mem.span(@as([*:0]const u8, @ptrCast(name)));
+    }
+
+    /// An SDL game controller button as a core gamepad button, by position.
+    fn sdlPadButton(button: u8) ?core.GamepadButton {
+        return switch (button) {
+            sdl.SDL_CONTROLLER_BUTTON_A => .south,
+            sdl.SDL_CONTROLLER_BUTTON_B => .east,
+            sdl.SDL_CONTROLLER_BUTTON_X => .west,
+            sdl.SDL_CONTROLLER_BUTTON_Y => .north,
+            sdl.SDL_CONTROLLER_BUTTON_LEFTSHOULDER => .left_shoulder,
+            sdl.SDL_CONTROLLER_BUTTON_RIGHTSHOULDER => .right_shoulder,
+            sdl.SDL_CONTROLLER_BUTTON_BACK => .back,
+            sdl.SDL_CONTROLLER_BUTTON_START => .start,
+            sdl.SDL_CONTROLLER_BUTTON_GUIDE => .guide,
+            sdl.SDL_CONTROLLER_BUTTON_LEFTSTICK => .left_stick,
+            sdl.SDL_CONTROLLER_BUTTON_RIGHTSTICK => .right_stick,
+            sdl.SDL_CONTROLLER_BUTTON_DPAD_UP => .dpad_up,
+            sdl.SDL_CONTROLLER_BUTTON_DPAD_DOWN => .dpad_down,
+            sdl.SDL_CONTROLLER_BUTTON_DPAD_LEFT => .dpad_left,
+            sdl.SDL_CONTROLLER_BUTTON_DPAD_RIGHT => .dpad_right,
+            else => null,
+        };
+    }
+
+    fn sdlPadAxis(axis: u8) ?core.GamepadAxis {
+        return switch (axis) {
+            sdl.SDL_CONTROLLER_AXIS_LEFTX => .left_x,
+            sdl.SDL_CONTROLLER_AXIS_LEFTY => .left_y,
+            sdl.SDL_CONTROLLER_AXIS_RIGHTX => .right_x,
+            sdl.SDL_CONTROLLER_AXIS_RIGHTY => .right_y,
+            sdl.SDL_CONTROLLER_AXIS_TRIGGERLEFT => .left_trigger,
+            sdl.SDL_CONTROLLER_AXIS_TRIGGERRIGHT => .right_trigger,
+            else => null,
+        };
     }
 
     /// The pixel size and the DPI scale of the window now.

@@ -12,7 +12,15 @@
 //! 120 mouse_move 100 -50
 //! 180 mouse_down left
 //! 181 mouse_up left
+//! 200 gamepad_down south
+//! 210 gamepad_up south
+//! 220 gamepad_axis left_x -0.5
+//! 230 gamepad_axis right_trigger 1 2
 //! ```
+//!
+//! The gamepad commands take the name of a `GamepadButton` or a
+//! `GamepadAxis`, and an optional gamepad slot at the end (default 0). The
+//! axis value is raw: the game applies the dead zones (REQ-INPUT-005).
 
 const std = @import("std");
 const event_mod = @import("event.zig");
@@ -23,6 +31,8 @@ const MouseButtonType = event_mod.MouseButton;
 const WheelMode = event_mod.WheelMode;
 const Modifiers = event_mod.Modifiers;
 const CommandKind = event_mod.CommandKind;
+const GamepadButton = event_mod.GamepadButton;
+const GamepadAxis = event_mod.GamepadAxis;
 
 /// TAS command types
 pub const TasCommand = union(enum) {
@@ -34,6 +44,9 @@ pub const TasCommand = union(enum) {
     mouse_wheel: f32,
     wait: u64, // Wait N ticks (syntactic sugar, doesn't generate event)
     command: struct { kind: CommandKind, args: [4]f32 },
+    gamepad_down: struct { pad: u8 = 0, button: GamepadButton },
+    gamepad_up: struct { pad: u8 = 0, button: GamepadButton },
+    gamepad_axis: struct { pad: u8 = 0, axis: GamepadAxis, value: f32 },
 
     pub fn toEvent(self: TasCommand, tick_id: u64, t_ns: u64, seq: u32) ?Event {
         const empty_mods = Modifiers{};
@@ -95,6 +108,15 @@ pub const TasCommand = union(enum) {
                     .kind = cmd.kind,
                     .args = cmd.args,
                 },
+            }),
+            .gamepad_down => |g| Event.init(tick_id, t_ns, seq, .{
+                .gamepad_button = .{ .pad = g.pad, .button = g.button, .down = true },
+            }),
+            .gamepad_up => |g| Event.init(tick_id, t_ns, seq, .{
+                .gamepad_button = .{ .pad = g.pad, .button = g.button, .down = false },
+            }),
+            .gamepad_axis => |g| Event.init(tick_id, t_ns, seq, .{
+                .gamepad_axis = .{ .pad = g.pad, .axis = g.axis, .value = g.value },
             }),
         };
     }
@@ -322,6 +344,25 @@ fn parseCommand(cmd: []const u8, parts: *std.mem.TokenIterator(u8, .scalar), lin
         const delta_str = parts.next() orelse return error.MissingArgument;
         const delta = try std.fmt.parseFloat(f32, delta_str);
         return .{ .mouse_wheel = delta };
+    } else if (std.mem.eql(u8, cmd, "gamepad_down") or std.mem.eql(u8, cmd, "gamepad_up")) {
+        const name = parts.next() orelse return error.MissingArgument;
+        const button = std.meta.stringToEnum(GamepadButton, name) orelse {
+            std.log.err("Line {}: Invalid gamepad button '{s}'", .{ line_num, name });
+            return error.InvalidGamepadButton;
+        };
+        const pad = try parsePad(parts, line_num);
+        if (cmd[8] == 'd') return .{ .gamepad_down = .{ .pad = pad, .button = button } };
+        return .{ .gamepad_up = .{ .pad = pad, .button = button } };
+    } else if (std.mem.eql(u8, cmd, "gamepad_axis")) {
+        const name = parts.next() orelse return error.MissingArgument;
+        const axis = std.meta.stringToEnum(GamepadAxis, name) orelse {
+            std.log.err("Line {}: Invalid gamepad axis '{s}'", .{ line_num, name });
+            return error.InvalidGamepadAxis;
+        };
+        const value_str = parts.next() orelse return error.MissingArgument;
+        const value = try std.fmt.parseFloat(f32, value_str);
+        const pad = try parsePad(parts, line_num);
+        return .{ .gamepad_axis = .{ .pad = pad, .axis = axis, .value = value } };
     } else if (std.mem.eql(u8, cmd, "wait")) {
         const ticks_str = parts.next() orelse return error.MissingArgument;
         const ticks = try std.fmt.parseInt(u64, ticks_str, 10);
@@ -353,6 +394,20 @@ fn parseCommand(cmd: []const u8, parts: *std.mem.TokenIterator(u8, .scalar), lin
         std.log.err("Line {}: Unknown command '{s}'", .{ line_num, cmd });
         return error.UnknownCommand;
     }
+}
+
+/// The optional gamepad slot at the end of a gamepad command. Default 0.
+fn parsePad(parts: *std.mem.TokenIterator(u8, .scalar), line_num: usize) !u8 {
+    const pad_str = parts.next() orelse return 0;
+    const pad = std.fmt.parseInt(u8, pad_str, 10) catch {
+        std.log.err("Line {}: Invalid gamepad slot '{s}'", .{ line_num, pad_str });
+        return error.InvalidGamepadSlot;
+    };
+    if (pad >= event_mod.max_gamepads) {
+        std.log.err("Line {}: Gamepad slot {} is not less than {}", .{ line_num, pad, event_mod.max_gamepads });
+        return error.InvalidGamepadSlot;
+    }
+    return pad;
 }
 
 // Tests
@@ -407,4 +462,28 @@ test "keyFromString knows the punctuation and navigation keys" {
     try std.testing.expectEqual(Key.Slash, try keyFromString("Slash"));
     try std.testing.expectEqual(Key.PageDown, try keyFromString("PageDown"));
     try std.testing.expectError(error.InvalidKey, keyFromString("Unknown"));
+}
+
+test "TAS gamepad commands (REQ-INPUT-005)" {
+    var script = try TasScript.parse(std.testing.allocator,
+        \\10 gamepad_down south
+        \\12 gamepad_up south 3
+        \\14 gamepad_axis left_y -0.5
+        \\16 gamepad_axis right_trigger 1 2
+    );
+    defer script.deinit();
+    var events = try script.toEvents(120);
+    defer events.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 4), events.items.len);
+    const down = events.items[0].payload.gamepad_button;
+    try std.testing.expectEqual(GamepadButton.south, down.button);
+    try std.testing.expect(down.down);
+    try std.testing.expectEqual(@as(u8, 0), down.pad);
+    const up = events.items[1].payload.gamepad_button;
+    try std.testing.expect(!up.down);
+    try std.testing.expectEqual(@as(u8, 3), up.pad);
+    const axis = events.items[2].payload.gamepad_axis;
+    try std.testing.expectEqual(GamepadAxis.left_y, axis.axis);
+    try std.testing.expectEqual(@as(f32, -0.5), axis.value);
+    try std.testing.expectEqual(@as(u8, 2), events.items[3].payload.gamepad_axis.pad);
 }

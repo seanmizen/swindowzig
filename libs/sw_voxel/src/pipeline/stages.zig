@@ -23,6 +23,7 @@ const std = @import("std");
 const chunk_mod = @import("../chunk.zig");
 const mesher_mod = @import("../mesher.zig");
 const content = @import("../content.zig");
+const light_rules = @import("../light.zig");
 
 const BlockType = chunk_mod.BlockType;
 const PalettedBlocks = chunk_mod.PalettedBlocks;
@@ -151,18 +152,20 @@ inline fn windowIdx(x: usize, y: usize, z: usize) u32 {
 /// The skylight and block light of the middle chunk of `window`.
 ///
 /// It lights a window of 44 × CHUNK_H × 44 cells: the middle chunk and 14 cells
-/// of each neighbour. The rules are the rules of `Chunk.computeSkylight` and
-/// `Chunk.computeBlockLight`, on the whole window:
+/// of each neighbour. The rules are the rules of light.zig, on the whole
+/// window:
 ///
-/// - Skylight: a cell with no solid block above it in its column is 15. A
-///   solid cell is 0. Light spreads through air, 1 level less for each step.
-/// - Block light: an emissive block has its emission level. Light spreads
-///   through air, 1 level less for each step.
+/// - Skylight: a cell with no cell of opacity more than 0 above it in its
+///   column is 15. Light goes into a neighbour at max(1, opacity) levels
+///   less. So a cell with opacity 15 gets 0.
+/// - Block light: an emissive block has at least its emission level. Light
+///   spreads with the same loss.
 ///
-/// Light starts at 15 or less and loses 1 for each step. So the light that
-/// reaches the middle chunk comes from a cell at most 14 steps away. A path
-/// that leaves the window is at least 15 steps long. So the middle 16 cells
-/// get the light of an unbounded world with the same 3×3 chunks (P3). Vertical light stays in its column.
+/// Light starts at 15 or less and loses 1 or more for each step. So the
+/// light that reaches the middle chunk comes from a cell at most 14 steps
+/// away. A path that leaves the window is at least 15 steps long. So the
+/// middle 16 cells get the light of an unbounded world with the same 3×3
+/// chunks (P3). Vertical light stays in its column.
 ///
 /// It allocates about 4 MB of scratch memory and frees it before it returns.
 /// `lightScratch` lets a caller keep the scratch memory between calls.
@@ -194,36 +197,47 @@ pub fn lightScratch(allocator: std.mem.Allocator, window: *const Window, scratch
 /// The memory that one `light` call uses.
 ///
 /// `light` computes only the rows below `y_hi`. At and above `y_hi`, no cell
-/// of the window is solid, and each cell is more than 14 cells above every
-/// emitter. So the skylight there is 15 and the block light is 0. The
+/// of the window stops sky light, and each cell is more than 14 cells above
+/// every emitter. So the skylight there is 15 and the block light is 0. The
 /// breadth-first spread never changes a cell there.
 pub const LightScratch = struct {
     /// The decoded cells of the 9 chunks, by slot, in `blockLinearIdx`
-    /// order: SOLID and EMIT bits.
+    /// order: the opacity, and the STOP and EMIT bits.
     flags: [SLOTS][chunk_mod.BLOCKS_PER_CHUNK]u8,
-    /// Window cells, [x][y][z]: SOLID and EMIT bits.
+    /// Window cells, [x][y][z]: the opacity, and the STOP and EMIT bits.
     cells: [WINDOW_CELLS]u8,
     sky: [WINDOW_CELLS]u8,
     bl: [WINDOW_CELLS]u8,
-    /// The y above the highest solid cell of each window column (x, z).
+    /// The y above the highest STOP cell of each window column (x, z).
     top: [WINDOW_W * WINDOW_W]u16,
-    /// Breadth-first queue. All the seeds of one channel have the same
-    /// level. So the queue is in order of level, and a cell goes in at most
-    /// one time for each channel.
+    /// Breadth-first queue. With `light_rules.ordered`, all the seeds of
+    /// one channel have the same level and each step loses 1 or stops. So
+    /// the queue is in order of level, and a cell goes in at most one time
+    /// for each channel. Else the queue is a ring, and `in_queue` keeps a
+    /// cell in it at most once.
     queue: [WINDOW_CELLS]u32,
+    /// The cells in the ring (not with `light_rules.ordered`).
+    in_queue: [(WINDOW_CELLS + 63) / 64]u64,
     /// Number of block light seeds at the start of `queue`.
     emitters: usize,
     /// `light` computes the rows below this y.
     y_hi: usize,
 
-    const SOLID: u8 = 1;
-    const EMIT: u8 = 2;
+    /// The opacity of the cell, 0 to 15.
+    const OPACITY: u8 = 0x0F;
+    /// The cell stops sky light: opacity more than 0.
+    const STOP: u8 = 0x10;
+    /// The cell gives block light.
+    const EMIT: u8 = 0x20;
 
     const flag_of = blk: {
-        var t: [256]u8 = @splat(SOLID);
-        t[@backingInt(BlockType.air)] = 0;
+        var t: [256]u8 = @splat(OPACITY | STOP);
         for (std.enums.values(BlockType)) |b| {
-            if (chunk_mod.emissionLevel(b) > 0) t[@backingInt(b)] |= EMIT;
+            const o = light_rules.opacity(b);
+            var f: u8 = o;
+            if (o > 0) f |= STOP;
+            if (light_rules.emission(b) > 0) f |= EMIT;
+            t[@backingInt(b)] = f;
         }
         break :blk t;
     };
@@ -251,7 +265,7 @@ pub const LightScratch = struct {
             const rx = axisRange(dcx);
             const rz = axisRange(dcz);
             // Column tops: scan rows of 16 cells down from the top of the
-            // chunk, until each column has a solid cell or y is 0.
+            // chunk, until each column has a STOP cell or y is 0.
             for (rx.lo..rx.hi) |wx| {
                 const lx = rx.local0 + wx - rx.lo;
                 var tops: [CHUNK_W]u16 = @splat(0);
@@ -260,7 +274,7 @@ pub const LightScratch = struct {
                 while (y > 0 and found != 0xFFFF) {
                     y -= 1;
                     const row = f[lx * CHUNK_H * CHUNK_W + y * CHUNK_W ..][0..CHUNK_W];
-                    var new = rowMask(row, SOLID) & ~found;
+                    var new = rowMask(row, STOP) & ~found;
                     found |= new;
                     while (new != 0) : (new &= new - 1) tops[@ctz(new)] = @intCast(y + 1);
                 }
@@ -285,7 +299,8 @@ pub const LightScratch = struct {
                     while (emit != 0) : (emit &= emit - 1) {
                         const lz = @ctz(emit);
                         if (lz < rz.local0 or lz >= rz.local0 + (rz.hi - rz.lo)) continue;
-                        self.queue[self.emitters] = windowIdx(wx, y, rz.lo + lz - rz.local0);
+                        const wi = windowIdx(wx, y, rz.lo + lz - rz.local0);
+                        self.queue[self.emitters] = wi;
                         self.emitters += 1;
                         max_emit = @max(max_emit orelse 0, y);
                     }
@@ -311,12 +326,24 @@ pub const LightScratch = struct {
         }
         for (0..WINDOW_W) |x| @memset(self.bl[x * STEP_X ..][0 .. self.y_hi * STEP_Y], 0);
         for (self.queue[0..self.emitters]) |i| {
-            // All emitters have one level (see the comptime check below).
-            self.bl[i] = chunk_mod.MAX_BLOCK_LIGHT;
+            const x = i / STEP_X;
+            const y = (i / STEP_Y) % CHUNK_H;
+            const z = i % WINDOW_W;
+            self.bl[i] = emissionAt(window, x, y, z);
         }
     }
 
-    /// A mask with bit z set when `row[z]` has the bit `flag` (SOLID or EMIT).
+    /// The emission of the block at window cell (x, y, z).
+    fn emissionAt(window: *const Window, x: usize, y: usize, z: usize) u8 {
+        const dx: i32 = if (x < MARGIN) -1 else if (x < MARGIN + CHUNK_W) 0 else 1;
+        const dz: i32 = if (z < MARGIN) -1 else if (z < MARGIN + CHUNK_W) 0 else 1;
+        const rx = axisRange(dx);
+        const rz = axisRange(dz);
+        const b = window[slot(dx, dz)].getAt(rx.local0 + x - rx.lo, y, rz.local0 + z - rz.lo);
+        return light_rules.emission(b);
+    }
+
+    /// A mask with bit z set when `row[z]` has the bit `flag` (STOP or EMIT).
     fn rowMask(row: *const [CHUNK_W]u8, flag: u8) u16 {
         const lo = std.mem.readInt(u64, row[0..8], .little);
         const hi = std.mem.readInt(u64, row[8..16], .little);
@@ -332,55 +359,91 @@ pub const LightScratch = struct {
         return @as(u16, @intCast(m_lo)) | (@as(u16, @intCast(m_hi)) << 8);
     }
 
-    /// Spread from the first `start_tail` cells of the queue through air.
+    /// Spread from the first `start_tail` cells of the queue. Light goes
+    /// into a neighbour at max(1, opacity) levels less.
     fn spread(self: *LightScratch, grid: *[WINDOW_CELLS]u8, start_tail: usize) void {
+        if (comptime !light_rules.ordered) return self.spreadRing(grid, start_tail);
         var head: usize = 0;
         var tail = start_tail;
-        const y_hi = self.y_hi;
         while (head < tail) {
             const v: usize = self.queue[head];
             head += 1;
             const level = grid[v];
             if (level < 2) continue;
-            const target = level - 1;
-            const x = v / STEP_X;
-            const y = (v / STEP_Y) % CHUNK_H;
-            const z = v % WINDOW_W;
             var nb: [6]usize = undefined;
-            var n: usize = 0;
-            if (x > 0) {
-                nb[n] = v - STEP_X;
-                n += 1;
-            }
-            if (x + 1 < WINDOW_W) {
-                nb[n] = v + STEP_X;
-                n += 1;
-            }
-            if (z > 0) {
-                nb[n] = v - 1;
-                n += 1;
-            }
-            if (z + 1 < WINDOW_W) {
-                nb[n] = v + 1;
-                n += 1;
-            }
-            if (y > 0) {
-                nb[n] = v - STEP_Y;
-                n += 1;
-            }
-            if (y + 1 < y_hi) {
-                nb[n] = v + STEP_Y;
-                n += 1;
-            }
+            const n = self.neighbours(v, &nb);
             for (nb[0..n]) |i| {
-                if (self.cells[i] & SOLID != 0) continue;
-                if (grid[i] >= target) continue;
+                const target = level -| @max(1, self.cells[i] & OPACITY);
+                if (target == 0 or grid[i] >= target) continue;
                 grid[i] = target;
                 self.queue[tail] = @intCast(i);
                 tail += 1;
             }
         }
         std.debug.assert(tail <= WINDOW_CELLS);
+    }
+
+    /// `spread` for mixed levels and losses: the queue is a ring, and a
+    /// cell goes in again when it gets brighter after it left the queue.
+    fn spreadRing(self: *LightScratch, grid: *[WINDOW_CELLS]u8, start_tail: usize) void {
+        @memset(&self.in_queue, 0);
+        for (self.queue[0..start_tail]) |v| self.in_queue[v >> 6] |= @as(u64, 1) << @intCast(v & 63);
+        var head: usize = 0;
+        var count = start_tail;
+        while (count > 0) {
+            const v: usize = self.queue[head];
+            head = if (head + 1 == WINDOW_CELLS) 0 else head + 1;
+            count -= 1;
+            self.in_queue[v >> 6] &= ~(@as(u64, 1) << @intCast(v & 63));
+            const level = grid[v];
+            if (level < 2) continue;
+            var nb: [6]usize = undefined;
+            const n = self.neighbours(v, &nb);
+            for (nb[0..n]) |i| {
+                const target = level -| @max(1, self.cells[i] & OPACITY);
+                if (target == 0 or grid[i] >= target) continue;
+                grid[i] = target;
+                const bit = @as(u64, 1) << @intCast(i & 63);
+                if (self.in_queue[i >> 6] & bit != 0) continue;
+                self.in_queue[i >> 6] |= bit;
+                const at = head + count;
+                self.queue[if (at >= WINDOW_CELLS) at - WINDOW_CELLS else at] = @intCast(i);
+                count += 1;
+            }
+        }
+    }
+
+    /// The window cells next to cell `v`, below `y_hi`.
+    inline fn neighbours(self: *const LightScratch, v: usize, nb: *[6]usize) usize {
+        const x = v / STEP_X;
+        const y = (v / STEP_Y) % CHUNK_H;
+        const z = v % WINDOW_W;
+        var n: usize = 0;
+        if (x > 0) {
+            nb[n] = v - STEP_X;
+            n += 1;
+        }
+        if (x + 1 < WINDOW_W) {
+            nb[n] = v + STEP_X;
+            n += 1;
+        }
+        if (z > 0) {
+            nb[n] = v - 1;
+            n += 1;
+        }
+        if (z + 1 < WINDOW_W) {
+            nb[n] = v + 1;
+            n += 1;
+        }
+        if (y > 0) {
+            nb[n] = v - STEP_Y;
+            n += 1;
+        }
+        if (y + 1 < self.y_hi) {
+            nb[n] = v + STEP_Y;
+            n += 1;
+        }
+        return n;
     }
 
     fn spreadSkylight(self: *LightScratch) void {
@@ -391,7 +454,7 @@ pub const LightScratch = struct {
             for (row, tops) |*cell, t| cell.* = if (y >= t) MAX_SKYLIGHT else 0;
         };
         // Seeds: sky cells next to a column with a higher top. Only those
-        // can have a shadowed air neighbour (see Chunk.computeSkylight).
+        // can have a shadowed neighbour (see Chunk.computeSkylight).
         var tail: usize = 0;
         for (0..WINDOW_W) |x| for (0..WINDOW_W) |z| {
             const col = x * WINDOW_W + z;
@@ -402,6 +465,9 @@ pub const LightScratch = struct {
             if (x + 1 < WINDOW_W) hi = @max(hi, self.top[col + WINDOW_W]);
             if (z > 0) hi = @max(hi, self.top[col - 1]);
             if (z + 1 < WINDOW_W) hi = @max(hi, self.top[col + 1]);
+            // A cell with opacity 1 to 14 under the lowest sky cell takes
+            // light from it. With `ordered`, that cell stops all light.
+            if (!light_rules.ordered and t > 0) hi = @max(hi, t + 1);
             for (t..@min(hi, CHUNK_H)) |y| {
                 self.queue[tail] = windowIdx(x, y, z);
                 tail += 1;
@@ -419,14 +485,6 @@ pub const LightScratch = struct {
         }
     }
 };
-
-comptime {
-    // All emitters have one level, so the block light queue is in order.
-    for (std.enums.values(BlockType)) |b| {
-        const e = chunk_mod.emissionLevel(b);
-        std.debug.assert(e == 0 or e == chunk_mod.MAX_BLOCK_LIGHT);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // mesh
