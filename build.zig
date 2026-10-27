@@ -253,15 +253,19 @@ pub fn build(b: *std.Build) void {
         // sw_gfx2d: the batching and the projection maths have no GPU code.
         "libs/sw_gfx2d/src/batch.zig",
         "libs/sw_gfx2d/src/projection.zig",
-        // sw_text: UTF-8, measuring and wrapping, the atlas packer and the
-        // bidirectional algorithm.
+        // sw_text: UTF-8, measuring and wrapping, the atlas packer, the
+        // bidirectional algorithm and the caret geometry.
         "libs/sw_text/src/utf8.zig",
         "libs/sw_text/src/layout.zig",
         "libs/sw_text/src/atlas.zig",
         "libs/sw_text/src/bidi.zig",
-        // sw_ui: the tree, layout, focus and semantic tree have no GPU or font
-        // code. draw.zig is built with the examples.
+        "libs/sw_text/src/caret.zig",
+        // sw_ui: the tree, layout, focus, semantic tree, on-screen keyboard
+        // and screen stack have no GPU or font code. draw.zig is built with
+        // the examples.
         "libs/sw_ui/src/ui.zig",
+        "libs/sw_ui/src/osk.zig",
+        "libs/sw_ui/src/screen.zig",
         // sw_audio: the sample type and the WAV decoder.
         "libs/sw_audio/src/sample.zig",
         "libs/sw_audio/src/wav.zig",
@@ -289,6 +293,43 @@ pub fn build(b: *std.Build) void {
         addAssetsC(b, unit_tests.root_module);
         test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     }
+    // sw_assets: the zip reader reads archives that the zip tool made
+    // (libs/sw_assets/testdata). The player files and the cache test their
+    // native backends.
+    const zip_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_assets/src/zip.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    zip_tests.root_module.addAnonymousImport("test_zip_standard", .{ .root_source_file = b.path("libs/sw_assets/testdata/standard.zip") });
+    zip_tests.root_module.addAnonymousImport("test_zip_streamed", .{ .root_source_file = b.path("libs/sw_assets/testdata/streamed.zip") });
+    test_step.dependOn(&b.addRunArtifact(zip_tests).step);
+    inline for (.{ "libs/sw_assets/src/files.zig", "libs/sw_assets/src/cache.zig" }) |file| {
+        const unit_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    }
+    // The web build of sw_assets (zip, player files, cache) must compile and
+    // link for wasm32-freestanding.
+    const assets_wasm = b.addExecutable(.{
+        .name = "assets_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_assets/src/wasm_check.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    assets_wasm.root_module.addImport("sw_assets", web_libs.assets);
+    assets_wasm.entry = .disabled;
+    assets_wasm.rdynamic = true;
+    test_step.dependOn(&assets_wasm.step);
 
     inline for (test_files) |file| {
         const unit_tests = b.addTest(.{

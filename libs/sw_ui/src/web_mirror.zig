@@ -15,10 +15,12 @@
 //!   u32 id
 //!   u8  role         (see `roleCode`)
 //!   u8  flags        (bit 0 focused, bit 1 disabled, bit 2 selected,
-//!                     bit 3 live)
+//!                     bit 3 live, bit 4 range)
 //!   u32 name_len,  then name_len bytes of UTF-8
 //!   u32 value_len, then value_len bytes of UTF-8
+//!   u32 description_len, then description_len bytes of UTF-8
 //!   u32 child_count, then child_count u32 indices into the node list
+//!   if flag bit 4: f32 value, f32 min, f32 max
 //! ```
 //!
 //! The bounds and the `changed` flag of a node are not sent. The DOM is
@@ -43,9 +45,11 @@ pub const flag_focused: u8 = 1 << 0;
 pub const flag_disabled: u8 = 1 << 1;
 pub const flag_selected: u8 = 1 << 2;
 pub const flag_live: u8 = 1 << 3;
+pub const flag_range: u8 = 1 << 4;
 
 /// The role byte of the wire format. `backends/wasm/a11y.ts` has the same
-/// table. A change here needs the same change there.
+/// table. A change here needs the same change there. Each widget has its own
+/// role (REQ-A11Y-006).
 pub fn roleCode(role: Role) u8 {
     return switch (role) {
         .group => 0,
@@ -55,6 +59,9 @@ pub fn roleCode(role: Role) u8 {
         .list_item => 4,
         .text_field => 5,
         .image => 6,
+        .slider => 7,
+        .dialog => 8,
+        .tooltip => 9,
     };
 }
 
@@ -79,11 +86,16 @@ pub fn encode(alloc: std.mem.Allocator, out: *std.ArrayList(u8), tree: SemanticT
         if (n.disabled) flags |= flag_disabled;
         if (n.selected) flags |= flag_selected;
         if (n.live) flags |= flag_live;
+        if (n.range != null) flags |= flag_range;
         try out.appendSlice(alloc, &.{ roleCode(n.role), flags });
         try appendBytes(alloc, out, n.name);
         try appendBytes(alloc, out, n.value);
+        try appendBytes(alloc, out, n.description);
         try appendU32(alloc, out, @intCast(n.children.len));
         for (n.children) |c| try appendU32(alloc, out, c);
+        if (n.range) |r| {
+            for ([_]f32{ r.value, r.min, r.max }) |v| try appendU32(alloc, out, @bitCast(v));
+        }
     }
 }
 
@@ -171,6 +183,9 @@ test "web mirror: the role codes are fixed" {
     try std.testing.expectEqual(@as(u8, 4), roleCode(.list_item));
     try std.testing.expectEqual(@as(u8, 5), roleCode(.text_field));
     try std.testing.expectEqual(@as(u8, 6), roleCode(.image));
+    try std.testing.expectEqual(@as(u8, 7), roleCode(.slider));
+    try std.testing.expectEqual(@as(u8, 8), roleCode(.dialog));
+    try std.testing.expectEqual(@as(u8, 9), roleCode(.tooltip));
 }
 
 test "web mirror: encode gives the wire format" {
@@ -202,6 +217,7 @@ test "web mirror: encode gives the wire format" {
     at += 2;
     try std.testing.expectEqual(@as(u32, 0), readU32(b, &at));
     try std.testing.expectEqual(@as(u32, 0), readU32(b, &at));
+    try std.testing.expectEqual(@as(u32, 0), readU32(b, &at));
     try std.testing.expectEqual(@as(u32, 2), readU32(b, &at));
     try std.testing.expectEqual(@as(u32, 1), readU32(b, &at));
     try std.testing.expectEqual(@as(u32, 2), readU32(b, &at));
@@ -218,6 +234,7 @@ test "web mirror: encode gives the wire format" {
     try std.testing.expectEqualStrings("h\u{e9}", b[at..][0..3]);
     at += 3;
     try std.testing.expectEqual(@as(u32, 0), readU32(b, &at));
+    try std.testing.expectEqual(@as(u32, 0), readU32(b, &at));
 
     // The live text. The changed flag is not sent.
     try std.testing.expectEqual(@as(u32, 5), readU32(b, &at));
@@ -229,6 +246,41 @@ test "web mirror: encode gives the wire format" {
     at += name_len;
     try std.testing.expectEqual(@as(u32, 0), readU32(b, &at));
     try std.testing.expectEqual(@as(u32, 0), readU32(b, &at));
+    try std.testing.expectEqual(@as(u32, 0), readU32(b, &at));
+    try std.testing.expectEqual(b.len, at);
+}
+
+test "web mirror: a slider sends its description and its range" {
+    const alloc = std.testing.allocator;
+    var slider = testNode(4, .slider, "Volume", &.{});
+    slider.value = "0.5";
+    slider.description = "Sound level";
+    slider.range = .{ .value = 0.5, .min = 0, .max = 1 };
+    const nodes = [_]SemanticNode{slider};
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    try encode(alloc, &out, .{ .nodes = &nodes });
+    const b = out.items;
+
+    var at: usize = 4;
+    try std.testing.expectEqual(@as(u32, 4), readU32(b, &at));
+    try std.testing.expectEqual(@as(u8, 7), b[at]);
+    try std.testing.expectEqual(flag_range, b[at + 1]);
+    at += 2;
+    const name_len = readU32(b, &at);
+    try std.testing.expectEqualStrings("Volume", b[at..][0..name_len]);
+    at += name_len;
+    const value_len = readU32(b, &at);
+    try std.testing.expectEqualStrings("0.5", b[at..][0..value_len]);
+    at += value_len;
+    const desc_len = readU32(b, &at);
+    try std.testing.expectEqualStrings("Sound level", b[at..][0..desc_len]);
+    at += desc_len;
+    try std.testing.expectEqual(@as(u32, 0), readU32(b, &at));
+    try std.testing.expectEqual(@as(f32, 0.5), @as(f32, @bitCast(readU32(b, &at))));
+    try std.testing.expectEqual(@as(f32, 0), @as(f32, @bitCast(readU32(b, &at))));
+    try std.testing.expectEqual(@as(f32, 1), @as(f32, @bitCast(readU32(b, &at))));
     try std.testing.expectEqual(b.len, at);
 }
 
