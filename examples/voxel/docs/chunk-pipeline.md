@@ -145,7 +145,8 @@ Edit, 16 bytes
   0  i32   cx
   4  i32   cz
   8  u32   block version after the edit
-  12 u8    x, 13 u8 y, 14 u8 z (local cell)
+  12 u16   y (local cell, 0 to CHUNK_H - 1)
+  14 u8    x | z << 4 (local cell)
   15 u8    block type
 
 Job, 88 bytes
@@ -189,8 +190,11 @@ bytes of a mesh are 16-byte aligned, ready for upload (C5). The mesh hash
 is `protocol.meshHash` of the payload. The worker calculates it, so main
 can compare meshes without the quads. Main reads only the first 64 bytes of
 a mesh Result (`protocol.decodeResultHead`). A generate payload holds the
-blocks: palette length u16, bits u8, 0 u8, word count u32, the palette
-(padded to 8 bytes), then the packed u64 words.
+blocks: the section count u16, 0 u16, 0 u32, then each section from local
+y 0 up. A section is: index bits u8 (0, 1, 2, 4 or 8), 0 u8, palette
+length u16, the palette (padded to 8 bytes from the start of the section),
+then the packed u64 index words. A section with one block type has no
+index words. `protocol.blocksLen` has the layout.
 
 The decoder checks each field, and never reads past the message. A
 message that decodes encodes to the same bytes. The fuzz tests check both.
@@ -390,7 +394,8 @@ Bytes for each message, full load:
 | Result, mesh | about 8400 on average (64 + 16 for each quad) |
 
 The measurement was with protocol version 1, when the fixed part of a
-Result was 16 bytes shorter. Version 2 added the mesh hash (C5).
+Result was 16 bytes shorter. Version 2 added the mesh hash (C5). Version 3
+sends the blocks as 16-cell sections, and the Edit y as a u16.
 
 The old async path copied about 50,880 bytes for each job (508,800 bytes
 for 10 jobs) into the worker. A job message is now 104 bytes.

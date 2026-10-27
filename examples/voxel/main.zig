@@ -789,9 +789,9 @@ const ChunkGPU = struct {
     quads: ?QuadBuffer = null,
     /// Quads in the buffer now.
     quad_count: u32 = 0,
-    /// The y range of the mesh, for the frustum cull.
-    y_min: f32 = 0,
-    y_max: f32 = chunk_mod.CHUNK_H,
+    /// The world y range of the mesh, for the frustum cull.
+    y_min: f32 = chunk_mod.MIN_Y,
+    y_max: f32 = chunk_mod.MIN_Y + chunk_mod.CHUNK_H,
     /// The value of State.debug_tick when the mesh was last rebuilt. The
     /// header of the quad buffer holds it, and vs_chunk tints the chunk
     /// orange for 64 ticks after it when GPU debug is on.
@@ -1762,7 +1762,7 @@ fn startExecutor(ctx: *sw.Context) !void {
 /// The view frustum test for the scheduler priority (C8, class 3).
 fn chunkInView(ctx: *const anyopaque, cx: i32, cz: i32) bool {
     const f: *const frustum_mod.Frustum = @ptrCast(@alignCast(ctx));
-    return frustum_mod.keepChunk(.frustum, f.*, cx, cz, 0, chunk_mod.CHUNK_H);
+    return frustum_mod.keepChunk(.frustum, f.*, cx, cz, chunk_mod.MIN_Y, chunk_mod.MIN_Y + chunk_mod.CHUNK_H);
 }
 
 /// The frame phase of the chunk pipeline (C1, C7). It runs once per frame,
@@ -2438,7 +2438,9 @@ fn voxelTick(ctx: *sw.Context) !void {
 /// ox/oz are the world-space X/Z origin of the chunk to draw the border for.
 fn buildChunkBorderMesh(g: *gpu_mod.GPU, ox: f32, oz: f32) void {
     const W: f32 = @floatFromInt(chunk_mod.CHUNK_W);
-    const H: f32 = @floatFromInt(chunk_mod.CHUNK_H);
+    // The world y range of the column.
+    const Y0: f32 = @floatFromInt(chunk_mod.MIN_Y);
+    const Y1: f32 = @floatFromInt(chunk_mod.MIN_Y + chunk_mod.CHUNK_H);
     const t: f32 = 0.02; // half-thickness of each line
     const bt: u32 = 101; // block_type for borders
     const n_zero = [3]f32{ 0, 0, 0 }; // normal unused for unlit wireframe
@@ -2473,13 +2475,13 @@ fn buildChunkBorderMesh(g: *gpu_mod.GPU, ox: f32, oz: f32) void {
         const cx = ox + c[0];
         const cz = oz + c[1];
         // Quad facing ±Z
-        addQ(&verts, &idxs, &vi, &ii, .{ cx - t, 0, cz }, .{ cx - t, H, cz }, .{ cx + t, H, cz }, .{ cx + t, 0, cz }, bt, n_zero);
+        addQ(&verts, &idxs, &vi, &ii, .{ cx - t, Y0, cz }, .{ cx - t, Y1, cz }, .{ cx + t, Y1, cz }, .{ cx + t, Y0, cz }, bt, n_zero);
         // Quad facing ±X
-        addQ(&verts, &idxs, &vi, &ii, .{ cx, 0, cz - t }, .{ cx, H, cz - t }, .{ cx, H, cz + t }, .{ cx, 0, cz + t }, bt, n_zero);
+        addQ(&verts, &idxs, &vi, &ii, .{ cx, Y0, cz - t }, .{ cx, Y1, cz - t }, .{ cx, Y1, cz + t }, .{ cx, Y0, cz + t }, bt, n_zero);
     }
 
     // Horizontal edges along X (4: bottom + top, at Z=0 and Z=W)
-    const y_levels = [_]f32{ 0, H };
+    const y_levels = [_]f32{ Y0, Y1 };
     const z_edges = [_]f32{ oz, oz + W };
     for (y_levels) |y| {
         for (z_edges) |z| {
@@ -2984,8 +2986,8 @@ fn voxelRender(ctx: *sw.Context) !void {
             // The y range of the chunk's uploaded mesh. A chunk with no upload
             // yet is not drawn anyway, so the full height is only a default.
             const cg = state.chunk_gpu.get(.{ .cx = lc_ptr.*.cx, .cz = lc_ptr.*.cz });
-            const y_min: f32 = if (cg) |c| c.y_min else 0;
-            const y_max: f32 = if (cg) |c| c.y_max else chunk_mod.CHUNK_H;
+            const y_min: f32 = if (cg) |c| c.y_min else chunk_mod.MIN_Y;
+            const y_max: f32 = if (cg) |c| c.y_max else chunk_mod.MIN_Y + chunk_mod.CHUNK_H;
             if (!frustum_mod.keepChunk(state.frustum_strategy, live_frustum, lc_ptr.*.cx, lc_ptr.*.cz, y_min, y_max)) {
                 state.frustum_culled += 1;
                 continue;
@@ -3006,7 +3008,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     }, struct {
         fn lt(ctx_val: ChunkSortCtx, a: *world_mod.LoadedChunk, b: *world_mod.LoadedChunk) bool {
             const half_xz: f32 = @as(f32, @floatFromInt(chunk_mod.CHUNK_W)) * 0.5;
-            const chunk_cy: f32 = @as(f32, @floatFromInt(chunk_mod.CHUNK_H)) * 0.5;
+            const chunk_cy: f32 = @as(f32, @floatFromInt(chunk_mod.MIN_Y)) + @as(f32, @floatFromInt(chunk_mod.CHUNK_H)) * 0.5;
             const ax = a.worldXf() + half_xz - ctx_val.cam[0];
             const ay = chunk_cy - ctx_val.cam[1];
             const az = a.worldZf() + half_xz - ctx_val.cam[2];
@@ -4124,7 +4126,7 @@ fn uploadChunkMesh(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !
     const buffer = cg.quads.?.buffer;
 
     cg.rebuilt_tick = state.debug_tick;
-    const header = mesher_mod.PackedQuad{ @bitCast(lc.cx * chunk_mod.CHUNK_W), cg.rebuilt_tick, @bitCast(lc.cz * chunk_mod.CHUNK_W), 0 };
+    const header = mesher_mod.PackedQuad{ @bitCast(lc.cx * chunk_mod.CHUNK_W), cg.rebuilt_tick, @bitCast(lc.cz * chunk_mod.CHUNK_W), @bitCast(@as(i32, chunk_mod.MIN_Y)) };
     const quad_size = @sizeOf(mesher_mod.PackedQuad);
     g.writeBuffer(buffer, 0, std.mem.asBytes(&header));
     switch (bytes) {

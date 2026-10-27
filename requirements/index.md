@@ -14,6 +14,8 @@
 | [`REQ-ASSETS-002`](assets.md#req-assets-002--the-cache-tells-why-opfs-is-missing) | The cache tells why OPFS is missing | active | functional | P2 | agent:SWZ-54 |
 | [`REQ-AUDIO-001`](audio.md#req-audio-001--the-waveform-api-does-not-change) | The waveform API does not change | active | constraint | P1 | agent:SWZ-48 |
 | [`REQ-AUDIO-002`](audio.md#req-audio-002--a-stream-does-not-decode-all-of-its-data) | A stream does not decode all of its data | active | quality | P1 | agent:SWZ-48 |
+| [`REQ-CAMERA-001`](camera.md#req-camera-001--the-camera-result-does-not-depend-on-the-frame-rate) | The camera result does not depend on the frame rate | active | quality | P2 | agent:SWZ-43 |
+| [`REQ-CAMERA-002`](camera.md#req-camera-002--the-camera-controller-reads-no-platform-input) | The camera controller reads no platform input | active | constraint | P2 | agent:SWZ-43 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -39,6 +41,8 @@ graph TD
   REQ_ASSETS_002["REQ-ASSETS-002<br/>The cache tells why OPFS is missing"]
   REQ_AUDIO_001["REQ-AUDIO-001<br/>The waveform API does not change"]
   REQ_AUDIO_002["REQ-AUDIO-002<br/>A stream does not decode all of its data"]
+  REQ_CAMERA_001["REQ-CAMERA-001<br/>The camera result does not depend on the frame rate"]
+  REQ_CAMERA_002["REQ-CAMERA-002<br/>The camera controller reads no platform input"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
