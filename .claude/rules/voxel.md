@@ -1,20 +1,39 @@
 ---
 paths:
   - "examples/voxel/**"
+  - "libs/sw_voxel/**"
 ---
 
-# swindowzig voxel demo
+# swindowzig voxel demo and sw_voxel
 
 Read with `CLAUDE.md`. The mandatory tests are there.
 
+The engine code is in `libs/sw_voxel/src/`: the chunk storage, the mesher,
+World, the frustum, and the chunk pipeline in `pipeline/`. The demo in
+`examples/voxel/` keeps the game code: the block types and the generator
+(`content.zig`, `world_gen.zig`), the renderer, the player and the menus.
+In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
+
+### The content contract (libs/sw_voxel/src/content.zig)
+
+- sw_voxel has no block names and no terrain. It imports the game content
+  as the module `sw_voxel_content`: `Block` (an `enum(u8)` with `air = 0`),
+  `emission`, `GenConfig` (with `seed: u64`), `generate`, and the
+  `GenConfig` bytes of the Hello message.
+- `build.zig` wires it with `addVoxel`. The demo gives
+  `examples/voxel/content.zig`. The unit tests of the library give
+  `libs/sw_voxel/testing/content.zig`, with numbered blocks.
+- Do not put a block name, a biome or a generator in `libs/sw_voxel`. Put
+  it in the content.
+
 ## Voxel lessons
 
-### Voxel face winding (fixed in mesher.zig)
+### Voxel face winding (fixed in sw_voxel mesher.zig)
 +Y, -Y, +Z, -Z faces had CW winding (inside-out). Fixed by reversing vertex
 order so geometric normal matches the intended outward face normal. +X and -X
 were already correct.
 
-### Mesher output and block edits (voxel/mesher.zig)
+### Mesher output and block edits (libs/sw_voxel/src/mesher.zig)
 
 - Greedy meshing is the only mesher. `generateMesh` writes one 16-byte
   `PackedQuad` per quad to `Mesh.quads`, and the y range to `Mesh.y_min`
@@ -31,7 +50,7 @@ were already correct.
   the packed quads of a fixed world. The quad hash is `4b4f00654f783b36`.
   A mesher change that must not change the output must keep this hash.
 
-### Chunk stages (voxel/pipeline/stages.zig)
+### Chunk stages (libs/sw_voxel/src/pipeline/stages.zig)
 
 - `generate`, `light` and `mesh` are pure functions of a bounded
   neighbourhood (C2, P3). They read no World and no globals. The chunk
@@ -52,7 +71,7 @@ were already correct.
 
 **Default changes (April 2026):** `--ao=moore` and `--aa=fxaa`
 (quality=medium) are the startup defaults when no CLI flags are given. The
-default render distance is 12 (`world.zig: DEFAULT_RENDER_DISTANCE`). Existing regression tests that captured frames under the old defaults
+default render distance is 12 (`libs/sw_voxel/src/world.zig: DEFAULT_RENDER_DISTANCE`). Existing regression tests that captured frames under the old defaults
 (classic AO, no AA) continue to pass the previous flags explicitly — see the
 comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 `cave_skylight.tas`, and `tests/aa_regression.sh`.
@@ -75,7 +94,7 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete. If a TAS is running, waits for the TAS to finish. Then waits for the chunk scheduler to be idle (`Scheduler.isIdle`), so the captured state does not depend on timing. |
 | `--debug-page=<general\|pipeline>` | The first page of the debug overlay. `pipeline` shows the chunk pipeline counters (C12). Cmd+P (Ctrl+P) changes the page at runtime. |
 | `--chunk-workers=N` | Native only. The chunk worker threads of the ThreadPool executor, 0 to 4. **Default: min(CPU count - 1, 4).** 0 runs the chunk jobs on the main thread (the Inline executor). Each worker has its own world copy and a 64 MB cache (C4, C14). The web build uses min(`navigator.hardwareConcurrency` - 1, 4) Web Workers. See `examples/voxel/docs/chunk-pipeline.md`. |
-| `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none`, `sphere`, `cone` and `frustum`. `frustum` is the default: it tests each chunk's box (the y range of its mesh) against the planes of the view-projection matrix. `none` draws every loaded chunk. `sphere` is a cheap radial cutoff at render_distance plus slack. `cone` tests each sphere against a cone along the camera's forward vector, with the FOV set by `--frustum-fov-deg`. No strategy ever culls the camera's own chunk or its 8 horizontal neighbours. `examples/voxel/frustum.zig` has the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
+| `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none`, `sphere`, `cone` and `frustum`. `frustum` is the default: it tests each chunk's box (the y range of its mesh) against the planes of the view-projection matrix. `none` draws every loaded chunk. `sphere` is a cheap radial cutoff at render_distance plus slack. `cone` tests each sphere against a cone along the camera's forward vector, with the FOV set by `--frustum-fov-deg`. No strategy ever culls the camera's own chunk or its 8 horizontal neighbours. `libs/sw_voxel/src/frustum.zig` has the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
 | `--frustum-fov-deg=<degrees>` | Total fov of the cone strategy in degrees. With no flag, each frame uses the screen-diagonal fov of the camera (about 100° at 60° vertical and 16:9). The test uses each chunk's full-height bounding sphere, so this cone keeps every chunk on screen. Range [0, 360]. Half-angle ≥ 90° always returns true. |
 
 ---
@@ -172,7 +191,7 @@ Regenerating the diffs / refreshing the doc's embedded PNGs:
 
 ## Voxel Demo — Chunk Pipeline
 
-One chunk scheduler (`examples/voxel/pipeline/scheduler.zig`) loads chunks
+One chunk scheduler (`libs/sw_voxel/src/pipeline/scheduler.zig`) loads chunks
 on every platform. It runs in the frame phase (`voxelFrame`), never in a
 tick. Workers own the world (C4): native runs the ThreadPool executor
 (`pipeline/exec_threads.zig`, `--chunk-workers=N`), and the web build runs
@@ -190,7 +209,8 @@ Web Worker pool rules (C9):
   only wasm imports of `chunks.wasm` are `env.jsGetTime` and `env.jsLog`.
   Do not import a WebGPU function into it.
 - Both files export the protocol version, the build hash and the build id
-  (a hash of the `.zig` files under `examples/voxel`, from `build.zig`).
+  (a hash of the `.zig` files under `examples/voxel` and `libs/sw_voxel`,
+  from `build.zig`).
   The pool starts only when the three values are equal.
 - `apps/minecraft.seanmizen.com/bundle.sh` in seanorepo gives the chunk files
   content-hashed names. Each deploy file must be in `bundle.sh`, the
@@ -358,19 +378,11 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | File | Purpose |
 |------|---------|
 | `main.zig` | Entry point, TAS wiring, render loop, pause menu, debug overlay, loading screen, `resolveSpawnPos`/`doRespawn` |
-| `chunk.zig` | `Chunk` struct, `BlockType` enum, `setBlock`/`getBlock`, world-gen call |
-| `world.zig` | Multi-chunk world, chunk map, chunk versions, `World.init(allocator, preset)` |
-| `pipeline/stages.zig` | The pure chunk stages: generate, light, mesh (C2), and versions (C3) |
-| `pipeline/scheduler.zig` | The chunk scheduler: desired state, priority, version checks, eviction, edits (C8) |
-| `pipeline/exec_inline.zig` | The Inline executor: one in-process worker on the main thread, within a frame budget (C7) |
-| `pipeline/exec_threads.zig` | The ThreadPool executor: native worker threads, spatial affinity, install budget (C4, C9) |
-| `pipeline/exec_web.zig` | The WorkerPool executor: the main side of the Web Worker pool, through the "chunks" imports (C9) |
-| `pipeline/chunk_worker_main.zig` | The exports of `chunks.wasm`, the chunk worker of the web build. `chunks_wasm.zig` is its build root (C9) |
-| `pipeline/worker_world.zig` | The world of a chunk worker: seed, edit log, LRU cache with a memory limit (C4, C14). Builds for wasm32 |
-| `pipeline/protocol.zig` | The chunk protocol: Hello, Edit, Job, Result, Error bytes (P6) |
-| `pipeline/mesh_bytes.zig` | The quad bytes of a mesh result until the GPU upload: in main memory, or held by JS (C5) |
+| `content.zig` | The demo content for sw_voxel: `Block` enum, `emission`, `GenConfig` bytes, `generate` (the terrain fill, glowstone, caves and trees) |
 | `world_gen.zig` | Procedural terrain, `Preset` enum (flatland / hilly), `presetConfig()`, value-noise `sampleHeight` |
-| `mesher.zig` | Greedy quad mesher (writes `PackedQuad`) |
+| `chunks_wasm.zig` | The root of `chunks.wasm`. It calls `sw_voxel.chunk_worker.exportFunctions` with the build id (C9) |
+| `stages_test.zig`, `scheduler_test.zig`, `protocol_test.zig`, `exec_test.zig`, `world_test.zig` | sw_voxel tests on the demo world (`test_recompute.zig` is their helper) |
+| `shader_test.zig` | The corner constants of `voxel.wgsl` match `sw_voxel.mesher.cornerBits` |
 | `camera.zig` | FPS camera, view/projection matrices |
 | `player.zig` | Movement, gravity, collision |
 | `raycast.zig` | Block-face hit test for place/destroy |
@@ -383,3 +395,24 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `terrain_hash.zig` | Block hash of a 9×9 hilly area for a seed. Native CLI and tests. `terrain_hash_wasm.zig` is the wasm root, and `scripts/terrain_hash_wasm.mjs` runs it in Node or Bun |
 | `framespike.tas` | TAS script used by the mandatory headless regression test |
 | `tests/msaa_flatland.tas` | MSAA regression test — flatland, block-remove, camera pan |
+
+### sw_voxel (`libs/sw_voxel/src/`)
+
+| File | Purpose |
+|------|---------|
+| `sw_voxel.zig` | The module root. It names each file below |
+| `content.zig` | The content contract: what the game module `sw_voxel_content` must declare |
+| `chunk.zig` | `Chunk`: paletted blocks, skylight, block light, `setBlock`/`getBlock`, `generateTerrain` (calls `content.generate`) |
+| `world.zig` | Multi-chunk world, chunk map, chunk versions, `World.init(allocator, gen_config, render_distance)` |
+| `mesher.zig` | Greedy quad mesher (writes `PackedQuad`), `cornerBits` for a shader |
+| `frustum.zig` | Chunk cull strategies: none, sphere, cone, frustum |
+| `clock.zig` | Monotonic clock for the perf logs. main sets `clock.io` |
+| `pipeline/stages.zig` | The pure chunk stages: generate, light, mesh (C2), and versions (C3) |
+| `pipeline/scheduler.zig` | The chunk scheduler: desired state, priority, version checks, eviction, edits (C8) |
+| `pipeline/exec_inline.zig` | The Inline executor: one in-process worker on the main thread, within a frame budget (C7) |
+| `pipeline/exec_threads.zig` | The ThreadPool executor: native worker threads, spatial affinity, install budget (C4, C9) |
+| `pipeline/exec_web.zig` | The WorkerPool executor: the main side of the Web Worker pool, through the "chunks" imports (C9) |
+| `pipeline/chunk_worker_main.zig` | The exports of `chunks.wasm` (`exportFunctions`), the chunk worker of the web build (C9) |
+| `pipeline/worker_world.zig` | The world of a chunk worker: seed, edit log, LRU cache with a memory limit (C4, C14). Builds for wasm32 |
+| `pipeline/protocol.zig` | The chunk protocol: Hello, Edit, Job, Result, Error bytes (P6) |
+| `pipeline/mesh_bytes.zig` | The quad bytes of a mesh result until the GPU upload: in main memory, or held by JS (C5) |

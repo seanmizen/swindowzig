@@ -19,7 +19,7 @@
 //! results come back with the same job ids. A job that reads an edit that
 //! came after it gets an Error (stale_input), and the scheduler queues the
 //! job again (C3). When no worker can run, `runFrame` gives each job in
-//! flight back to the scheduler and returns error.NoWorkers. main.zig then
+//! flight back to the scheduler and returns error.NoWorkers. The game then
 //! starts the Inline executor (the fallback).
 //!
 //! Main does not copy mesh bytes into its wasm memory (C5). For each result,
@@ -27,7 +27,7 @@
 //! the header and the fixed part of the Result. JS keeps the whole message
 //! (the transferred ArrayBuffer) under a handle. A mesh result goes to the
 //! scheduler as that handle (mesh_bytes.MeshBytes.held). The GPU upload in
-//! main.zig tells JS to write the quads to the GPU from the ArrayBuffer
+//! The game tells JS to write the quads to the GPU from the ArrayBuffer
 //! (gpu.writeBufferHeld), then releases the handle. Only a generate result
 //! with blocks (C6) and an Error copy their payload into the wasm memory.
 //!
@@ -41,7 +41,7 @@ const protocol = @import("protocol.zig");
 const scheduler_mod = @import("scheduler.zig");
 const exec_inline = @import("exec_inline.zig");
 const world_mod = @import("../world.zig");
-const world_gen = @import("../world_gen.zig");
+const content = @import("../content.zig");
 const mesh_bytes = @import("mesh_bytes.zig");
 
 const Scheduler = scheduler_mod.Scheduler;
@@ -170,7 +170,7 @@ pub const Web = struct {
     /// Send the Hello for the world `config` to each worker. The JS pool
     /// checks each Hello reply (C9). Returns error.NoWorkers when no worker
     /// runs.
-    pub fn init(allocator: std.mem.Allocator, transport: Transport, config: world_gen.WorldGenConfig, cache_limit: u64) Error!Web {
+    pub fn init(allocator: std.mem.Allocator, transport: Transport, config: content.GenConfig, cache_limit: u64) Error!Web {
         const n = transport.slots();
         if (n == 0 or liveCount(transport) == 0) return error.NoWorkers;
         const in_flight = try allocator.alloc(usize, n);

@@ -104,6 +104,10 @@ pub fn build(b: *std.Build) void {
     // (e.g. voxel, which constructs a WasmBackend directly in its
     // swindowzig_init export).
     example.root_module.addImport("sw_platform", web_libs.platform);
+    // The voxel demo: sw_voxel with the demo content (examples/voxel/content.zig).
+    const web_voxel = addVoxel(b, web_libs.gpu, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
+    example.root_module.addImport("sw_voxel", web_voxel.voxel);
+    example.root_module.addImport("voxel_content", web_voxel.content);
     example.rdynamic = true; // Export symbols for WASM
     // Voxel's Chunk.init() constructs a stack-allocated struct value.
     // At CHUNK_W=16: 16×256×16 blocks + skylight ≈ 128 KB. At CHUNK_W=48
@@ -133,9 +137,9 @@ pub fn build(b: *std.Build) void {
             .strip = optimize != .debug,
         }),
     });
-    // mesher.zig takes the AO and lighting enums from sw_gpu. They are
-    // types only: chunks.wasm imports no WebGPU function.
-    chunks_wasm.root_module.addImport("sw_gpu", web_libs.gpu);
+    // sw_voxel takes the AO and lighting enums from sw_gpu. They are types
+    // only: chunks.wasm imports no WebGPU function.
+    chunks_wasm.root_module.addImport("sw_voxel", web_voxel.voxel);
     chunks_wasm.root_module.addOptions("chunk_build", chunk_build);
     chunks_wasm.entry = .disabled;
     chunks_wasm.rdynamic = true;
@@ -176,6 +180,9 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_ui", native_libs.ui);
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
     native_exe.root_module.addOptions("chunk_build", chunk_build);
+    const native_voxel = addVoxel(b, native_libs.gpu, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
+    native_exe.root_module.addImport("sw_voxel", native_voxel.voxel);
+    native_exe.root_module.addImport("voxel_content", native_voxel.content);
 
     // Link SDL2 for native builds.
     native_exe.root_module.linkSystemLibrary("SDL2", .{});
@@ -235,6 +242,10 @@ pub fn build(b: *std.Build) void {
         "libs/sw_core/src/replay.zig",
         "libs/sw_core/src/tas.zig",
         "libs/sw_platform/src/storage.zig",
+        // sw_gpu: the mip chain maths and the descriptor checks have no
+        // GPU code.
+        "libs/sw_gpu/src/mip_chain.zig",
+        "libs/sw_gpu/src/types.zig",
         // sw_gfx2d: the batching and the projection maths have no GPU code.
         "libs/sw_gfx2d/src/batch.zig",
         "libs/sw_gfx2d/src/projection.zig",
@@ -247,6 +258,9 @@ pub fn build(b: *std.Build) void {
         // sw_ui: the tree, layout, focus and semantic tree have no GPU or font
         // code. draw.zig is built with the examples.
         "libs/sw_ui/src/ui.zig",
+        // sw_audio: the sample type and the WAV decoder.
+        "libs/sw_audio/src/sample.zig",
+        "libs/sw_audio/src/wav.zig",
     };
 
     // sw_assets: byte loading and PNG decoding. The PNG decoder is C
@@ -305,6 +319,58 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(font_tests).step);
     }
 
+    // sw_audio tests: the Ogg Vorbis decoder (stb_vorbis, C), the stream and
+    // the mixer. testdata/tone.ogg is the "test_ogg" import.
+    const audio_test_files = [_][]const u8{
+        "libs/sw_audio/src/vorbis.zig",
+        "libs/sw_audio/src/mixer.zig",
+    };
+    inline for (audio_test_files) |file| {
+        const unit_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        addAudioC(b, unit_tests.root_module);
+        unit_tests.root_module.addAnonymousImport("test_ogg", .{ .root_source_file = b.path("libs/sw_audio/testdata/tone.ogg") });
+        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    }
+    // The Audio API with the SDL2 backend. SDL_AUDIODRIVER=dummy: the SDL
+    // audio thread runs the mixer, and no sound goes to a speaker.
+    const audio_api_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_audio/src/audio.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+        .filters = &.{ "waveform API", "decode:", "Audio:" },
+    });
+    addAudioC(b, audio_api_tests.root_module);
+    audio_api_tests.root_module.addImport("sdl", sdl_c.createModule());
+    audio_api_tests.root_module.addAnonymousImport("test_ogg", .{ .root_source_file = b.path("libs/sw_audio/testdata/tone.ogg") });
+    audio_api_tests.root_module.linkSystemLibrary("SDL2", .{});
+    const run_audio_api_tests = b.addRunArtifact(audio_api_tests);
+    run_audio_api_tests.setEnvironmentVariable("SDL_AUDIODRIVER", "dummy");
+    test_step.dependOn(&run_audio_api_tests.step);
+    // The web build of sw_audio (the Web Audio backend and stb_vorbis with no
+    // C library) must compile and link for wasm32-freestanding.
+    const audio_wasm = b.addExecutable(.{
+        .name = "audio_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_audio/src/wasm_check.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    audio_wasm.root_module.addImport("sw_audio", web_libs.audio);
+    audio_wasm.entry = .disabled;
+    audio_wasm.rdynamic = true;
+    test_step.dependOn(&audio_wasm.step);
+
     // Mesher benchmark (no GPU): zig build bench-mesher -Doptimize=ReleaseFast
     const bench_mesher = b.addExecutable(.{
         .name = "bench_mesher",
@@ -314,7 +380,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    bench_mesher.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(bench_mesher.root_module, web_voxel);
     const bench_mesher_step = b.step("bench-mesher", "Time the voxel mesher on a fixed world (no GPU)");
     bench_mesher_step.dependOn(&b.addRunArtifact(bench_mesher).step);
 
@@ -329,7 +395,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    terrain_hash_native.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(terrain_hash_native.root_module, web_voxel);
     const terrain_hash_wasm = b.addExecutable(.{
         .name = "terrain_hash",
         .root_module = b.createModule(.{
@@ -338,7 +404,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    terrain_hash_wasm.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(terrain_hash_wasm.root_module, web_voxel);
     terrain_hash_wasm.entry = .disabled;
     terrain_hash_wasm.rdynamic = true;
     // A Chunk value is about 128 KB on the stack. See the app stack above.
@@ -358,7 +424,7 @@ pub fn build(b: *std.Build) void {
         // the tests of the files that it imports.
         .filters = &.{"block hash"},
     });
-    terrain_hash_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(terrain_hash_tests.root_module, web_voxel);
     test_step.dependOn(&b.addRunArtifact(terrain_hash_tests).step);
 
     // Chunk stage benchmark (no GPU), native and wasm. See stage_bench.zig.
@@ -373,7 +439,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    stage_bench_native.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(stage_bench_native.root_module, web_voxel);
     const stage_bench_step = b.step("bench-stages", "Time each voxel chunk stage natively and print the terrain hashes");
     stage_bench_step.dependOn(&b.addRunArtifact(stage_bench_native).step);
     const stage_bench_wasm = b.addExecutable(.{
@@ -384,7 +450,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    stage_bench_wasm.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(stage_bench_wasm.root_module, web_voxel);
     stage_bench_wasm.entry = .disabled;
     stage_bench_wasm.rdynamic = true;
     // Chunk.init makes a large value on the stack. Use the same stack as app.wasm.
@@ -392,44 +458,38 @@ pub fn build(b: *std.Build) void {
     const stage_bench_wasm_step = b.step("bench-stages-wasm", "Build zig-out/bin/stage_bench.wasm (run it with examples/voxel/scripts/bench_stages.mjs)");
     stage_bench_wasm_step.dependOn(&b.addInstallArtifact(stage_bench_wasm, .{}).step);
 
-    // Voxel mesher tests: the packed-quad round trip checks that vs_chunk's
-    // decode (mirrored in mesher.unpackCorner) gives back the CPU vertices.
-    const mesher_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/voxel/mesher.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+    // sw_voxel unit tests, with the test content (libs/sw_voxel/testing):
+    // the chunk storage, the light, the mesher, World and the frustum.
+    const voxel_lib_tests = addVoxel(b, web_libs.gpu, .{
+        .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig"),
+        .target = target,
+        .optimize = optimize,
+    }, .{ .root_source_file = b.path("libs/sw_voxel/testing/content.zig") });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = voxel_lib_tests.voxel })).step);
+    // The demo content (examples/voxel/content.zig): the GenConfig bytes
+    // and the world_gen tests.
+    const demo_content_tests = addVoxel(b, web_libs.gpu, .{
+        .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig"),
+    }, .{
+        .root_source_file = b.path("examples/voxel/content.zig"),
+        .target = target,
+        .optimize = optimize,
     });
-    mesher_tests.root_module.addImport("sw_gpu", web_libs.gpu);
-    test_step.dependOn(&b.addRunArtifact(mesher_tests).step);
-    const frustum_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/voxel/frustum.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    test_step.dependOn(&b.addRunArtifact(frustum_tests).step);
-    // Chunk tests: the fast skylight matches the bucket-pass reference.
-    const chunk_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/voxel/chunk.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    test_step.dependOn(&b.addRunArtifact(chunk_tests).step);
-    // World tests: generated chunks get block light across chunk borders.
-    const world_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/voxel/world.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    world_tests.root_module.addImport("sw_gpu", web_libs.gpu);
-    test_step.dependOn(&b.addRunArtifact(world_tests).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = demo_content_tests.content })).step);
+    // Demo tests: sw_voxel World on the demo terrain, and the demo shader
+    // against the mesher.
+    inline for (.{ .{ "examples/voxel/world_test.zig", "world: " }, .{ "examples/voxel/shader_test.zig", "shader: " } }) |t| {
+        const demo_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(t[0]),
+                .target = target,
+                .optimize = optimize,
+            }),
+            .filters = &.{t[1]},
+        });
+        addVoxelDemo(demo_tests.root_module, web_voxel);
+        test_step.dependOn(&b.addRunArtifact(demo_tests).step);
+    }
     // Chunk stage tests (pipeline/stages.zig): equivalence with World,
     // install order, and edits with versions (C2, C3, P3).
     const stages_tests = b.addTest(.{
@@ -442,7 +502,7 @@ pub fn build(b: *std.Build) void {
         // the tests of the files that it imports.
         .filters = &.{"stages: "},
     });
-    stages_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(stages_tests.root_module, web_voxel);
     test_step.dependOn(&b.addRunArtifact(stages_tests).step);
     // Chunk scheduler tests (pipeline/scheduler.zig, pipeline/exec_inline.zig):
     // priority order, stale results, eviction and the render distance (C3, C8).
@@ -454,7 +514,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"scheduler: "},
     });
-    scheduler_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(scheduler_tests.root_module, web_voxel);
     test_step.dependOn(&b.addRunArtifact(scheduler_tests).step);
     // Chunk protocol tests (pipeline/protocol.zig): round trip, layout and
     // fuzz (P6).
@@ -466,7 +526,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"protocol: "},
     });
-    protocol_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(protocol_tests.root_module, web_voxel);
     test_step.dependOn(&b.addRunArtifact(protocol_tests).step);
     // Executor tests (pipeline/worker_world.zig, pipeline/exec_threads.zig):
     // the cache limit, and Inline and ThreadPool give the same bytes (C14,
@@ -479,7 +539,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"exec: "},
     });
-    exec_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    addVoxelDemo(exec_tests.root_module, web_voxel);
     const run_exec_tests = b.addRunArtifact(exec_tests);
     test_step.dependOn(&run_exec_tests.step);
     const exec_test_step = b.step("test-exec", "Run the chunk executor tests only (no cache: run it again to look for races)");
@@ -494,12 +554,18 @@ pub fn build(b: *std.Build) void {
 }
 
 /// The build id of the voxel web build (C9): a hash of the path and the
-/// bytes of each .zig file under examples/voxel. app.wasm and chunks.wasm of
-/// one build have the same id. A browser cache that keeps an old chunks.wasm
-/// gives another id, and the worker pool does not start.
+/// bytes of each .zig file under examples/voxel and libs/sw_voxel. app.wasm
+/// and chunks.wasm of one build have the same id. A browser cache that keeps
+/// an old chunks.wasm gives another id, and the worker pool does not start.
 fn voxelBuildId(b: *std.Build) u64 {
+    var h = std.hash.Wyhash.init(0);
+    for ([_][]const u8{ "examples/voxel", "libs/sw_voxel" }) |root| hashZigFiles(b, root, &h);
+    return h.final();
+}
+
+fn hashZigFiles(b: *std.Build, root: []const u8, h: *std.hash.Wyhash) void {
     const io = b.graph.io;
-    var dir = b.root.openDir(io, "examples/voxel", .{ .iterate = true }) catch return 0;
+    var dir = b.root.openDir(io, root, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var walker = dir.walk(b.allocator) catch @panic("OOM");
     defer walker.deinit();
@@ -513,13 +579,40 @@ fn voxelBuildId(b: *std.Build) u64 {
             return std.mem.lessThan(u8, x, y);
         }
     }.lessThan);
-    var h = std.hash.Wyhash.init(0);
     for (paths.items) |p| {
         const data = dir.readFileAlloc(io, p, b.allocator, .limited(64 << 20)) catch @panic("cannot read a voxel source file");
+        h.update(root);
         h.update(p);
         h.update(data);
     }
-    return h.final();
+}
+
+const VoxelModules = struct {
+    voxel: *std.Build.Module,
+    content: *std.Build.Module,
+};
+
+/// Make a sw_voxel module with the content module at `content_options`.
+/// sw_voxel imports the content as `sw_voxel_content`, and the content can
+/// import `sw_voxel` (libs/sw_voxel/src/content.zig gives the contract).
+fn addVoxel(
+    b: *std.Build,
+    gpu: *std.Build.Module,
+    voxel_options: std.Build.Module.CreateOptions,
+    content_options: std.Build.Module.CreateOptions,
+) VoxelModules {
+    const voxel = b.createModule(voxel_options);
+    const content = b.createModule(content_options);
+    voxel.addImport("sw_gpu", gpu);
+    voxel.addImport("sw_voxel_content", content);
+    content.addImport("sw_voxel", voxel);
+    return .{ .voxel = voxel, .content = content };
+}
+
+/// Give a voxel demo tool or test sw_voxel and the demo content.
+fn addVoxelDemo(module: *std.Build.Module, demo: VoxelModules) void {
+    module.addImport("sw_voxel", demo.voxel);
+    module.addImport("voxel_content", demo.content);
 }
 
 /// Compile stb_image (libs/sw_assets/c) into `module`. The shim headers stand
@@ -545,6 +638,7 @@ const Libs = struct {
     text: *std.Build.Module,
     ui: *std.Build.Module,
     assets: *std.Build.Module,
+    voxel: *std.Build.Module,
     app: *std.Build.Module,
 };
 
@@ -569,6 +663,8 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     if (sdl) |m| platform.addImport("sdl", m);
     const gpu = libModule(b, exported, "sw_gpu", "libs/sw_gpu/src/gpu_root.zig");
     const audio = libModule(b, exported, "sw_audio", "libs/sw_audio/src/audio_root.zig");
+    addAudioC(b, audio);
+    if (sdl) |m| audio.addImport("sdl", m);
     const math = libModule(b, exported, "sw_math", "libs/sw_math/src/math_root.zig");
     const assets = libModule(b, exported, "sw_assets", "libs/sw_assets/src/assets_root.zig");
     addAssetsC(b, assets);
@@ -581,13 +677,29 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     const ui = libModule(b, exported, "sw_ui", "libs/sw_ui/src/ui_root.zig");
     ui.addImport("sw_gfx2d", gfx2d);
     ui.addImport("sw_text", text);
+    // sw_voxel needs a content module from the dependent package:
+    // voxel.addImport("sw_voxel_content", content). See
+    // libs/sw_voxel/src/content.zig.
+    const voxel = libModule(b, exported, "sw_voxel", "libs/sw_voxel/src/sw_voxel.zig");
+    voxel.addImport("sw_gpu", gpu);
     const app = libModule(b, exported, "sw_app", "libs/sw_app/src/app_root.zig");
     app.addImport("sw_core", core);
     app.addImport("sw_platform", platform);
     app.addImport("sw_gpu", gpu);
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
-    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .text = text, .ui = ui, .app = app };
+    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .text = text, .ui = ui, .voxel = voxel, .app = app };
+}
+
+/// Compile stb_vorbis (libs/sw_audio/c) into `module`. The file needs no C
+/// library, so it builds for freestanding wasm too.
+fn addAudioC(b: *std.Build, module: *std.Build.Module) void {
+    module.addCSourceFile(.{
+        .file = b.path("libs/sw_audio/c/sw_vorbis.c"),
+        // STB_VORBIS_NO_CRT gives `malloc(s)` as an int 0. With a memory
+        // buffer, the decoder never calls it.
+        .flags = &.{ "-std=c99", "-fno-sanitize=undefined", "-Wno-int-conversion", "-Wno-tautological-compare" },
+    });
 }
 
 /// Compile stb_truetype (with the C API that font.zig declares) into a module.

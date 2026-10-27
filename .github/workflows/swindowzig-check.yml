@@ -99,6 +99,10 @@ jobs:
         # The key numbers and the wheel deltas that events.ts sends.
         run: bun test backends/wasm/events.test.ts
 
+      - name: Web audio mixer pump tests in Bun
+        # The blocks that sw_audio mixes play on the audio clock with no gap.
+        run: bun test backends/wasm/audio.test.ts
+
       - name: Native build
         run: zig build native -Dexample=voxel
 
@@ -106,6 +110,15 @@ jobs:
         run: |
           zig build web -Dexample=flat2d
           zig build native -Dexample=flat2d
+
+      - name: GPU mip levels (mipmaps --check)
+        # The example makes the mip levels of a texture array on the GPU,
+        # reads each level back and compares it with the CPU reference
+        # (REQ-GPU-001, REQ-GPU-002). The web build must compile too.
+        run: |
+          zig build web -Dexample=mipmaps
+          zig build native -Dexample=mipmaps
+          ./zig-out/bin/mipmaps --check
 
       - name: Screen-reader mirror in Chromium (flat2d)
         # Playwright opens flat2d with WebGPU, moves the focus with Tab, and

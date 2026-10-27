@@ -9,7 +9,7 @@
 //!   .cone   — sphere-vs-cone test against a half-angle (fov/2) cone around
 //!             the camera forward vector. The chunk's bounding sphere is
 //!             treated as a single sphere for the test (no per-quad work).
-//!             main.zig sets the fov to the screen diagonal each frame, so
+//!             The game sets the fov to the screen diagonal each frame, so
 //!             the cone contains the view frustum.
 //!   .frustum — the default. Tests the chunk's box (its x and z, and the y
 //!             range of its mesh) against the left, right, bottom, top and
@@ -42,7 +42,7 @@
 //!    keep all 8 (including diagonals) so the player rotating across a chunk
 //!    corner never sees a chunk blink out.
 //!
-//! 4. The frozen-frustum debug toggle (Cmd+F in main.zig) snapshots a
+//! 4. The frozen-frustum debug toggle (Cmd+F in the voxel demo) snapshots a
 //!    Frustum once and reuses it across subsequent frames so the user can
 //!    fly around and watch what the cull thinks. There is no per-frame
 //!    re-snapshot until they press the toggle again.

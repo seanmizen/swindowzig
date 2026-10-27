@@ -322,7 +322,37 @@ pub const SamplerDescriptor = struct {
     lod_min_clamp: f32 = 0.0,
     lod_max_clamp: f32 = 32.0,
     compare: ?CompareFunction = null,
+    /// 1 is no anisotropic filtering. A value above 1 needs linear
+    /// `mag_filter`, `min_filter` and `mipmap_filter` (a WebGPU rule). The
+    /// GPU clamps the value to the most that it supports (16 on most GPUs).
     max_anisotropy: u16 = 1,
+
+    pub const Error = error{ InvalidAnisotropy, AnisotropyNeedsLinearFilters };
+
+    /// Check the WebGPU rules for anisotropy before the GPU sees the
+    /// descriptor. A native GPU stops the process on a validation error, and
+    /// a browser only writes a console message.
+    pub fn validate(self: SamplerDescriptor) Error!void {
+        if (self.max_anisotropy == 0) return error.InvalidAnisotropy;
+        if (self.max_anisotropy > 1 and
+            (self.mag_filter != .linear or self.min_filter != .linear or self.mipmap_filter != .linear))
+        {
+            return error.AnisotropyNeedsLinearFilters;
+        }
+    }
+};
+
+/// One region of a texture to write: a mip level, an origin and a size.
+/// For a 2D texture array, `origin.z` is the first array layer and
+/// `size.depth_or_array_layers` is the number of layers.
+pub const TextureRegion = struct {
+    mip_level: u32 = 0,
+    origin: Origin3D = .{},
+    size: Extent3D,
+    /// Bytes from the start of one row of texels to the start of the next.
+    bytes_per_row: u32,
+    /// Rows from the start of one layer to the start of the next.
+    rows_per_image: u32,
 };
 
 /// Shader module descriptor
@@ -647,4 +677,30 @@ pub fn bytesPerPixel(format: TextureFormat) u32 {
         .depth32float, .depth24plus, .depth24plus_stencil8 => 4,
         else => 4, // compressed formats vary
     };
+}
+
+test "sampler: the defaults are valid" {
+    try (SamplerDescriptor{}).validate();
+}
+
+test "sampler: anisotropy needs linear filters" {
+    const linear = SamplerDescriptor{
+        .mag_filter = .linear,
+        .min_filter = .linear,
+        .mipmap_filter = .linear,
+        .max_anisotropy = 16,
+    };
+    try linear.validate();
+
+    var nearest_mip = linear;
+    nearest_mip.mipmap_filter = .nearest;
+    try std.testing.expectError(error.AnisotropyNeedsLinearFilters, nearest_mip.validate());
+
+    var nearest_mag = linear;
+    nearest_mag.mag_filter = .nearest;
+    try std.testing.expectError(error.AnisotropyNeedsLinearFilters, nearest_mag.validate());
+
+    var zero = linear;
+    zero.max_anisotropy = 0;
+    try std.testing.expectError(error.InvalidAnisotropy, zero.validate());
 }
