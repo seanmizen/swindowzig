@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 9. Skipped: 0. Not started: 6.
+- Done: 9. Skipped: 1. Not started: 5.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -254,3 +254,26 @@ ticket of #102, in the order of the batch.
     sun is off the screen, the shafts become weak.
 - Risks: the light shafts are the costliest effect. The default of 48
   samples is for a desktop GPU.
+
+## #26 sw_jobs worker pool for native threads and Web Workers
+
+- Status: skipped
+- Commit: see `git log --grep SWZ-26`
+- Reason: the ticket does not fit in the time limit of one ticket. It has
+  three large parts:
+  - a generic `sw_jobs` pool from `pipeline/exec_threads.zig` and
+    `pipeline/exec_web.zig`, with tests for order, cancel and shutdown;
+  - the move of `sw_voxel` to it, with `stage_match=yes`;
+  - a SharedArrayBuffer mode in `backends/wasm/worker-pool.ts`.
+- Open questions:
+  - `backends/wasm/worker-pool.ts` says "No SharedArrayBuffer and no wasm
+    threads (section 11)": each message is a transferred ArrayBuffer, so
+    no copy occurs now. The acceptance criteria ask for
+    SharedArrayBuffer when the page is cross-origin isolated, and copies
+    when it is not. Sean must decide if that design changes, and what the
+    shared mode gives (a ring buffer with no postMessage, or wasm
+    threads).
+  - Proposal: split the ticket. Part 1: native `sw_jobs` and the move of
+    `exec_threads.zig`. Part 2: the web side and the SharedArrayBuffer
+    decision.
+- Risks: none. No code changed.
