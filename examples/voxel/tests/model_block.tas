@@ -1,0 +1,42 @@
+# model_block.tas — place a half block (a block with a baked model).
+#
+# Purpose: show the model mesher in the demo. Hotbar slot 5 holds the
+# half block (`slab` in examples/voxel/content.zig). Its baked model is a
+# box from y 0 to y 0.5, so the model mesher meshes it, and the greedy
+# mesher meshes the full cubes around it (REQ-VOXEL-001).
+#
+# Scene (flatland, the same spawn each run): the player looks down 30 degrees,
+# selects slot 5 and places the half block on the ground in front. A
+# second right-click on the same spot places a full stone block on top of
+# the half block: the top quad of the half block has no cull face, so it
+# stays, and the stone shows its bottom face over the gap.
+#
+# Usage (from the repo root):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --world=flatland --aa=none \
+#     --tas examples/voxel/tests/model_block.tas \
+#     --dump-frame=model_block.ppm
+#
+# Expected: a pale blue-grey half block on the grass in front of the
+# crosshair, half the height of a full block. With `--headless` and no
+# dump, the run exits 0.
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look down about 30 degrees (the same as hotbar_place.tas). ---
+3 mouse_move 0 180
+
+# --- Select slot 5 (the half block). ---
+8 keydown 5
+9 keyup 5
+
+# --- Place the half block on the targeted ground block. ---
+14 mouse_down right
+15 mouse_up right
+
+# --- Hold steady so --dump-frame lands on a stable view. ---
+30 mouse_move 0 0

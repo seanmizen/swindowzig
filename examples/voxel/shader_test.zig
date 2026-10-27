@@ -24,3 +24,8 @@ test "shader: voxel.wgsl corner constants match face_layouts" {
     try std.testing.expectEqual(uv[0], try wgslHexConst(src, "FACE_UV_A"));
     try std.testing.expectEqual(uv[1], try wgslHexConst(src, "FACE_UV_B"));
 }
+
+test "shader: voxel.wgsl model record bit matches the mesher (REQ-VOXEL-001)" {
+    const src = @embedFile("voxel.wgsl");
+    try std.testing.expectEqual(mesher.MODEL_RECORD_BIT, try wgslHexConst(src, "MODEL_RECORD_BIT"));
+}
