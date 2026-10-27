@@ -5,7 +5,7 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 7. Skipped: 0. Not started: 8.
+- Done: 8. Skipped: 0. Not started: 7.
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -184,3 +184,28 @@ ticket of #102, in the order of the batch.
     smoke test and goldens ran after the change.
   - `PassTimer.collect` waits for the GPU each frame. Use the timer only
     for debug.
+
+## #81 distance fog as a post effect that reads the depth target
+
+- Status: done
+- Commit: see `git log --grep SWZ-81`
+- Not run here:
+  - A resize with the effect on. The headless check has a fixed surface.
+    The chain makes the bind group again at each new target generation,
+    the same as the input image.
+  - The effect in a browser. The web build compiles.
+- What ran: `sky --check` passed on lavapipe, with 2 new steps: noon and
+  sunrise with no shader fog and the fog effect on. Each step compares
+  228000 pixels with the CPU reference of the shader fog, largest
+  difference 1. With the effect off in those steps, 14345 pixels differ
+  (largest difference 144), so the check finds a missing effect.
+- Expected changes:
+  - quad hash: no change
+  - goldens: none
+- CI changes needed: none. The `sky --check` step runs the new steps.
+- Requirements: REQ-GPU-030
+- Open questions: the effect fogs each pixel with geometry. Clouds and
+  precipitation keep their own fog, and do not write depth. A game that
+  uses the effect must not also call `sw_fog` in its scene shaders.
+- Risks: `sw_view_distance` reads the projection in `sw_frame.proj`. A
+  projection with a rotation or a skew gives a wrong distance.

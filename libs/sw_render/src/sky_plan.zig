@@ -266,6 +266,28 @@ pub fn applyFog(u: SkyUniforms, c: Vec3, dist: f32) Vec3 {
     return mix(c, rgb(u.fog_color), fogAmount(u, dist));
 }
 
+/// The distance from the camera of the point at a pixel, from its depth
+/// (REQ-GPU-030). `ndc` is the pixel centre in normalised device
+/// coordinates (x right, y up, -1 to 1). `depth` is the value of the depth
+/// target (0 to 1). `proj` is the column-major projection matrix: a
+/// perspective or an orthographic projection with no rotation. It is the
+/// CPU reference of `sw_view_distance` in `post.depth_fog_shader`.
+pub fn depthDistance(proj: [16]f32, ndc: [2]f32, depth: f32) f32 {
+    const z = (proj[14] - depth * proj[15]) / (depth * proj[11] - proj[10]);
+    const w = proj[11] * z + proj[15];
+    const x = (ndc[0] * w - proj[8] * z - proj[12]) / proj[0];
+    const y = (ndc[1] * w - proj[9] * z - proj[13]) / proj[5];
+    return @sqrt(x * x + y * y + z * z);
+}
+
+/// The colour of the fog post effect for a pixel (REQ-GPU-030): `c` with
+/// `sw_fog` at the distance of `depthDistance`. A pixel with no geometry
+/// (depth 1) keeps its colour.
+pub fn depthFog(u: SkyUniforms, proj: [16]f32, c: Vec3, ndc: [2]f32, depth: f32) Vec3 {
+    if (depth >= 1.0) return c;
+    return applyFog(u, c, depthDistance(proj, ndc, depth));
+}
+
 // =============================================================================
 // The sky pass
 // =============================================================================
@@ -530,6 +552,33 @@ test "sky: the fog uses the horizon colour, from the start to the end (REQ-GPU-0
     try expectVec(red, applyFog(none, red, 1e6), 1e-6);
     const default: SkyUniforms = .{};
     try testing.expectEqual(@as(f32, 0.0), fogAmount(default, 1e6));
+}
+
+test "sky: the depth gives the camera distance, and the fog post effect gives the sw_fog colour (REQ-GPU-030)" {
+    const math = @import("sw_math");
+    const proj = math.perspective(std.math.pi / 3.0, 4.0 / 3.0, 0.1, 5000.0);
+    const set: Settings = .{};
+    const u = uniforms(state(0.5, set), set, .{ .start = 25, .end = 70 });
+    const points = [_][3]f32{ .{ 0, 0, -30 }, .{ 5, -2, -48 }, .{ -20, 3, -10 }, .{ 1, 1, -0.5 }, .{ -100, -40, -900 } };
+    for (points) |p| {
+        const clip = proj.mulVec4(.{ .x = p[0], .y = p[1], .z = p[2], .w = 1 });
+        const ndc: [2]f32 = .{ clip.x / clip.w, clip.y / clip.w };
+        const depth = clip.z / clip.w;
+        const want = @sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        try testing.expectApproxEqRel(want, depthDistance(proj.data, ndc, depth), 1e-3);
+        const c: Vec3 = .{ 0.1, 0.2, 0.3 };
+        const got = depthFog(u, proj.data, c, ndc, depth);
+        const ref = applyFog(u, c, want);
+        for (0..3) |i| try testing.expectApproxEqAbs(ref[i], got[i], 1e-3);
+    }
+    // An orthographic projection.
+    const n: f32 = 0.1;
+    const f: f32 = 100;
+    const ortho: math.Mat4 = .{ .data = .{ 0.1, 0, 0, 0, 0, 0.1, 0, 0, 0, 0, 1 / (n - f), 0, 0, 0, n / (n - f), 1 } };
+    const clip = ortho.mulVec4(.{ .x = 3, .y = -4, .z = -12, .w = 1 });
+    try testing.expectApproxEqRel(@as(f32, 13), depthDistance(ortho.data, .{ clip.x, clip.y }, clip.z), 1e-4);
+    // No geometry: no fog.
+    try testing.expectEqual(Vec3{ 0.1, 0.2, 0.3 }, depthFog(u, proj.data, .{ 0.1, 0.2, 0.3 }, .{ 0, 0 }, 1.0));
 }
 
 test "sky: the view ray goes through the pixel" {

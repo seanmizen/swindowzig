@@ -10,13 +10,18 @@
 // camera. A height map stops it on the ground and on the boxes
 // (REQ-GPU-021). The tonemap of the post chain then writes the screen.
 //
+// The fog can also come from a post effect that reads the depth target
+// (REQ-GPU-030). Then the scene shader does not call `sw_fog`.
+//
 // Keys: Left and Right change the time. Space stops or starts the clock.
 // C turns the cube-map skybox on or off. G turns the fog on or off. K
-// turns the clouds on or off. R changes the weather: snow, rain, none.
+// turns the clouds on or off. R changes the weather: snow, rain, none. E
+// changes the fog between the scene shader and the post effect.
 //
 // Native `--check`: no window. The example draws the sky at noon, at
 // sunrise, at midnight, with the cube map, with clouds, with snow and with
-// rain. It reads each frame back. It compares the right half of the screen
+// rain, and at noon and sunrise with the fog post effect in place of the
+// shader fog. It reads each frame back. It compares the right half of the screen
 // (sky, clouds and ground) with the CPU reference of `sw_render.sky` and
 // `sw_render.weather`, after the CPU tonemap. For snow and rain it checks
 // the particles one by one: a particle above the height map has the CPU
@@ -100,6 +105,10 @@ var post: ?sw_render.PostChain = null;
 var sky: ?sw_render.Sky = null;
 var cube: ?sw_render.CubeMap = null;
 var pipeline: ?gpu_mod.RenderPipeline = null;
+/// The scene pipeline with no `sw_fog`, for the fog post effect.
+var pipeline_no_fog: ?gpu_mod.RenderPipeline = null;
+var fog_effect: sw_render.PostEffectId = undefined;
+var post_fog_on = false;
 var vertex_buffer: ?gpu_mod.Buffer = null;
 var clouds: ?sw_render.Clouds = null;
 var precipitation: ?sw_render.Precipitation = null;
@@ -170,12 +179,21 @@ const shader_code = sw_render.wgsl.shader(
     \\    return out;
     \\}
     \\
-    \\@fragment fn fs_main(in: VSOut) -> @location(0) vec4f {
+    \\fn scene_color(in: VSOut) -> vec3f {
     \\    // The sky light: the zenith and horizon colours, and the sun.
     \\    let s = sw_frame.sky;
     \\    let sun = max(dot(in.normal, s.sun_dir.xyz), 0.0) * 1.5 * smoothstep(-0.05, 0.05, s.sun_dir.y);
     \\    let light = 0.6 * s.zenith.rgb + 0.6 * s.horizon.rgb + vec3f(sun + 0.02);
-    \\    return vec4f(sw_fog(in.color * light, in.world), 1.0);
+    \\    return in.color * light;
+    \\}
+    \\
+    \\@fragment fn fs_main(in: VSOut) -> @location(0) vec4f {
+    \\    return vec4f(sw_fog(scene_color(in), in.world), 1.0);
+    \\}
+    \\
+    \\// The fog post effect gives the fog.
+    \\@fragment fn fs_no_fog(in: VSOut) -> @location(0) vec4f {
+    \\    return vec4f(scene_color(in), 1.0);
     \\}
 );
 
@@ -207,7 +225,10 @@ const Callbacks = struct {
         post = try sw_render.PostChain.init(allocator, g, .{});
         const p = &post.?;
         sky = try sw_render.Sky.init(allocator, g, p.hdr, .{ .time = time_of_day, .fog = fog });
-        const depth = try g.addTarget(.{ .name = "depth", .format = .depth24plus, .usage = .{ .render_attachment = true } });
+        // The fog post effect reads the depth.
+        const depth = try g.addTarget(.{ .name = "depth", .format = .depth24plus, .usage = .{ .render_attachment = true, .texture_binding = true } });
+        fog_effect = try p.addDepthFog(depth);
+        try p.setEffectEnabled(fog_effect, false);
         try g.addPass(.{
             .name = "scene",
             .attachments = .{
@@ -244,10 +265,16 @@ const Callbacks = struct {
             .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{&g.frame_layout},
         });
         var shader = try gpu.createShaderModule(.{ .code = shader_code });
-        pipeline = try gpu.createRenderPipeline(.{
-            .layout = &pipeline_layout,
+        pipeline = try makePipeline(gpu, &pipeline_layout, &shader, "fs_main");
+        pipeline_no_fog = try makePipeline(gpu, &pipeline_layout, &shader, "fs_no_fog");
+        std.log.info("sky: GPU ready. Left/Right: time. Space: clock. C: cube map. G: fog. K: clouds. R: weather. E: fog post effect.", .{});
+    }
+
+    fn makePipeline(gpu: *gpu_mod.GPU, layout: *gpu_mod.PipelineLayout, shader: *gpu_mod.ShaderModule, fragment: []const u8) !gpu_mod.RenderPipeline {
+        return gpu.createRenderPipeline(.{
+            .layout = layout,
             .vertex = .{
-                .module = &shader,
+                .module = shader,
                 .entry_point = "vs_main",
                 .buffers = &[_]gpu_mod.VertexBufferLayout{.{
                     .array_stride = @sizeOf(Vertex),
@@ -259,15 +286,14 @@ const Callbacks = struct {
                 }},
             },
             .fragment = .{
-                .module = &shader,
-                .entry_point = "fs_main",
-                .targets = &[_]gpu_mod.ColorTargetState{.{ .format = p.hdr_format }},
+                .module = shader,
+                .entry_point = fragment,
+                .targets = &[_]gpu_mod.ColorTargetState{.{ .format = post.?.hdr_format }},
             },
             .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
             .depth_stencil = .{ .format = .depth24plus, .depth_write_enabled = true, .depth_compare = .less },
             .multisample = .{ .count = 1 },
         });
-        std.log.info("sky: GPU ready. Left/Right: time. Space: clock. C: cube map. G: fog. K: clouds. R: weather.", .{});
     }
 
     pub fn tick(ctx: *sw.Context) !void {
@@ -283,6 +309,7 @@ const Callbacks = struct {
             fog_on = !fog_on;
             if (sky) |*s| s.fog = if (fog_on) fog else null;
         }
+        if (in.keyPressed(.E)) try setPostFog(!post_fog_on);
         if (in.keyPressed(.K)) {
             clouds_on = !clouds_on;
             if (clouds) |*cl| cl.setEnabled(clouds_on);
@@ -440,9 +467,15 @@ fn mapHeight(_: void, c: [2]i32) f32 {
     return heights[@as(usize, @intCast(c[1])) * map_size + @as(usize, @intCast(c[0]))];
 }
 
+/// The fog from the post effect (true) or from the scene shader (false).
+fn setPostFog(on: bool) !void {
+    post_fog_on = on;
+    try post.?.setEffectEnabled(fog_effect, on);
+}
+
 fn drawScene(pass: *sw_render.Pass) !void {
     const rp = pass.render.?;
-    rp.setPipeline(pipeline.?);
+    rp.setPipeline(if (post_fog_on) pipeline_no_fog.? else pipeline.?);
     pass.bindFrame();
     rp.setVertexBuffer(0, vertex_buffer.?, 0, @sizeOf(Vertex) * vertex_count);
     rp.draw(vertex_count, 1, 0, 0);
@@ -517,6 +550,8 @@ const Step = struct {
     clouds: bool = false,
     weather: Weather = .none,
     fog: sw_render.Fog = fog,
+    /// The fog post effect in place of the shader fog (REQ-GPU-030).
+    post_fog: bool = false,
     /// The time of the wind and the fall.
     seconds: f64 = check_seconds,
 };
@@ -536,6 +571,8 @@ const steps = [_]Step{
     .{ .name = "clouds 40 seconds later", .time = 0.5, .clouds = true, .seconds = check_seconds + 40 },
     .{ .name = "snow", .time = 0.5, .weather = .snow, .fog = weather_fog },
     .{ .name = "rain", .time = 0.45, .weather = .rain, .fog = weather_fog },
+    .{ .name = "noon with the fog post effect", .time = 0.5, .post_fog = true },
+    .{ .name = "sunrise with the fog post effect", .time = 0.27, .post_fog = true },
 };
 
 var check_frame: u32 = 0;
@@ -551,6 +588,7 @@ fn setCheckStep() !void {
         try sky.?.setCubeMap(if (cube_on) &cube.? else null, .{ 1, 1, 1 });
     }
     sky.?.fog = step.fog;
+    if (step.post_fog != post_fog_on) try setPostFog(step.post_fog);
     clouds_on = step.clouds;
     clouds.?.setEnabled(step.clouds);
     if (step.weather != weather) {

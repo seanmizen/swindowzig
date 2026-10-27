@@ -678,3 +678,29 @@ Textures, samplers and other resources of `sw_gpu`.
   - Test — `libs/sw_render/src/perf_overlay.zig` › "perf overlay: the bar
     height is the frame time over the chart maximum (REQ-GPU-029)"
 - **Relations:** none
+
+## REQ-GPU-030 — A post effect reads the depth target and gives the fog
+
+- **Status:** active
+- **Source:** agent:SWZ-81
+- **Origin:** #81
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** Where a post chain has the depth fog effect, the post
+  chain shall give each pixel with a depth below 1 the colour of
+  `sw_fog` at the camera distance from the depth target.
+- **Rationale:** Some games cannot change each scene shader to call
+  `sw_fog`. The effect gets the distance from the depth and the
+  projection in `sw_frame`, so it needs no world position. The chain
+  binds the depth view again at each new target generation, so a resize
+  does not break the effect.
+- **Verification:**
+  - Test — `libs/sw_render/src/sky_plan.zig` › "sky: the depth gives the
+    camera distance, and the fog post effect gives the sw_fog colour
+    (REQ-GPU-030)"
+  - Test — `libs/sw_render/src/post_plan.zig` › "post: the fog effect has
+    the depth prefix after the input prefix (REQ-GPU-030)"
+  - Demonstration — `sky --check` (native, in CI) draws the scene at noon
+    and at sunrise with no shader fog and the fog effect on. Each pixel of
+    the right half must match the CPU reference of the shader fog.
+- **Relations:** depends-on REQ-GPU-011

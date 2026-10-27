@@ -45,6 +45,7 @@
 | [`REQ-GPU-027`](gpu.md#req-gpu-027--the-frame-limiter-holds-a-target-frame-rate) | The frame limiter holds a target frame rate | active | functional | P3 | agent:SWZ-44 |
 | [`REQ-GPU-028`](gpu.md#req-gpu-028--gpu-timestamps-time-each-render-pass) | GPU timestamps time each render pass | active | functional | P3 | agent:SWZ-44 |
 | [`REQ-GPU-029`](gpu.md#req-gpu-029--the-overlay-draws-a-frame-time-chart-with-sw_gfx2d) | The overlay draws a frame-time chart with sw_gfx2d | active | functional | P3 | agent:SWZ-44 |
+| [`REQ-GPU-030`](gpu.md#req-gpu-030--a-post-effect-reads-the-depth-target-and-gives-the-fog) | A post effect reads the depth target and gives the fog | active | functional | P3 | agent:SWZ-81 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -125,6 +126,7 @@ graph TD
   REQ_GPU_027["REQ-GPU-027<br/>The frame limiter holds a target frame rate"]
   REQ_GPU_028["REQ-GPU-028<br/>GPU timestamps time each render pass"]
   REQ_GPU_029["REQ-GPU-029<br/>The overlay draws a frame-time chart with sw_gfx2d"]
+  REQ_GPU_030["REQ-GPU-030<br/>A post effect reads the depth target and gives the fog"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -183,6 +185,7 @@ graph TD
   REQ_GPU_021 -->|refines| REQ_GPU_011
   REQ_GPU_023 -->|depends-on| REQ_GPU_022
   REQ_GPU_024 -->|depends-on| REQ_GPU_022
+  REQ_GPU_030 -->|depends-on| REQ_GPU_011
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
   REQ_TEXT_004 -->|refines| REQ_TEXT_001
@@ -211,7 +214,7 @@ graph TD
 - `REQ-GPU-006` — refined-by REQ-GPU-014, refined-by REQ-GPU-017
 - `REQ-GPU-008` — refined-by REQ-GPU-010
 - `REQ-GPU-010` — refined-by REQ-GPU-011
-- `REQ-GPU-011` — refined-by REQ-GPU-020, refined-by REQ-GPU-021
+- `REQ-GPU-011` — refined-by REQ-GPU-020, refined-by REQ-GPU-021, required-by REQ-GPU-030
 - `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
 - `REQ-GPU-016` — refined-by REQ-GPU-018
 - `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024

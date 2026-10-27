@@ -211,6 +211,54 @@ pub fn shader(comptime body: []const u8) []const u8 {
     return wgsl.prefix ++ post_prefix ++ body;
 }
 
+/// The binding of the depth target in group 1, for an effect that reads
+/// it (REQ-GPU-030).
+pub const depth_binding: u32 = 2;
+
+/// The WGSL text after `post_prefix` in the shader of an effect that reads
+/// a depth target. It declares `sw_depth` and `sw_view_distance`, the
+/// distance from the camera of the point at a pixel. `sw_view_distance`
+/// uses `sw_frame.proj`: a perspective or an orthographic projection with
+/// no rotation. `sky_plan.depthDistance` is its CPU reference.
+pub const depth_prefix =
+    \\@group(1) @binding(2) var sw_depth: texture_depth_2d;
+    \\
+    \\fn sw_view_distance(frag_xy: vec2<f32>, depth: f32) -> f32 {
+    \\    let p = sw_frame.proj;
+    \\    let uv = frag_xy * sw_frame.viewport.zw;
+    \\    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    \\    let z = (p[3][2] - depth * p[3][3]) / (depth * p[2][3] - p[2][2]);
+    \\    let w = p[2][3] * z + p[3][3];
+    \\    let x = (ndc.x * w - p[2][0] * z - p[3][0]) / p[0][0];
+    \\    let y = (ndc.y * w - p[2][1] * z - p[3][1]) / p[1][1];
+    \\    return length(vec3<f32>(x, y, z));
+    \\}
+    \\
+;
+
+/// The full source of a post shader that reads a depth target:
+/// `wgsl.prefix`, `post_prefix`, `depth_prefix`, then `body`.
+pub fn depthShader(comptime body: []const u8) []const u8 {
+    return wgsl.prefix ++ post_prefix ++ depth_prefix ++ body;
+}
+
+/// The fog post effect (REQ-GPU-030): `sw_fog` of the shared prefix, at
+/// the distance from the depth target. A pixel with no geometry (depth 1)
+/// keeps its colour. Use it in place of `sw_fog` in the scene shaders, not
+/// with it: a pixel with both gets the fog two times.
+pub const depth_fog_shader = depthShader(
+    \\@fragment fn fs_main(in: SwPostOut) -> @location(0) vec4<f32> {
+    \\    let c = textureSample(sw_input, sw_input_sampler, in.uv);
+    \\    let depth = textureLoad(sw_depth, vec2<i32>(in.pos.xy), 0);
+    \\    if (depth >= 1.0) {
+    \\        return c;
+    \\    }
+    \\    let amount = sw_fog_amount(sw_view_distance(in.pos.xy, depth));
+    \\    return vec4<f32>(mix(c.rgb, sw_frame.sky.fog_color.rgb, amount), c.a);
+    \\}
+    \\
+);
+
 /// The tonemap link.
 pub const tonemap_shader = shader(std.fmt.comptimePrint(
     \\struct SwTonemap {{
@@ -387,6 +435,13 @@ test "post: SwTonemap in the tonemap shader has the layout of TonemapUniforms (R
     try testing.expectEqual(@as(u32, 1), @backingInt(Curve.reinhard));
     try testing.expectEqual(@as(u32, 2), @backingInt(Curve.aces));
     try testing.expect(std.mem.indexOf(u8, tonemap_shader, "case 2u: { c = sw_aces(c); }") != null);
+}
+
+test "post: the fog effect has the depth prefix after the input prefix (REQ-GPU-030)" {
+    const at = wgsl.prefix.len + post_prefix.len;
+    try testing.expect(std.mem.startsWith(u8, depth_fog_shader, wgsl.prefix ++ post_prefix));
+    try testing.expect(std.mem.indexOf(u8, depth_fog_shader, depth_prefix) == at);
+    try testing.expect(std.mem.indexOf(u8, depth_fog_shader, "sw_fog_amount(sw_view_distance(") != null);
 }
 
 test "post: each post shader starts with the frame prefix, then the input at group 1" {
