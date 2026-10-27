@@ -65,6 +65,30 @@ pub fn model(block: Block) ?*const model_mod.BakedModel {
     };
 }
 
+const CellBox = sw_voxel.collision.CellBox;
+/// b16: two boxes, like a stair: the bottom half and the top of the -x half.
+const stair_boxes = [2]CellBox{
+    .{ .min = .{ 0, 0, 0 }, .max = .{ 1, 0.5, 1 } },
+    .{ .min = .{ 0, 0.5, 0 }, .max = .{ 0.5, 1, 1 } },
+};
+/// b18: a thin post in the middle of the cell.
+const post_boxes = [1]CellBox{.{ .min = .{ 0.375, 0, 0.375 }, .max = .{ 0.625, 1, 0.625 } }};
+/// b19: the box of the half block.
+const half_boxes = [1]CellBox{.{ .min = .{ 0, 0, 0 }, .max = .{ 1, 0.5, 1 } }};
+
+/// The collision boxes of the blocks with no full cube: b16, b18, b19 and
+/// b20 (no box). All other blocks use the default. The generator does not
+/// place these blocks.
+pub fn collision(block: Block) ?[]const CellBox {
+    return switch (block) {
+        .b16 => &stair_boxes,
+        .b18 => &post_boxes,
+        .b19 => &half_boxes,
+        .b20 => &.{},
+        else => null,
+    };
+}
+
 /// `emitter` gives full light. b18 gives less light, and lets light
 /// through. The generator does not place b18.
 pub fn emission(block: Block) u8 {
