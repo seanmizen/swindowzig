@@ -34,12 +34,14 @@
 //!   sky_hash    the dense skylight of each chunk after computeSkylight.
 //!   quad_hash   the sorted packed quads of each meshed chunk (as bench_mesher).
 const std = @import("std");
+/// The demo world of the tests and the tools: the hilly preset.
+const hilly_config = @import("voxel_content").world_gen.presetConfig(.hilly);
 const builtin = @import("builtin");
-const world_mod = @import("world.zig");
-const chunk_mod = @import("chunk.zig");
-const mesher_mod = @import("mesher.zig");
-const clock = @import("clock.zig");
-const stages = @import("pipeline/stages.zig");
+const world_mod = @import("sw_voxel").world;
+const chunk_mod = @import("sw_voxel").chunk;
+const mesher_mod = @import("sw_voxel").mesher;
+const clock = @import("sw_voxel").clock;
+const stages = @import("sw_voxel").stages;
 
 const is_wasm = builtin.cpu.arch == .wasm32;
 const target_name = if (is_wasm) "wasm" else "native";
@@ -88,7 +90,7 @@ fn bench(allocator: std.mem.Allocator) !void {
     var world: world_mod.World = undefined;
     for (&gen_ns, 0..) |*o, r| {
         if (r > 0) world.deinit();
-        world = try world_mod.World.init(allocator, .hilly, HALF + 1);
+        world = try world_mod.World.init(allocator, hilly_config, HALF + 1);
         const t0 = nowNs();
         var cx: i32 = -HALF;
         while (cx <= HALF) : (cx += 1) {

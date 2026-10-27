@@ -15,10 +15,12 @@
 //! and a hash of every chunk's packed quads, sorted (the same hash before and
 //! after a change means the same quads, in any order).
 const std = @import("std");
-const world_mod = @import("world.zig");
-const chunk_mod = @import("chunk.zig");
-const mesher_mod = @import("mesher.zig");
-const clock = @import("clock.zig");
+/// The demo world of the tests and the tools: the hilly preset.
+const hilly_config = @import("voxel_content").world_gen.presetConfig(.hilly);
+const world_mod = @import("sw_voxel").world;
+const chunk_mod = @import("sw_voxel").chunk;
+const mesher_mod = @import("sw_voxel").mesher;
+const clock = @import("sw_voxel").clock;
 
 pub const std_options: std.Options = .{ .log_level = .warn };
 
@@ -29,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
     clock.io = init.io;
     const allocator = init.gpa;
 
-    var world = try world_mod.World.init(allocator, .hilly, HALF + 1);
+    var world = try world_mod.World.init(allocator, hilly_config, HALF + 1);
     defer world.deinit();
     var cx: i32 = -HALF;
     while (cx <= HALF) : (cx += 1) {

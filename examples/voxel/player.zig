@@ -1,8 +1,8 @@
 const std = @import("std");
-const chunk_mod = @import("chunk.zig");
+const chunk_mod = @import("sw_voxel").chunk;
 const Chunk = chunk_mod.Chunk;
 const BlockGetter = chunk_mod.BlockGetter;
-const mesher_mod = @import("mesher.zig");
+const mesher_mod = @import("sw_voxel").mesher;
 const VoxelVertex = mesher_mod.VoxelVertex;
 
 pub const PLAYER_RADIUS: f32 = 0.3;

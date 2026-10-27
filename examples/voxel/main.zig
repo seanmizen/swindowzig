@@ -222,27 +222,27 @@ const Callbacks = struct {
     }
 };
 
-const chunk_mod = @import("chunk.zig");
+const chunk_mod = @import("sw_voxel").chunk;
 const Chunk = chunk_mod.Chunk;
 const BlockType = chunk_mod.BlockType;
 
-const mesher_mod = @import("mesher.zig");
-const mesh_bytes = @import("pipeline/mesh_bytes.zig");
+const mesher_mod = @import("sw_voxel").mesher;
+const mesh_bytes = @import("sw_voxel").mesh_bytes;
 const Mesh = mesher_mod.Mesh;
 const VoxelVertex = mesher_mod.VoxelVertex;
 
-const world_mod = @import("world.zig");
-const world_gen = @import("world_gen.zig");
-const clock = @import("clock.zig");
-const stages = @import("pipeline/stages.zig");
-const scheduler_mod = @import("pipeline/scheduler.zig");
-const exec_inline = @import("pipeline/exec_inline.zig");
-const worker_world = @import("pipeline/worker_world.zig");
+const world_mod = @import("sw_voxel").world;
+const world_gen = @import("voxel_content").world_gen;
+const clock = @import("sw_voxel").clock;
+const stages = @import("sw_voxel").stages;
+const scheduler_mod = @import("sw_voxel").scheduler;
+const exec_inline = @import("sw_voxel").exec_inline;
+const worker_world = @import("sw_voxel").worker_world;
 /// The ThreadPool executor uses std.Thread, so only native builds import it.
-const exec_threads = if (is_wasm) struct {} else @import("pipeline/exec_threads.zig");
+const exec_threads = if (is_wasm) struct {} else @import("sw_voxel").exec_threads;
 /// The WorkerPool executor: Web Workers that run chunks.wasm (C9). Only the
 /// web build has the JS pool.
-const exec_web = @import("pipeline/exec_web.zig");
+const exec_web = @import("sw_voxel").exec_web;
 /// The build id of app.wasm and chunks.wasm (build.zig, C9).
 const chunk_build = @import("chunk_build");
 
@@ -308,7 +308,7 @@ const CameraType = @import("camera.zig").Camera(Vec3, Mat4, math);
 const WorldRaycastType = @import("raycast.zig").Raycast(Vec3, world_mod.World);
 const worldRaycast = WorldRaycastType.raycast;
 const camera_clip = @import("camera_clip.zig");
-const frustum_mod = @import("frustum.zig");
+const frustum_mod = @import("sw_voxel").frustum;
 
 /// 3PV camera-clip skin: distance to keep between the camera origin and the
 /// nearest solid voxel face. Must exceed the near-plane half-diagonal so the
@@ -1423,7 +1423,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Initialize world with the selected preset and CLI-selected render
     // distance (deferred until here so --world= / --render-distance= work
     // regardless of flag order).
-    state.world = try world_mod.World.init(ctx.allocator(), state.world_preset, state.render_distance);
+    state.world = try world_mod.World.init(ctx.allocator(), world_gen.presetConfig(state.world_preset), state.render_distance);
     state.world.gen_config.seed = state.world_seed;
 
     // Open the profile CSV if requested. Writing the header here means every
@@ -4434,10 +4434,10 @@ fn wasmDebugEdit(wx: i32, wy: i32, wz: i32, block: u32) callconv(.c) u32 {
 // same values (pipeline/chunk_worker_main.zig). The loader starts the pool
 // only when all three are equal.
 fn wasmChunkProtocolVersion() callconv(.c) u32 {
-    return @import("pipeline/protocol.zig").VERSION;
+    return @import("sw_voxel").protocol.VERSION;
 }
 fn wasmChunkBuildHash() callconv(.c) u64 {
-    return @import("pipeline/protocol.zig").BUILD_HASH;
+    return @import("sw_voxel").protocol.BUILD_HASH;
 }
 fn wasmChunkBuildId() callconv(.c) u64 {
     return chunk_build.id;

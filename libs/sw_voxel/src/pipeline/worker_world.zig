@@ -23,7 +23,7 @@
 //! generate is the same in both.
 const std = @import("std");
 const chunk_mod = @import("../chunk.zig");
-const world_gen = @import("../world_gen.zig");
+const content = @import("../content.zig");
 const stages = @import("stages.zig");
 const protocol = @import("protocol.zig");
 
@@ -77,7 +77,7 @@ pub const Stats = struct {
 
 pub const WorkerWorld = struct {
     allocator: std.mem.Allocator,
-    config: ?world_gen.WorldGenConfig = null,
+    config: ?content.GenConfig = null,
     cache_limit: u64 = DEFAULT_CACHE_LIMIT,
     cache: std.AutoHashMapUnmanaged(Key, *Entry) = .empty,
     /// The newest entry of the LRU list, and the oldest.
@@ -131,7 +131,7 @@ pub const WorkerWorld = struct {
     }
 
     /// Start a new world: drop the cache and the edit log.
-    pub fn setWorld(self: *WorkerWorld, config: world_gen.WorldGenConfig, cache_limit: u64) void {
+    pub fn setWorld(self: *WorkerWorld, config: content.GenConfig, cache_limit: u64) void {
         self.clearCache();
         var it = self.log.valueIterator();
         while (it.next()) |l| l.edits.deinit(self.allocator);

@@ -12,12 +12,14 @@
 //!   render       a change of the render distance at runtime.
 //!   ready        the loading screen check and the simulation radius.
 const std = @import("std");
-const stages = @import("pipeline/stages.zig");
-const scheduler_mod = @import("pipeline/scheduler.zig");
-const exec_inline = @import("pipeline/exec_inline.zig");
-const worker_world = @import("pipeline/worker_world.zig");
-const world_mod = @import("world.zig");
-const chunk_mod = @import("chunk.zig");
+/// The demo world of the tests and the tools: the hilly preset.
+const hilly_config = @import("voxel_content").world_gen.presetConfig(.hilly);
+const stages = @import("sw_voxel").stages;
+const scheduler_mod = @import("sw_voxel").scheduler;
+const exec_inline = @import("sw_voxel").exec_inline;
+const worker_world = @import("sw_voxel").worker_world;
+const world_mod = @import("sw_voxel").world;
+const chunk_mod = @import("sw_voxel").chunk;
 const test_recompute = @import("test_recompute.zig");
 
 const Scheduler = scheduler_mod.Scheduler;
@@ -34,7 +36,7 @@ const Fixture = struct {
     fn init(a: std.mem.Allocator, r: i32) !*Fixture {
         const f = try a.create(Fixture);
         errdefer a.destroy(f);
-        f.world = try World.init(a, .hilly, r);
+        f.world = try World.init(a, hilly_config, r);
         errdefer f.world.deinit();
         f.sched = Scheduler.init(a, r, .moore, .skylight);
         f.exec = try exec_inline.Inline.init(a, f.world.gen_config, worker_world.DEFAULT_CACHE_LIMIT);
