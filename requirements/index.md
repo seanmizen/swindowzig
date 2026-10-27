@@ -28,6 +28,8 @@
 | [`REQ-GPU-009`](gpu.md#req-gpu-009--the-post-chain-runs-its-passes-in-order-and-fxaa-is-one-link) | The post chain runs its passes in order, and FXAA is one link | active | functional | P2 | agent:SWZ-30 |
 | [`REQ-GPU-010`](gpu.md#req-gpu-010--the-sky-pass-draws-the-sky-from-a-time-of-day) | The sky pass draws the sky from a time of day | active | functional | P2 | agent:SWZ-36 |
 | [`REQ-GPU-011`](gpu.md#req-gpu-011--the-distance-fog-fades-into-the-sky-colour-at-the-horizon) | The distance fog fades into the sky colour at the horizon | active | functional | P2 | agent:SWZ-36 |
+| [`REQ-GPU-012`](gpu.md#req-gpu-012--the-web-bridge-keeps-no-surface-view-or-command-object-from-an-earlier-frame) | The web bridge keeps no surface view or command object from an earlier frame | active | functional | P1 | agent:SWZ-68 |
+| [`REQ-GPU-013`](gpu.md#req-gpu-013--the-web-canvas-has-the-screen-format-of-the-zig-side) | The web canvas has the screen format of the Zig side | active | functional | P1 | agent:SWZ-68 |
 | [`REQ-GPU-014`](gpu.md#req-gpu-014--one-draw-call-draws-all-instances-of-one-box-model) | One draw call draws all instances of one box model | active | functional | P2 | agent:SWZ-41 |
 | [`REQ-GPU-015`](gpu.md#req-gpu-015--the-first-person-pass-draws-in-front-of-the-world) | The first-person pass draws in front of the world | active | functional | P2 | agent:SWZ-41 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
@@ -75,6 +77,8 @@ graph TD
   REQ_GPU_009["REQ-GPU-009<br/>The post chain runs its passes in order, and FXAA is one link"]
   REQ_GPU_010["REQ-GPU-010<br/>The sky pass draws the sky from a time of day"]
   REQ_GPU_011["REQ-GPU-011<br/>The distance fog fades into the sky colour at the horizon"]
+  REQ_GPU_012["REQ-GPU-012<br/>The web bridge keeps no surface view or command object from an earlier frame"]
+  REQ_GPU_013["REQ-GPU-013<br/>The web canvas has the screen format of the Zig side"]
   REQ_GPU_014["REQ-GPU-014<br/>One draw call draws all instances of one box model"]
   REQ_GPU_015["REQ-GPU-015<br/>The first-person pass draws in front of the world"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
@@ -105,6 +109,8 @@ graph TD
   REQ_GPU_009 -->|refines| REQ_GPU_005
   REQ_GPU_010 -->|refines| REQ_GPU_008
   REQ_GPU_011 -->|refines| REQ_GPU_010
+  REQ_GPU_012 -->|refines| REQ_GPU_005
+  REQ_GPU_013 -->|refines| REQ_GPU_005
   REQ_GPU_014 -->|refines| REQ_GPU_006
   REQ_GPU_015 -->|refines| REQ_GPU_014
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
@@ -117,7 +123,7 @@ graph TD
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
-- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009
+- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013
 - `REQ-GPU-006` — refined-by REQ-GPU-014
 - `REQ-GPU-008` — refined-by REQ-GPU-010
 - `REQ-GPU-010` — refined-by REQ-GPU-011

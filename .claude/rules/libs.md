@@ -139,6 +139,12 @@ depth test rejects hidden fragments before they shade.
   WebGPU imports and the real worker pool. `headless.ts` (CI) and
   `worker-pool.test.ts` use it. The stub records the GPU buffers and the
   writes to them, and checks the rules of `writeBuffer` (`StubGpu`).
+- Web: the bridge (`backends/wasm/webgpu.ts`) drops the handle of a view,
+  an encoder, a pass and a command buffer where native releases the object.
+  So a frame adds no handle (REQ-GPU-012). The canvas is always
+  `bgra8unorm`, the screen format of the Zig side (REQ-GPU-013). `yarn test:browser` runs the
+  Playwright tests: `canvas.pw.ts` checks the pixels of justabox on the
+  canvas, and `a11y.pw.ts` checks flat2d. `yarn test:a11y` runs the same.
 - Web: `gpu.writeBufferHeld` writes bytes that JS holds
   (`backends/wasm/held-bytes.ts`, by handle) to a GPU buffer. The bytes do
   not go through the wasm memory. The WebGPU bridge owns the store, and the

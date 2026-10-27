@@ -15,6 +15,18 @@ const exampleArg = (() => {
 // Playwright test uses it after its own `zig build web`.
 const noBuild = process.argv.includes('--no-build');
 
+/** The value after a CLI flag, or the fallback. */
+function flagValue(flag: string, fallback: string): string {
+  const idx = process.argv.indexOf(flag);
+  return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : fallback;
+}
+
+// --port N: the port of the server. --out DIR: the zig install prefix that
+// holds bin/app.wasm (`zig build web -p DIR`). The Playwright tests use
+// both to serve two examples at the same time.
+const port = Number(flagValue('--port', '3020'));
+const outDir = flagValue('--out', 'zig-out');
+
 // Watch Zig source files and rebuild on change
 let buildInProgress = false;
 let buildQueued = false;
@@ -79,7 +91,7 @@ if (!noBuild) {
 }
 
 const server = serve({
-  port: 3020,
+  port,
   async fetch(req) {
     const url = new URL(req.url);
     let path = url.pathname;
@@ -126,9 +138,9 @@ const server = serve({
       '/worker-pool.js': './backends/wasm/worker-pool.ts',
       '/worker-pool': './backends/wasm/worker-pool.ts',
       '/chunk-worker.js': './backends/wasm/chunk-worker.ts',
-      '/chunks.wasm': './zig-out/bin/chunks.wasm',
-      '/app.wasm': './zig-out/bin/app.wasm',
-      '/zig-out/bin/app.wasm': './zig-out/bin/app.wasm',
+      '/chunks.wasm': `./${outDir}/bin/chunks.wasm`,
+      '/app.wasm': `./${outDir}/bin/app.wasm`,
+      '/zig-out/bin/app.wasm': `./${outDir}/bin/app.wasm`,
     };
 
     // Files next to the example (examples/<name>/sprite.png) are served from
