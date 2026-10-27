@@ -162,6 +162,16 @@ jobs:
           zig build native -Dexample=sky
           ./zig-out/bin/sky --check
 
+      - name: Box models and the first-person pass (models --check)
+        # The example draws the box models with one draw call for each
+        # model, and the held object in the first-person pass. It reads the
+        # screen back and compares it with the CPU reference after the
+        # tonemap (REQ-GPU-014, REQ-GPU-015). The web build must compile too.
+        run: |
+          zig build web -Dexample=models
+          zig build native -Dexample=models
+          ./zig-out/bin/models --check
+
       - name: Screen-reader mirror in Chromium (flat2d)
         # Playwright opens flat2d with WebGPU, moves the focus with Tab, and
         # reads the accessibility tree (REQ-A11Y-001). Chromium uses its own
@@ -173,10 +183,17 @@ jobs:
           env -u VK_LOADER_DRIVERS_SELECT yarn test:a11y
 
       - name: Compare with the goldens
+        # The step takes about 1.5 minutes. The script stops a run after
+        # 120 s and shows each golden before it starts. The step limit
+        # stops a hang outside the runs. On 2026-10-27 a job stopped at the
+        # 30-minute job limit 21 s into this step. The apt and Playwright
+        # installs used 25 minutes of the job. No golden run was hung.
+        timeout-minutes: 10
         run: ./examples/voxel/scripts/run_headless_regressions.sh --out "$RUNNER_TEMP/frames"
 
       - name: Make new goldens
         if: failure()
+        timeout-minutes: 10
         run: ./examples/voxel/scripts/run_headless_regressions.sh --update --out "$RUNNER_TEMP/frames/update"
 
       - name: Upload the new goldens

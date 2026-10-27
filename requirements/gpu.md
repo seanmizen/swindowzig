@@ -308,9 +308,10 @@ Textures, samplers and other resources of `sw_gpu`.
     shader structs have the layouts of the Zig records (REQ-GPU-014)"
   - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: the CPU
     shade lights the faces that turn to the light (REQ-GPU-014)"
-  - Demonstration — `models --check` (native) draws 67 figures, two blocks
-    and a held object, checks that the frame has 3 draw calls, and compares
-    a posed hand and two bodies with the CPU reference after the tonemap.
+  - Demonstration — `models --check` (native, in CI) draws 67 figures, two
+    blocks and a held object, checks that the frame has 3 draw calls, and
+    compares a posed hand and two bodies with the CPU reference after the
+    tonemap.
 - **Relations:** refines REQ-GPU-006
 
 ## REQ-GPU-015 — The first-person pass draws in front of the world
@@ -331,8 +332,8 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Verification:**
   - Test — `libs/sw_render/src/box_model_plan.zig` › "box models: the own
     depth range maps NDC depth into near to far (REQ-GPU-015)"
-  - Demonstration — `models --check` (native) puts a block between the
-    camera and the held object. With the depth range, the held object
+  - Demonstration — `models --check` (native, in CI) puts a block between
+    the camera and the held object. With the depth range, the held object
     shows. With the full depth range, the block covers it.
 - **Relations:** refines REQ-GPU-014
 

@@ -12,8 +12,8 @@ Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS
 |---|---|
 | done | 22 |
 | in-review | 2 |
-| in-progress | 1 |
-| ready | 13 |
+| in-progress | 3 |
+| ready | 11 |
 | backlog | 1 |
 
 A GitHub workflow writes this block from the
