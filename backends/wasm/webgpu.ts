@@ -89,12 +89,30 @@ export async function initWebGPU(
     throw new Error('Failed to get WebGPU context');
   }
 
-  const format = navigator.gpu.getPreferredCanvasFormat();
+  // The Zig side draws the screen in bgra8unorm on native and on the web
+  // (FrameGraph.Options.screen_format, the post chain, sw_gfx2d). The
+  // preferred canvas format is rgba8unorm on Linux and Android. A canvas in
+  // that format makes each pipeline that writes the screen fail validation,
+  // and the canvas stays black. Every WebGPU canvas supports bgra8unorm. On
+  // a device that prefers rgba8unorm, the browser adds one copy for each
+  // frame (REQ-GPU-013).
+  const format: GPUTextureFormat = 'bgra8unorm';
+  if (navigator.gpu.getPreferredCanvasFormat() !== format) {
+    console.log(
+      `[WebGPU] The canvas uses ${format}, not the preferred format ${navigator.gpu.getPreferredCanvasFormat()}`,
+    );
+  }
   context.configure({
     device,
     format,
     alphaMode: 'premultiplied',
   });
+
+  // The number of live handles. The browser test reads it to find a handle
+  // that each frame adds and does not drop (REQ-GPU-012).
+  (
+    window as never as { swindowzigGpuHandles?: () => number }
+  ).swindowzigGpuHandles = () => handles.size;
 
   // Store global references
   gpuDevice = device;
@@ -1149,6 +1167,8 @@ function createWebGPUImports(
     webgpuCommandEncoderFinish: (encoderHandle: number): number => {
       const encoder = getHandle<GPUCommandEncoder>(encoderHandle);
       const commandBuffer = encoder.finish();
+      // A finished encoder is not used again. Native releases it here too.
+      handles.delete(encoderHandle);
       return createHandle(commandBuffer);
     },
 
@@ -1277,6 +1297,8 @@ function createWebGPUImports(
     webgpuRenderPassEnd: (passHandle: number): void => {
       const pass = getHandle<GPURenderPassEncoder>(passHandle);
       pass.end();
+      // An ended pass is not used again. Native releases it here too.
+      handles.delete(passHandle);
     },
 
     // =======================================================================
@@ -1343,6 +1365,7 @@ function createWebGPUImports(
     webgpuComputePassEnd: (passHandle: number): void => {
       const pass = getHandle<GPUComputePassEncoder>(passHandle);
       pass.end();
+      handles.delete(passHandle);
     },
 
     // =======================================================================
@@ -1364,6 +1387,9 @@ function createWebGPUImports(
         const view = new DataView(memory.buffer, commandBuffersPtr + i * 4, 4);
         const handle = view.getUint32(0, true);
         commandBuffers.push(getHandle<GPUCommandBuffer>(handle));
+        // A command buffer is submitted one time only. Native releases it
+        // after the submit too.
+        handles.delete(handle);
       }
 
       queue.submit(commandBuffers);
@@ -1373,6 +1399,10 @@ function createWebGPUImports(
     // Canvas/SwapChain Operations
     // =======================================================================
 
+    // The canvas gives a new texture for each frame. Zig asks for it in
+    // each frame. Zig releases the view after the submit
+    // (webgpuTextureViewRelease), so the bridge does not keep the canvas
+    // texture of an old frame (REQ-GPU-012).
     webgpuGetCurrentTextureView: (): number => {
       if (!gpuContext) throw new Error('GPU context not initialized');
       const texture = gpuContext.getCurrentTexture();

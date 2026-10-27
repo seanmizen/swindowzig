@@ -244,6 +244,43 @@ Textures, samplers and other resources of `sw_gpu`.
     at the horizon.
 - **Relations:** refines REQ-GPU-010
 
+## REQ-GPU-012 — The web bridge keeps no surface view or command object from an earlier frame
+
+- **Status:** active
+- **Source:** agent:SWZ-68
+- **Origin:** #68
+- **Type:** functional
+- **Priority:** P1
+- **Statement:** When the web build submits a frame, the WebGPU bridge
+  shall drop the handles of the canvas view, the encoders, the passes and
+  the command buffers of that frame.
+- **Rationale:** The canvas gives a new texture for each frame, and the
+  frame graph gets the view of it in each frame. Native
+  releases these objects at the same points. Before this requirement, the
+  bridge kept about six handles for each frame, with the canvas texture of
+  each frame. The memory of the page increased while the game ran.
+- **Verification:** Test — `backends/wasm/tests/canvas.pw.ts` › "justabox
+  draws the spinning box on the canvas"
+- **Relations:** refines REQ-GPU-005
+
+## REQ-GPU-013 — The web canvas has the screen format of the Zig side
+
+- **Status:** active
+- **Source:** agent:SWZ-68
+- **Origin:** #68
+- **Type:** functional
+- **Priority:** P1
+- **Statement:** When the web build configures the canvas, the WebGPU bridge
+  shall use `bgra8unorm`, the screen format of the Zig pipelines.
+- **Rationale:** The preferred canvas format is `rgba8unorm` on Linux and
+  Android. With that format, each pipeline that writes the screen failed
+  validation, and the canvas stayed black. Every WebGPU canvas supports
+  `bgra8unorm`. The cost is one copy for each frame on a device that
+  prefers `rgba8unorm`.
+- **Verification:** Test — `backends/wasm/tests/canvas.pw.ts` › "justabox
+  draws the spinning box on the canvas" (CI runs it on Linux)
+- **Relations:** refines REQ-GPU-005
+
 ## REQ-GPU-014 — One draw call draws all instances of one box model
 
 - **Status:** active

@@ -12,17 +12,12 @@
 //! `rgba8unorm_srgb`).
 
 const std = @import("std");
-const builtin = @import("builtin");
 const gpu_mod = @import("gpu.zig");
 const types = @import("types.zig");
 const mip_chain = @import("mip_chain.zig");
 
-const is_wasm = builtin.cpu.arch.isWasm();
-const web = if (is_wasm) @import("web_bridge.zig") else struct {};
-
 const GPU = gpu_mod.GPU;
 const Texture = gpu_mod.Texture;
-const TextureView = gpu_mod.TextureView;
 const CommandEncoder = gpu_mod.CommandEncoder;
 
 /// What `MipmapGenerator.generate` needs to know about a texture. A
@@ -153,7 +148,7 @@ pub const MipmapGenerator = struct {
                     .base_array_layer = layer,
                     .array_layer_count = 1,
                 });
-                defer releaseView(src_view);
+                defer src_view.release();
                 var dst_view = try texture.createView(.{
                     .dimension = .@"2d",
                     .base_mip_level = level,
@@ -161,7 +156,7 @@ pub const MipmapGenerator = struct {
                     .base_array_layer = layer,
                     .array_layer_count = 1,
                 });
-                defer releaseView(dst_view);
+                defer dst_view.release();
 
                 const bind_group = try gpu.createBindGroup(.{
                     .layout = &self.bind_group_layout,
@@ -193,13 +188,3 @@ pub const MipmapGenerator = struct {
         gpu.submit(&[_]gpu_mod.CommandBuffer{cmd});
     }
 };
-
-/// The recorded commands keep the view alive on native. On the web, drop
-/// the JS handle: a view has no destroy.
-fn releaseView(view: TextureView) void {
-    if (comptime is_wasm) {
-        web.webgpuTextureViewRelease(view.handle);
-    } else {
-        view.release();
-    }
-}

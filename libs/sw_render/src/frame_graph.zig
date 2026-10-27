@@ -306,6 +306,8 @@ pub const FrameGraph = struct {
         for (self.passes[0..self.pass_count]) |*p| {
             if (p.enabled and plan.usesScreen(attachmentsOf(p))) uses_screen = true;
         }
+        // A new surface view in each frame. The view is released after the
+        // submit, and the graph does not keep it (REQ-GPU-012).
         if (uses_screen) self.screen_view = try gpu.getCurrentTextureView();
         defer if (self.screen_view) |v| {
             v.release();

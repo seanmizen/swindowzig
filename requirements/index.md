@@ -28,6 +28,8 @@
 | [`REQ-GPU-009`](gpu.md#req-gpu-009--the-post-chain-runs-its-passes-in-order-and-fxaa-is-one-link) | The post chain runs its passes in order, and FXAA is one link | active | functional | P2 | agent:SWZ-30 |
 | [`REQ-GPU-010`](gpu.md#req-gpu-010--the-sky-pass-draws-the-sky-from-a-time-of-day) | The sky pass draws the sky from a time of day | active | functional | P2 | agent:SWZ-36 |
 | [`REQ-GPU-011`](gpu.md#req-gpu-011--the-distance-fog-fades-into-the-sky-colour-at-the-horizon) | The distance fog fades into the sky colour at the horizon | active | functional | P2 | agent:SWZ-36 |
+| [`REQ-GPU-012`](gpu.md#req-gpu-012--the-web-bridge-keeps-no-surface-view-or-command-object-from-an-earlier-frame) | The web bridge keeps no surface view or command object from an earlier frame | active | functional | P1 | agent:SWZ-68 |
+| [`REQ-GPU-013`](gpu.md#req-gpu-013--the-web-canvas-has-the-screen-format-of-the-zig-side) | The web canvas has the screen format of the Zig side | active | functional | P1 | agent:SWZ-68 |
 | [`REQ-GPU-014`](gpu.md#req-gpu-014--one-draw-call-draws-all-instances-of-one-box-model) | One draw call draws all instances of one box model | active | functional | P2 | agent:SWZ-41 |
 | [`REQ-GPU-015`](gpu.md#req-gpu-015--the-first-person-pass-draws-in-front-of-the-world) | The first-person pass draws in front of the world | active | functional | P2 | agent:SWZ-41 |
 | [`REQ-GPU-016`](gpu.md#req-gpu-016--a-cascaded-shadow-map-shadows-the-scene-from-one-directional-light) | A cascaded shadow map shadows the scene from one directional light | active | functional | P2 | agent:SWZ-38 |
@@ -50,6 +52,8 @@
 | [`REQ-VOXEL-003`](voxel.md#req-voxel-003--the-content-gives-the-opacity-and-the-emission-of-each-block) | The content gives the opacity and the emission of each block | active | functional | P1 | agent:SWZ-32 |
 | [`REQ-VOXEL-004`](voxel.md#req-voxel-004--sky-light-falls-straight-down-without-loss) | Sky light falls straight down without loss | active | functional | P1 | agent:SWZ-32 |
 | [`REQ-VOXEL-005`](voxel.md#req-voxel-005--an-edit-updates-the-light-incrementally) | An edit updates the light incrementally | active | quality | P1 | agent:SWZ-32 |
+| [`REQ-VOXEL-006`](voxel.md#req-voxel-006--a-moving-box-stops-at-the-collision-boxes-of-the-blocks) | A moving box stops at the collision boxes of the blocks | active | functional | P2 | agent:SWZ-51 |
+| [`REQ-VOXEL-007`](voxel.md#req-voxel-007--a-voxel-ray-cast-gives-the-first-block-its-face-and-the-distance) | A voxel ray cast gives the first block, its face and the distance | active | functional | P2 | agent:SWZ-51 |
 
 ## Dependency graph
 
@@ -78,6 +82,8 @@ graph TD
   REQ_GPU_009["REQ-GPU-009<br/>The post chain runs its passes in order, and FXAA is one link"]
   REQ_GPU_010["REQ-GPU-010<br/>The sky pass draws the sky from a time of day"]
   REQ_GPU_011["REQ-GPU-011<br/>The distance fog fades into the sky colour at the horizon"]
+  REQ_GPU_012["REQ-GPU-012<br/>The web bridge keeps no surface view or command object from an earlier frame"]
+  REQ_GPU_013["REQ-GPU-013<br/>The web canvas has the screen format of the Zig side"]
   REQ_GPU_014["REQ-GPU-014<br/>One draw call draws all instances of one box model"]
   REQ_GPU_015["REQ-GPU-015<br/>The first-person pass draws in front of the world"]
   REQ_GPU_016["REQ-GPU-016<br/>A cascaded shadow map shadows the scene from one directional light"]
@@ -100,6 +106,8 @@ graph TD
   REQ_VOXEL_003["REQ-VOXEL-003<br/>The content gives the opacity and the emission of each block"]
   REQ_VOXEL_004["REQ-VOXEL-004<br/>Sky light falls straight down without loss"]
   REQ_VOXEL_005["REQ-VOXEL-005<br/>An edit updates the light incrementally"]
+  REQ_VOXEL_006["REQ-VOXEL-006<br/>A moving box stops at the collision boxes of the blocks"]
+  REQ_VOXEL_007["REQ-VOXEL-007<br/>A voxel ray cast gives the first block, its face and the distance"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -111,6 +119,8 @@ graph TD
   REQ_GPU_009 -->|refines| REQ_GPU_005
   REQ_GPU_010 -->|refines| REQ_GPU_008
   REQ_GPU_011 -->|refines| REQ_GPU_010
+  REQ_GPU_012 -->|refines| REQ_GPU_005
+  REQ_GPU_013 -->|refines| REQ_GPU_005
   REQ_GPU_014 -->|refines| REQ_GPU_006
   REQ_GPU_015 -->|refines| REQ_GPU_014
   REQ_GPU_016 -->|refines| REQ_GPU_005
@@ -120,6 +130,7 @@ graph TD
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
   REQ_VOXEL_004 -->|refines| REQ_VOXEL_003
   REQ_VOXEL_005 -->|depends-on| REQ_VOXEL_003
+  REQ_VOXEL_007 -->|depends-on| REQ_VOXEL_006
 ```
 
 ## Derived reverse links
@@ -127,7 +138,7 @@ graph TD
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
-- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-016
+- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
 - `REQ-GPU-006` — refined-by REQ-GPU-014, refined-by REQ-GPU-017
 - `REQ-GPU-008` — refined-by REQ-GPU-010
 - `REQ-GPU-010` — refined-by REQ-GPU-011
@@ -135,3 +146,4 @@ graph TD
 - `REQ-GPU-016` — refined-by REQ-GPU-018
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
 - `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005
+- `REQ-VOXEL-006` — required-by REQ-VOXEL-007
