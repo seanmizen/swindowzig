@@ -28,11 +28,17 @@
 //!
 //! The model colours are linear, and the shader calls `sw_fog`, so a model
 //! fades into the sky as the rest of the scene does.
+//!
+//! With `Options.lighting`, the `.world` layer casts shadows into each
+//! cascade of the `Lighting`, and the draws get the shadows and the point
+//! lights (REQ-GPU-016, REQ-GPU-017). The light direction then comes from
+//! the `Lighting` (the sun by default). `Light` gives the colours.
 
 const std = @import("std");
 const gpu_mod = @import("sw_gpu");
 const sw_math = @import("sw_math");
 const frame_graph = @import("frame_graph.zig");
+const lighting_mod = @import("lighting.zig");
 const plan = @import("plan.zig");
 const ring_mod = @import("ring.zig");
 const model_plan = @import("box_model_plan.zig");
@@ -80,6 +86,11 @@ pub const Options = struct {
     /// The most part records in one frame: the sum of the parts of each
     /// instance, over all models and layers. Each record is 80 bytes.
     max_records: u32 = 16 * 1024,
+    /// Receive the shadows and the point lights of this lighting. Deinit
+    /// the models before the lighting.
+    lighting: ?lighting_mod.Lighting = null,
+    /// With `lighting`: draw the `.world` layer into each shadow cascade.
+    cast_shadows: bool = true,
 };
 
 pub const Instance = struct {
@@ -122,7 +133,11 @@ pub const FirstPersonOptions = struct {
 
 /// The work of the current frame (or the last frame, after `execute`).
 pub const Stats = struct {
+    /// The draw calls of `draw`. The shadow draws are not in this count,
+    /// nor in `instances` and `records`.
     draw_calls: u32 = 0,
+    /// The draw calls into the shadow cascades.
+    shadow_draw_calls: u32 = 0,
     instances: u32 = 0,
     records: u32 = 0,
 };
@@ -144,6 +159,9 @@ const State = struct {
     graph: *FrameGraph,
     options: Options,
     pipeline: gpu_mod.RenderPipeline,
+    /// The depth-only pipeline of the shadow casts.
+    shadow_pipeline: ?gpu_mod.RenderPipeline = null,
+    lighting: ?lighting_mod.Lighting = null,
     layout: gpu_mod.BindGroupLayout,
     storage: gpu_mod.Buffer,
     bind_group: gpu_mod.BindGroup,
@@ -159,6 +177,7 @@ const State = struct {
     stats_frame: u32 = 0,
 
     fn deinit(self: *State) void {
+        if (self.lighting) |*l| l.removeCaster(self);
         for (self.models.items) |*m| {
             m.vertex_buffer.destroy();
             self.allocator.free(m.parts);
@@ -185,20 +204,41 @@ const State = struct {
         self.dirty = false;
     }
 
-    fn draw(self: *State, pass: *Pass, layer: Layer, view: View) !void {
+    fn resetStats(self: *State) void {
         if (self.stats_frame != self.graph.frame_count) {
             self.stats = .{};
             self.stats_frame = self.graph.frame_count;
         }
+    }
+
+    fn draw(self: *State, pass: *Pass, layer: Layer, view: View) !void {
+        self.resetStats();
+        const lit = self.lighting != null;
+        const dir = if (self.lighting) |l| l.lightDirection() else self.light.unitDir();
+        const calls = try self.drawWith(pass, layer, view, self.pipeline, dir, lit);
+        self.stats.draw_calls += calls;
+    }
+
+    /// Draw the `.world` layer into one shadow cascade.
+    fn drawShadow(self: *State, cp: *lighting_mod.CasterPass) anyerror!void {
+        self.resetStats();
+        const pipeline = self.shadow_pipeline orelse return;
+        const view: View = .{ .view_proj = cp.view_proj, .fog = false };
+        const calls = try self.drawWith(cp.pass, .world, view, pipeline, .{ 0, 1, 0 }, false);
+        self.stats.shadow_draw_calls += calls;
+    }
+
+    /// Draw each model of `layer` with `pipeline`. Give the draw calls.
+    fn drawWith(self: *State, pass: *Pass, layer: Layer, view: View, pipeline: gpu_mod.RenderPipeline, dir: [3]f32, lit: bool) !u32 {
         if (self.dirty) try self.upload();
         const rp = pass.render orelse return error.NoRenderPass;
         const l = @backingInt(layer);
-        const dir = self.light.unitDir();
         const mode: model_plan.CameraMode = if (view.view_proj != null) .custom else switch (layer) {
             .world => .frame,
             .first_person => .frame_view_space,
         };
         var bound = false;
+        var calls: u32 = 0;
         for (self.models.items) |*m| {
             const records = m.records[l].items;
             if (records.len == 0) continue;
@@ -214,23 +254,38 @@ const State = struct {
             };
             const offset = try pass.push(uniforms);
             if (!bound) {
-                rp.setPipeline(self.pipeline);
+                rp.setPipeline(pipeline);
                 pass.bindFrame();
+                if (lit) try self.lighting.?.bind(pass, model_plan.lighting_group);
                 bound = true;
             }
             rp.setBindGroupWithOffsets(group, self.bind_group, &.{offset});
             rp.setVertexBuffer(0, m.vertex_buffer, 0, @as(u64, m.vertex_count) * @sizeOf(model_plan.Vertex));
             rp.draw(m.vertex_count, instances, 0, 0);
-            self.stats.draw_calls += 1;
-            self.stats.instances += instances;
-            self.stats.records += @intCast(records.len);
+            calls += 1;
+            // The instance and record counts are of the lit draws only.
+            if (pipeline.handle == self.pipeline.handle) {
+                self.stats.instances += instances;
+                self.stats.records += @intCast(records.len);
+            }
         }
+        return calls;
     }
 
     fn runFirstPerson(self: *State, pass: *Pass) anyerror!void {
         try self.draw(pass, .first_person, self.first_person);
     }
 };
+
+const vertex_buffers = [_]gpu_mod.VertexBufferLayout{.{
+    .array_stride = @sizeOf(model_plan.Vertex),
+    .attributes = &[_]gpu_mod.VertexAttribute{
+        .{ .format = .float32x3, .offset = @offsetOf(model_plan.Vertex, "position"), .shader_location = 0 },
+        .{ .format = .float32x3, .offset = @offsetOf(model_plan.Vertex, "normal"), .shader_location = 1 },
+        .{ .format = .float32x3, .offset = @offsetOf(model_plan.Vertex, "color"), .shader_location = 2 },
+        .{ .format = .uint32, .offset = @offsetOf(model_plan.Vertex, "part"), .shader_location = 3 },
+    },
+}};
 
 pub const BoxModels = struct {
     state: *State,
@@ -267,27 +322,25 @@ pub const BoxModels = struct {
         });
         errdefer bind_group.release();
 
+        // The lit pipeline has the lighting group at group 2.
+        var layouts: [3]*gpu_mod.BindGroupLayout = .{ &graph.frame_layout, &layout, undefined };
+        var layout_count: usize = 2;
+        if (options.lighting) |l| {
+            layouts[model_plan.lighting_group] = l.layout();
+            layout_count = 3;
+        }
         var pipeline_layout = try gpu.createPipelineLayout(.{
             .label = "sw_box_models",
-            .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{ &graph.frame_layout, &layout },
+            .bind_group_layouts = layouts[0..layout_count],
         });
-        var module = try gpu.createShaderModule(.{ .label = "sw_box_models", .code = model_plan.shader });
+        var module = try gpu.createShaderModule(.{
+            .label = "sw_box_models",
+            .code = if (options.lighting != null) model_plan.shader_lit else model_plan.shader,
+        });
         const pipeline = try gpu.createRenderPipeline(.{
             .label = "sw_box_models",
             .layout = &pipeline_layout,
-            .vertex = .{
-                .module = &module,
-                .entry_point = "vs_main",
-                .buffers = &[_]gpu_mod.VertexBufferLayout{.{
-                    .array_stride = @sizeOf(model_plan.Vertex),
-                    .attributes = &[_]gpu_mod.VertexAttribute{
-                        .{ .format = .float32x3, .offset = @offsetOf(model_plan.Vertex, "position"), .shader_location = 0 },
-                        .{ .format = .float32x3, .offset = @offsetOf(model_plan.Vertex, "normal"), .shader_location = 1 },
-                        .{ .format = .float32x3, .offset = @offsetOf(model_plan.Vertex, "color"), .shader_location = 2 },
-                        .{ .format = .uint32, .offset = @offsetOf(model_plan.Vertex, "part"), .shader_location = 3 },
-                    },
-                }},
-            },
+            .vertex = .{ .module = &module, .entry_point = "vs_main", .buffers = &vertex_buffers },
             .fragment = .{
                 .module = &module,
                 .entry_point = "fs_main",
@@ -302,15 +355,39 @@ pub const BoxModels = struct {
             .graph = graph,
             .options = options,
             .pipeline = pipeline,
+            .lighting = options.lighting,
             .layout = layout,
             .storage = storage,
             .bind_group = bind_group,
         };
+
+        // The shadow casts: a depth-only pipeline with no fragment stage.
+        // Both faces draw, so a thin box casts from each side.
+        if (options.lighting) |l| {
+            if (options.cast_shadows) {
+                var shadow_layout = try gpu.createPipelineLayout(.{
+                    .label = "sw_box_models_shadow",
+                    .bind_group_layouts = layouts[0..2],
+                });
+                var shadow_module = try gpu.createShaderModule(.{ .label = "sw_box_models_shadow", .code = model_plan.shader });
+                state.shadow_pipeline = try gpu.createRenderPipeline(.{
+                    .label = "sw_box_models_shadow",
+                    .layout = &shadow_layout,
+                    .vertex = .{ .module = &shadow_module, .entry_point = "vs_main", .buffers = &vertex_buffers },
+                    .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
+                    .depth_stencil = .{ .format = lighting_mod.Lighting.format, .depth_write_enabled = true, .depth_compare = .less },
+                    .multisample = .{ .count = 1 },
+                });
+                var lt = l;
+                try lt.addCaster(.of(State, state, State.drawShadow));
+            }
+        }
         return .{ .state = state };
     }
 
-    /// Release the models. Call it before `FrameGraph.deinit`. The graph
-    /// keeps the first-person pass, but the pass does not run.
+    /// Release the models. Call it before `FrameGraph.deinit`, and before
+    /// the `deinit` of `Options.lighting`. The graph keeps the first-person
+    /// pass, but the pass does not run.
     pub fn deinit(self: *BoxModels) void {
         const s = self.state;
         if (s.first_person_pass) |p| s.graph.setPassEnabled(p, false);

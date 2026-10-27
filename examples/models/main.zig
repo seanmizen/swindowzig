@@ -11,14 +11,22 @@
 // The models draw into the HDR target of the post chain after the sky
 // pass, and use `sw_fog`, so far figures fade into the sky.
 //
-// Keys: Space stops or starts the animation. D turns the first-person
-// depth range on or off.
+// `sw_render.Lighting` gives the shadows and a point light. The figures
+// cast shadows into a cascaded shadow map. The light follows the sun of
+// the sky (REQ-GPU-016). A point light moves near the ground in front of
+// the figures (REQ-GPU-017).
 //
-// Native `--check`: no window. The example draws a fixed pose two times:
-// with the first-person depth range, and with no depth range. It reads
-// each frame back and compares pixels with the CPU reference of the shader
-// after the CPU tonemap. It checks the draw calls and the instance counts.
-// It exits with 0 (pass) or 1 (fail).
+// Keys: Space stops or starts the animation. D turns the first-person
+// depth range on or off. L turns the shadows on or off (REQ-GPU-018). P
+// turns the point light on or off. Left and Right change the time of day.
+//
+// Native `--check`: no window. The example draws a fixed pose three times:
+// with the first-person depth range, with no depth range, and with the
+// shadows off. It reads each frame back and compares pixels with the CPU
+// reference of the shader after the CPU tonemap: the figures, the ground
+// in the shadow of a figure, the same ground in light, and the ground
+// under the point light. It checks the draw calls and the instance
+// counts. It exits with 0 (pass) or 1 (fail).
 const std = @import("std");
 const sw = @import("sw_app");
 const builtin = @import("builtin");
@@ -142,9 +150,21 @@ const block_size: f32 = 0.08;
 const block_tint: [3]f32 = .{ 0.9, 0.45, 0.1 };
 const ground_tint: [3]f32 = .{ 0.25, 0.35, 0.2 };
 
+/// The time of day of the check: the sun is 45 degrees up, to +X.
+const check_time: f32 = 0.375;
+const cascade_count = 3;
+/// The point light of the check, near the ground in front of the figures.
+const check_point_light: sw_render.PointLight = .{
+    .position = .{ 0.6, 0.4, 2.5 },
+    .color = .{ 1.0, 0.6, 0.25 },
+    .intensity = 2.0,
+    .radius = 2.5,
+};
+
 var graph: ?sw_render.FrameGraph = null;
 var post: ?sw_render.PostChain = null;
 var sky: ?sw_render.Sky = null;
+var lighting: ?sw_render.Lighting = null;
 var models: ?sw_render.BoxModels = null;
 var figure: sw_render.BoxModelId = undefined;
 var block: sw_render.BoxModelId = undefined;
@@ -153,6 +173,9 @@ var held: sw_render.BoxModelId = undefined;
 var anim_time: f32 = 0;
 var anim_on = true;
 var depth_range_on = true;
+var shadows_on = true;
+var point_light_on = true;
+var time_of_day: f32 = check_time;
 
 const first_person_view: sw_render.BoxModelView = .{ .depth_range = .{ 0, 0.01 }, .fog = false };
 const no_range_view: sw_render.BoxModelView = .{ .depth_range = .{ 0, 1 }, .fog = false };
@@ -250,7 +273,9 @@ const Callbacks = struct {
         const g = &graph.?;
         post = try sw_render.PostChain.init(allocator, g, .{});
         const p = &post.?;
-        sky = try sw_render.Sky.init(allocator, g, p.hdr, .{ .time = 0.5, .fog = fog });
+        sky = try sw_render.Sky.init(allocator, g, p.hdr, .{ .time = check_time, .fog = fog });
+        // The shadow cascades run before the sky and the scene.
+        lighting = try sw_render.Lighting.init(allocator, g, .{ .cascades = cascade_count });
         const depth = try g.addTarget(.{ .name = "depth", .format = .depth24plus, .usage = .{ .render_attachment = true } });
         try g.addPass(.{
             .name = "scene",
@@ -262,13 +287,15 @@ const Callbacks = struct {
             .callback = .plain(drawScene),
         });
 
-        models = try sw_render.BoxModels.init(allocator, g, .{ .color_format = p.hdr_format });
+        // The models receive the lighting, and the world layer casts
+        // shadows.
+        models = try sw_render.BoxModels.init(allocator, g, .{ .color_format = p.hdr_format, .lighting = lighting.? });
         const m = &models.?;
         figure = try m.addModel(.{ .parts = &figure_parts });
         block = try m.addModel(.{ .parts = &block_parts });
         held = try m.addModel(.{ .parts = &held_parts });
         try m.addFirstPersonPass(.{ .color = p.hdr, .depth = depth, .view = first_person_view });
-        std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range.", .{figure_count});
+        std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range. L: shadows. P: point light. Left/Right: time.", .{figure_count});
     }
 
     pub fn tick(ctx: *sw.Context) !void {
@@ -279,6 +306,13 @@ const Callbacks = struct {
             depth_range_on = !depth_range_on;
             if (models) |*m| m.setFirstPersonView(if (depth_range_on) first_person_view else no_range_view);
         }
+        if (in.keyPressed(.L)) {
+            shadows_on = !shadows_on;
+            if (lighting) |*l| l.setShadowsEnabled(shadows_on);
+        }
+        if (in.keyPressed(.P)) point_light_on = !point_light_on;
+        if (in.keyDown(.Left)) time_of_day -= 0.1 / 60.0;
+        if (in.keyDown(.Right)) time_of_day += 0.1 / 60.0;
         if (anim_on) anim_time += 1.0 / 60.0;
     }
 
@@ -294,7 +328,21 @@ const Callbacks = struct {
 
         const frame = frameUniforms(gpu.getSurfaceWidth(), gpu.getSurfaceHeight());
         var f = frame;
+        sky.?.setTime(time_of_day);
         f.sky = try sky.?.update();
+        // The shadow light follows the sun of `f.sky`.
+        const l = &lighting.?;
+        if (point_light_on) {
+            var light = check_point_light;
+            if (!check_mode) {
+                const a = anim_time * 0.8;
+                light.position = .{ 2.0 * @sin(a), 0.4, 1.5 + 1.2 * @cos(a) };
+            }
+            try l.setPointLights(&.{light});
+        } else {
+            try l.setPointLights(&.{});
+        }
+        try l.update(f);
         if (try g.execute(f)) {
             if (comptime !builtin.cpu.arch.isWasm()) {
                 if (check_mode) try checkFrame(ctx, f);
@@ -307,6 +355,8 @@ const Callbacks = struct {
         _ = ctx;
         if (models) |*m| m.deinit();
         models = null;
+        if (lighting) |*l| l.deinit();
+        lighting = null;
         if (sky) |*s| s.deinit();
         sky = null;
         if (post) |*p| p.deinit();
@@ -340,11 +390,13 @@ fn drawScene(pass: *sw_render.Pass) !void {
 const Step = struct {
     name: []const u8,
     depth_range: bool,
+    shadows: bool = true,
 };
 
 const steps = [_]Step{
     .{ .name = "first-person depth range", .depth_range = true },
     .{ .name = "no depth range", .depth_range = false },
+    .{ .name = "shadows off", .depth_range = true, .shadows = false },
 };
 
 var check_frame: u32 = 0;
@@ -354,6 +406,7 @@ var check_ok = true;
 fn setCheckStep() void {
     const step = steps[check_frame / 2];
     models.?.setFirstPersonView(if (step.depth_range) first_person_view else no_range_view);
+    lighting.?.setShadowsEnabled(step.shadows);
 }
 
 fn checkFrame(ctx: *sw.Context, frame: sw_render.FrameUniforms) !void {
@@ -410,13 +463,26 @@ fn pixelAt(pixels: []const u8, w: u32, xy: [2]u32) [3]u8 {
     return .{ pixels[i + 2], pixels[i + 1], pixels[i] };
 }
 
-/// A face that turns to the camera (+Z), with its albedo and tint, at the
-/// point `world`. `fogged`: the world fog applies.
-fn faceColor(frame: sw_render.FrameUniforms, albedo: [3]f32, tint: [3]f32, world: [3]f32, fogged: bool) [3]u8 {
+/// The CPU colour of a box face with the normal `normal`, its albedo and
+/// tint, at the point `world`, with the shadow factor `shadow`.
+/// `fogged`: a world-space face, with the fog and the point lights. Else
+/// a view-space face (the held object): no fog, no shadow, no point light.
+fn litColor(frame: sw_render.FrameUniforms, albedo: [3]f32, tint: [3]f32, normal: [3]f32, world: [3]f32, shadow: f32, fogged: bool) [3]u8 {
     const light = models.?.getLight();
-    var c = box_model.shade(albedo, tint, .{ 0, 0, 1 }, light.unitDir(), light);
+    const lt = lighting.?;
+    const points: [3]f32 = if (fogged) sw_render.lighting.pointLights(lt.uniforms(), world, normal) else .{ 0, 0, 0 };
+    var c = box_model.shadeLit(albedo, tint, normal, lt.lightDirection(), light, shadow, points);
     if (fogged) c = sw_render.sky.applyFog(frame.sky, c, distance(world, eye));
     return display(c);
+}
+
+/// A face that turns to the camera (+Z), in light.
+fn faceColor(frame: sw_render.FrameUniforms, albedo: [3]f32, tint: [3]f32, world: [3]f32, fogged: bool) [3]u8 {
+    return litColor(frame, albedo, tint, .{ 0, 0, 1 }, world, 1, fogged);
+}
+
+fn brightness(c: [3]u8) i32 {
+    return @as(i32, c[0]) + c[1] + c[2];
 }
 
 fn expectPixel(step: Step, what: []const u8, pixels: []const u8, w: u32, xy: [2]u32, want: [3]u8) bool {
@@ -442,6 +508,14 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
     std.log.info("models: {s}: {d} draw calls, {d} instances, {d} part records", .{ step.name, s.draw_calls, s.instances, s.records });
     if (s.draw_calls != 3 or s.instances != want_instances or s.records != want_records) {
         std.log.err("models: {s}: the counts must be 3 draw calls, {d} instances, {d} records", .{ step.name, want_instances, want_records });
+        ok = false;
+    }
+    // The world layer (the figures and the blocks) draws into each
+    // cascade with the shadows on, and into none with the shadows off.
+    const want_shadow_calls: u32 = if (step.shadows) 2 * cascade_count else 0;
+    std.log.info("models: {s}: {d} shadow draw calls", .{ step.name, s.shadow_draw_calls });
+    if (s.shadow_draw_calls != want_shadow_calls) {
+        std.log.err("models: {s}: the shadow draw calls must be {d}", .{ step.name, want_shadow_calls });
         ok = false;
     }
 
@@ -491,6 +565,83 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
         ok = expectPixel(step, "held object in front of the block", pixels, w, held_xy, faceColor(frame, barrel_color, .{ 1, 1, 1 }, held_face, false)) and ok;
     } else {
         ok = expectPixel(step, "block in front of the held object", pixels, w, held_xy, faceColor(frame, .{ 1, 1, 1 }, block_tint, block_face, true)) and ok;
+    }
+    ok = checkShadows(step, frame, pixels, w, h) and ok;
+    return ok;
+}
+
+/// The ground in the shadow of the centre body, the same ground in light,
+/// and the ground under the point light (REQ-GPU-016, REQ-GPU-017,
+/// REQ-GPU-018).
+fn checkShadows(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: u32, h: u32) bool {
+    var ok = true;
+    const vp = frame.view_proj;
+    const up: [3]f32 = .{ 0, 1, 0 };
+    const l = lighting.?.lightDirection();
+    // The light follows the sun of the sky.
+    const sun = sw_render.sky.sunDirection(check_time, (sw_render.SkySettings{}).tilt);
+    if (@abs(l[0] - sun[0]) > 1e-4 or @abs(l[1] - sun[1]) > 1e-4 or @abs(l[2] - sun[2]) > 1e-4) {
+        std.log.err("models: {s}: the shadow light {any} is not the sun {any}", .{ step.name, l, sun });
+        ok = false;
+    }
+
+    // The centre of the body of the centre figure, moved along the light
+    // to the top of the ground (y = 0).
+    const body_min: [3]f32 = .{ -0.4, 1.0, -0.2 };
+    const body_max: [3]f32 = .{ 0.4, 2.2, 0.2 };
+    const t = 1.6 / l[1];
+    const shadowed: [3]f32 = .{ -l[0] * t, 0, -l[2] * t };
+    // The same ground with no caster between it and the light. Each front
+    // figure is in a box from z = -0.3 to 0.3, and the ray goes to +Z.
+    const lit: [3]f32 = .{ -2.2, 0, 1.2 };
+    if (!sw_render.lighting.rayHitsBox(shadowed, l, body_min, body_max)) {
+        std.log.err("models: the shadow point {any} is not behind the body", .{shadowed});
+        ok = false;
+    }
+    for (front_x) |x| {
+        if (sw_render.lighting.rayHitsBox(lit, l, .{ x - 0.7, 0, -0.3 }, .{ x + 1.8, 2.8, 0.3 })) {
+            std.log.err("models: the lit point {any} is behind a figure", .{lit});
+            ok = false;
+        }
+    }
+
+    const shadow_factor: f32 = if (step.shadows) 0 else 1;
+    const want_shadowed = litColor(frame, .{ 1, 1, 1 }, ground_tint, up, shadowed, shadow_factor, true);
+    const want_lit = litColor(frame, .{ 1, 1, 1 }, ground_tint, up, lit, 1, true);
+    const shadowed_xy = project(vp, shadowed, w, h);
+    const lit_xy = project(vp, lit, w, h);
+    ok = expectPixel(step, "ground in the body shadow", pixels, w, shadowed_xy, want_shadowed) and ok;
+    ok = expectPixel(step, "ground in light", pixels, w, lit_xy, want_lit) and ok;
+    const got_shadowed = pixelAt(pixels, w, shadowed_xy);
+    const got_lit = pixelAt(pixels, w, lit_xy);
+    if (step.shadows) {
+        // The shadow removes the sun light: the CPU reference is much
+        // darker, and so is the frame.
+        const want_drop = brightness(want_lit) - brightness(want_shadowed);
+        const got_drop = brightness(got_lit) - brightness(got_shadowed);
+        std.log.info("models: {s}: the shadow is darker by {d} (the CPU reference: {d})", .{ step.name, got_drop, want_drop });
+        if (want_drop < 60 or @abs(got_drop - want_drop) > 9) {
+            std.log.err("models: {s}: the shadow must be darker by about {d}", .{ step.name, want_drop });
+            ok = false;
+        }
+    } else if (maxDiff(got_shadowed, got_lit) > 3) {
+        std.log.err("models: {s}: with no shadows, the shadow point {any} must equal the lit point {any}", .{ step.name, got_shadowed, got_lit });
+        ok = false;
+    }
+
+    // The ground under the point light.
+    const under: [3]f32 = .{ check_point_light.position[0], 0, check_point_light.position[2] };
+    const under_xy = project(vp, under, w, h);
+    const want_under = litColor(frame, .{ 1, 1, 1 }, ground_tint, up, under, 1, true);
+    ok = expectPixel(step, "ground under the point light", pixels, w, under_xy, want_under) and ok;
+    // With no point light, the CPU reference is the same as the lit ground.
+    const light = models.?.getLight();
+    const no_point = display(box_model.shadeLit(.{ 1, 1, 1 }, ground_tint, up, l, light, 1, .{ 0, 0, 0 }));
+    const gain = brightness(pixelAt(pixels, w, under_xy)) - brightness(no_point);
+    std.log.info("models: {s}: the point light adds {d}", .{ step.name, gain });
+    if (gain < 60) {
+        std.log.err("models: {s}: the point light must make the ground brighter", .{step.name});
+        ok = false;
     }
     return ok;
 }
