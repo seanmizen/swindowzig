@@ -419,7 +419,7 @@ pub fn build(b: *std.Build) void {
 
     // sw_render frame graph tests: the plan, the uniform ring, the staged
     // uploads, the WGSL prefix, the post chain plan, the sky plan, the box
-    // model plan and the weather plan. No GPU code runs.
+    // model plan, the lighting plan and the weather plan. No GPU code runs.
     const render_graph_test_files = [_][]const u8{
         "libs/sw_render/src/plan.zig",
         "libs/sw_render/src/ring.zig",
@@ -428,6 +428,7 @@ pub fn build(b: *std.Build) void {
         "libs/sw_render/src/post_plan.zig",
         "libs/sw_render/src/sky_plan.zig",
         "libs/sw_render/src/box_model_plan.zig",
+        "libs/sw_render/src/lighting_plan.zig",
         "libs/sw_render/src/weather_plan.zig",
     };
     inline for (render_graph_test_files) |file| {

@@ -32,6 +32,9 @@
 | [`REQ-GPU-013`](gpu.md#req-gpu-013--the-web-canvas-has-the-screen-format-of-the-zig-side) | The web canvas has the screen format of the Zig side | active | functional | P1 | agent:SWZ-68 |
 | [`REQ-GPU-014`](gpu.md#req-gpu-014--one-draw-call-draws-all-instances-of-one-box-model) | One draw call draws all instances of one box model | active | functional | P2 | agent:SWZ-41 |
 | [`REQ-GPU-015`](gpu.md#req-gpu-015--the-first-person-pass-draws-in-front-of-the-world) | The first-person pass draws in front of the world | active | functional | P2 | agent:SWZ-41 |
+| [`REQ-GPU-016`](gpu.md#req-gpu-016--a-cascaded-shadow-map-shadows-the-scene-from-one-directional-light) | A cascaded shadow map shadows the scene from one directional light | active | functional | P2 | agent:SWZ-38 |
+| [`REQ-GPU-017`](gpu.md#req-gpu-017--the-lit-passes-add-the-point-lights-of-the-frame) | The lit passes add the point lights of the frame | active | functional | P2 | agent:SWZ-38 |
+| [`REQ-GPU-018`](gpu.md#req-gpu-018--a-setting-turns-the-shadows-off) | A setting turns the shadows off | active | functional | P2 | agent:SWZ-38 |
 | [`REQ-GPU-020`](gpu.md#req-gpu-020--the-cloud-layer-moves-with-the-wind-and-takes-its-shape-from-the-game) | The cloud layer moves with the wind and takes its shape from the game | active | functional | P3 | agent:SWZ-37 |
 | [`REQ-GPU-021`](gpu.md#req-gpu-021--rain-and-snow-fall-around-the-camera-and-stop-at-the-height-map) | Rain and snow fall around the camera and stop at the height map | active | functional | P3 | agent:SWZ-37 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
@@ -85,6 +88,9 @@ graph TD
   REQ_GPU_013["REQ-GPU-013<br/>The web canvas has the screen format of the Zig side"]
   REQ_GPU_014["REQ-GPU-014<br/>One draw call draws all instances of one box model"]
   REQ_GPU_015["REQ-GPU-015<br/>The first-person pass draws in front of the world"]
+  REQ_GPU_016["REQ-GPU-016<br/>A cascaded shadow map shadows the scene from one directional light"]
+  REQ_GPU_017["REQ-GPU-017<br/>The lit passes add the point lights of the frame"]
+  REQ_GPU_018["REQ-GPU-018<br/>A setting turns the shadows off"]
   REQ_GPU_020["REQ-GPU-020<br/>The cloud layer moves with the wind and takes its shape from the game"]
   REQ_GPU_021["REQ-GPU-021<br/>Rain and snow fall around the camera and stop at the height map"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
@@ -121,6 +127,10 @@ graph TD
   REQ_GPU_013 -->|refines| REQ_GPU_005
   REQ_GPU_014 -->|refines| REQ_GPU_006
   REQ_GPU_015 -->|refines| REQ_GPU_014
+  REQ_GPU_016 -->|refines| REQ_GPU_005
+  REQ_GPU_016 -->|refines| REQ_GPU_014
+  REQ_GPU_017 -->|refines| REQ_GPU_006
+  REQ_GPU_018 -->|refines| REQ_GPU_016
   REQ_GPU_020 -->|refines| REQ_GPU_011
   REQ_GPU_021 -->|refines| REQ_GPU_011
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
@@ -134,12 +144,13 @@ graph TD
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
-- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013
-- `REQ-GPU-006` — refined-by REQ-GPU-014
+- `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
+- `REQ-GPU-006` — refined-by REQ-GPU-014, refined-by REQ-GPU-017
 - `REQ-GPU-008` — refined-by REQ-GPU-010
 - `REQ-GPU-010` — refined-by REQ-GPU-011
 - `REQ-GPU-011` — refined-by REQ-GPU-020, refined-by REQ-GPU-021
-- `REQ-GPU-014` — refined-by REQ-GPU-015
+- `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
+- `REQ-GPU-016` — refined-by REQ-GPU-018
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
 - `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005
 - `REQ-VOXEL-006` — required-by REQ-VOXEL-007

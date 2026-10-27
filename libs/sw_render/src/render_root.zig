@@ -40,6 +40,12 @@
 //! pass draws view-space models in front of the world, with their own depth
 //! range (REQ-GPU-015). See `box_models.zig`.
 //!
+//! `Lighting` renders a cascaded shadow map for one directional light,
+//! which follows the sun by default, and holds the point lights of the
+//! frame. A scene shader samples the shadow with a PCF filter and adds
+//! the point lights through a WGSL include (REQ-GPU-016, REQ-GPU-017). A
+//! setting turns the shadows off (REQ-GPU-018). See `lighting.zig`.
+//!
 //! The cloud pass draws a layer of boxes at a set height, from a shape
 //! image that the game gives, and the wind moves it (REQ-GPU-020). The
 //! precipitation pass draws rain or snow in a column around the camera,
@@ -49,6 +55,7 @@
 const atlas_mod = @import("atlas.zig");
 const box_models_mod = @import("box_models.zig");
 const frame_graph_mod = @import("frame_graph.zig");
+const lighting_mod = @import("lighting.zig");
 const post_mod = @import("post.zig");
 const ring_mod = @import("ring.zig");
 const sky_mod = @import("sky.zig");
@@ -74,6 +81,9 @@ pub const sky = @import("sky_plan.zig");
 /// Box models with no GPU code: the mesh, the pose of the parts, the WGSL
 /// and the CPU reference of the shader.
 pub const box_model = @import("box_model_plan.zig");
+/// Shadows and point lights with no GPU code: the cascade fit, the WGSL
+/// include (`lighting.include`) and the CPU reference of its helpers.
+pub const lighting = @import("lighting_plan.zig");
 /// Clouds and precipitation with no GPU code: the settings, the sky light,
 /// the WGSL and the CPU reference of the shaders.
 pub const weather = @import("weather_plan.zig");
@@ -135,6 +145,13 @@ pub const BoxModelLight = box_models_mod.Light;
 pub const BoxModelStats = box_models_mod.Stats;
 pub const FirstPersonOptions = box_models_mod.FirstPersonOptions;
 
+pub const Lighting = lighting_mod.Lighting;
+pub const LightingOptions = lighting_mod.Options;
+pub const ShadowSettings = lighting.ShadowSettings;
+pub const PointLight = lighting.PointLight;
+pub const ShadowCasterPass = lighting_mod.CasterPass;
+pub const ShadowCaster = lighting_mod.CasterCallback;
+pub const LightingUniforms = lighting.LightingUniforms;
 pub const Clouds = weather_mod.Clouds;
 pub const CloudOptions = weather_mod.CloudOptions;
 pub const CloudSettings = weather.CloudSettings;
