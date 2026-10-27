@@ -34,11 +34,19 @@
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
 | [`REQ-INPUT-004`](input.md#req-input-004--saved-input-settings-load-in-a-newer-version) | Saved input settings load in a newer version | active | functional | P2 | agent:SWZ-49 |
+| [`REQ-INPUT-005`](input.md#req-input-005--gamepads-are-recorded-input-that-binds-to-actions) | Gamepads are recorded input that binds to actions | active | functional | P2 | agent:SWZ-50 |
+| [`REQ-INPUT-006`](input.md#req-input-006--old-recordings-still-play) | Old recordings still play | active | constraint | P1 | agent:SWZ-50 |
+| [`REQ-NET-001`](net.md#req-net-001--the-game-polls-network-events) | The game polls network events | active | constraint | P1 | agent:SWZ-53 |
+| [`REQ-NET-002`](net.md#req-net-002--the-native-client-masks-each-frame) | The native client masks each frame | active | functional | P1 | agent:SWZ-53 |
+| [`REQ-NET-003`](net.md#req-net-003--the-reconnect-delay-doubles-to-a-limit) | The reconnect delay doubles to a limit | active | functional | P2 | agent:SWZ-53 |
 | [`REQ-PLATFORM-001`](platform.md#req-platform-001--a-refused-pointer-lock-does-not-stop-the-game) | A refused pointer lock does not stop the game | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-002`](platform.md#req-platform-002--clipboard-results-arrive-as-events) | Clipboard results arrive as events | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-PLATFORM-003`](platform.md#req-platform-003--the-canvas-and-the-surface-follow-the-device-pixel-ratio) | The canvas and the surface follow the device pixel ratio | active | functional | P2 | agent:SWZ-45 |
 | [`REQ-VOXEL-001`](voxel.md#req-voxel-001--a-block-with-a-baked-model-gets-the-model-mesher) | A block with a baked model gets the model mesher | active | functional | P1 | agent:SWZ-31 |
 | [`REQ-VOXEL-002`](voxel.md#req-voxel-002--a-full-cube-hides-a-model-quad-with-a-cull-face) | A full cube hides a model quad with a cull face | active | functional | P1 | agent:SWZ-31 |
+| [`REQ-VOXEL-003`](voxel.md#req-voxel-003--the-content-gives-the-opacity-and-the-emission-of-each-block) | The content gives the opacity and the emission of each block | active | functional | P1 | agent:SWZ-32 |
+| [`REQ-VOXEL-004`](voxel.md#req-voxel-004--sky-light-falls-straight-down-without-loss) | Sky light falls straight down without loss | active | functional | P1 | agent:SWZ-32 |
+| [`REQ-VOXEL-005`](voxel.md#req-voxel-005--an-edit-updates-the-light-incrementally) | An edit updates the light incrementally | active | quality | P1 | agent:SWZ-32 |
 
 ## Dependency graph
 
@@ -73,11 +81,19 @@ graph TD
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
   REQ_INPUT_004["REQ-INPUT-004<br/>Saved input settings load in a newer version"]
+  REQ_INPUT_005["REQ-INPUT-005<br/>Gamepads are recorded input that binds to actions"]
+  REQ_INPUT_006["REQ-INPUT-006<br/>Old recordings still play"]
+  REQ_NET_001["REQ-NET-001<br/>The game polls network events"]
+  REQ_NET_002["REQ-NET-002<br/>The native client masks each frame"]
+  REQ_NET_003["REQ-NET-003<br/>The reconnect delay doubles to a limit"]
   REQ_PLATFORM_001["REQ-PLATFORM-001<br/>A refused pointer lock does not stop the game"]
   REQ_PLATFORM_002["REQ-PLATFORM-002<br/>Clipboard results arrive as events"]
   REQ_PLATFORM_003["REQ-PLATFORM-003<br/>The canvas and the surface follow the device pixel ratio"]
   REQ_VOXEL_001["REQ-VOXEL-001<br/>A block with a baked model gets the model mesher"]
   REQ_VOXEL_002["REQ-VOXEL-002<br/>A full cube hides a model quad with a cull face"]
+  REQ_VOXEL_003["REQ-VOXEL-003<br/>The content gives the opacity and the emission of each block"]
+  REQ_VOXEL_004["REQ-VOXEL-004<br/>Sky light falls straight down without loss"]
+  REQ_VOXEL_005["REQ-VOXEL-005<br/>An edit updates the light incrementally"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -92,6 +108,8 @@ graph TD
   REQ_GPU_014 -->|refines| REQ_GPU_006
   REQ_GPU_015 -->|refines| REQ_GPU_014
   REQ_VOXEL_002 -->|refines| REQ_VOXEL_001
+  REQ_VOXEL_004 -->|refines| REQ_VOXEL_003
+  REQ_VOXEL_005 -->|depends-on| REQ_VOXEL_003
 ```
 
 ## Derived reverse links
@@ -105,3 +123,4 @@ graph TD
 - `REQ-GPU-010` — refined-by REQ-GPU-011
 - `REQ-GPU-014` — refined-by REQ-GPU-015
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002
+- `REQ-VOXEL-003` — refined-by REQ-VOXEL-004, required-by REQ-VOXEL-005

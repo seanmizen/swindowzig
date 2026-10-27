@@ -34,8 +34,8 @@ pub const Bus = struct {
 
     /// Push an event to the bus.
     /// When block_physical_input is true, platform input events (tick_id=0,
-    /// payload=pointer_move/pointer_button/key/wheel/text_input/text_composition)
-    /// are silently dropped. TAS/replayer events (tick_id != 0) are never blocked.
+    /// payload=pointer_move/pointer_button/key/wheel/text_input/text_composition
+    /// and the gamepad events) are silently dropped. TAS/replayer events (tick_id != 0) are never blocked.
     /// While text_input_active is false, text events are dropped at any tick_id.
     pub fn push(self: *Bus, tick_id: u64, t_ns: u64, payload: event.EventPayload) !void {
         if (!self.text_input_active) {
@@ -46,7 +46,16 @@ pub const Bus = struct {
         }
         if (self.block_physical_input and tick_id == 0) {
             switch (payload) {
-                .pointer_move, .pointer_button, .key, .wheel, .text_input, .text_composition => return,
+                .pointer_move,
+                .pointer_button,
+                .key,
+                .wheel,
+                .text_input,
+                .text_composition,
+                .gamepad_connection,
+                .gamepad_button,
+                .gamepad_axis,
+                => return,
                 else => {},
             }
         }
@@ -170,4 +179,17 @@ test "text events pass only while text input is on" {
     bus.text_input_active = false;
     try bus.push(0, 0, .{ .lifecycle = .init });
     try std.testing.expectEqual(@as(usize, 3), bus.events.items.len);
+}
+
+test "blocked physical input drops the platform gamepad events" {
+    var bus = Bus.init(std.testing.allocator);
+    defer bus.deinit();
+    bus.block_physical_input = true;
+    try bus.push(0, 0, .{ .gamepad_button = .{ .pad = 0, .button = .south, .down = true } });
+    try bus.push(0, 0, .{ .gamepad_axis = .{ .pad = 0, .axis = .left_x, .value = 1 } });
+    try bus.push(0, 0, .{ .gamepad_connection = .{ .pad = 0, .connected = true } });
+    try std.testing.expectEqual(@as(usize, 0), bus.events.items.len);
+    // A TAS or a replay gives a tick, so its events pass.
+    try bus.push(5, 0, .{ .gamepad_button = .{ .pad = 0, .button = .south, .down = true } });
+    try std.testing.expectEqual(@as(usize, 1), bus.events.items.len);
 }

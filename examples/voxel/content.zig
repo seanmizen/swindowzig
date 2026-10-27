@@ -1,7 +1,7 @@
 //! The content of the voxel demo for sw_voxel: the block types, the light
-//! that each block gives, and the terrain generator. sw_voxel imports this
-//! file as the `sw_voxel_content` module. `libs/sw_voxel/src/content.zig`
-//! gives the contract.
+//! that each block gives and stops, and the terrain generator. sw_voxel
+//! imports this file as the `sw_voxel_content` module.
+//! `libs/sw_voxel/src/content.zig` gives the contract.
 const std = @import("std");
 const sw_voxel = @import("sw_voxel");
 pub const world_gen = @import("world_gen.zig");
@@ -50,6 +50,16 @@ pub fn emission(block: Block) u8 {
     return switch (block) {
         .glowstone => chunk.MAX_BLOCK_LIGHT,
         else => 0,
+    };
+}
+
+/// The light that a cell of `block` stops, 0 to 15. Air and the half block
+/// let all light through, so the face of a full cube next to a half block
+/// is not dark. All other blocks stop all light.
+pub fn opacity(block: Block) u8 {
+    return switch (block) {
+        .air, .slab => 0,
+        else => 15,
     };
 }
 

@@ -65,9 +65,26 @@ pub fn model(block: Block) ?*const model_mod.BakedModel {
     };
 }
 
-/// Only `emitter` gives light.
+/// `emitter` gives full light. b18 gives less light, and lets light
+/// through. The generator does not place b18.
 pub fn emission(block: Block) u8 {
-    return if (block == .emitter) chunk.MAX_BLOCK_LIGHT else 0;
+    return switch (block) {
+        .emitter => chunk.MAX_BLOCK_LIGHT,
+        .b18 => 9,
+        else => 0,
+    };
+}
+
+/// The model blocks (b19, b20) and b18 let light through. b17 is a full
+/// cube that stops a part of the light. All other blocks stop all light.
+/// The generator places none of b17 to b20, so the terrain light is the
+/// light of full cubes.
+pub fn opacity(block: Block) u8 {
+    return switch (block) {
+        .air, .b18, .b19, .b20 => 0,
+        .b17 => 3,
+        else => 15,
+    };
 }
 
 pub const GenConfig = struct {

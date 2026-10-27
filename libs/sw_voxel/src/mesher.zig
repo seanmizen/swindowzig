@@ -2030,10 +2030,9 @@ test "a block with a model gets model records and no greedy faces (REQ-VOXEL-001
             try std.testing.expectEqual(baked.uv[c], v.uv);
             try std.testing.expectEqual(face_normals[@backingInt(baked.face)], v.normal);
             try std.testing.expectEqual(@as(f32, 1.0), v.ao);
-            // The half block stops light, so the cell under it gets the
-            // sky light from the side: one level less.
-            const sky: f32 = if (baked.face == .ny) 14.0 / 15.0 else 1.0;
-            try std.testing.expectEqual(sky, v.skylight);
+            // The half block has opacity 0 (REQ-VOXEL-003), so the sky
+            // light goes through it: the cell under it gets full sky light.
+            try std.testing.expectEqual(@as(f32, 1.0), v.skylight);
             try std.testing.expectEqual(@as(f32, 0.0), v.block_light);
         }
     }
@@ -2117,6 +2116,32 @@ test "the model records take the light of the neighbour in the light direction" 
         try std.testing.expectEqual(@as(f32, 1.0), v.skylight);
         try std.testing.expectEqual(@as(f32, 0.0), v.block_light);
     }
+}
+
+test "the face of a full cube next to a half block gets the sky light (REQ-VOXEL-003)" {
+    const allocator = std.testing.allocator;
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
+    // A full cube in the open sky, with a half block (b19, opacity 0) at
+    // +X. The +X face of the cube reads the light of the half block cell
+    // and the cells around it.
+    try chunk.setBlock(5, 70, 6, .solid);
+    try chunk.setBlock(6, 70, 6, .b19);
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try meshAlone(&chunk, &mesh);
+    // The sky light goes through the half block with no loss.
+    try std.testing.expectEqual(chunk_mod.MAX_SKYLIGHT, chunk.lightAt(6, 70, 6).sky);
+    try std.testing.expectEqual(chunk_mod.MAX_SKYLIGHT, chunk.lightAt(6, 69, 6).sky);
+    var seen = false;
+    for (mesh.quads.items) |q| {
+        if (isModelRecord(q)) continue;
+        const face: Face = @fromBackingInt(@as(u3, @intCast((q[0] >> 16) & 0x7)));
+        if (face != .px) continue;
+        seen = true;
+        for (0..4) |c| try std.testing.expectEqual(@as(f32, 1.0), unpackCorner(q, c, 0, 0).skylight);
+    }
+    try std.testing.expect(seen);
 }
 
 test "a model record keeps a cell y above 255 and the quad index" {

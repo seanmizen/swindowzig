@@ -111,12 +111,16 @@ const server = serve({
       '/a11y': './backends/wasm/a11y.ts',
       '/net.js': './backends/wasm/net.ts',
       '/net': './backends/wasm/net.ts',
+      '/websocket.js': './backends/wasm/websocket.ts',
+      '/websocket': './backends/wasm/websocket.ts',
       '/held-bytes.js': './backends/wasm/held-bytes.ts',
       '/held-bytes': './backends/wasm/held-bytes.ts',
       '/window.js': './backends/wasm/window.ts',
       '/window': './backends/wasm/window.ts',
       '/clipboard.js': './backends/wasm/clipboard.ts',
       '/clipboard': './backends/wasm/clipboard.ts',
+      '/gamepad.js': './backends/wasm/gamepad.ts',
+      '/gamepad': './backends/wasm/gamepad.ts',
       // The chunk worker pool (C9). chunk-worker.ts has no imports, so the
       // worker gets one transpiled file.
       '/worker-pool.js': './backends/wasm/worker-pool.ts',

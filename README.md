@@ -4,17 +4,17 @@
 Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS/Linux).
 
 <!-- progress:start -->
-![engine progress](https://img.shields.io/badge/engine-41.0%25-1D76DB)
+![engine progress](https://img.shields.io/badge/engine-48.7%25-1D76DB)
 
-**Engine: 41.0% complete** `████████░░░░░░░░░░░░` (16 of 39 issues)
+**Engine: 48.7% complete** `██████████░░░░░░░░░░` (19 of 39 issues)
 
 | State | Issues |
 |---|---|
-| done | 16 |
+| done | 19 |
 | in-review | 2 |
-| in-progress | 3 |
+| in-progress | 1 |
 | ready | 16 |
-| backlog | 2 |
+| backlog | 1 |
 
 A GitHub workflow writes this block from the
 [`engine` issues](https://github.com/seanmizen/swindowzig/issues?q=label%3Aengine).
@@ -198,7 +198,7 @@ exe.root_module.addImport("sw_app", swindowzig.module("sw_app"));
 ```
 
 The package exports `sw_core`, `sw_platform`, `sw_gpu`, `sw_audio`, `sw_math`,
-`sw_gfx2d` and `sw_app`. The `platform` option picks the platform of these modules:
+`sw_gfx2d`, `sw_net` and `sw_app`. The `platform` option picks the platform of these modules:
 `web` (the default, no SDL) or `native` (SDL2 from `addTranslateC`):
 
 ```zig
