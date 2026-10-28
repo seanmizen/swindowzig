@@ -49,6 +49,12 @@ pub const Context = struct {
         return self.backend.getWindowInfo();
     }
 
+    /// The native window: its handle, its focus and its place on the screen.
+    /// The web build gives the default value (kind `none`).
+    pub fn nativeWindow(self: *const Context) platform.NativeWindow {
+        return self.backend.getNativeWindow();
+    }
+
     /// GPU interface for rendering (clearScreen, drawLine, drawCircle, etc).
     pub fn gpu(self: *Context) *gpu_mod.GPU {
         return self.gpu_device;

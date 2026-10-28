@@ -11,6 +11,8 @@
 | [`REQ-A11Y-004`](a11y.md#req-a11y-004--the-mirror-is-visually-hidden) | The mirror is visually hidden | active | constraint | P1 | sean |
 | [`REQ-A11Y-005`](a11y.md#req-a11y-005--an-unchanged-tree-is-not-sent-to-js) | An unchanged tree is not sent to JS | active | quality | P1 | sean |
 | [`REQ-A11Y-006`](a11y.md#req-a11y-006--each-widget-has-its-aria-role-in-the-mirror) | Each widget has its ARIA role in the mirror | active | functional | P2 | agent:SWZ-47 |
+| [`REQ-A11Y-007`](a11y.md#req-a11y-007--the-native-build-can-send-the-semantic-tree-to-accesskit) | The native build can send the semantic tree to AccessKit | active | functional | P3 | sean |
+| [`REQ-A11Y-008`](a11y.md#req-a11y-008--accesskit-gets-the-focus-and-the-live-region-changes) | AccessKit gets the focus and the live-region changes | active | functional | P3 | sean |
 | [`REQ-ASSETS-001`](assets.md#req-assets-001--opening-a-zip-archive-does-not-decompress-it) | Opening a zip archive does not decompress it | active | quality | P1 | agent:SWZ-54 |
 | [`REQ-ASSETS-002`](assets.md#req-assets-002--the-cache-tells-why-opfs-is-missing) | The cache tells why OPFS is missing | active | functional | P2 | agent:SWZ-54 |
 | [`REQ-AUDIO-001`](audio.md#req-audio-001--the-waveform-api-does-not-change) | The waveform API does not change | active | constraint | P1 | agent:SWZ-48 |
@@ -125,6 +127,8 @@ graph TD
   REQ_A11Y_004["REQ-A11Y-004<br/>The mirror is visually hidden"]
   REQ_A11Y_005["REQ-A11Y-005<br/>An unchanged tree is not sent to JS"]
   REQ_A11Y_006["REQ-A11Y-006<br/>Each widget has its ARIA role in the mirror"]
+  REQ_A11Y_007["REQ-A11Y-007<br/>The native build can send the semantic tree to AccessKit"]
+  REQ_A11Y_008["REQ-A11Y-008<br/>AccessKit gets the focus and the live-region changes"]
   REQ_ASSETS_001["REQ-ASSETS-001<br/>Opening a zip archive does not decompress it"]
   REQ_ASSETS_002["REQ-ASSETS-002<br/>The cache tells why OPFS is missing"]
   REQ_AUDIO_001["REQ-AUDIO-001<br/>The waveform API does not change"]
@@ -233,6 +237,7 @@ graph TD
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_005 -->|refines| REQ_A11Y_001
   REQ_A11Y_006 -->|refines| REQ_A11Y_001
+  REQ_A11Y_008 -->|refines| REQ_A11Y_007
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
@@ -299,6 +304,7 @@ graph TD
 ## Derived reverse links
 
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
+- `REQ-A11Y-007` — refined-by REQ-A11Y-008
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016

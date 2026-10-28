@@ -107,6 +107,12 @@ var volume: f32 = 0.7;
 var level: usize = 0;
 var keyboard: sw_ui.osk.Keyboard = .{};
 var cursor_mode: sw.CursorMode = .normal;
+
+// The native screen-reader backend. It works only in a build with
+// `-Daccesskit=true` (REQ-A11Y-007). A request from the screen reader waits
+// in `reader_request` until its node has focus, then acts as a key press.
+var screen_reader: sw_ui.accesskit.Adapter = .{};
+var reader_request: ?sw_ui.accesskit.ActionRequest = null;
 var last_clipboard: ?sw.ClipboardEvent = null;
 
 // The gamepad navigation of the UI. Each action has a gamepad binding only:
@@ -201,6 +207,35 @@ fn uiInput(ctx: *sw.Context) sw_ui.Input {
         .text = input.text.text(),
         .composition = input.composition.text(),
     };
+}
+
+/// Send the semantic tree to the screen reader, and take its requests. A
+/// focus request moves the focus now. A click, increment or decrement first
+/// moves the focus, then `readerInput` gives the key on a later frame.
+fn updateScreenReader(ctx: *sw.Context, u: *sw_ui.Ui, scale: f32) !void {
+    screen_reader.syncWindow(sw_ui.accesskit.windowState(ctx.nativeWindow()));
+    try screen_reader.publish(u.semanticTree(), scale);
+    while (screen_reader.takeAction()) |req| {
+        u.setFocus(req.target);
+        if (req.kind != .focus) reader_request = req;
+    }
+}
+
+/// Add the key of a waiting screen-reader request to the input, when its
+/// node has focus: Enter for a click, Right or Left for a slider.
+fn readerInput(u: *const sw_ui.Ui, input: sw_ui.Input) sw_ui.Input {
+    const req = reader_request orelse return input;
+    const focused = u.focused() orelse return input;
+    if (focused != req.target) return input;
+    reader_request = null;
+    var out = input;
+    switch (req.kind) {
+        .click => out.keys.enter = true,
+        .increment => out.keys.right = true,
+        .decrement => out.keys.left = true,
+        .focus => {},
+    }
+    return out;
 }
 
 /// Build the UI of this frame: the menu (or a button that opens it) in the
@@ -495,6 +530,9 @@ const Callbacks = struct {
             // Copy and paste of the text fields use the system clipboard.
             u.clipboard = sw_ui.Clipboard.platform(ctx);
         }
+        if (comptime sw_ui.accesskit.enabled) {
+            screen_reader.start(ctx.allocator(), sw_ui.accesskit.windowState(ctx.nativeWindow()), config.title);
+        }
         sprite_request = try assets.loadBytes(ctx.allocator(), "sprite.png");
         std.log.info("flat2d: GPU ready", .{});
     }
@@ -508,8 +546,9 @@ const Callbacks = struct {
         const u = if (ui_state) |*p| p else return;
         const win = ctx.window();
         const logical = gfx.projection.logicalSize(win.width, win.height, win.dpi_scale);
-        try buildUi(u, uiInput(ctx), logical.w, logical.h);
+        try buildUi(u, readerInput(u, uiInput(ctx)), logical.w, logical.h);
         handleUiEvents(ctx, u);
+        if (comptime sw_ui.accesskit.enabled) try updateScreenReader(ctx, u, win.dpi_scale);
     }
 
     pub fn render(ctx: *sw.Context) !void {
@@ -601,6 +640,7 @@ const Callbacks = struct {
 
     pub fn shutdown(ctx: *sw.Context) !void {
         _ = ctx;
+        screen_reader.stop();
         if (ui_state) |*u| u.deinit();
         ui_state = null;
         if (text_renderer) |*tr| tr.deinit();

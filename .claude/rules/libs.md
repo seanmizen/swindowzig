@@ -228,6 +228,12 @@ depth test rejects hidden fragments before they shade.
   changes (`web_mirror.zig`). That file keeps a hidden DOM tree for screen
   readers, and gives DOM focus to the focused node (REQ-A11Y-001).
   `yarn test:a11y` (Playwright, Chromium) tests it with flat2d.
+- Native: `sw_ui.accesskit.Adapter` sends the same tree to AccessKit
+  (accesskit-c) when the build has `-Daccesskit=true` (off by default,
+  REQ-A11Y-007). `accesskit_map.zig` is the pure map and diff. The window
+  handle comes from `ctx.nativeWindow()`. `docs/accesskit.md` has the API,
+  the licence and the install steps. `scripts/accesskit/atspi-check.sh`
+  tests it on Linux with a fake AT-SPI registry.
 - Web entry: the browser does not call `main`. An app that uses `sw.run`
   calls `sw.exportWeb(config, Callbacks)` in a `comptime` block, and sets
   `std_options.logFn` to `sw.webLogFn`. See `examples/flat2d/main.zig`.
@@ -315,6 +321,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_ui/src/ui.zig` | `Ui`: immediate-mode tree (row, column, text, button, list, scroll list, list item, text field, slider, image, screen, tooltips), small layout (fixed, fit, fill, padding, gap, alignment), keyboard focus, pointer drags, events, and the semantic tree. `TextValue` has the caret and selection. No GPU or font code, unit tested |
 | `libs/sw_ui/src/screen.zig`, `osk.zig` | `ScreenStack`: a stack of screens that gives the focus back on `pop`. `osk.Keyboard`: an on-screen keyboard of buttons that fills a `TextValue`. Unit tested |
 | `libs/sw_ui/src/semantic.zig` | `SemanticTree`: plain data (role, name, value, focused, disabled, selected, live, changed, bounds, children) for a backend such as the web screen-reader mirror |
+| `libs/sw_ui/src/accesskit_map.zig`, `accesskit.zig` | The semantic tree as AccessKit nodes, and the diff of two trees (no C code, unit tested). The optional accesskit-c backend: Windows, macOS and AT-SPI adapters through `extern fn` (REQ-A11Y-007, REQ-A11Y-008) |
 | `libs/sw_ui/src/web_mirror.zig` | Encodes the semantic tree for the web screen-reader mirror (`backends/wasm/a11y.ts`), and sends it only when it changes |
 | `libs/sw_app/src/web_entry.zig` | `exportWeb`: the `swindowzig_init` and `swindowzig_frame` exports for an app that uses `sw.run`. `webLogFn` for `std.log` on wasm |
 | `libs/sw_ui/src/draw.zig` | Draws the tree with sw_gfx2d and sw_text, with a focus ring and the tooltip. A scroll list cuts its children (`Renderer.setClip`). `measurer(&text_renderer)` gives the UI its text size and bidi caret positions |

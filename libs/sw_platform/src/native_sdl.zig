@@ -1,5 +1,6 @@
 // SDL2 Native Backend
 const std = @import("std");
+const builtin = @import("builtin");
 const core = @import("sw_core");
 const backend_mod = @import("backend.zig");
 const platform = @import("platform.zig");
@@ -107,6 +108,7 @@ pub const SDL2Backend = struct {
                 .setClipboardText = setClipboardText,
                 .requestClipboardText = requestClipboardText,
                 .clipboardText = clipboardText,
+                .getNativeWindow = getNativeWindow,
             },
         };
     }
@@ -381,6 +383,45 @@ pub const SDL2Backend = struct {
     fn getWindow(ptr: *anyopaque) ?*anyopaque {
         const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
         return @ptrCast(self.window);
+    }
+
+    /// The native handle from SDL_GetWindowWMInfo, the focus, and the place
+    /// of the window on the screen (REQ-A11Y-007).
+    fn getNativeWindow(ptr: *anyopaque) platform.NativeWindow {
+        const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
+        var out: platform.NativeWindow = .{};
+        var info = std.mem.zeroes(sdl.SDL_SysWMinfo);
+        sdl.SDL_GetVersion(&info.version);
+        if (sdl.SDL_GetWindowWMInfo(self.window, &info) == sdl.SDL_TRUE) {
+            switch (builtin.os.tag) {
+                .macos => if (info.subsystem == sdl.SDL_SYSWM_COCOA) {
+                    out.kind = .cocoa;
+                    out.handle = @ptrCast(info.info.cocoa.window);
+                },
+                .windows => if (info.subsystem == sdl.SDL_SYSWM_WINDOWS) {
+                    out.kind = .win32;
+                    out.handle = @ptrCast(info.info.win.window);
+                },
+                else => {
+                    if (info.subsystem == sdl.SDL_SYSWM_X11) out.kind = .x11;
+                    if (info.subsystem == sdl.SDL_SYSWM_WAYLAND) out.kind = .wayland;
+                },
+            }
+        }
+        out.focused = (sdl.SDL_GetWindowFlags(self.window) & sdl.SDL_WINDOW_INPUT_FOCUS) != 0;
+        sdl.SDL_GetWindowPosition(self.window, &out.x, &out.y);
+        sdl.SDL_GetWindowSize(self.window, &out.w, &out.h);
+        var top: c_int = 0;
+        var left: c_int = 0;
+        var bottom: c_int = 0;
+        var right: c_int = 0;
+        if (sdl.SDL_GetWindowBordersSize(self.window, &top, &left, &bottom, &right) == 0) {
+            out.border_top = top;
+            out.border_left = left;
+            out.border_bottom = bottom;
+            out.border_right = right;
+        }
+        return out;
     }
 
     // Helper to get current keyboard modifiers

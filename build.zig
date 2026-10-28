@@ -44,6 +44,15 @@ pub fn build(b: *std.Build) void {
         "Platform of the exported modules: web (default, no SDL) or native (SDL2)",
     ) orelse .web;
 
+    // The native screen-reader backend of sw_ui (REQ-A11Y-007). It links
+    // accesskit-c from ~/.local/lib. Off by default: then nothing links, and
+    // the native build does not change. See docs/accesskit.md.
+    const accesskit = b.option(
+        bool,
+        "accesskit",
+        "Native builds: send the sw_ui semantic tree to AccessKit (needs libaccesskit in ~/.local/lib)",
+    ) orelse false;
+
     // The exported modules. `b.addModule` makes them importable from a
     // dependent package.
     const exported_sdl: ?*std.Build.Module = if (platform == .native) blk: {
@@ -55,7 +64,7 @@ pub fn build(b: *std.Build) void {
         if (target.result.os.tag == .macos) sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
         break :blk sdl_c.createModule();
     } else null;
-    const exported = addLibs(b, exported_sdl, true);
+    const exported = addLibs(b, exported_sdl, true, accesskit and platform == .native);
 
     // A dependent package stops here. The examples, steps and tests below
     // belong to this package alone, and they need HOME and SDL.
@@ -63,7 +72,7 @@ pub fn build(b: *std.Build) void {
 
     // The web build gets its own set of library modules, with no SDL. The
     // minecraft dockerfile has no SDL headers.
-    const web_libs = if (platform == .web) exported else addLibs(b, null, false);
+    const web_libs = if (platform == .web) exported else addLibs(b, null, false, false);
 
     // Example app - WASM build
     const wasm_target = b.resolveTargetQuery(.{
@@ -162,7 +171,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     if (target.result.os.tag == .macos) sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-    const native_libs = if (platform == .native) exported else addLibs(b, sdl_c.createModule(), false);
+    const native_libs = if (platform == .native) exported else addLibs(b, sdl_c.createModule(), false, accesskit);
 
     const native_exe = b.addExecutable(.{
         .name = b.fmt("{s}", .{example_name}),
@@ -198,6 +207,24 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addLibraryPath(.{ .cwd_relative = wgpu_lib_path });
     native_exe.root_module.addIncludePath(.{ .cwd_relative = wgpu_include_path });
     native_exe.root_module.linkSystemLibrary("wgpu_native", .{});
+
+    // accesskit-c (optional, REQ-A11Y-007): the static library of the
+    // release zip, in ~/.local/lib. The system libraries are the ones that
+    // accesskit-config.cmake names for the static library.
+    if (accesskit) {
+        native_exe.root_module.linkSystemLibrary("accesskit", .{ .preferred_link_mode = .static });
+        switch (target.result.os.tag) {
+            .macos => {
+                native_exe.root_module.linkFramework("AppKit", .{});
+                native_exe.root_module.linkFramework("CoreFoundation", .{});
+                native_exe.root_module.linkSystemLibrary("objc", .{});
+            },
+            .windows => for ([_][]const u8{ "bcrypt", "ntdll", "propsys", "runtimeobject", "uiautomationcore", "userenv", "ws2_32" }) |lib| {
+                native_exe.root_module.linkSystemLibrary(lib, .{});
+            },
+            else => native_exe.root_module.linkSystemLibrary("m", .{}),
+        }
+    }
 
     // Platform-specific frameworks
     if (target.result.os.tag == .macos) {
@@ -280,6 +307,20 @@ pub fn build(b: *std.Build) void {
         // sw_math: vectors, matrices, quaternions, boxes, rays and planes.
         "libs/sw_math/src/math_root.zig",
     };
+
+    // sw_ui: the AccessKit backend, built with the option off, and its map
+    // from the semantic tree to AccessKit nodes (accesskit_map.zig). The
+    // test checks that the backend does nothing and links no accesskit-c
+    // symbol.
+    const accesskit_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_ui/src/accesskit.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    accesskit_tests.root_module.addOptions("sw_ui_options", uiOptions(b, false));
+    test_step.dependOn(&b.addRunArtifact(accesskit_tests).step);
 
     // sw_assets: byte loading and PNG decoding. The PNG decoder is C
     // (stb_image), so these tests link libc.
@@ -904,7 +945,8 @@ fn libModule(
 
 /// Create the swindowzig library modules. `sdl` is the translated SDL2 headers
 /// for a native build, or null for the web build.
-fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
+/// `accesskit` turns on the AccessKit backend of sw_ui (REQ-A11Y-007).
+fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool, accesskit: bool) Libs {
     const core = libModule(b, exported, "sw_core", "libs/sw_core/src/core.zig");
     const platform = libModule(b, exported, "sw_platform", "libs/sw_platform/src/platform_root.zig");
     platform.addImport("sw_core", core);
@@ -927,6 +969,7 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     const ui = libModule(b, exported, "sw_ui", "libs/sw_ui/src/ui_root.zig");
     ui.addImport("sw_gfx2d", gfx2d);
     ui.addImport("sw_text", text);
+    ui.addOptions("sw_ui_options", uiOptions(b, accesskit));
     // sw_voxel needs a content module from the dependent package:
     // voxel.addImport("sw_voxel_content", content). See
     // libs/sw_voxel/src/content.zig.
@@ -948,6 +991,13 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
     return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .net = net, .jobs = jobs, .text = text, .ui = ui, .voxel = voxel, .render = render, .app = app };
+}
+
+/// The build options of sw_ui.
+fn uiOptions(b: *std.Build, accesskit: bool) *std.Build.Step.Options {
+    const opts = b.addOptions();
+    opts.addOption(bool, "accesskit", accesskit);
+    return opts;
 }
 
 /// Compile stb_vorbis (libs/sw_audio/c) into `module`. The file needs no C
