@@ -1,0 +1,87 @@
+# cow.tas: the settings tour of the cow demo, one change at a time.
+# Each line: tick command args. 60 ticks each second.
+# The keys are the keys of demos/cow/main.zig.
+
+# MSAA.
+60 keydown 1
+62 keyup 1
+# Off.
+170 keydown 1
+172 keyup 1
+# FXAA.
+280 keydown 1
+282 keyup 1
+# Naive.
+390 keydown 2
+392 keyup 2
+# Wireframe on.
+500 keydown 3
+502 keyup 3
+# Greedy with the wireframe.
+610 keydown 2
+612 keyup 2
+# Wireframe off.
+720 keydown 3
+722 keyup 3
+# Clamp.
+830 keydown 4
+832 keyup 4
+# Reinhard.
+940 keydown 4
+942 keyup 4
+# ACES.
+1050 keydown 4
+1052 keyup 4
+# Exposure up.
+1160 keydown 6
+1162 keyup 6
+# Exposure up.
+1270 keydown 6
+1272 keyup 6
+# Exposure down.
+1380 keydown 5
+1382 keyup 5
+# Exposure down.
+1490 keydown 5
+1492 keyup 5
+# Brown and cream.
+1600 keydown 7
+1602 keyup 7
+# Blue and orange.
+1710 keydown 7
+1712 keyup 7
+# Black and white.
+1820 keydown 7
+1822 keyup 7
+# Time of day: night.
+1930 keydown T
+2080 keyup T
+# Time of day: noon.
+2170 keydown T
+2290 keyup T
+# Shadows off.
+2380 keydown 8
+2382 keyup 8
+# Shadows on.
+2490 keydown 8
+2492 keyup 8
+# AO off.
+2600 keydown 9
+2602 keyup 9
+# AO on.
+2710 keydown 9
+2712 keyup 9
+# Fog off.
+2820 keydown 0
+2822 keyup 0
+# Fog on.
+2930 keydown 0
+2932 keyup 0
+# Violet sky.
+3040 keydown K
+3042 keyup K
+# Day sky.
+3150 keydown K
+3152 keyup K
+# The end: one more second of the default settings.
+3320 wait 0

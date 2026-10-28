@@ -186,7 +186,8 @@ pub const Sky = struct {
                 .targets = &[_]gpu_mod.ColorTargetState{.{ .format = graph.targetFormat(target) }},
             },
             .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
-            .multisample = .{ .count = 1 },
+            // A multisampled target gets a multisampled sky (REQ-GPU-040).
+            .multisample = .{ .count = graph.targetSampleCount(target) },
         });
         runner.* = .{
             .pipeline = pipeline,

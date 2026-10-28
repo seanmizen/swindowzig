@@ -290,6 +290,13 @@ pub const FrameGraph = struct {
         return self.targets[id.index()].desc.format;
     }
 
+    /// The MSAA sample count of a target. `.screen` has 1. A pipeline that
+    /// draws into the target uses this count (REQ-GPU-040).
+    pub fn targetSampleCount(self: *const FrameGraph, id: TargetId) u32 {
+        if (id == .screen) return 1;
+        return self.targets[id.index()].desc.sample_count;
+    }
+
     /// The size of a target in pixels, after the first `execute`.
     pub fn size(self: *const FrameGraph, id: TargetId) Extent {
         if (id == .screen) return self.surface;

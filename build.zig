@@ -30,11 +30,19 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Build option to select which example to build
-    const example_name = b.option(
+    const example_option = b.option(
         []const u8,
         "example",
-        "Which example to build (default: windows)",
-    ) orelse "justabox";
+        "Which example to build (default: justabox)",
+    );
+    // A showcase demo in demos/<name>: cow, shooter or menu. It takes the
+    // place of -Dexample.
+    const demo_option = b.option(
+        []const u8,
+        "demo",
+        "Which showcase demo to build: cow, shooter or menu (demos/<name>)",
+    );
+    const example_name = demo_option orelse example_option orelse "justabox";
 
     // Which platform the exported modules (sw_app, sw_platform, ...) use. A
     // dependent package gets web by default: no SDL, no system libraries.
@@ -71,14 +79,15 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
     });
 
-    // Construct path to example (try src/main.zig first, then main.zig)
+    // Construct path to example (try src/main.zig first, then main.zig).
+    // A name with no example is a demo: demos/<name>/main.zig.
     const example_path = blk: {
         const src_path = b.fmt("examples/{s}/src/main.zig", .{example_name});
         const root_path = b.fmt("examples/{s}/main.zig", .{example_name});
-
-        // Check if src/main.zig exists
+        const demo_path = b.fmt("demos/{s}/main.zig", .{example_name});
+        if (demo_option != null) break :blk demo_path;
         b.root.access(b.graph.io, src_path, .{}) catch {
-            // Fall back to root main.zig
+            b.root.access(b.graph.io, root_path, .{}) catch break :blk demo_path;
             break :blk root_path;
         };
         break :blk src_path;
@@ -105,6 +114,9 @@ pub fn build(b: *std.Build) void {
     // (e.g. voxel, which constructs a WasmBackend directly in its
     // swindowzig_init export).
     example.root_module.addImport("sw_platform", web_libs.platform);
+    example.root_module.addImport("sw_audio", web_libs.audio);
+    // The shared code of the showcase demos (demos/common).
+    example.root_module.addImport("demo_common", addDemoCommon(b, web_libs));
     // The voxel demo: sw_voxel with the demo content (examples/voxel/content.zig).
     const web_voxel = addVoxel(b, web_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
     example.root_module.addImport("sw_voxel", web_voxel.voxel);
@@ -181,6 +193,8 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_ui", native_libs.ui);
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
     native_exe.root_module.addImport("sw_render", native_libs.render);
+    native_exe.root_module.addImport("sw_audio", native_libs.audio);
+    native_exe.root_module.addImport("demo_common", addDemoCommon(b, native_libs));
     native_exe.root_module.addOptions("chunk_build", chunk_build);
     const native_voxel = addVoxel(b, native_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
     native_exe.root_module.addImport("sw_voxel", native_voxel.voxel);
@@ -562,6 +576,36 @@ pub fn build(b: *std.Build) void {
     audio_wasm.rdynamic = true;
     test_step.dependOn(&audio_wasm.step);
 
+    // The showcase demos (demos/): the cow meshers, the bitmap font, the
+    // flags and the random numbers of a run, the arena, the bots and the
+    // gun models. No GPU code runs.
+    const demo_common_tests = addDemoCommon(b, web_libs);
+    const demo_test_files = [_][]const u8{
+        "demos/common/cow.zig",
+        "demos/common/bitmap_font.zig",
+        "demos/common/run.zig",
+        "demos/shooter/arena.zig",
+        "demos/shooter/bots.zig",
+        "demos/shooter/guns.zig",
+    };
+    inline for (demo_test_files) |file| {
+        const demo_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(file),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        demo_tests.root_module.addImport("demo_common", demo_common_tests);
+        demo_tests.root_module.addImport("sw_app", web_libs.app);
+        demo_tests.root_module.addImport("sw_core", web_libs.core);
+        demo_tests.root_module.addImport("sw_math", web_libs.math);
+        demo_tests.root_module.addImport("sw_render", web_libs.render);
+        demo_tests.root_module.addImport("sw_text", web_libs.text);
+        test_step.dependOn(&b.addRunArtifact(demo_tests).step);
+    }
+
     // Mesher benchmark (no GPU): zig build bench-mesher -Doptimize=ReleaseFast
     const bench_mesher = b.addExecutable(.{
         .name = "bench_mesher",
@@ -826,6 +870,24 @@ fn hashZigFiles(b: *std.Build, root: []const u8, h: *std.hash.Wyhash) void {
         h.update(p);
         h.update(data);
     }
+}
+
+/// The shared code of the showcase demos (demos/common): the TAS player,
+/// the frame capture, the mesh renderer, the cow and its scene. It embeds
+/// the fonts of the demo text.
+fn addDemoCommon(b: *std.Build, libs: Libs) *std.Build.Module {
+    const m = b.createModule(.{ .root_source_file = b.path("demos/common/common.zig") });
+    m.addImport("sw_app", libs.app);
+    m.addImport("sw_core", libs.core);
+    m.addImport("sw_gpu", libs.gpu);
+    m.addImport("sw_math", libs.math);
+    m.addImport("sw_render", libs.render);
+    m.addImport("sw_gfx2d", libs.gfx2d);
+    m.addImport("sw_text", libs.text);
+    m.addImport("sw_ui", libs.ui);
+    m.addImport("sw_audio", libs.audio);
+    m.addAnonymousImport("demo_font", .{ .root_source_file = b.path("examples/flat2d/assets/Lato-Regular.ttf") });
+    return m;
 }
 
 const VoxelModules = struct {

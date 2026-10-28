@@ -69,7 +69,7 @@ async function rebuildZig() {
 }
 
 // Watch directories for .zig file changes
-const watchDirs = noBuild ? [] : ['libs', 'examples'];
+const watchDirs = noBuild ? [] : ['libs', 'examples', 'demos'];
 for (const dir of watchDirs) {
   try {
     watch(dir, { recursive: true }, (_event, filename) => {

@@ -1,0 +1,226 @@
+# menu.tas: a tour of the menu demo. 60 ticks each second.
+# The keyboard, a gamepad and the mouse move the focus. Each step
+# changes a setting that applies at once to the cow behind the menu.
+# mouse_move moves the pointer from its last place (it starts at 0, 0).
+
+# Main screen: Tab to Settings, then Enter.
+60 keydown Tab
+62 keyup Tab
+100 keydown Enter
+102 keyup Enter
+# Settings: Enter opens Graphics.
+140 keydown Enter
+142 keyup Enter
+# Graphics: the preset list. Up two times, then Enter: Low.
+190 keydown Up
+192 keyup Up
+210 keydown Up
+212 keyup Up
+230 keydown Enter
+232 keyup Enter
+# Anti-aliasing: off, then FXAA, then MSAA.
+290 keydown Tab
+292 keyup Tab
+330 keydown Enter
+332 keyup Enter
+380 keydown Enter
+382 keyup Enter
+# Shadows on again, then the fog off.
+440 keydown Tab
+442 keyup Tab
+470 keydown Enter
+472 keyup Enter
+520 keydown Tab
+522 keyup Tab
+540 keydown Tab
+542 keyup Tab
+570 keydown Enter
+572 keyup Enter
+# The wireframe on, then naive and greedy meshing.
+630 keydown Tab
+632 keyup Tab
+660 keydown Enter
+662 keyup Enter
+720 keydown Tab
+722 keyup Tab
+750 keydown Enter
+752 keyup Enter
+810 keydown Enter
+812 keyup Enter
+# The exposure and the time of day sliders: Right.
+860 keydown Tab
+862 keyup Tab
+900 keydown Right
+902 keyup Right
+910 keydown Right
+912 keyup Right
+920 keydown Right
+922 keyup Right
+930 keydown Right
+932 keyup Right
+940 keydown Right
+942 keyup Right
+950 keydown Right
+952 keyup Right
+990 keydown Tab
+992 keyup Tab
+1030 keydown Right
+1032 keyup Right
+1040 keydown Right
+1042 keyup Right
+1050 keydown Right
+1052 keyup Right
+1060 keydown Right
+1062 keyup Right
+1070 keydown Right
+1072 keyup Right
+1080 keydown Right
+1082 keyup Right
+# Back to Settings, then Audio. The ambience volume goes down.
+1120 keydown Tab
+1122 keyup Tab
+1140 keydown Tab
+1142 keyup Tab
+1170 keydown Enter
+1172 keyup Enter
+1210 keydown Tab
+1212 keyup Tab
+1230 keydown Enter
+1232 keyup Enter
+1270 keydown Tab
+1272 keyup Tab
+1290 keydown Tab
+1292 keyup Tab
+1320 keydown Left
+1322 keyup Left
+1330 keydown Left
+1332 keyup Left
+1340 keydown Left
+1342 keyup Left
+1350 keydown Left
+1352 keyup Left
+1360 keydown Left
+1362 keyup Left
+1400 keydown Tab
+1402 keyup Tab
+1420 keydown Enter
+1422 keyup Enter
+# Controls: rebind Turn left to D (a conflict with Turn right), then to J.
+1460 keydown Tab
+1462 keyup Tab
+1480 keydown Enter
+1482 keyup Enter
+1520 keydown Enter
+1522 keyup Enter
+1550 keydown D
+1552 keyup D
+1640 keydown Enter
+1642 keyup Enter
+1670 keydown J
+1672 keyup J
+# The mouse sensitivity, and invert Y.
+1730 keydown Tab
+1732 keyup Tab
+1750 keydown Right
+1752 keyup Right
+1760 keydown Right
+1762 keyup Right
+1770 keydown Right
+1772 keyup Right
+1780 keydown Tab
+1782 keyup Tab
+1810 keydown Enter
+1812 keyup Enter
+1850 keydown Tab
+1852 keyup Tab
+1870 keydown Enter
+1872 keyup Enter
+# A gamepad: the right shoulder is Tab, south is Enter, east is Back.
+1910 gamepad_down right_shoulder
+1912 gamepad_up right_shoulder
+1940 gamepad_down south
+1942 gamepad_up south
+# Gamepad: the d-pad moves the dead zone slider.
+1980 gamepad_down dpad_right
+1982 gamepad_up dpad_right
+1994 gamepad_down dpad_right
+1996 gamepad_up dpad_right
+2008 gamepad_down dpad_right
+2010 gamepad_up dpad_right
+2022 gamepad_down dpad_right
+2024 gamepad_up dpad_right
+2076 gamepad_down east
+2078 gamepad_up east
+2106 gamepad_down east
+2108 gamepad_up east
+# Language: Hebrew, then the bitmap font, then the TTF font, then English.
+2146 keydown Tab
+2148 keyup Tab
+2166 keydown Enter
+2168 keyup Enter
+2206 keydown Down
+2208 keyup Down
+2226 keydown Enter
+2228 keyup Enter
+2296 keydown Tab
+2298 keyup Tab
+2316 keydown Down
+2318 keyup Down
+2336 keydown Enter
+2338 keyup Enter
+2426 keydown Up
+2428 keyup Up
+2446 keydown Enter
+2448 keyup Enter
+2516 keydown Shift
+2517 keydown Tab
+2519 keyup Tab
+2520 keyup Shift
+2536 keydown Up
+2538 keyup Up
+2556 keydown Enter
+2558 keyup Enter
+2606 keydown Escape
+2608 keyup Escape
+# The on-screen keyboard: three letters, then Escape.
+2646 keydown Tab
+2648 keyup Tab
+2666 keydown Tab
+2668 keyup Tab
+2686 keydown Enter
+2688 keyup Enter
+2726 keydown Tab
+2728 keyup Tab
+2746 keydown Enter
+2748 keyup Enter
+2766 keydown Right
+2768 keyup Right
+2782 keydown Enter
+2784 keyup Enter
+2802 keydown Right
+2804 keyup Right
+2818 keydown Enter
+2820 keyup Enter
+2858 keydown Escape
+2860 keyup Escape
+# The mouse: a click on Play. Then the keys of Controls turn the cow,
+# and a drag moves the camera.
+2898 mouse_move 181 68
+2918 mouse_down left
+2921 mouse_up left
+2978 keydown D
+3018 keyup D
+3038 mouse_down left
+3040 mouse_move 12 4
+3043 mouse_move 12 4
+3046 mouse_move 12 4
+3049 mouse_move 12 4
+3052 mouse_move 12 4
+3055 mouse_move 12 4
+3058 mouse_move 12 4
+3061 mouse_move 12 4
+3068 mouse_up left
+# Escape: the menu again.
+3098 keydown Escape
+3100 keyup Escape
+3158 wait 0
