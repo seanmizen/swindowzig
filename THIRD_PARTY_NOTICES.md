@@ -212,12 +212,14 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ------------------------------------------------------------------------------
 ```
 
-## Lato (font in the flat2d example)
+## Lato (font in the flat2d example and the demos)
 
 - Files: `examples/flat2d/assets/Lato-Regular.ttf`, and the licence in
   `examples/flat2d/assets/Lato-OFL.txt`.
 - Source: https://github.com/google/fonts/tree/main/ofl/lato
-- Used by: `examples/flat2d` only. The libraries do not include a font.
+- Used by: `examples/flat2d`, and the overlay of the demos in `demos/`
+  (`demos/common/overlay.zig` embeds the same file). The libraries do not
+  include a font.
 - Licence: SIL Open Font License 1.1. The font is not changed, and it keeps
   the Reserved Font Name "Lato". The full text follows.
 
