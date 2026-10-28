@@ -285,8 +285,11 @@ TAS scripts for regression live under `examples/voxel/`:
   (REQ-VOXEL-028).
 
 - `tests/chunk_border.sh` — the terrain hides the chunk border lines of
-  debug mode. Each TAS turns debug mode on. With no depth test, the corner
-  lines drew through the ground and looked like a dark crack.
+  debug mode (`--debug=on`). With no depth test, the corner lines drew
+  through the ground and looked like a dark crack. The hitbox cylinder and
+  the spawn disc use the same pipeline, with the same depth test. A TAS
+  turns on only the 2D HUD (the debug panel and the keyboard HUD), not
+  the 3D debug shapes.
 
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
 block at the top documenting the purpose, usage, and baseline numbers.

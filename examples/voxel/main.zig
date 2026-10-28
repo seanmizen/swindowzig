@@ -881,10 +881,10 @@ const State = struct {
     camera: CameraType = undefined, // set by voxelInit
     player: Player = undefined, // set by voxelInit
     pipeline: ?gpu_mod.RenderPipeline = null,
+    /// The debug shapes of debug mode: the hitbox cylinder, the spawn disc
+    /// and the chunk border wireframe. Alpha, no face culling, and a depth
+    /// test with no depth write, so the terrain hides the parts behind it.
     cylinder_pipeline: ?gpu_mod.RenderPipeline = null,
-    /// The chunk border wireframe of debug mode: the cylinder pipeline with
-    /// a depth test, so the terrain hides the lines behind it.
-    border_pipeline: ?gpu_mod.RenderPipeline = null,
     /// Chunk meshes: vs_chunk, with the packed quads at group 1 and the
     /// baked model quads at group 2.
     chunk_pipeline: ?gpu_mod.RenderPipeline = null,
@@ -951,7 +951,13 @@ const State = struct {
     /// True once the spawn chunk has loaded and the player has been placed at
     /// the resolved (terrain-safe) position for the current spawn_point.
     spawn_resolved: bool = false,
+    /// Debug mode (Cmd+D, --debug=on): the 2D HUD and the 3D debug shapes
+    /// (the hitbox, the spawn disc and the chunk border).
     debug_mode: bool = false,
+    /// The 2D HUD only: the debug panel and the keyboard HUD. A TAS run
+    /// turns it on, so the keyboard HUD shows the TAS input. The 3D debug
+    /// shapes stay off. --debug=off turns it off.
+    hud_2d: bool = false,
     tas_step_mode: bool = false,
     /// Set by Right arrow — preTick will inject the next TAS event group on the next sim tick.
     tas_step_pending: bool = false,
@@ -1156,7 +1162,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Explicitly null all optional fields — `var state: State = undefined` bypasses struct defaults
     state.pipeline = null;
     state.cylinder_pipeline = null;
-    state.border_pipeline = null;
     state.uniform_buffer = null;
     state.bind_group = null;
     state.depth_texture = null;
@@ -1200,6 +1205,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.spawn_resolved = false;
     state.camera_view = .first_person;
     state.debug_mode = false;
+    state.hud_2d = false;
     state.tas_step_mode = false;
     state.tas_step_pending = false;
     state.tas_step_executing = false;
@@ -1682,8 +1688,9 @@ fn voxelInit(ctx: *sw.Context) !void {
                     ctx.setInputBlocked(true);
                 }
 
-                // Enable debug mode automatically so the keyboard HUD shows TAS input live.
-                state.debug_mode = true;
+                // Turn on the 2D HUD, so the keyboard HUD shows the TAS
+                // input. The 3D debug shapes stay off.
+                state.hud_2d = true;
                 // Auto-enable GPU debug in step mode so rebuilt faces are highlighted.
                 if (state.tas_step_mode) state.gpu_debug = true;
                 std.log.info("TAS replayer ready — will start after world loading completes", .{});
@@ -1693,10 +1700,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     }
 
     // --debug=on|off final pass: parsed AFTER TAS init so it overrides the
-    // automatic `state.debug_mode = true` that TAS load forces (the keyboard
-    // HUD wants to be visible during a normal TAS run, but the
-    // debug_overlay.sh regression test needs to capture a clean baseline with
-    // debug_mode=off even when a TAS is loaded for camera determinism).
+    // 2D HUD that a TAS turns on. The goldens and debug_overlay.sh need a
+    // clean frame with --debug=off even when a TAS is loaded.
     for (args) |arg| {
         if (std.mem.startsWith(u8, arg, "--debug=")) {
             const val = std.mem.sliceTo(arg["--debug=".len..], 0);
@@ -1704,6 +1709,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.debug_mode = true;
             } else if (std.mem.eql(u8, val, "off")) {
                 state.debug_mode = false;
+                state.hud_2d = false;
             } else {
                 std.log.err("--debug: invalid value '{s}'. Accepted: on, off", .{val});
                 fatalExit(1);
@@ -2446,6 +2452,8 @@ fn voxelTick(ctx: *sw.Context) !void {
     // Cmd+D (macOS) / Ctrl+D (Windows/Linux) — toggle debug mode (shows hitbox cylinder)
     if (input.keyPressed(.D) and (input.mods.super or input.mods.ctrl)) {
         state.debug_mode = !state.debug_mode;
+        // Cmd+D off also hides the 2D HUD of a TAS run.
+        state.hud_2d = false;
         std.log.info("Debug mode: {}", .{state.debug_mode});
     }
 
@@ -3499,7 +3507,8 @@ fn voxelRender(ctx: *sw.Context) !void {
     // the frustum or in no visible section.
     const entity_keep = cullEntities(cave, &live_frustum);
     // =========================================================================
-    // Player hitbox cylinder (drawn after voxels; no face culling so always visible)
+    // Player hitbox cylinder (drawn after voxels; no face culling, so the
+    // inside shows in first person). The terrain in front of it hides it.
     // =========================================================================
     if (state.debug_mode and entity_keep[@backingInt(DebugEntity.player)] and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
         player_mod.buildCylinderMesh(
@@ -3525,7 +3534,8 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     // =========================================================================
-    // Spawn point debug marker (debug mode; flat red disc plate on the ground)
+    // Spawn point debug marker (debug mode; flat red disc plate on the ground,
+    // hidden by the terrain in front of it)
     // Reuses the same scratch buffers and GPU buffers as the player hitbox —
     // they're drawn sequentially so there's no overlap.
     // =========================================================================
@@ -3553,12 +3563,11 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     // =========================================================================
-    // Chunk border wireframe (debug mode only). The border pipeline has
-    // alpha and no face culling, as the cylinder pipeline has, but it keeps
+    // Chunk border wireframe (debug mode only). The cylinder pipeline has
     // the depth test. With no depth test, the full-height corner lines drew
     // through the ground and looked like a dark crack in the terrain.
     // =========================================================================
-    if (state.debug_mode and state.border_pipeline != null) {
+    if (state.debug_mode and state.cylinder_pipeline != null) {
         // Draw border for the chunk the player is currently in.
         const pcx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
         const pcz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
@@ -3566,7 +3575,7 @@ fn voxelRender(ctx: *sw.Context) !void {
         const border_oz: f32 = @as(f32, @floatFromInt(pcz)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
         buildChunkBorderMesh(g, border_ox, border_oz);
         if (state.border_vertex_buffer != null and state.border_idx_count > 0) {
-            pass.setPipeline(state.border_pipeline.?);
+            pass.setPipeline(state.cylinder_pipeline.?);
             pass.setBindGroup(0, state.bind_group.?);
             pass.setVertexBuffer(0, state.border_vertex_buffer.?, 0, state.border_vert_count * @sizeOf(VoxelVertex));
             pass.setIndexBuffer(state.border_index_buffer.?, .uint32, 0, state.border_idx_count * @sizeOf(u32));
@@ -3787,7 +3796,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     // tried 1.5 first, but the resulting 7.5×10.5 quads blurred at edges.
     // bitmap_font.zig has only ASCII 0x20-0x5A — no lowercase rendering
     // (auto-uppercased), no degree sign (uses 'D'), no brackets (uses parens).
-    if (state.debug_mode and !state.game_state.isLayerActive(.pause_menu)) {
+    if ((state.debug_mode or state.hud_2d) and !state.game_state.isLayerActive(.pause_menu)) {
         const dbg_scale: f32 = 2.0; // smaller than menu entries (3.0); integer-aligned glyph quads
         const dbg_line_h: f32 = (GLYPH_H + 2) * dbg_scale; // 18 px per line
         const dbg_edge: f32 = 2; // 2-pixel gutter from screen edge per spec
@@ -3974,8 +3983,8 @@ fn voxelRender(ctx: *sw.Context) !void {
         }
     }
 
-    // Full keyboard HUD — only in debug mode
-    if (state.debug_mode) {
+    // Full keyboard HUD — in debug mode and in the 2D HUD of a TAS run
+    if (state.debug_mode or state.hud_2d) {
         keyboard_hud.draw(&state.overlay, ctx.input(), overlay_w, overlay_h);
     }
 
@@ -4516,12 +4525,14 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     // Cylinder pipeline: no face culling + alpha blending so the hitbox is semi-transparent
     // and visible from both inside (first-person) and outside (third-person, F5).
     // depth_stencil must match the render pass attachment.
-    // depth_write disabled + compare=always so debug overlays render on top of
-    // everything without occluding voxel geometry.
+    // The depth test is on, so the terrain in front of a debug shape hides
+    // it. The shapes do not write depth, so they do not hide the terrain or
+    // each other. The hitbox, the spawn disc and the chunk border lines
+    // use this pipeline.
     const cylinder_depth_stencil: gpu_mod.DepthStencilState = .{
         .format = .depth24plus,
         .depth_write_enabled = false,
-        .depth_compare = .always,
+        .depth_compare = .less_equal,
         .stencil_read_mask = 0,
         .stencil_write_mask = 0,
     };
@@ -4566,38 +4577,6 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
             break :blk null;
         };
     }
-
-    // Border pipeline: the cylinder pipeline with the depth test on. The
-    // lines do not write depth, so they do not hide the terrain, but the
-    // terrain in front of a line hides it.
-    var border_depth_stencil = cylinder_depth_stencil;
-    border_depth_stencil.depth_compare = .less_equal;
-    state.border_pipeline = try g.createRenderPipeline(.{
-        .layout = &pipeline_layout,
-        .vertex = .{
-            .module = &shader,
-            .entry_point = "vs_main",
-            .buffers = &[_]sw.gpu_types.VertexBufferLayout{voxel_vbl},
-        },
-        .fragment = .{
-            .module = &shader,
-            .entry_point = "fs_main",
-            .targets = &[_]sw.gpu_types.ColorTargetState{.{
-                .format = .bgra8unorm,
-                .blend = .{
-                    .color = .{ .operation = .add, .src_factor = .src_alpha, .dst_factor = .one_minus_src_alpha },
-                    .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .zero },
-                },
-            }},
-        },
-        .primitive = .{
-            .topology = .triangle_list,
-            .front_face = .ccw,
-            .cull_mode = .none,
-        },
-        .multisample = .{ .count = sample_count },
-        .depth_stencil = border_depth_stencil,
-    });
 
     // Pre-allocate fixed-size cylinder GPU buffers (size never changes)
     state.cylinder_vertex_buffer = try g.createBuffer(.{
