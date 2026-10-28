@@ -172,9 +172,6 @@ fn uiInput(ctx: *sw.Context) sw_ui.Input {
     const input = ctx.input();
     // The shortcut modifier: Ctrl, or Cmd on macOS.
     const shortcut = input.mods.ctrl or input.mods.super;
-    // The web gives the wheel in pixels and SDL in lines. The UI reads lines
-    // of 40 pixels (Theme.scroll_step).
-    const wheel_lines = if (builtin.cpu.arch.isWasm()) input.wheel.delta_y / 40 else input.wheel.delta_y;
     return .{
         .keys = .{
             .tab = input.keyPressed(.Tab) or nav.pressed(.next) or nav.pressed(.prev),
@@ -199,7 +196,8 @@ fn uiInput(ctx: *sw.Context) sw_ui.Input {
         .pointer_y = input.mouse.y,
         .pointer_pressed = input.buttonPressed(.left),
         .pointer_down = input.buttonDown(.left),
-        .wheel_y = wheel_lines,
+        // The snapshot and the UI both give the wheel in lines (REQ-INPUT-008).
+        .wheel_y = input.wheel.delta_y,
         .text = input.text.text(),
         .composition = input.composition.text(),
     };

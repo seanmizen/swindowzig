@@ -98,6 +98,10 @@ depth test rejects hidden fragments before they shade.
 .wheel = .{ .dx = 0, .dy = 1, .mode = .line, .mods = mods } // dy > 0 scrolls up
 ```
 
+- `input().wheel` is in lines on every backend. The snapshot changes the
+  pixels and pages of a wheel event to lines (`input.wheelLines`,
+  REQ-INPUT-008). The event keeps its raw deltas and its mode.
+
 - `KeyCode` is append-only: a recording stores its values (REQ-INPUT-001).
   The punctuation and navigation keys follow the physical key on the web
   (`KeyboardEvent.code`) and on SDL (the scancode) (REQ-INPUT-002).
