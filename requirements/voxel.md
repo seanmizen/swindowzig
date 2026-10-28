@@ -375,6 +375,16 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   meshes. Each mesh is a GPU upload, and many uploads in one frame make
   a frame spike. The meshes that wait upload in the next frames. The
   loading screen has no limit.
+  The limit is a count and not a time. A time limit
+  needs a GPU timestamp for each upload, because `writeBuffer` only puts
+  the copy in the queue: the GPU does the transfer after the submit. A
+  CPU time around the queue writes measures only the copy into the
+  staging memory of wgpu (native) or the call into JS (web). That time is
+  small and does not show the GPU cost. Also, a time limit makes the
+  uploads of a frame depend on the clock, so a TAS run is not the same on
+  each machine. A count is deterministic. If the count is not
+  sufficient, a byte limit (the sum of the quad bytes) is the next step:
+  it is also deterministic and it follows the transfer size.
 - **Verification:** Test — `libs/sw_voxel/src/pipeline/streaming.zig` ›
   "streaming: the upload budget keeps the chunks in view, nearest first
   (REQ-VOXEL-017)"
@@ -716,6 +726,7 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   give each block face the shade of 1x1 quads (REQ-VOXEL-032)"
 - **Relations:**
   - refines REQ-VOXEL-010
+
 ## REQ-VOXEL-033 — An init error of the demo frees each allocation of init
 
 - **Status:** active
