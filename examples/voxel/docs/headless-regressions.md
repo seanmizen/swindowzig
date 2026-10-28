@@ -124,8 +124,9 @@ ao_corners_moore             PASS
 cave_skylight_none           PASS
 cave_skylight_skylight       PASS
 dig_relight                  PASS
+water_pool                   PASS
 
-Summary: 10 passed, 0 failed, 0 missing (backend=metal)
+Summary: 11 passed, 0 failed, 0 missing (backend=metal)
 ```
 
 ### Verified backends

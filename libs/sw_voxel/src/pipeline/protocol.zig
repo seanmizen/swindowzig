@@ -32,6 +32,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const chunk_mod = @import("../chunk.zig");
 const mesher_mod = @import("../mesher.zig");
+const fluid_mod = @import("../fluid.zig");
 const content = @import("../content.zig");
 const stages = @import("stages.zig");
 const lod = @import("lod.zig");
@@ -40,6 +41,9 @@ const BlockType = chunk_mod.BlockType;
 const PalettedBlocks = chunk_mod.PalettedBlocks;
 const Section = chunk_mod.Section;
 pub const PackedQuad = mesher_mod.PackedQuad;
+pub const FluidVertex = fluid_mod.Vertex;
+/// The bytes of one fluid quad in a mesh payload: 4 `fluid.Vertex`.
+pub const FLUID_QUAD_LEN = 4 * @sizeOf(FluidVertex);
 pub const Stage = stages.Stage;
 pub const Version = stages.Version;
 pub const SLOTS = stages.SLOTS;
@@ -47,7 +51,7 @@ pub const SLOTS = stages.SLOTS;
 /// "VXCP" as little-endian bytes.
 pub const MAGIC: u32 = 0x50435856;
 /// Increment this value for each change of the layout.
-pub const VERSION: u16 = 6;
+pub const VERSION: u16 = 7;
 
 pub const HEADER_LEN = 16;
 pub const HELLO_LEN = 24 + content.GEN_CONFIG_LEN;
@@ -74,7 +78,7 @@ pub const MAX_ERROR_TEXT = 256;
 /// version and the sizes that the stages use.
 pub const BUILD_HASH: u64 = blk: {
     var h = std.hash.Wyhash.init(0);
-    const parts = [_]u64{ VERSION, chunk_mod.CHUNK_W, chunk_mod.CHUNK_H, @bitCast(@as(i64, chunk_mod.MIN_Y)), @sizeOf(PackedQuad), SLOTS, std.enums.values(BlockType).len };
+    const parts = [_]u64{ VERSION, chunk_mod.CHUNK_W, chunk_mod.CHUNK_H, @bitCast(@as(i64, chunk_mod.MIN_Y)), @sizeOf(PackedQuad), SLOTS, std.enums.values(BlockType).len, @sizeOf(FluidVertex) };
     for (parts) |p| h.update(std.mem.asBytes(&p));
     break :blk h.final();
 };
@@ -84,6 +88,8 @@ comptime {
     // Edit stores local x and z in 4 bits each, and local y in a u16.
     std.debug.assert(chunk_mod.CHUNK_W == 16 and chunk_mod.CHUNK_H <= 65536);
     std.debug.assert(@sizeOf(PackedQuad) == 16);
+    // The fluid quads keep the next stream 16-byte aligned.
+    std.debug.assert(FLUID_QUAD_LEN % 16 == 0);
 }
 
 pub const Kind = enum(u8) {
@@ -185,15 +191,18 @@ pub const Job = struct {
 ///   24 u32  mesh: the quad count. generate: the payload length. light: 0
 ///   28 u32  job time in µs, or 0
 ///   32 u64  mesh: meshHash of the payload. generate and light: 0
-///   40 u64  reserved, 0
+///   40 u32  mesh: the fluid quad count (REQ-VOXEL-027). generate and
+///           light: 0
+///   44 u32  reserved, 0
 ///   48 u16  mesh: the face connections of each section (visibility.zig),
 ///           SECTION_COUNT values, then 0 to a multiple of 16 bytes
 ///           (SECTIONS_LEN). generate and light: 0
 ///   48 + SECTIONS_LEN  u32  mesh: the draw range of each section
 ///           (mesher.SectionRange), SECTION_COUNT values, then 0 to a
 ///           multiple of 16 bytes (RANGES_LEN). generate and light: 0
-///   48 + SECTIONS_LEN + RANGES_LEN ...  payload: mesh: PackedQuad × count.
-///           generate: the blocks
+///   48 + SECTIONS_LEN + RANGES_LEN ...  payload: mesh: PackedQuad × count,
+///           then fluid.Vertex × 4 × the fluid quad count. generate: the
+///           blocks
 pub const ResultHead = struct {
     stage: Stage,
     cx: i32,
@@ -209,6 +218,9 @@ pub const ResultHead = struct {
     sections: [chunk_mod.SECTION_COUNT]u16 = @splat(0x7FFF),
     /// Mesh: the draw range of each section (REQ-VOXEL-023).
     ranges: mesher_mod.SectionRanges = mesher_mod.EMPTY_RANGES,
+    /// Mesh: the fluid quads after the PackedQuads (REQ-VOXEL-027). The
+    /// encoder sets it from the payload.
+    fluid_quads: u32 = 0,
 };
 
 /// The hash of the quad bytes of a mesh. The worker calculates it, so main
@@ -227,11 +239,30 @@ pub const ResultInfo = struct {
     payload_len: usize,
     /// Mesh: the quad count.
     quad_count: u32,
+
+    /// Mesh: the offset of the fluid vertices in the message.
+    pub fn fluidOffset(self: ResultInfo) usize {
+        return PAYLOAD_OFFSET + @as(usize, self.quad_count) * @sizeOf(PackedQuad);
+    }
+
+    /// Mesh: the length of the fluid vertices.
+    pub fn fluidLen(self: ResultInfo) usize {
+        return @as(usize, self.head.fluid_quads) * FLUID_QUAD_LEN;
+    }
+};
+
+/// The streams of a mesh Result.
+pub const MeshPayload = struct {
+    quads: []const PackedQuad,
+    /// 4 vertices for each fluid quad (REQ-VOXEL-027).
+    fluid: []const FluidVertex = &.{},
 };
 
 pub const Payload = union(enum) {
     none,
+    /// A mesh with only PackedQuads.
     quads: []const PackedQuad,
+    mesh: MeshPayload,
     blocks: *const PalettedBlocks,
 };
 
@@ -242,19 +273,47 @@ pub const Result = struct {
     payload: []const u8,
     has_blocks: bool,
 
+    /// The bytes of the PackedQuads of a mesh.
+    pub fn quadBytes(self: Result) []const u8 {
+        return self.payload[0 .. self.payload.len - @as(usize, self.head.fluid_quads) * FLUID_QUAD_LEN];
+    }
+
+    /// The bytes of the fluid vertices of a mesh (REQ-VOXEL-027).
+    pub fn fluidBytes(self: Result) []const u8 {
+        return self.payload[self.quadBytes().len..];
+    }
+
     pub fn quadCount(self: Result) usize {
-        return self.payload.len / @sizeOf(PackedQuad);
+        return self.quadBytes().len / @sizeOf(PackedQuad);
+    }
+
+    pub fn fluidQuadCount(self: Result) usize {
+        return self.head.fluid_quads;
     }
 
     /// Copy the quads into `out`. `out.len` must be `quadCount()`.
     pub fn copyQuads(self: Result, out: []PackedQuad) void {
         std.debug.assert(out.len == self.quadCount());
+        const bytes = self.quadBytes();
         if (comptime builtin.cpu.arch.endian() == .little) {
-            @memcpy(std.mem.sliceAsBytes(out), self.payload);
+            @memcpy(std.mem.sliceAsBytes(out), bytes);
         } else {
             for (out, 0..) |*q, i| {
-                for (q, 0..) |*w, k| w.* = std.mem.readInt(u32, self.payload[i * 16 + k * 4 ..][0..4], .little);
+                for (q, 0..) |*w, k| w.* = std.mem.readInt(u32, bytes[i * 16 + k * 4 ..][0..4], .little);
             }
+        }
+    }
+
+    /// Copy the fluid vertices into `out`. `out.len` must be 4 ×
+    /// `fluidQuadCount()`.
+    pub fn copyFluid(self: Result, out: []FluidVertex) void {
+        std.debug.assert(out.len == self.fluidQuadCount() * 4);
+        const bytes = self.fluidBytes();
+        for (out, 0..) |*v, i| {
+            var in: In = .{ .buf = bytes[i * @sizeOf(FluidVertex) ..][0..@sizeOf(FluidVertex)] };
+            for (&v.pos) |*f| f.* = in.float();
+            for (&v.uv) |*f| f.* = in.float();
+            v.info = in.int(u32);
         }
     }
 };
@@ -421,9 +480,15 @@ fn sectionLen(bits: u8, palette_len: usize) usize {
 }
 
 pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, payload: Payload) ![]u8 {
+    const mesh: ?MeshPayload = switch (payload) {
+        .quads => |q| .{ .quads = q },
+        .mesh => |m| m,
+        else => null,
+    };
+    if (mesh) |m| std.debug.assert(m.fluid.len % 4 == 0);
     const payload_len: usize = switch (payload) {
         .none => 0,
-        .quads => |q| q.len * @sizeOf(PackedQuad),
+        .quads, .mesh => mesh.?.quads.len * @sizeOf(PackedQuad) + mesh.?.fluid.len * @sizeOf(FluidVertex),
         .blocks => |pb| blocksLen(pb),
     };
     var o = try begin(allocator, PAYLOAD_OFFSET + payload_len, .result, id);
@@ -442,25 +507,32 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
     }
     o.int(u32, switch (payload) {
         .none => 0,
-        .quads => |q| @intCast(q.len),
+        .quads, .mesh => @intCast(mesh.?.quads.len),
         .blocks => @intCast(payload_len),
     });
     o.int(u32, head.job_us);
     // The mesh hash goes in after the payload: it is the hash of the
     // payload bytes.
     o.int(u64, 0);
-    o.int(u64, 0);
+    o.int(u32, if (mesh) |m| @intCast(m.fluid.len / 4) else 0);
+    o.int(u32, 0);
     for (head.sections) |c| o.int(u16, if (head.stage == .mesh) c else 0);
     o.zeros(SECTIONS_LEN - chunk_mod.SECTION_COUNT * 2);
     for (head.ranges) |r| o.int(u32, if (head.stage == .mesh) @bitCast(r) else 0);
     o.zeros(RANGES_LEN - chunk_mod.SECTION_COUNT * 4);
     switch (payload) {
         .none => {},
-        .quads => |q| {
+        .quads, .mesh => {
+            const m = mesh.?;
             if (comptime builtin.cpu.arch.endian() == .little) {
-                o.bytes(std.mem.sliceAsBytes(q));
+                o.bytes(std.mem.sliceAsBytes(m.quads));
             } else {
-                for (q) |quad| for (quad) |w| o.int(u32, w);
+                for (m.quads) |quad| for (quad) |w| o.int(u32, w);
+            }
+            for (m.fluid) |v| {
+                for (v.pos) |f| o.float(f);
+                for (v.uv) |f| o.float(f);
+                o.int(u32, v.info);
             }
         },
         .blocks => |pb| {
@@ -477,7 +549,7 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
             }
         },
     }
-    if (payload == .quads) {
+    if (mesh != null) {
         std.mem.writeInt(u64, o.buf[MESH_HASH_OFFSET..][0..8], meshHash(o.buf[PAYLOAD_OFFSET..]), .little);
     }
     return finish(o);
@@ -674,7 +746,9 @@ fn resultInfo(bytes: []const u8, kind: Kind, body_len: u32, id: u32) DecodeError
     const count = b.int(u32);
     r.job_us = b.int(u32);
     r.mesh_hash = b.int(u64);
-    if (b.int(u64) != 0) return error.BadField;
+    r.fluid_quads = b.int(u32);
+    if (r.stage != .mesh and r.fluid_quads != 0) return error.BadField;
+    if (b.int(u32) != 0) return error.BadField;
     for (&r.sections) |*c| {
         c.* = b.int(u16);
         if (c.* > 0x7FFF or (r.stage != .mesh and c.* != 0)) return error.BadField;
@@ -702,7 +776,7 @@ fn resultInfo(bytes: []const u8, kind: Kind, body_len: u32, id: u32) DecodeError
     switch (r.stage) {
         .mesh => {
             if (has_blocks) return error.BadField;
-            if (@as(u64, count) * @sizeOf(PackedQuad) != payload_len) return error.BadLength;
+            if (@as(u64, count) * @sizeOf(PackedQuad) + @as(u64, r.fluid_quads) * FLUID_QUAD_LEN != payload_len) return error.BadLength;
             if (r.ranges[chunk_mod.SECTION_COUNT - 1].end != count) return error.BadField;
         },
         .generate => {

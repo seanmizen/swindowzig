@@ -50,6 +50,8 @@ const CHUNK_W = 16;
 const BLOCK_AIR = 0;
 const BLOCK_STONE = 3;
 const BLOCK_GLOWSTONE = 5;
+/** examples/voxel/content.zig: a full fluid cell (REQ-VOXEL-014). */
+const BLOCK_WATER = 10;
 /** The memory test: the chunks to walk, and the growth that it allows. */
 const WALK_CHUNKS = 24;
 const MEMORY_GROWTH_LIMIT = 1 << 20;
@@ -247,6 +249,33 @@ describe('chunk worker pool (real Bun Web Workers)', () => {
           RESULT_HEAD_BYTES,
         );
       }
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    'fluid: water gives a fluid stream that goes to the GPU from the held bytes (REQ-VOXEL-027)',
+    async () => {
+      // A small pool of water in the air of the spawn chunk and its +x
+      // neighbour, over the chunk border.
+      const water: Edit[] = [];
+      for (const x of [14, 15, 0, 1])
+        for (const z of [4, 5])
+          water.push({
+            dcx: x < 8 ? 1 : 0,
+            dcz: 0,
+            x,
+            y: 120,
+            z,
+            block: BLOCK_WATER,
+          });
+      const inline = await run(null, water);
+      const o = await run({ size: 2 }, water);
+      expectWorkersOnly(o);
+      expectSameState(o, inline);
+      // Each chunk with water has one more held write: its fluid stream.
+      expect(o.uploads.fluidWrites).toBeGreaterThanOrEqual(2);
+      expect(inline.uploads.fluidWrites).toBe(0);
     },
     TIMEOUT_MS,
   );

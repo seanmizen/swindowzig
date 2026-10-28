@@ -107,6 +107,8 @@
 | [`REQ-VOXEL-024`](voxel.md#req-voxel-024--the-demo-draws-only-the-sections-that-the-walk-reaches) | The demo draws only the sections that the walk reaches | active | quality | P2 | agent:SWZ-40 |
 | [`REQ-VOXEL-025`](voxel.md#req-voxel-025--the-occlusion-cull-skips-a-chunk-only-while-its-result-is-correct) | The occlusion cull skips a chunk only while its result is correct | active | quality | P2 | agent:SWZ-40 |
 | [`REQ-VOXEL-026`](voxel.md#req-voxel-026--the-demo-culls-its-entity-boxes-with-the-visible-sections) | The demo culls its entity boxes with the visible sections | active | functional | P3 | agent:SWZ-40 |
+| [`REQ-VOXEL-027`](voxel.md#req-voxel-027--the-mesh-result-carries-the-fluid-quads-after-the-packed-quads) | The mesh result carries the fluid quads after the packed quads | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-028`](voxel.md#req-voxel-028--the-demo-draws-water-in-a-fluid-pass-after-the-opaque-chunks) | The demo draws water in a fluid pass after the opaque chunks | active | functional | P2 | agent:SWZ-112 |
 
 ## Dependency graph
 
@@ -214,6 +216,8 @@ graph TD
   REQ_VOXEL_024["REQ-VOXEL-024<br/>The demo draws only the sections that the walk reaches"]
   REQ_VOXEL_025["REQ-VOXEL-025<br/>The occlusion cull skips a chunk only while its result is correct"]
   REQ_VOXEL_026["REQ-VOXEL-026<br/>The demo culls its entity boxes with the visible sections"]
+  REQ_VOXEL_027["REQ-VOXEL-027<br/>The mesh result carries the fluid quads after the packed quads"]
+  REQ_VOXEL_028["REQ-VOXEL-028<br/>The demo draws water in a fluid pass after the opaque chunks"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -270,6 +274,8 @@ graph TD
   REQ_VOXEL_024 -->|depends-on| REQ_VOXEL_023
   REQ_VOXEL_025 -->|depends-on| REQ_GPU_039
   REQ_VOXEL_026 -->|depends-on| REQ_VOXEL_020
+  REQ_VOXEL_027 -->|depends-on| REQ_VOXEL_014
+  REQ_VOXEL_028 -->|depends-on| REQ_VOXEL_027
 ```
 
 ## Derived reverse links
@@ -301,8 +307,9 @@ graph TD
 - `REQ-VOXEL-008` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-009` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
-- `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016
+- `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016, required-by REQ-VOXEL-027
 - `REQ-VOXEL-019` — required-by REQ-VOXEL-020
 - `REQ-VOXEL-020` — required-by REQ-VOXEL-024, required-by REQ-VOXEL-026
 - `REQ-VOXEL-021` — required-by REQ-VOXEL-022
 - `REQ-VOXEL-023` — required-by REQ-VOXEL-024
+- `REQ-VOXEL-027` — required-by REQ-VOXEL-028

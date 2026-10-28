@@ -568,3 +568,50 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   - Inspection — `examples/voxel/main.zig`: `cullEntities` and the debug
     draws of the player hitbox and the spawn marker.
 - **Relations:** depends-on REQ-VOXEL-020
+
+## REQ-VOXEL-027 — The mesh result carries the fluid quads after the packed quads
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a chunk holds fluid cells, the `sw_voxel` mesh stage
+  shall put the quads of `fluid.generate` in the mesh result after the
+  packed quads.
+- **Rationale:** The fluid quads have 4 corner heights, so they cannot go
+  in the greedy stream. The worker makes them with the other quads, and
+  the result carries them as a second stream with its count in the head
+  of the result. Main does not copy them (C5): it writes them to a GPU buffer from
+  the result bytes. A chunk with no fluid gives the payload bytes of
+  protocol version 6, so its mesh hash does not change.
+- **Verification:**
+  - Test — `examples/voxel/protocol_test.zig` › "protocol: a mesh Result
+    holds the fluid quads after the quads (REQ-VOXEL-027)"
+  - Test — `backends/wasm/worker-pool.test.ts` › "fluid: water gives a
+    fluid stream that goes to the GPU from the held bytes
+    (REQ-VOXEL-027)"
+- **Relations:** depends-on REQ-VOXEL-014
+
+## REQ-VOXEL-028 — The demo draws water in a fluid pass after the opaque chunks
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a chunk mesh has fluid quads, the voxel demo shall
+  draw them after the opaque chunks with alpha blend and with the depth
+  write off.
+- **Rationale:** Water is translucent: the ground under it must show
+  through, and a water surface must not hide the terrain behind it from
+  the depth test. The chunks draw far to near. The demo generator puts
+  water in the low columns only with `--water=on`, so the default terrain
+  and its goldens do not change. `--place-block=water` places water.
+- **Verification:**
+  - Demonstration — the `water_pool` golden of
+    `examples/voxel/scripts/run_headless_regressions.sh` (lavapipe, in
+    CI): water in a dug hole and on the grass.
+  - Test — `examples/voxel/content.zig` › "water fills the low columns to
+    the sea level only with the water flag (REQ-VOXEL-028)"
+- **Relations:** depends-on REQ-VOXEL-027

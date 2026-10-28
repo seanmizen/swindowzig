@@ -39,6 +39,10 @@ pub const WorldGenConfig = struct {
     /// and biome noise, the cave noise, the trees and the glowstone. Seed 0
     /// gives the terrain from before the seed existed (decision D3).
     seed: u64 = 0,
+    /// Fill the columns below `sea_level` with water to the sea level
+    /// (REQ-VOXEL-028). Off by default, so the default terrain and its
+    /// hashes do not change. `--water=on` turns it on.
+    water: bool = false,
 
     /// The mixed form of `seed` that the hash functions use.
     pub fn seedKey(self: WorldGenConfig) SeedKey {

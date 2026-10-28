@@ -1,0 +1,47 @@
+# water_pool.tas — water from the fluid pass of the demo (REQ-VOXEL-028).
+#
+# Purpose: show the fluid stream of the mesh result and the fluid pass.
+# With --place-block=water, hotbar slot 1 holds water. The player digs one
+# ground block, places water in the hole, then places one more water cell
+# on the grass next to the hole. The ray of the player goes through water.
+#
+# Scene (flatland, the same spawn each run): the player looks down about
+# 30 degrees. The water in the hole has its surface below the grass (the
+# fluid surface height is 0.875). The water cell on the grass shows its
+# sides and its top surface, and the grass shows through the water.
+#
+# Usage (from the repo root):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --world=flatland --aa=none --place-block=water \
+#     --tas examples/voxel/tests/water_pool.tas \
+#     --dump-frame=water_pool.ppm
+#
+# The golden `water_pool` of run_headless_regressions.sh is this frame.
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look down about 30 degrees (the same as hotbar_place.tas). ---
+3 mouse_move 0 180
+
+# --- Dig the ground block in front. ---
+6 mouse_down left
+7 mouse_up left
+
+# --- Place water in the hole: the ray hits the top of the hole floor. ---
+11 mouse_down right
+12 mouse_up right
+
+# --- Turn right a little, then place water on the grass. ---
+16 mouse_move 220 0
+20 mouse_down right
+21 mouse_up right
+
+# --- Turn back so the two water cells are in the frame. ---
+25 mouse_move -110 -60
+
+# --- Hold steady so --dump-frame lands on a stable view. ---
+32 mouse_move 0 0

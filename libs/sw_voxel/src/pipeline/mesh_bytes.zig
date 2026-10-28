@@ -5,7 +5,8 @@
 //!
 //!   local  the whole Result message in main memory: the reply of the
 //!          Inline executor or of a ThreadPool thread. The quads are the
-//!          bytes from protocol.PAYLOAD_OFFSET. The upload writes them to the
+//!          bytes from protocol.PAYLOAD_OFFSET, and the fluid vertices
+//!          follow them (REQ-VOXEL-027). The upload writes them to the
 //!          GPU, then frees the message.
 //!   held   the Result message that JS holds: the transferred ArrayBuffer of
 //!          a Web Worker. Main has only a handle. The upload tells JS to
@@ -39,22 +40,29 @@ pub const MeshBytes = union(enum) {
         store: Store,
     },
 
-    /// The length of the quad bytes.
-    pub fn quadBytesLen(self: MeshBytes) usize {
+    /// The length of the payload: the quad bytes, then the fluid
+    /// vertices (REQ-VOXEL-027).
+    pub fn payloadLen(self: MeshBytes) usize {
         return switch (self) {
             .local => |l| l.msg.len - protocol.PAYLOAD_OFFSET,
             .held => |h| h.len - protocol.PAYLOAD_OFFSET,
         };
     }
 
-    /// Copy the quads into `out` (its length is `quadBytesLen() / 16`). Only
-    /// the tests use it.
+    /// Copy the first quads into `out`. Only the tests use it.
     pub fn copyQuads(self: MeshBytes, out: []protocol.PackedQuad) void {
-        const dst = std.mem.sliceAsBytes(out);
-        std.debug.assert(dst.len == self.quadBytesLen());
+        self.copyAt(protocol.PAYLOAD_OFFSET, std.mem.sliceAsBytes(out));
+    }
+
+    /// Copy the bytes of the message from `offset` into `out`. Only the
+    /// tests use it: main does not copy a stream of a mesh (C5).
+    pub fn copyAt(self: MeshBytes, offset: usize, out: []u8) void {
         switch (self) {
-            .local => |l| @memcpy(dst, l.msg[protocol.PAYLOAD_OFFSET..]),
-            .held => |h| h.store.vtable.read(h.store.ptr, h.handle, protocol.PAYLOAD_OFFSET, dst),
+            .local => |l| @memcpy(out, l.msg[offset..][0..out.len]),
+            .held => |h| {
+                std.debug.assert(offset + out.len <= h.len);
+                h.store.vtable.read(h.store.ptr, h.handle, offset, out);
+            },
         }
     }
 

@@ -229,6 +229,7 @@ const BlockType = chunk_mod.BlockType;
 const mesher_mod = @import("sw_voxel").mesher;
 const models_mod = @import("sw_voxel").models;
 const mesh_bytes = @import("sw_voxel").mesh_bytes;
+const protocol_mod = @import("sw_voxel").protocol;
 const Mesh = mesher_mod.Mesh;
 const VoxelVertex = mesher_mod.VoxelVertex;
 
@@ -326,7 +327,8 @@ const CAMERA_CLIP_SKIN: f32 = 0.2;
 const IsSolidWorld = struct {
     world: *const world_mod.World,
     pub fn isSolid(self: IsSolidWorld, x: i32, y: i32, z: i32) bool {
-        return self.world.getBlock(x, y, z) != .air;
+        const b = self.world.getBlock(x, y, z);
+        return b != .air and b != .water;
     }
 };
 
@@ -832,10 +834,16 @@ const ChunkGPU = struct {
     /// header of the quad buffer holds it, and vs_chunk tints the chunk
     /// orange for 64 ticks after it when GPU debug is on.
     rebuilt_tick: u32 = 0,
+    /// The fluid vertices of the mesh after a 16-byte header, or null
+    /// (REQ-VOXEL-027). The buffer comes from the quad pool: one fluid
+    /// quad is FLUID_ELEMENTS elements of 16 bytes.
+    fluid: ?QuadBuffer = null,
+    fluid_quads: u32 = 0,
 
-    /// Give the buffer to the pool.
+    /// Give the buffers to the pool.
     fn release(self: *ChunkGPU) void {
         if (self.quads) |qb| state.quad_pool.put(state.allocator, qb);
+        if (self.fluid) |fb| state.quad_pool.put(state.allocator, fb);
         self.* = .{};
         // The depth of the scene can change: old occlusion results are
         // not correct now (REQ-VOXEL-025).
@@ -867,6 +875,8 @@ const State = struct {
     /// Chunk meshes: vs_chunk, with the packed quads at group 1 and the
     /// baked model quads at group 2.
     chunk_pipeline: ?gpu_mod.RenderPipeline = null,
+    /// The fluid pass (fluid.wgsl, REQ-VOXEL-028).
+    fluid_pipeline: ?gpu_mod.RenderPipeline = null,
     chunk_bg_layout: ?gpu_mod.BindGroupLayout = null,
     /// The baked model quads of the content (sw_voxel `models.gpu_table`),
     /// uploaded one time. The model quad records of the chunks index it.
@@ -996,6 +1006,9 @@ const State = struct {
     /// World seed. Parsed from --seed=<u64> on native. The web build stays at
     /// seed 0. Seed 0 gives the terrain from before the seed existed.
     world_seed: u64 = 0,
+    /// Water in the generator (REQ-VOXEL-028). Parsed from --water=on|off.
+    /// Off by default, so the default terrain does not change.
+    world_water: bool = false,
     /// Frustum-cull strategy parsed from --frustum=<none|sphere|cone>.
     /// Default is `.none` so the feature is opt-in — see frustum.zig header
     /// for the rationale and the cone-vs-sphere math notes.
@@ -1307,6 +1320,17 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             };
         }
+        if (std.mem.startsWith(u8, arg, "--water=")) {
+            const val = std.mem.sliceTo(arg["--water=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.world_water = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.world_water = false;
+            } else {
+                std.log.err("--water: invalid value '{s}'. Accepted: on, off", .{val});
+                fatalExit(1);
+            }
+        }
         if (std.mem.startsWith(u8, arg, "--world=")) {
             const val = std.mem.sliceTo(arg["--world=".len..], 0);
             if (std.mem.eql(u8, val, "flatland")) {
@@ -1573,6 +1597,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // regardless of flag order).
     state.world = try world_mod.World.init(ctx.allocator(), world_gen.presetConfig(state.world_preset), state.render_distance);
     state.world.gen_config.seed = state.world_seed;
+    state.world.gen_config.water = state.world_water;
 
     // Open the profile CSV if requested. Writing the header here means every
     // subsequent row can be appended without a seek. Failures log a warning
@@ -1741,6 +1766,7 @@ fn hotbarBlockColor(bt: chunk_mod.BlockType) [3]f32 {
         .leaves => .{ 0.18, 0.50, 0.12 },
         .sand => .{ 0.85, 0.78, 0.48 },
         .slab => .{ 0.66, 0.68, 0.74 },
+        .water => .{ 0.17, 0.38, 0.75 },
         .debug_marker => .{ 1.0, 0.0, 0.0 },
         .air => .{ 0.0, 0.0, 0.0 },
     };
@@ -3342,7 +3368,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     {
         var it = state.world.chunks.valueIterator();
         while (it.next()) |lc_ptr| {
-            if (lc_ptr.*.mesh.quadCount() == 0) continue;
+            if (lc_ptr.*.mesh.isEmpty()) continue;
             // The y range of the chunk's uploaded mesh. A chunk with no upload
             // yet is not drawn anyway, so the full height is only a default.
             const cg = state.chunk_gpu.get(.{ .cx = lc_ptr.*.cx, .cz = lc_ptr.*.cz });
@@ -3420,6 +3446,27 @@ fn voxelRender(ctx: *sw.Context) !void {
     if (occ_frame != null) {
         state.occ.?.draw(g, pass);
         pass.setBindGroup(0, state.bind_group.?);
+    }
+    // The fluid pass (REQ-VOXEL-028): after the opaque chunks and the box
+    // tests, so the fluids do not hide a chunk from a box test. The chunks
+    // draw far to near for the alpha blend.
+    if (state.fluid_pipeline) |fp| {
+        var bound = false;
+        var i = sorted_chunks.items.len;
+        while (i > 0) {
+            i -= 1;
+            const lc = sorted_chunks.items[i];
+            const cg = state.chunk_gpu.get(.{ .cx = lc.cx, .cz = lc.cz }) orelse continue;
+            const fb = cg.fluid orelse continue;
+            if (cg.fluid_quads == 0) continue;
+            if (!bound) {
+                pass.setPipeline(fp);
+                pass.setBindGroup(0, state.bind_group.?);
+                bound = true;
+            }
+            pass.setBindGroup(1, fb.bind_group);
+            pass.draw(cg.fluid_quads * 6, 1, 0, 0);
+        }
     }
     // The debug entities (REQ-VOXEL-026): the player hitbox and the spawn
     // marker. `visibility.cullBoxes` removes each entity box that is out of
@@ -3523,7 +3570,8 @@ fn voxelRender(ctx: *sw.Context) !void {
         const cam_bx: i32 = @intFromFloat(@floor(state.camera.position.x));
         const cam_by: i32 = @intFromFloat(@floor(state.camera.position.y));
         const cam_bz: i32 = @intFromFloat(@floor(state.camera.position.z));
-        if (state.world.getBlock(cam_bx, cam_by, cam_bz) != .air) {
+        const cam_block = state.world.getBlock(cam_bx, cam_by, cam_bz);
+        if (cam_block != .air and cam_block != .water) {
             // Dark purple base
             state.overlay.rect(0, 0, overlay_w, overlay_h, .{ 0.08, 0.02, 0.12, 1 }, overlay_w, overlay_h) catch {};
 
@@ -4391,6 +4439,43 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         .depth_stencil = main_depth_stencil,
     });
 
+    // Fluid pipeline (REQ-VOXEL-028): fluid.wgsl reads the fluid vertices
+    // of a chunk from a storage buffer at group 1, as vs_chunk reads the
+    // quads. Alpha blend, the depth test on and the depth write off, no
+    // back-face cull: the player sees the surface from below.
+    var fluid_shader = try g.createShaderModule(.{ .code = @embedFile("fluid.wgsl") });
+    var fluid_pipeline_layout = try g.createPipelineLayout(.{
+        .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{ &bg_layout, &state.chunk_bg_layout.? },
+    });
+    var fluid_depth_stencil = main_depth_stencil;
+    fluid_depth_stencil.depth_write_enabled = false;
+    state.fluid_pipeline = try g.createRenderPipeline(.{
+        .layout = &fluid_pipeline_layout,
+        .vertex = .{
+            .module = &fluid_shader,
+            .entry_point = "vs_fluid",
+            .buffers = &[_]sw.gpu_types.VertexBufferLayout{},
+        },
+        .fragment = .{
+            .module = &fluid_shader,
+            .entry_point = "fs_fluid",
+            .targets = &[_]sw.gpu_types.ColorTargetState{.{
+                .format = .bgra8unorm,
+                .blend = .{
+                    .color = .{ .operation = .add, .src_factor = .src_alpha, .dst_factor = .one_minus_src_alpha },
+                    .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
+                },
+            }},
+        },
+        .primitive = .{
+            .topology = .triangle_list,
+            .front_face = .ccw,
+            .cull_mode = .none,
+        },
+        .multisample = .{ .count = sample_count },
+        .depth_stencil = fluid_depth_stencil,
+    });
+
     // Cylinder pipeline: no face culling + alpha blending so the hitbox is semi-transparent
     // and visible from both inside (first-person) and outside (third-person, F5).
     // depth_stencil must match the render pass attachment.
@@ -4614,40 +4699,72 @@ fn uploadChunkMesh(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !
     // The depth of the scene can change: old occlusion results are not
     // correct now (REQ-VOXEL-025).
     state.scene_gen +%= 1;
+    const header = mesher_mod.PackedQuad{ @bitCast(lc.cx * chunk_mod.CHUNK_W), state.debug_tick, @bitCast(lc.cz * chunk_mod.CHUNK_W), @bitCast(@as(i32, chunk_mod.MIN_Y)) };
+    const quad_size = @sizeOf(mesher_mod.PackedQuad);
     if (n == 0) {
         // Nothing to draw. The buffer goes back to the pool.
         if (cg.quads) |qb| state.quad_pool.put(state.allocator, qb);
         cg.quads = null;
         cg.quad_count = 0;
-        lc.dropUpload();
-        return;
-    }
-    if (cg.quads) |qb| if (qb.capacity < n) {
-        state.quad_pool.put(state.allocator, qb);
-        cg.quads = null;
-    };
-    if (cg.quads == null) cg.quads = try state.quad_pool.acquire(g, n);
-    const buffer = cg.quads.?.buffer;
+    } else {
+        if (cg.quads) |qb| if (qb.capacity < n) {
+            state.quad_pool.put(state.allocator, qb);
+            cg.quads = null;
+        };
+        if (cg.quads == null) cg.quads = try state.quad_pool.acquire(g, n);
+        const buffer = cg.quads.?.buffer;
 
-    cg.rebuilt_tick = state.debug_tick;
-    const header = mesher_mod.PackedQuad{ @bitCast(lc.cx * chunk_mod.CHUNK_W), cg.rebuilt_tick, @bitCast(lc.cz * chunk_mod.CHUNK_W), @bitCast(@as(i32, chunk_mod.MIN_Y)) };
-    const quad_size = @sizeOf(mesher_mod.PackedQuad);
-    g.writeBuffer(buffer, 0, std.mem.asBytes(&header));
-    switch (bytes) {
-        .local => |l| {
-            g.writeBuffer(buffer, quad_size, l.msg[mesh_bytes.QUADS_OFFSET..]);
-            state.uploads_local += 1;
-        },
-        .held => |h| {
-            g.writeBufferHeld(buffer, quad_size, h.handle, mesh_bytes.QUADS_OFFSET, bytes.quadBytesLen());
-            state.uploads_held += 1;
-        },
+        cg.rebuilt_tick = state.debug_tick;
+        g.writeBuffer(buffer, 0, std.mem.asBytes(&header));
+        switch (bytes) {
+            .local => |l| {
+                g.writeBuffer(buffer, quad_size, l.msg[mesh_bytes.QUADS_OFFSET..][0 .. @as(usize, n) * quad_size]);
+                state.uploads_local += 1;
+            },
+            .held => |h| {
+                g.writeBufferHeld(buffer, quad_size, h.handle, mesh_bytes.QUADS_OFFSET, @as(usize, n) * quad_size);
+                state.uploads_held += 1;
+            },
+        }
+        cg.quad_count = n;
     }
-    cg.quad_count = n;
+    try uploadFluid(g, lc, cg, header);
     cg.y_min = lc.mesh.y_min;
     cg.y_max = lc.mesh.y_max;
     cg.ranges = lc.mesh.ranges;
     lc.dropUpload();
+}
+
+/// The 16-byte elements of one fluid quad in a quad pool buffer.
+const FLUID_ELEMENTS = protocol_mod.FLUID_QUAD_LEN / @sizeOf(mesher_mod.PackedQuad);
+
+/// Write the fluid vertices of the new mesh of `lc` to its fluid buffer
+/// (REQ-VOXEL-027). The vertices follow the quads in the mesh bytes. Main
+/// does not copy them (C5).
+fn uploadFluid(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, header: mesher_mod.PackedQuad) !void {
+    const bytes = lc.upload.?;
+    const f = lc.mesh.fluid_quad_count;
+    if (f == 0) {
+        if (cg.fluid) |fb| state.quad_pool.put(state.allocator, fb);
+        cg.fluid = null;
+        cg.fluid_quads = 0;
+        return;
+    }
+    const elements = @as(usize, f) * FLUID_ELEMENTS;
+    if (cg.fluid) |fb| if (fb.capacity < elements) {
+        state.quad_pool.put(state.allocator, fb);
+        cg.fluid = null;
+    };
+    if (cg.fluid == null) cg.fluid = try state.quad_pool.acquire(g, elements);
+    const buffer = cg.fluid.?.buffer;
+    const offset = mesh_bytes.QUADS_OFFSET + @as(usize, lc.mesh.quad_count) * @sizeOf(mesher_mod.PackedQuad);
+    const len = @as(usize, f) * protocol_mod.FLUID_QUAD_LEN;
+    g.writeBuffer(buffer, 0, std.mem.asBytes(&header));
+    switch (bytes) {
+        .local => |l| g.writeBuffer(buffer, @sizeOf(mesher_mod.PackedQuad), l.msg[offset..][0..len]),
+        .held => |h| g.writeBufferHeld(buffer, @sizeOf(mesher_mod.PackedQuad), h.handle, @intCast(offset), len),
+    }
+    cg.fluid_quads = f;
 }
 
 // ----------------------------------------------------------------------------
