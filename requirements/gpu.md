@@ -603,11 +603,15 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Priority:** P3
 - **Statement:** When the game selects a quality preset, `sw_render`
   shall give a `GraphicsSettings` with the render distance, the
-  anti-aliasing, the mip levels, the shadows and vsync of that preset.
+  anti-aliasing, the mip levels, the shadows, the lighting mode and vsync
+  of that preset.
 - **Rationale:** A settings menu changes one struct, and a preset is a
   fast start for a slow or a fast machine. The game gives each value to
   the part that uses it, for example the anti-aliasing to
-  `GPU.configureMSAA` and vsync to `GPU.setVsync`.
+  `GPU.configureMSAA` and vsync to `GPU.setVsync`. The voxel demo keeps
+  its anti-aliasing, vsync and lighting mode in this struct, and its
+  flags and its settings menu change the struct. The demo has no texture
+  atlas, so it does not read `mip_levels`.
 - **Verification:**
   - Test — `libs/sw_render/src/settings.zig` › "settings: each preset is
     better than or equal to the preset below it (REQ-GPU-026)"

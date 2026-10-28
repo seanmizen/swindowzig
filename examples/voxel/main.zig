@@ -470,7 +470,7 @@ const SettingsEntry = enum {
 fn settingsEntryCount() u8 {
     return switch (state.settings_tab) {
         .game, .audio => 2, // tab_selector + back
-        .video => switch (state.msaa_config.method) {
+        .video => switch (aaConfig().method) {
             // tab_selector + aa_method + quality + ao + lighting + frustum + fog + render_dist + back
             .msaa, .fxaa => 9,
             // tab_selector + aa_method + ao + lighting + frustum + fog + render_dist + back
@@ -485,13 +485,13 @@ fn settingsEntryAt(i: u8) SettingsEntry {
         .game, .audio => return .back,
         .video => {
             // Video tab: aa_method, [quality], ao, lighting, frustum, fog_dist, render_dist, back
-            const has_quality = switch (state.msaa_config.method) {
+            const has_quality = switch (aaConfig().method) {
                 .msaa, .fxaa => true,
                 else => false,
             };
             if (i == 1) return .aa_method;
             if (has_quality and i == 2) {
-                return switch (state.msaa_config.method) {
+                return switch (aaConfig().method) {
                     .msaa => .msaa_samples,
                     .fxaa => .fxaa_quality,
                     else => unreachable,
@@ -510,6 +510,12 @@ fn settingsEntryAt(i: u8) SettingsEntry {
             };
         },
     }
+}
+
+/// The anti-aliasing of the graphics settings, as sw_gpu takes it
+/// (REQ-GPU-026).
+fn aaConfig() gpu_mod.AntiAliasingConfig {
+    return state.graphics.antiAliasingConfig();
 }
 
 fn menuEntryCount(screen: MenuScreen) u8 {
@@ -534,8 +540,8 @@ fn aaMethodLabel(method: gpu_mod.AAMethod) []const u8 {
 }
 
 /// Cycle the value of the Settings entry at visual index `idx` by `dir` (+1 / -1).
-/// AA Method / MSAA Samples / FXAA Quality all write through to
-/// `state.msaa_config` / `state.fxaa_quality`. AO Strategy cycles
+/// AA Method, MSAA Samples, FXAA Quality and Lighting write to
+/// `state.graphics` (REQ-GPU-026). AO Strategy cycles
 /// state.ao_strategy (none/classic/moore). Lighting flips between
 /// none and skylight. Render Distance changes the desired state of the
 /// chunk scheduler at runtime (C8).
@@ -560,52 +566,44 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             // supported native sample count for bgra8unorm); when landing on
             // FXAA the quality snaps to whatever was most recently chosen
             // (preserved on the state field so re-entering FXAA keeps it).
-            const next_method: gpu_mod.AAMethod = switch (state.msaa_config.method) {
-                .none => if (dir > 0) .msaa else .fxaa,
-                .msaa => if (dir > 0) .fxaa else .none,
-                .fxaa => if (dir > 0) .none else .msaa,
-                else => .none,
+            const AA = sw_render.AntiAliasing;
+            const next: AA = switch (state.graphics.anti_aliasing) {
+                .none => if (dir > 0) .msaa4 else .fxaa,
+                .msaa2, .msaa4, .msaa8 => if (dir > 0) .fxaa else .none,
+                .fxaa => if (dir > 0) .none else .msaa4,
             };
-            const next_samples: u32 = if (next_method == .msaa)
-                if (state.msaa_config.msaa_samples >= 2) state.msaa_config.msaa_samples else 4
-            else
-                1;
-            state.msaa_config = .{
-                .method = next_method,
-                .msaa_samples = next_samples,
-                .fxaa_quality = state.msaa_config.fxaa_quality,
-            };
-            std.log.info("Settings: AA Method -> {s} (applies on next pipeline rebuild)", .{@tagName(next_method)});
+            state.graphics.anti_aliasing = next;
+            std.log.info("Settings: AA Method -> {s} (applies on next pipeline rebuild)", .{@tagName(aaConfig().method)});
         },
         .msaa_samples => {
             // Cycle MSAA sample count across 2 / 4 / 8. The GPU wrapper
             // caps the requested count for the current surface format at
             // pipeline-create time — see configureMSAA in gpu.zig.
-            const cur = state.msaa_config.msaa_samples;
-            const next: u32 = if (dir > 0) switch (cur) {
-                2 => 4,
-                4 => 8,
-                8 => 2,
-                else => 4,
-            } else switch (cur) {
-                2 => 8,
-                4 => 2,
-                8 => 4,
-                else => 4,
+            const AA = sw_render.AntiAliasing;
+            const next: AA = if (dir > 0) switch (state.graphics.anti_aliasing) {
+                .msaa2 => .msaa4,
+                .msaa4 => .msaa8,
+                .msaa8 => .msaa2,
+                .none, .fxaa => .msaa4,
+            } else switch (state.graphics.anti_aliasing) {
+                .msaa2 => .msaa8,
+                .msaa4 => .msaa2,
+                .msaa8 => .msaa4,
+                .none, .fxaa => .msaa4,
             };
-            state.msaa_config.msaa_samples = next;
-            std.log.info("Settings: MSAA Samples -> {} (applies on next pipeline rebuild)", .{next});
+            state.graphics.anti_aliasing = next;
+            std.log.info("Settings: MSAA Samples -> {} (applies on next pipeline rebuild)", .{next.samples()});
         },
         .fxaa_quality => {
             // Cycle FXAA quality tier: low → medium → high → low …
             // Mark the AA pipeline dirty so the render loop re-runs
             // configureFXAA with the new token substitutions on the next tick.
-            const next: gpu_mod.FxaaQuality = switch (state.msaa_config.fxaa_quality) {
+            const next: gpu_mod.FxaaQuality = switch (state.graphics.fxaa_quality) {
                 .low => if (dir > 0) .medium else .high,
                 .medium => if (dir > 0) .high else .low,
                 .high => if (dir > 0) .low else .medium,
             };
-            state.msaa_config.fxaa_quality = next;
+            state.graphics.fxaa_quality = next;
             state.aa_dirty = true;
             std.log.info("Settings: FXAA Quality -> {s} (pipeline rebuild queued)", .{@tagName(next)});
         },
@@ -618,7 +616,7 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
                 .moore, .propagated, .ssao => if (dir > 0) .none else .classic,
             };
             state.ao_strategy = next_ao;
-            state.scheduler.setMeshOptions(state.ao_strategy, state.lighting_mode);
+            state.scheduler.setMeshOptions(state.ao_strategy, state.graphics.lighting);
             std.log.info("Settings: AO Strategy -> {s} (each mesh is stale)", .{@tagName(next_ao)});
         },
         .lighting => {
@@ -626,12 +624,12 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             // ignored here — we flip on every press, same as a checkbox.
             // Skylight is baked per-vertex at mesh time, same as AO, so
             // each mesh becomes stale and the scheduler meshes it again.
-            const next_mode: gpu_mod.LightingMode = switch (state.lighting_mode) {
+            const next_mode: gpu_mod.LightingMode = switch (state.graphics.lighting) {
                 .none => .skylight,
                 .skylight => .none,
             };
-            state.lighting_mode = next_mode;
-            state.scheduler.setMeshOptions(state.ao_strategy, state.lighting_mode);
+            state.graphics.lighting = next_mode;
+            state.scheduler.setMeshOptions(state.ao_strategy, state.graphics.lighting);
             std.log.info("Settings: Lighting -> {s} (each mesh is stale)", .{@tagName(next_mode)});
         },
         .frustum => {
@@ -970,28 +968,22 @@ const State = struct {
     /// gpu_debug is on (0 when off), and each chunk stores the value at its
     /// last rebuild (ChunkGPU.rebuilt_tick). It starts at 1, so 0 means off.
     debug_tick: u32 = 1,
-    /// AA config parsed from `--aa=<none|msaa|fxaa>` (plus `--msaa=N` /
-    /// `--fxaa-quality=<tier>`). Default: FXAA 3.11 at medium quality — this
-    /// is the engine-wide ships-by-default AA mode. Override with
-    /// `--aa=none --ao=classic --render-distance=4` to reproduce the
-    /// pre-default-change behaviour used by existing regression tests.
-    msaa_config: gpu_mod.AntiAliasingConfig = .{
-        .method = .fxaa,
-        .msaa_samples = 1,
-        .fxaa_quality = .medium,
-    },
+    /// The graphics settings of sw_render (REQ-GPU-026): the anti-aliasing,
+    /// vsync and the lighting mode. The flags `--aa=<none|msaa|fxaa>`,
+    /// `--msaa=N`, `--fxaa-quality=<tier>`, `--vsync=<on|off>` and
+    /// `--lighting=<none|skylight>` set them. The defaults are the defaults
+    /// of the struct: FXAA 3.11 at medium quality, vsync on, skylight.
+    /// Skylight darkens the caves. `.none` lights each face fully. A change
+    /// to the lighting goes through Scheduler.setMeshOptions, because
+    /// skylight is baked per vertex at mesh time, as AO is. The demo has
+    /// no texture atlas, so it does not use `mip_levels`.
+    graphics: sw_render.GraphicsSettings = .{},
     /// Ambient-occlusion sampling strategy parsed from --ao=<none|classic|moore>.
     /// Default: moore (extended indoor-corner darkening). The future in-game
     /// settings menu reads/writes this same field; changing it at runtime
     /// requires marking every loaded chunk's mesh dirty so they get remeshed
     /// with the new sampler.
     ao_strategy: gpu_mod.AOStrategy = .moore,
-    /// World-lighting mode parsed from --lighting=<none|skylight>. Default:
-    /// skylight (caves are dark). `.none` is the regression-test baseline that
-    /// makes every face fully lit by sky regardless of how enclosed it is.
-    /// A change at runtime goes through Scheduler.setMeshOptions, because
-    /// skylight is baked per-vertex at mesh time, same as AO.
-    lighting_mode: gpu_mod.LightingMode = .skylight,
     /// Smooth light, parsed from --smooth-light=<on|off>. Off gives flat
     /// light: each face takes the light of the cell in front of it
     /// (sw_voxel REQ-VOXEL-008). Default: on.
@@ -1232,18 +1224,16 @@ fn voxelInit(ctx: *sw.Context) !void {
 
     // Initialize overlay renderer
     state.overlay = OverlayRenderer.init(ctx.allocator());
+    // An init error (for example a TAS script that does not parse) frees
+    // each allocation of init, in the reverse order. Thus the demo exits
+    // with no memory leak.
+    errdefer state.overlay.deinit();
 
-    // Default AA config: FXAA 3.11 at medium quality (ships-by-default).
-    // `--aa=...`, `--msaa=N`, and `--fxaa-quality=<tier>` override below.
-    state.msaa_config = .{
-        .method = .fxaa,
-        .msaa_samples = 1,
-        .fxaa_quality = .medium,
-    };
+    // Default graphics settings (REQ-GPU-026): FXAA 3.11 at medium
+    // quality, vsync on, skylight. The flags below change them.
+    state.graphics = .{};
     // Default AO strategy: moore (extended indoor-corner AO).
     state.ao_strategy = .moore;
-    // Default lighting: skylight (caves dark). `--lighting=none` overrides.
-    state.lighting_mode = .skylight;
     // Frustum-cull defaults: the cone strategy, with a cone that covers the
     // screen diagonal (frustum_fov_auto). The cone test uses each chunk's
     // full-height bounding sphere, so it keeps every chunk that is on screen.
@@ -1363,19 +1353,16 @@ fn voxelInit(ctx: *sw.Context) !void {
         }
         if (std.mem.startsWith(u8, arg, "--msaa=")) {
             const val = arg["--msaa=".len..];
-            // `--msaa=N` always implies method=msaa; preserves any fxaa_quality
-            // already parsed (though FXAA is inactive when method=msaa anyway).
-            const q = state.msaa_config.fxaa_quality;
-            if (std.mem.eql(u8, val, "none") or std.mem.eql(u8, val, "0")) {
-                state.msaa_config = .{ .method = .none, .msaa_samples = 1, .fxaa_quality = q };
-            } else if (std.mem.eql(u8, val, "1")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 1, .fxaa_quality = q };
+            // `--msaa=N` sets MSAA with N samples. 0, 1 and none set no
+            // anti-aliasing: one sample is no MSAA. The FXAA quality stays.
+            if (std.mem.eql(u8, val, "none") or std.mem.eql(u8, val, "0") or std.mem.eql(u8, val, "1")) {
+                state.graphics.anti_aliasing = .none;
             } else if (std.mem.eql(u8, val, "2")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 2, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .msaa2;
             } else if (std.mem.eql(u8, val, "4")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 4, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .msaa4;
             } else if (std.mem.eql(u8, val, "8")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 8, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .msaa8;
             } else {
                 std.log.err("--msaa: invalid value '{s}'. Accepted: none, 0, 1, 2, 4, 8", .{val});
                 fatalExit(1);
@@ -1386,17 +1373,14 @@ fn voxelInit(ctx: *sw.Context) !void {
             // Preserve method-specific knobs (sample count, FXAA quality) when
             // switching methods so `--aa=fxaa --fxaa-quality=high` and
             // `--msaa=8 --aa=msaa` work regardless of flag order.
-            const samples = state.msaa_config.msaa_samples;
-            const q = state.msaa_config.fxaa_quality;
             if (std.mem.eql(u8, val, "none")) {
-                state.msaa_config = .{ .method = .none, .msaa_samples = 1, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .none;
             } else if (std.mem.eql(u8, val, "msaa")) {
                 // Keep the sample count from --msaa=N if set earlier; default
-                // to 4 when it isn't already a valid MSAA sample count.
-                const s: u32 = if (samples >= 2) samples else 4;
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = s, .fxaa_quality = q };
+                // to 4 when the setting is not MSAA.
+                if (state.graphics.anti_aliasing.samples() == 1) state.graphics.anti_aliasing = .msaa4;
             } else if (std.mem.eql(u8, val, "fxaa")) {
-                state.msaa_config = .{ .method = .fxaa, .msaa_samples = 1, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .fxaa;
             } else {
                 std.log.err("--aa: invalid value '{s}'. Accepted: none, msaa, fxaa", .{val});
                 fatalExit(1);
@@ -1405,11 +1389,11 @@ fn voxelInit(ctx: *sw.Context) !void {
         if (std.mem.startsWith(u8, arg, "--fxaa-quality=")) {
             const val = arg["--fxaa-quality=".len..];
             if (std.mem.eql(u8, val, "low")) {
-                state.msaa_config.fxaa_quality = .low;
+                state.graphics.fxaa_quality = .low;
             } else if (std.mem.eql(u8, val, "medium") or std.mem.eql(u8, val, "med")) {
-                state.msaa_config.fxaa_quality = .medium;
+                state.graphics.fxaa_quality = .medium;
             } else if (std.mem.eql(u8, val, "high")) {
-                state.msaa_config.fxaa_quality = .high;
+                state.graphics.fxaa_quality = .high;
             } else {
                 std.log.err("--fxaa-quality: invalid value '{s}'. Accepted: low, medium, high", .{val});
                 fatalExit(1);
@@ -1467,11 +1451,22 @@ fn voxelInit(ctx: *sw.Context) !void {
         if (std.mem.startsWith(u8, arg, "--lighting=")) {
             const val = arg["--lighting=".len..];
             if (std.mem.eql(u8, val, "none")) {
-                state.lighting_mode = .none;
+                state.graphics.lighting = .none;
             } else if (std.mem.eql(u8, val, "skylight")) {
-                state.lighting_mode = .skylight;
+                state.graphics.lighting = .skylight;
             } else {
                 std.log.err("--lighting: invalid value '{s}'. Accepted: none, skylight", .{val});
+                fatalExit(1);
+            }
+        }
+        if (std.mem.startsWith(u8, arg, "--vsync=")) {
+            const val = std.mem.sliceTo(arg["--vsync=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.graphics.vsync = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.graphics.vsync = false;
+            } else {
+                std.log.err("--vsync: invalid value '{s}'. Accepted: on, off", .{val});
                 fatalExit(1);
             }
         }
@@ -1594,13 +1589,14 @@ fn voxelInit(ctx: *sw.Context) !void {
             state.hotbar_slots[0] = block;
         }
     }
-    std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s}", .{
-        @tagName(state.msaa_config.method),
-        state.msaa_config.msaa_samples,
-        @tagName(state.msaa_config.fxaa_quality),
+    std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s} vsync={}", .{
+        @tagName(aaConfig().method),
+        aaConfig().msaa_samples,
+        @tagName(state.graphics.fxaa_quality),
+        state.graphics.vsync,
     });
     std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
-    std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
+    std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.graphics.lighting)});
     std.log.info("Smooth light (post-parse): {}", .{state.smooth_light});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
     std.log.info("World seed: {d}", .{state.world_seed});
@@ -1641,7 +1637,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     // The chunk pipeline (C1): one scheduler and one executor. The pool
     // starts before the loading screen, and the loading screen uses it
     // (D6, D7). The first frame plans the loading of the spawn area.
-    state.scheduler = scheduler_mod.Scheduler.init(ctx.allocator(), state.render_distance, state.ao_strategy, state.lighting_mode);
+    state.scheduler = scheduler_mod.Scheduler.init(ctx.allocator(), state.render_distance, state.ao_strategy, state.graphics.lighting);
+    errdefer state.scheduler.deinit();
     state.scheduler.setSmoothLight(state.smooth_light);
     state.scheduler.setLodDistance(state.lod_distance);
     try startExecutor(ctx);
@@ -3227,8 +3224,8 @@ fn voxelRender(ctx: *sw.Context) !void {
     // sample_count, which is a separate follow-up.
     if (state.aa_dirty) {
         state.aa_dirty = false;
-        if (state.msaa_config.method == .fxaa) {
-            g.configureFXAA(g.getSurfaceWidth(), g.getSurfaceHeight(), state.msaa_config.fxaa_quality) catch |err| {
+        if (aaConfig().method == .fxaa) {
+            g.configureFXAA(g.getSurfaceWidth(), g.getSurfaceHeight(), state.graphics.fxaa_quality) catch |err| {
                 std.log.err("FXAA reconfigure failed: {}", .{err});
             };
         }
@@ -3700,16 +3697,16 @@ fn voxelRender(ctx: *sw.Context) !void {
                         break :blk s;
                     },
                     .aa_method => blk: {
-                        const aa_label = aaMethodLabel(state.msaa_config.method);
+                        const aa_label = aaMethodLabel(aaConfig().method);
                         const s = std.fmt.bufPrint(&entry_buf, "AA Method: {s}", .{aa_label}) catch "AA Method: ?";
                         break :blk s;
                     },
                     .msaa_samples => blk: {
-                        const s = std.fmt.bufPrint(&entry_buf, "MSAA Samples: {}", .{state.msaa_config.msaa_samples}) catch "MSAA Samples: ?";
+                        const s = std.fmt.bufPrint(&entry_buf, "MSAA Samples: {}", .{aaConfig().msaa_samples}) catch "MSAA Samples: ?";
                         break :blk s;
                     },
                     .fxaa_quality => blk: {
-                        const s = std.fmt.bufPrint(&entry_buf, "FXAA Quality: {s}", .{@tagName(state.msaa_config.fxaa_quality)}) catch "FXAA Quality: ?";
+                        const s = std.fmt.bufPrint(&entry_buf, "FXAA Quality: {s}", .{@tagName(state.graphics.fxaa_quality)}) catch "FXAA Quality: ?";
                         break :blk s;
                     },
                     .ao_strategy => blk: {
@@ -3718,7 +3715,7 @@ fn voxelRender(ctx: *sw.Context) !void {
                         break :blk s;
                     },
                     .lighting => blk: {
-                        const light_label = @tagName(state.lighting_mode);
+                        const light_label = @tagName(state.graphics.lighting);
                         const s = std.fmt.bufPrint(&entry_buf, "Lighting: {s}", .{light_label}) catch "Lighting: ?";
                         break :blk s;
                     },
@@ -3927,11 +3924,11 @@ fn voxelRender(ctx: *sw.Context) !void {
                 drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
             }
             {
-                const s = std.fmt.bufPrint(&dbg_buf, "LIGHTING: {s}", .{@tagName(state.lighting_mode)}) catch "LIGHTING: ?";
+                const s = std.fmt.bufPrint(&dbg_buf, "LIGHTING: {s}", .{@tagName(state.graphics.lighting)}) catch "LIGHTING: ?";
                 drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
             }
             {
-                const s = std.fmt.bufPrint(&dbg_buf, "ANTIALIAS: {s} ({}X)", .{ aaMethodLabel(state.msaa_config.method), state.msaa_config.msaa_samples }) catch "ANTIALIAS: ?";
+                const s = std.fmt.bufPrint(&dbg_buf, "ANTIALIAS: {s} ({}X)", .{ aaMethodLabel(aaConfig().method), aaConfig().msaa_samples }) catch "ANTIALIAS: ?";
                 drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
             }
 
@@ -4307,10 +4304,12 @@ fn voxelShutdown(ctx: *sw.Context) !void {
 
 fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     // Configure AA from CLI flags (default: FXAA medium quality).
-    try g.configureMSAA(state.msaa_config, width, height);
-    if (state.msaa_config.method == .fxaa) {
-        try g.configureFXAA(width, height, state.msaa_config.fxaa_quality);
+    // The graphics settings give the AA and vsync (REQ-GPU-026).
+    try g.configureMSAA(aaConfig(), width, height);
+    if (aaConfig().method == .fxaa) {
+        try g.configureFXAA(width, height, state.graphics.fxaa_quality);
     }
+    if (g.vsync != state.graphics.vsync) g.setVsync(state.graphics.vsync);
     const sample_count = g.getSampleCount();
 
     // Load shader
