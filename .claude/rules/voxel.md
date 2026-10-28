@@ -253,6 +253,10 @@ TAS scripts for regression live under `examples/voxel/`:
   chunk boundaries). Run with `./examples/voxel/tests/glowstone_cave.sh`
   (or `--skip-build` to reuse an existing binary).
 
+- `tests/chunk_border.sh` — the terrain hides the chunk border lines of
+  debug mode. Each TAS turns debug mode on. With no depth test, the corner
+  lines drew through the ground and looked like a dark crack.
+
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
 block at the top documenting the purpose, usage, and baseline numbers.
 

@@ -825,6 +825,9 @@ const State = struct {
     player: Player = undefined, // set by voxelInit
     pipeline: ?gpu_mod.RenderPipeline = null,
     cylinder_pipeline: ?gpu_mod.RenderPipeline = null,
+    /// The chunk border wireframe of debug mode: the cylinder pipeline with
+    /// a depth test, so the terrain hides the lines behind it.
+    border_pipeline: ?gpu_mod.RenderPipeline = null,
     /// Chunk meshes: vs_chunk, with the packed quads at group 1 and the
     /// baked model quads at group 2.
     chunk_pipeline: ?gpu_mod.RenderPipeline = null,
@@ -1065,6 +1068,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Explicitly null all optional fields — `var state: State = undefined` bypasses struct defaults
     state.pipeline = null;
     state.cylinder_pipeline = null;
+    state.border_pipeline = null;
     state.uniform_buffer = null;
     state.bind_group = null;
     state.depth_texture = null;
@@ -3174,9 +3178,12 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     // =========================================================================
-    // Chunk border wireframe (debug mode only; uses cylinder pipeline for alpha + no culling)
+    // Chunk border wireframe (debug mode only). The border pipeline has
+    // alpha and no face culling, as the cylinder pipeline has, but it keeps
+    // the depth test. With no depth test, the full-height corner lines drew
+    // through the ground and looked like a dark crack in the terrain.
     // =========================================================================
-    if (state.debug_mode and state.cylinder_pipeline != null) {
+    if (state.debug_mode and state.border_pipeline != null) {
         // Draw border for the chunk the player is currently in.
         const pcx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
         const pcz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
@@ -3184,7 +3191,7 @@ fn voxelRender(ctx: *sw.Context) !void {
         const border_oz: f32 = @as(f32, @floatFromInt(pcz)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
         buildChunkBorderMesh(g, border_ox, border_oz);
         if (state.border_vertex_buffer != null and state.border_idx_count > 0) {
-            pass.setPipeline(state.cylinder_pipeline.?);
+            pass.setPipeline(state.border_pipeline.?);
             pass.setBindGroup(0, state.bind_group.?);
             pass.setVertexBuffer(0, state.border_vertex_buffer.?, 0, state.border_vert_count * @sizeOf(VoxelVertex));
             pass.setIndexBuffer(state.border_index_buffer.?, .uint32, 0, state.border_idx_count * @sizeOf(u32));
@@ -4106,6 +4113,38 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         },
         .multisample = .{ .count = sample_count },
         .depth_stencil = cylinder_depth_stencil,
+    });
+
+    // Border pipeline: the cylinder pipeline with the depth test on. The
+    // lines do not write depth, so they do not hide the terrain, but the
+    // terrain in front of a line hides it.
+    var border_depth_stencil = cylinder_depth_stencil;
+    border_depth_stencil.depth_compare = .less_equal;
+    state.border_pipeline = try g.createRenderPipeline(.{
+        .layout = &pipeline_layout,
+        .vertex = .{
+            .module = &shader,
+            .entry_point = "vs_main",
+            .buffers = &[_]sw.gpu_types.VertexBufferLayout{voxel_vbl},
+        },
+        .fragment = .{
+            .module = &shader,
+            .entry_point = "fs_main",
+            .targets = &[_]sw.gpu_types.ColorTargetState{.{
+                .format = .bgra8unorm,
+                .blend = .{
+                    .color = .{ .operation = .add, .src_factor = .src_alpha, .dst_factor = .one_minus_src_alpha },
+                    .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .zero },
+                },
+            }},
+        },
+        .primitive = .{
+            .topology = .triangle_list,
+            .front_face = .ccw,
+            .cull_mode = .none,
+        },
+        .multisample = .{ .count = sample_count },
+        .depth_stencil = border_depth_stencil,
     });
 
     // Pre-allocate fixed-size cylinder GPU buffers (size never changes)
