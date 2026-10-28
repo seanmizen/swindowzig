@@ -277,6 +277,7 @@ pub const WorkerWorld = struct {
                 head.y_min = m.y_min;
                 head.y_max = m.y_max;
                 head.sections = m.sections;
+                head.ranges = m.ranges;
                 return protocol.encodeResult(self.allocator, id, head, .{ .quads = m.quads });
             },
         }

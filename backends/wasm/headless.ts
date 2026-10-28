@@ -301,6 +301,16 @@ async function main() {
   if (app.gpu.viewsMade === 0) fail('No frame got a canvas view');
   if (views > 0) fail(`${views} canvas views are live after the last frame`);
 
+  // 9. The occlusion queries read their results with no wait
+  // (REQ-GPU-038). The stub completes a map one frame later, so the maps
+  // that wait at the end are at most the result buffers (3).
+  const maps = app.gpu.maps.size;
+  console.log(
+    `Buffer reads: ${app.gpu.mapsStarted} started, ${maps} wait after the last frame`,
+  );
+  if (app.gpu.mapsStarted === 0) fail('No frame started a buffer read');
+  if (maps > 3) fail(`${maps} buffer reads wait after the last frame`);
+
   if (opts.measure) {
     console.log(`Start (pool and app.wasm): ${startMs.toFixed(0)} ms`);
     console.log(`Loading screen: ${loadMs.toFixed(0)} ms`);

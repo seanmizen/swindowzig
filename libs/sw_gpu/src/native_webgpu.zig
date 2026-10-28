@@ -121,6 +121,8 @@ pub extern fn wgpuRenderPassEncoderSetIndexBuffer(pass: WGPURenderPassEncoder, b
 pub extern fn wgpuRenderPassEncoderDraw(pass: WGPURenderPassEncoder, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void;
 pub extern fn wgpuRenderPassEncoderDrawIndexed(pass: WGPURenderPassEncoder, index_count: u32, instance_count: u32, first_index: u32, base_vertex: i32, first_instance: u32) void;
 pub extern fn wgpuRenderPassEncoderEnd(pass: WGPURenderPassEncoder) void;
+pub extern fn wgpuRenderPassEncoderBeginOcclusionQuery(pass: WGPURenderPassEncoder, query_index: u32) void;
+pub extern fn wgpuRenderPassEncoderEndOcclusionQuery(pass: WGPURenderPassEncoder) void;
 pub extern fn wgpuRenderPassEncoderRelease(pass: WGPURenderPassEncoder) void;
 
 // Compute Pass

@@ -29,6 +29,10 @@ function getHandle<T>(handle: number): T {
   return obj as T;
 }
 
+// The state of the last read map of each buffer (REQ-GPU-038):
+// 1 pending, 2 mapped, 3 failed. A buffer with no entry has no map (0).
+const mapStates = new Map<number, number>();
+
 // Global state
 let gpuDevice: GPUDevice | null = null;
 let gpuContext: GPUCanvasContext | null = null;
@@ -50,6 +54,12 @@ const TEXTURE_FORMAT_MAP: Record<number, GPUTextureFormat> = {
   41: 'depth24plus-stencil8',
   42: 'depth32float',
   43: 'depth32float-stencil8',
+};
+
+// Key = `webQueryTypeCode` in libs/sw_gpu/src/types.zig (REQ-GPU-035).
+const QUERY_TYPES: Record<number, GPUQueryType> = {
+  1: 'occlusion',
+  2: 'timestamp',
 };
 
 // Index = the value of `CompareFunction` in libs/sw_gpu/src/types.zig.
@@ -190,12 +200,118 @@ function createWebGPUImports(
     webgpuBufferUnmap: (bufferHandle: number): void => {
       const buffer = getHandle<GPUBuffer>(bufferHandle);
       buffer.unmap();
+      mapStates.delete(bufferHandle);
     },
 
     webgpuBufferDestroy: (bufferHandle: number): void => {
       const buffer = getHandle<GPUBuffer>(bufferHandle);
       buffer.destroy();
       handles.delete(bufferHandle);
+      mapStates.delete(bufferHandle);
+    },
+
+    // A read map that does not wait (REQ-GPU-038). Zig reads the state
+    // with webgpuBufferMapState in a later frame.
+    webgpuBufferMapReadAsync: (
+      bufferHandle: number,
+      offset: bigint,
+      size: bigint,
+    ): void => {
+      const buffer = getHandle<GPUBuffer>(bufferHandle);
+      mapStates.set(bufferHandle, 1);
+      buffer.mapAsync(GPUMapMode.READ, Number(offset), Number(size)).then(
+        () => {
+          if (mapStates.get(bufferHandle) === 1) mapStates.set(bufferHandle, 2);
+        },
+        () => {
+          if (mapStates.has(bufferHandle)) mapStates.set(bufferHandle, 3);
+        },
+      );
+    },
+
+    webgpuBufferMapState: (bufferHandle: number): number =>
+      mapStates.get(bufferHandle) ?? 0,
+
+    webgpuBufferReadMapped: (
+      bufferHandle: number,
+      offset: bigint,
+      size: bigint,
+      dstPtr: number,
+    ): void => {
+      const buffer = getHandle<GPUBuffer>(bufferHandle);
+      const memory = (window as never as { wasmMemory?: WebAssembly.Memory })
+        .wasmMemory;
+      if (!memory) throw new Error('WASM memory not available');
+      const src = new Uint8Array(
+        buffer.getMappedRange(Number(offset), Number(size)),
+      );
+      new Uint8Array(memory.buffer, dstPtr, src.byteLength).set(src);
+    },
+
+    // =======================================================================
+    // Query sets (REQ-GPU-035 to REQ-GPU-037)
+    // =======================================================================
+
+    webgpuCreateQuerySet: (
+      _deviceHandle: number,
+      typeCode: number,
+      count: number,
+    ): number => {
+      const type = QUERY_TYPES[typeCode];
+      if (!type || !gpuDevice) return 0;
+      return createHandle(gpuDevice.createQuerySet({ type, count }));
+    },
+
+    webgpuQuerySetDestroy: (querySetHandle: number): void => {
+      getHandle<GPUQuerySet>(querySetHandle).destroy();
+      handles.delete(querySetHandle);
+    },
+
+    webgpuCommandEncoderResolveQuerySet: (
+      encoderHandle: number,
+      querySetHandle: number,
+      firstQuery: number,
+      queryCount: number,
+      destinationHandle: number,
+      destinationOffset: bigint,
+    ): void => {
+      getHandle<GPUCommandEncoder>(encoderHandle).resolveQuerySet(
+        getHandle<GPUQuerySet>(querySetHandle),
+        firstQuery,
+        queryCount,
+        getHandle<GPUBuffer>(destinationHandle),
+        Number(destinationOffset),
+      );
+    },
+
+    webgpuCommandEncoderCopyBufferToBuffer: (
+      encoderHandle: number,
+      sourceHandle: number,
+      sourceOffset: bigint,
+      destinationHandle: number,
+      destinationOffset: bigint,
+      size: bigint,
+    ): void => {
+      getHandle<GPUCommandEncoder>(encoderHandle).copyBufferToBuffer(
+        getHandle<GPUBuffer>(sourceHandle),
+        Number(sourceOffset),
+        getHandle<GPUBuffer>(destinationHandle),
+        Number(destinationOffset),
+        Number(size),
+      );
+    },
+
+    webgpuRenderPassBeginOcclusionQuery: (
+      passHandle: number,
+      queryIndex: number,
+    ): void => {
+      getHandle<GPURenderPassEncoder>(passHandle).beginOcclusionQuery(
+        queryIndex,
+      );
+    },
+
+    webgpuRenderPassEndOcclusionQuery: (passHandle: number): void => {
+      getHandle<GPURenderPassEncoder>(passHandle).endOcclusionQuery();
     },
 
     // A bind group has no destroy in WebGPU. Drop the handle so the browser
@@ -1049,6 +1165,7 @@ function createWebGPUImports(
       stencilLoadOp: number,
       stencilStoreOp: number,
       stencilClearValue: number,
+      occlusionQuerySetHandle: number,
     ): number => {
       const encoder = getHandle<GPUCommandEncoder>(encoderHandle);
       const memory = (window as never as { wasmMemory?: WebAssembly.Memory })
@@ -1122,6 +1239,10 @@ function createWebGPUImports(
       const renderPass = encoder.beginRenderPass({
         colorAttachments,
         depthStencilAttachment,
+        // The occlusion queries of the pass (REQ-GPU-036). 0 is none.
+        occlusionQuerySet: occlusionQuerySetHandle
+          ? getHandle<GPUQuerySet>(occlusionQuerySetHandle)
+          : undefined,
       });
 
       return createHandle(renderPass);

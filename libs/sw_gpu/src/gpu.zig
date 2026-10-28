@@ -1421,8 +1421,8 @@ pub const GPU = struct {
         native.wgpuCommandEncoderRelease(enc);
 
         // Map buffer and wait synchronously
-        const MapState = struct { done: bool = false };
-        var map_state = MapState{};
+        const MapWait = struct { done: bool = false };
+        var map_state = MapWait{};
         native.wgpuBufferMapAsync(
             staging_buf,
             native.WGPUMapMode_Read,
@@ -1431,7 +1431,7 @@ pub const GPU = struct {
             struct {
                 fn cb(status: u32, ud: ?*anyopaque) callconv(.c) void {
                     _ = status;
-                    @as(*MapState, @ptrCast(@alignCast(ud))).done = true;
+                    @as(*MapWait, @ptrCast(@alignCast(ud))).done = true;
                 }
             }.cb,
             &map_state,
@@ -1456,13 +1456,33 @@ pub const GPU = struct {
     /// gives `error.TimestampsNotSupported` when the device has no
     /// timestamp feature. The web build has no timestamps.
     pub fn createTimestampQuerySet(self: *GPU, count: u32) !QuerySet {
-        if (!self.isReady()) return error.GPUNotReady;
-        if (comptime is_wasm) return error.TimestampsNotSupported;
-        if (!self.timestamps) return error.TimestampsNotSupported;
-        const desc: native.WGPUQuerySetDescriptor = .{ .type = .timestamp, .count = count };
-        const handle = native.wgpuDeviceCreateQuerySet(self.device, &desc) orelse return error.QuerySetCreationFailed;
-        return .{ .handle = handle, .count = count };
+        return self.createQuerySet(.{ .type = .timestamp, .count = count });
     }
+
+    /// Make a query set of `desc.count` queries (REQ-GPU-035). Occlusion
+    /// queries work on native and on the web. Timestamp queries need the
+    /// device feature: else `error.TimestampsNotSupported`, and always on
+    /// the web. The type goes through a named map (`types.nativeQueryType`,
+    /// `types.webQueryTypeCode`), never through its Zig number.
+    pub fn createQuerySet(self: *GPU, desc: types.QuerySetDescriptor) !QuerySet {
+        if (!self.isReady()) return error.GPUNotReady;
+        if (desc.count == 0 or desc.count > MAX_QUERIES) return error.BadQueryCount;
+        if (desc.type == .timestamp and (is_wasm or !self.timestamps)) return error.TimestampsNotSupported;
+        if (comptime is_wasm) {
+            const handle = web.webgpuCreateQuerySet(self.device, types.webQueryTypeCode(desc.type), desc.count);
+            if (handle == 0) return error.QuerySetCreationFailed;
+            return .{ .handle = handle, .count = desc.count, .type = desc.type };
+        } else {
+            var c_desc = std.mem.zeroes(native.WGPUQuerySetDescriptor);
+            c_desc.type = @fromBackingInt(types.nativeQueryType(desc.type));
+            c_desc.count = desc.count;
+            const handle = native.wgpuDeviceCreateQuerySet(self.device, &c_desc) orelse return error.QuerySetCreationFailed;
+            return .{ .handle = handle, .count = desc.count, .type = desc.type };
+        }
+    }
+
+    /// The most queries in one query set (the WebGPU limit).
+    pub const MAX_QUERIES: u32 = 4096;
 
     /// Copy `out.len` bytes at `offset` of `buffer` to `out` (REQ-GPU-028).
     /// The buffer must have `map_read` usage. The call waits for the GPU
@@ -1471,8 +1491,8 @@ pub const GPU = struct {
     pub fn readBuffer(self: *GPU, buffer: Buffer, offset: u64, out: []u8) !void {
         if (comptime is_wasm) return error.NotSupportedOnWasm;
         if (out.len == 0) return;
-        const MapState = struct { done: bool = false, status: u32 = 0 };
-        var map_state = MapState{};
+        const MapWait = struct { done: bool = false, status: u32 = 0 };
+        var map_state = MapWait{};
         native.wgpuBufferMapAsync(
             buffer.handle,
             native.WGPUMapMode_Read,
@@ -1480,7 +1500,7 @@ pub const GPU = struct {
             out.len,
             struct {
                 fn cb(status: u32, ud: ?*anyopaque) callconv(.c) void {
-                    const st: *MapState = @ptrCast(@alignCast(ud));
+                    const st: *MapWait = @ptrCast(@alignCast(ud));
                     st.status = status;
                     st.done = true;
                 }
@@ -1492,6 +1512,15 @@ pub const GPU = struct {
         defer native.wgpuBufferUnmap(buffer.handle);
         const ptr: [*]const u8 = @ptrCast(native.wgpuBufferGetMappedRange(buffer.handle, @intCast(offset), out.len) orelse return error.MapFailed);
         @memcpy(out, ptr[0..out.len]);
+    }
+
+    /// Wait until the GPU completes all submitted work, and run the native
+    /// callbacks of the completed maps (REQ-GPU-038). The web cannot wait:
+    /// there it does nothing. Use it at shutdown, not in each frame.
+    pub fn waitIdle(self: *GPU) void {
+        if (comptime is_wasm) return;
+        if (!self.isReady()) return;
+        _ = native.wgpuDevicePoll(self.device, 1, null);
     }
 
     /// Present the current frame to screen
@@ -1708,8 +1737,8 @@ pub const GPU = struct {
         native.wgpuCommandBufferRelease(cmd);
         native.wgpuCommandEncoderRelease(enc);
 
-        const MapState = struct { done: bool = false };
-        var map_state = MapState{};
+        const MapWait = struct { done: bool = false };
+        var map_state = MapWait{};
         native.wgpuBufferMapAsync(
             staging_buf,
             native.WGPUMapMode_Read,
@@ -1718,7 +1747,7 @@ pub const GPU = struct {
             struct {
                 fn cb(status: u32, ud: ?*anyopaque) callconv(.c) void {
                     _ = status;
-                    @as(*MapState, @ptrCast(@alignCast(ud))).done = true;
+                    @as(*MapWait, @ptrCast(@alignCast(ud))).done = true;
                 }
             }.cb,
             &map_state,
@@ -1882,16 +1911,104 @@ pub const PipelineLayout = struct {
     handle: if (is_wasm) web.WebGPUPipelineLayout else native.WGPUPipelineLayout,
 };
 
-/// A set of GPU timestamp queries (REQ-GPU-028). Make it with
+/// A set of GPU queries: timestamps (REQ-GPU-028) or occlusion
+/// (REQ-GPU-035). Make it with `GPU.createQuerySet` or
 /// `GPU.createTimestampQuerySet`.
 pub const QuerySet = struct {
-    handle: if (is_wasm) void else native.WGPUQuerySet,
+    handle: if (is_wasm) web.WebGPUQuerySet else native.WGPUQuerySet,
     count: u32,
+    type: types.QueryType = .timestamp,
 
     pub fn destroy(self: QuerySet) void {
-        if (comptime is_wasm) return;
+        if (comptime is_wasm) {
+            web.webgpuQuerySetDestroy(self.handle);
+            return;
+        }
         native.wgpuQuerySetDestroy(self.handle);
         native.wgpuQuerySetRelease(self.handle);
+    }
+};
+
+/// The state of a `BufferRead` (REQ-GPU-038).
+pub const MapState = enum {
+    /// No map: `start` can start one.
+    idle,
+    /// The GPU has not given the bytes yet.
+    pending,
+    /// `read` can copy the bytes. Then call `finish`.
+    mapped,
+    /// The map failed. `finish` makes the read idle again.
+    failed,
+};
+
+/// A read of a GPU buffer that does not wait for the GPU (REQ-GPU-038).
+/// The buffer needs `map_read` and `copy_dst` usage. Call `start` after
+/// the submit that writes the buffer, then `poll` once per frame until it
+/// gives `.mapped`. Then `read` the bytes and `finish`. Native: the map
+/// callback writes to this struct, so do not move it while a map is
+/// pending.
+pub const BufferRead = struct {
+    buffer: Buffer,
+    offset: u64 = 0,
+    size: u64,
+    state: MapState = .idle,
+
+    /// Start the map. The read must be idle.
+    pub fn start(self: *BufferRead, gpu: *GPU) void {
+        std.debug.assert(self.state == .idle);
+        if (!gpu.isReady()) {
+            self.state = .failed;
+            return;
+        }
+        self.state = .pending;
+        if (comptime is_wasm) {
+            web.webgpuBufferMapReadAsync(self.buffer.handle, self.offset, self.size);
+        } else {
+            native.wgpuBufferMapAsync(self.buffer.handle, native.WGPUMapMode_Read, @intCast(self.offset), @intCast(self.size), mapCallback, self);
+        }
+    }
+
+    fn mapCallback(status: u32, ud: ?*anyopaque) callconv(.c) void {
+        const self: *BufferRead = @ptrCast(@alignCast(ud));
+        // WGPUBufferMapAsyncStatus_Success is 0.
+        self.state = if (status == 0) .mapped else .failed;
+    }
+
+    /// The state of the map. It does not wait: native polls the device
+    /// once with no wait, and the web reads the state of the promise.
+    pub fn poll(self: *BufferRead, gpu: *GPU) MapState {
+        if (self.state != .pending) return self.state;
+        if (comptime is_wasm) {
+            self.state = switch (web.webgpuBufferMapState(self.buffer.handle)) {
+                1 => .pending,
+                2 => .mapped,
+                else => .failed,
+            };
+        } else {
+            _ = native.wgpuDevicePoll(gpu.device, 0, null);
+        }
+        return self.state;
+    }
+
+    /// Copy `out.len` bytes from the start of the mapped range to `out`.
+    pub fn read(self: *BufferRead, out: []u8) !void {
+        if (self.state != .mapped) return error.NotMapped;
+        if (out.len > self.size) return error.ReadTooLong;
+        if (out.len == 0) return;
+        if (comptime is_wasm) {
+            web.webgpuBufferReadMapped(self.buffer.handle, self.offset, out.len, out.ptr);
+        } else {
+            const ptr: [*]const u8 = @ptrCast(native.wgpuBufferGetMappedRange(self.buffer.handle, @intCast(self.offset), @intCast(self.size)) orelse return error.MapFailed);
+            @memcpy(out, ptr[0..out.len]);
+        }
+    }
+
+    /// Unmap the buffer. The read is idle again.
+    pub fn finish(self: *BufferRead) void {
+        if (self.state == .mapped) {
+            if (comptime is_wasm) web.webgpuBufferUnmap(self.buffer.handle) else native.wgpuBufferUnmap(self.buffer.handle);
+        }
+        self.state = .idle;
     }
 };
 
@@ -1906,21 +2023,27 @@ pub const RenderPassTimestampWrites = struct {
 pub const CommandEncoder = struct {
     handle: if (is_wasm) web.WebGPUCommandEncoder else native.WGPUCommandEncoder,
 
-    /// Record a copy of `count` timestamps, from query `first`, to
-    /// `destination` at `offset`, as one u64 each (REQ-GPU-028). The
-    /// buffer needs `query_resolve` usage. `offset` must be a multiple of
-    /// 256.
+    /// Record a copy of `count` query results, from query `first`, to
+    /// `destination` at `offset`, as one u64 each (REQ-GPU-028,
+    /// REQ-GPU-037). The buffer needs `query_resolve` usage. `offset` must
+    /// be a multiple of 256. Native and web.
     pub fn resolveQuerySet(self: CommandEncoder, query_set: QuerySet, first: u32, count: u32, destination: Buffer, offset: u64) void {
-        if (comptime is_wasm) return;
+        if (comptime is_wasm) {
+            web.webgpuCommandEncoderResolveQuerySet(self.handle, query_set.handle, first, count, destination.handle, offset);
+            return;
+        }
         native.wgpuCommandEncoderResolveQuerySet(self.handle, query_set.handle, first, count, destination.handle, offset);
     }
 
     /// Record a copy of `size` bytes from `source` to `destination`.
     /// `source` needs `copy_src` usage and `destination` needs `copy_dst`
-    /// usage. Native only: the web build has no binding yet and does
-    /// nothing.
+    /// usage. The offsets and the size are multiples of 4. Native and web
+    /// (REQ-GPU-037).
     pub fn copyBufferToBuffer(self: CommandEncoder, source: Buffer, source_offset: u64, destination: Buffer, destination_offset: u64, size: u64) void {
-        if (comptime is_wasm) return;
+        if (comptime is_wasm) {
+            web.webgpuCommandEncoderCopyBufferToBuffer(self.handle, source.handle, source_offset, destination.handle, destination_offset, size);
+            return;
+        }
         native.wgpuCommandEncoderCopyBufferToBuffer(self.handle, source.handle, source_offset, destination.handle, destination_offset, size);
     }
 
@@ -1956,6 +2079,7 @@ pub const CommandEncoder = struct {
                 if (desc.depth_stencil_attachment) |ds| (if (ds.stencil_read_only) 0 else @backingInt(ds.stencil_load_op)) else 0,
                 if (desc.depth_stencil_attachment) |ds| (if (ds.stencil_read_only) 0 else @backingInt(ds.stencil_store_op)) else 0,
                 if (desc.depth_stencil_attachment) |ds| ds.stencil_clear_value else 0,
+                if (desc.occlusion_query_set) |q| q.handle else 0,
             );
             return RenderPassEncoder{ .handle = handle };
         } else {
@@ -2009,7 +2133,7 @@ pub const CommandEncoder = struct {
                 .color_attachment_count = desc.color_attachments.len,
                 .color_attachments = &color_attachments,
                 .depth_stencil_attachment = if (depth_stencil) |*ds| ds else null,
-                .occlusion_query_set = null,
+                .occlusion_query_set = if (desc.occlusion_query_set) |q| q.handle else null,
                 .timestamp_writes = if (timestamp_writes) |*t| t else null,
             };
 
@@ -2144,6 +2268,26 @@ pub const RenderPassEncoder = struct {
         }
     }
 
+    /// Count the samples of the next draws that pass the depth test, into
+    /// query `index` of the `occlusion_query_set` of the pass
+    /// (REQ-GPU-036). One query at a time, and each index once in a pass.
+    pub fn beginOcclusionQuery(self: RenderPassEncoder, index: u32) void {
+        if (comptime is_wasm) {
+            web.webgpuRenderPassBeginOcclusionQuery(self.handle, index);
+        } else {
+            native.wgpuRenderPassEncoderBeginOcclusionQuery(self.handle, index);
+        }
+    }
+
+    /// End the query of `beginOcclusionQuery` (REQ-GPU-036).
+    pub fn endOcclusionQuery(self: RenderPassEncoder) void {
+        if (comptime is_wasm) {
+            web.webgpuRenderPassEndOcclusionQuery(self.handle);
+        } else {
+            native.wgpuRenderPassEncoderEndOcclusionQuery(self.handle);
+        }
+    }
+
     pub fn end(self: RenderPassEncoder) void {
         if (comptime is_wasm) {
             web.webgpuRenderPassEnd(self.handle);
@@ -2213,6 +2357,9 @@ pub const RenderPassDescriptor = struct {
     /// Write GPU timestamps at the start and the end of the pass
     /// (REQ-GPU-028). The web build ignores it.
     timestamp_writes: ?RenderPassTimestampWrites = null,
+    /// The occlusion queries of `beginOcclusionQuery` go into this set
+    /// (REQ-GPU-036). It must be a set of type `.occlusion`.
+    occlusion_query_set: ?QuerySet = null,
 };
 
 /// Render pipeline descriptor (overrides types.zig version)

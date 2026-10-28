@@ -18,7 +18,7 @@
 //                executor runs the jobs, so the terrain is correct.
 //   uploads      each run checks the mesh uploads (checkMeshUploads, C5).
 //                With the pool, JS writes no mesh byte into the main wasm
-//                memory: at most the 96-byte head of each result. Each mesh
+//                memory: at most the 160-byte head of each result. Each mesh
 //                goes to the GPU from the ArrayBuffer of its worker, with
 //                its size and its GPU header. JS holds nothing at the end.
 //   memory       the main wasm memory does not grow with the meshed

@@ -81,8 +81,13 @@ were already correct.
   tint slots, and each quad holds its slot in the same bits. The shader
   draws no triangle for a tint record. `mesher.zig` has the layout. The upload writes the bytes of
   the worker result to the GPU as they are, and main keeps no copy (C5).
-  Main keeps only `world.MeshInfo`: the quad count, the y range and the
-  mesh hash.
+  Main keeps only `world.MeshInfo`: the quad count, the y range, the
+  mesh hash, the section connections and the section draw ranges.
+- The quads of a mesh are in order of their lowest section (a stable
+  sort). `Mesh.ranges` gives the end and the highest section of the
+  range of each section (REQ-VOXEL-023). The tint records are in the
+  range of section 0. With each section visible, the demo draws the
+  full mesh in one draw.
 - A greedy quad spans many blocks. A dig or a place meshes the whole chunk
   again, on the main thread, in the same tick. If the block is at a chunk
   edge, `updateBoundaryNeighbors` also meshes the neighbour chunk.
@@ -172,7 +177,8 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--chunk-workers=N` | Native only. The chunk worker threads of the ThreadPool executor, 0 to 4. **Default: min(CPU count - 1, 4).** 0 runs the chunk jobs on the main thread (the Inline executor). Each worker has its own world copy and a 64 MB cache (C4, C14). The web build uses min(`navigator.hardwareConcurrency` - 1, 4) Web Workers. See `examples/voxel/docs/chunk-pipeline.md`. |
 | `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none`, `sphere`, `cone` and `frustum`. `frustum` is the default: it tests each chunk's box (the y range of its mesh) against the planes of the view-projection matrix. `none` draws every loaded chunk. `sphere` is a cheap radial cutoff at render_distance plus slack. `cone` tests each sphere against a cone along the camera's forward vector, with the FOV set by `--frustum-fov-deg`. No strategy ever culls the camera's own chunk or its 8 horizontal neighbours. `libs/sw_voxel/src/frustum.zig` has the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
 | `--frustum-fov-deg=<degrees>` | Total fov of the cone strategy in degrees. With no flag, each frame uses the screen-diagonal fov of the camera (about 100° at 60° vertical and 16:9). The test uses each chunk's full-height bounding sphere, so this cone keeps every chunk on screen. Range [0, 360]. Half-angle ≥ 90° always returns true. |
-| `--cave-cull=<on\|off>` | Cave culling (REQ-VOXEL-020). `on` is the default: each frame walks from the camera section through the connected section faces, and does not draw a chunk column that the walk does not reach. The `[GPU MESH]` log shows `cave_culled=`. `examples/voxel/tests/cave_cull.sh` checks that the frame does not change. |
+| `--cave-cull=<on\|off>` | Cave culling (REQ-VOXEL-020, REQ-VOXEL-024). `on` is the default: each frame walks from the camera section through the connected section faces. The demo does not draw a chunk column that the walk does not reach. In a column that it draws, it draws only the section ranges that the walk reaches. The `[GPU MESH]` log shows `cave_culled=` and `sections_culled=`. `examples/voxel/tests/cave_cull.sh` checks that the frame does not change. |
+| `--occlusion=<on\|off>` | GPU occlusion queries (REQ-VOXEL-025). `on` is the default. After the chunk draws, each chunk outside the 3×3 around the camera gets a box test (`sw_gpu.OcclusionQueries`). The demo skips a chunk only while its last result says hidden, from the same eye and the same meshes. Also, the test had the same view, or the box was on the screen in full. So a move or a mesh change draws the chunk in the same frame. The `[GPU MESH]` log shows `occlusion_culled=`. `--dump-frame` waits up to 120 frames for the results of a still camera. |
 | `--lod-distance=<0..32>` | Far terrain (REQ-VOXEL-021). `0` is the default (off). Past N chunks a chunk gets a mesh of 2-block cells, past 2N of 4-block cells, past 4N of 8-block cells. `libs/sw_voxel/src/pipeline/lod.zig` has the border proof. |
 
 ---

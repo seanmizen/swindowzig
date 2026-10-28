@@ -163,7 +163,7 @@ Job, 88 bytes
   16 u32×9 block versions of the 3×3 chunks
   52 u32×9 light versions of the 3×3 chunks
 
-Result, 48 + SECTIONS_LEN bytes (80 in the demo), then the payload
+Result, 48 + SECTIONS_LEN + RANGES_LEN bytes (144 in the demo), then the payload
   0  u8    stage
   1  u8    flags: bit 0 = the payload holds blocks
   2  u16   0
@@ -177,7 +177,10 @@ Result, 48 + SECTIONS_LEN bytes (80 in the demo), then the payload
   40 u64   0
   48 u16×n the face connections of each section (mesh), else 0, then 0
            to a multiple of 16 bytes (SECTIONS_LEN: 32 in the demo)
-  80 ...   payload (demo: 16 sections)
+  80 u32×n the draw range of each section (mesh): the end in bits 0-23,
+           the highest section in bits 24-31 (mesher.SectionRange), else
+           0, then 0 to a multiple of 16 bytes (RANGES_LEN: 64 in the demo)
+  144 ...  payload (demo: 16 sections)
 
 Error, 16 bytes, then the text
   0  u16   code
@@ -192,8 +195,9 @@ Error, 16 bytes, then the text
 
 Protocol version 4 added the section connections for cave culling
 (REQ-VOXEL-019). Protocol version 5 added the level of detail of a mesh
-job (REQ-VOXEL-021). The Result payload starts at byte 96 of the message in the
-demo (`protocol.PAYLOAD_OFFSET`, byte 64 before version 4), so the PackedQuad
+job (REQ-VOXEL-021). Protocol version 6 added the draw range of each
+section (REQ-VOXEL-023). The Result payload starts at byte 160 of the message in the
+demo (`protocol.PAYLOAD_OFFSET`, byte 96 in versions 4 and 5, byte 64 before version 4), so the PackedQuad
 bytes of a mesh are 16-byte aligned, ready for upload (C5). The mesh hash
 is `protocol.meshHash` of the payload. The worker calculates it, so main
 can compare meshes without the quads. Main reads only the first

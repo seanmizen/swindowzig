@@ -238,6 +238,23 @@ depth test rejects hidden fragments before they shade.
 The replay buffer cleanup leaks memory. It is not critical. (Recorded in an
 earlier session and not checked again since.)
 
+### Occlusion queries
+
+- `gpu.createQuerySet(.{ .type = .occlusion, .count = n })`. The type goes
+  through `types.nativeQueryType` and `types.webQueryTypeCode`, never a raw
+  enum number (REQ-GPU-035). Give the set to
+  `RenderPassDescriptor.occlusion_query_set`, then
+  `pass.beginOcclusionQuery(i)` and `endOcclusionQuery()` (REQ-GPU-036).
+- `resolveQuerySet` and `copyBufferToBuffer` work on the web too
+  (REQ-GPU-037).
+- `BufferRead` maps a `map_read` buffer with no wait: `start` after the
+  submit, `poll` each frame, then `read` and `finish` (REQ-GPU-038). Do
+  not move it while a native map is pending: the callback writes to it.
+- `OcclusionQueries` (`occlusion.zig`) does all of this for boxes: `begin`,
+  `add`, `draw` in the pass, `resolve`, `submitted`, then `poll` gives the
+  results of an earlier frame with its tag (REQ-GPU-039). `draw` changes
+  the pipeline and bind group 0 of the pass.
+
 ---
 
 ## Adding New WebGPU Features
@@ -273,6 +290,7 @@ Key files and what they do — read this before opening anything.
 | `libs/sw_gpu/src/types.zig` | Shared descriptor types used by both native and WASM paths |
 | `libs/sw_gpu/src/web_bridge.zig` | WASM/JS extern bindings |
 | `libs/sw_gpu/src/mip_chain.zig` | Mip level counts and sizes, the atlas tile limit, and the CPU reference box filter (no GPU code, unit tested) |
+| `libs/sw_gpu/src/occlusion.zig`, `occlusion_plan.zig` | `OcclusionQueries`: box tests in occlusion queries, results some frames later with the tag of their frame. The plan file has the box corners and `boxOnScreen` (no GPU code, unit tested) (REQ-GPU-039) |
 | `libs/sw_gpu/src/mipmap.zig` | `MipmapGenerator`: makes mip levels with render passes, native and web (REQ-GPU-001, REQ-GPU-002) |
 | `libs/sw_platform/src/native_sdl.zig` | SDL2 window + event pump (native path). `initStorage` opens the per-user save directory |
 | `libs/sw_platform/src/storage.zig` | Local key-value saves: `storageGet`/`storageSet`/`storageDelete`. Keys `[a-z0-9_-]`, 64 max. Native: files. Web: localStorage via `backends/wasm/storage.ts` |

@@ -515,6 +515,8 @@ pub const MeshResult = struct {
     y_max: f32,
     /// The face connections of each section (REQ-VOXEL-019).
     sections: [chunk_mod.SECTION_COUNT]visibility.Connectivity = @splat(visibility.all),
+    /// The draw range of each section (REQ-VOXEL-023).
+    ranges: mesher_mod.SectionRanges = mesher_mod.EMPTY_RANGES,
 
     pub fn deinit(self: *MeshResult, allocator: std.mem.Allocator) void {
         allocator.free(self.quads);
@@ -589,6 +591,7 @@ pub fn meshBlocks(
         .y_min = m.y_min,
         .y_max = m.y_max,
         .sections = visibility.chunkConnectivity(&real),
+        .ranges = m.ranges,
     };
 }
 
