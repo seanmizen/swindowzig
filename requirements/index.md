@@ -43,7 +43,7 @@
 | [`REQ-INPUT-004`](input.md#req-input-004--saved-input-settings-load-in-a-newer-version) | Saved input settings load in a newer version | active | functional | P2 | agent:SWZ-49 |
 | [`REQ-INPUT-005`](input.md#req-input-005--gamepads-are-recorded-input-that-binds-to-actions) | Gamepads are recorded input that binds to actions | active | functional | P2 | agent:SWZ-50 |
 | [`REQ-INPUT-006`](input.md#req-input-006--old-recordings-still-play) | Old recordings still play | active | constraint | P1 | agent:SWZ-50 |
-| [`REQ-INPUT-007`](input.md#req-input-007--the-wheel-snapshot-is-in-lines) | The wheel snapshot is in lines | active | functional | P2 | agent:SWZ-77 |
+| [`REQ-INPUT-008`](input.md#req-input-008--the-wheel-snapshot-is-in-lines) | The wheel snapshot is in lines | active | functional | P2 | agent:SWZ-77 |
 | [`REQ-NET-001`](net.md#req-net-001--the-game-polls-network-events) | The game polls network events | active | constraint | P1 | agent:SWZ-53 |
 | [`REQ-NET-002`](net.md#req-net-002--the-native-client-masks-each-frame) | The native client masks each frame | active | functional | P1 | agent:SWZ-53 |
 | [`REQ-NET-003`](net.md#req-net-003--the-reconnect-delay-doubles-to-a-limit) | The reconnect delay doubles to a limit | active | functional | P2 | agent:SWZ-53 |
@@ -113,7 +113,7 @@ graph TD
   REQ_INPUT_004["REQ-INPUT-004<br/>Saved input settings load in a newer version"]
   REQ_INPUT_005["REQ-INPUT-005<br/>Gamepads are recorded input that binds to actions"]
   REQ_INPUT_006["REQ-INPUT-006<br/>Old recordings still play"]
-  REQ_INPUT_007["REQ-INPUT-007<br/>The wheel snapshot is in lines"]
+  REQ_INPUT_008["REQ-INPUT-008<br/>The wheel snapshot is in lines"]
   REQ_NET_001["REQ-NET-001<br/>The game polls network events"]
   REQ_NET_002["REQ-NET-002<br/>The native client masks each frame"]
   REQ_NET_003["REQ-NET-003<br/>The reconnect delay doubles to a limit"]

@@ -30,7 +30,7 @@ pub const MouseState = struct {
     }
 };
 
-/// The wheel of this tick, in lines on all backends (REQ-INPUT-007).
+/// The wheel of this tick, in lines on all backends (REQ-INPUT-008).
 /// `delta_y > 0` scrolls up and `delta_x > 0` scrolls right. SDL gives one
 /// line for one notch. A browser gives pixels, lines or pages, and the
 /// snapshot changes pixels and pages to lines with `wheel_pixels_per_line`
@@ -47,7 +47,7 @@ pub const wheel_pixels_per_line: f32 = 40;
 /// page, so this is a fixed value.
 pub const wheel_lines_per_page: f32 = 10;
 
-/// The number of wheel lines in a delta of the unit `mode` (REQ-INPUT-007).
+/// The number of wheel lines in a delta of the unit `mode` (REQ-INPUT-008).
 pub fn wheelLines(delta: f32, mode: event.WheelMode) f32 {
     if (!std.math.isFinite(delta)) return 0;
     return switch (mode) {
@@ -489,7 +489,7 @@ fn wheelEvent(seq: u32, dx: f32, dy: f32, mode: event.WheelMode) Event {
     });
 }
 
-test "wheel deltas in pixels, lines and pages give lines (REQ-INPUT-007)" {
+test "wheel deltas in pixels, lines and pages give lines (REQ-INPUT-008)" {
     try std.testing.expectEqual(@as(f32, 2.5), wheelLines(100, .pixel));
     try std.testing.expectEqual(@as(f32, -1), wheelLines(-40, .pixel));
     try std.testing.expectEqual(@as(f32, 3), wheelLines(3, .line));
@@ -498,7 +498,7 @@ test "wheel deltas in pixels, lines and pages give lines (REQ-INPUT-007)" {
     try std.testing.expectEqual(@as(f32, 0), wheelLines(std.math.inf(f32), .pixel));
 }
 
-test "InputSnapshot wheel is in lines on all backends (REQ-INPUT-007)" {
+test "InputSnapshot wheel is in lines on all backends (REQ-INPUT-008)" {
     var snapshot = InputSnapshot.init();
 
     // One SDL notch up, one web notch down in pixels, and a web scroll right

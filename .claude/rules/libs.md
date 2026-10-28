@@ -100,7 +100,7 @@ depth test rejects hidden fragments before they shade.
 
 - `input().wheel` is in lines on every backend. The snapshot changes the
   pixels and pages of a wheel event to lines (`input.wheelLines`,
-  REQ-INPUT-007). The event keeps its raw deltas and its mode.
+  REQ-INPUT-008). The event keeps its raw deltas and its mode.
 
 - `KeyCode` is append-only: a recording stores its values (REQ-INPUT-001).
   The punctuation and navigation keys follow the physical key on the web

@@ -112,7 +112,7 @@ input actions that a game binds to them.
   version 1 recording (REQ-INPUT-006)"
 - **Relations:** none
 
-## REQ-INPUT-007 — The wheel snapshot is in lines
+## REQ-INPUT-008 — The wheel snapshot is in lines
 
 - **Status:** active
 - **Source:** agent:SWZ-77
@@ -133,5 +133,5 @@ input actions that a game binds to them.
   A browser notch is often more than one line, because the browser sets
   the size of a notch.
 - **Verification:** Test — `libs/sw_core/src/input.zig` › "InputSnapshot
-  wheel is in lines on all backends (REQ-INPUT-007)"
+  wheel is in lines on all backends (REQ-INPUT-008)"
 - **Relations:** none

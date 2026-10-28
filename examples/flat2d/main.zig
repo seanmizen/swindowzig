@@ -196,7 +196,7 @@ fn uiInput(ctx: *sw.Context) sw_ui.Input {
         .pointer_y = input.mouse.y,
         .pointer_pressed = input.buttonPressed(.left),
         .pointer_down = input.buttonDown(.left),
-        // The snapshot and the UI both give the wheel in lines (REQ-INPUT-007).
+        // The snapshot and the UI both give the wheel in lines (REQ-INPUT-008).
         .wheel_y = input.wheel.delta_y,
         .text = input.text.text(),
         .composition = input.composition.text(),
