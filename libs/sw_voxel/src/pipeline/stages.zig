@@ -549,9 +549,30 @@ pub fn meshWith(
     cz: i32,
     options: MeshOptions,
 ) !MeshResult {
+    return meshBlocks(allocator, hood, hood[CENTER].blocks, cx, cz, options);
+}
+
+/// `meshWith`, with `blocks` in place of the blocks of the middle chunk.
+/// The light of the middle chunk and the neighbours stay. The far terrain
+/// stage (lod.zig) meshes its coarse blocks this way (REQ-VOXEL-021). The
+/// section connections are the connections of the real middle chunk.
+pub fn meshBlocks(
+    allocator: std.mem.Allocator,
+    hood: *const Neighbourhood,
+    blocks: *const PalettedBlocks,
+    cx: i32,
+    cz: i32,
+    options: MeshOptions,
+) !MeshResult {
     const center = hood[CENTER];
     // A read-only Chunk value over the inputs. It owns nothing.
     const view: chunk_mod.Chunk = .{
+        .allocator = allocator,
+        .blocks = blocks.*,
+        .skylight = center.light.sky,
+        .block_light = center.light.block,
+    };
+    const real: chunk_mod.Chunk = .{
         .allocator = allocator,
         .blocks = center.blocks.*,
         .skylight = center.light.sky,
@@ -567,7 +588,7 @@ pub fn meshWith(
         .quads = try m.quads.toOwnedSlice(allocator),
         .y_min = m.y_min,
         .y_max = m.y_max,
-        .sections = visibility.chunkConnectivity(&view),
+        .sections = visibility.chunkConnectivity(&real),
     };
 }
 

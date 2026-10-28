@@ -982,6 +982,9 @@ const State = struct {
     cave_cull: bool = true,
     /// The chunks that the cave cull skipped in the last frame.
     cave_culled: u32 = 0,
+    /// The distance in chunks where the far terrain mesh starts
+    /// (REQ-VOXEL-021). 0 is off. --lod-distance=<0..32>.
+    lod_distance: i32 = 0,
     /// The sections that the camera can see, from the walk of each frame.
     cave_visible: visibility.VisibleSet = .{},
     /// F3-style debug overlay rolling FPS sampler. Captured at the top of
@@ -1152,6 +1155,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.frustum_culled = 0;
     state.cave_cull = true;
     state.cave_culled = 0;
+    state.lod_distance = 0;
     state.cave_visible = .{};
     state.fps_window_ns = @splat(0);
     state.fps_window_idx = 0;
@@ -1360,6 +1364,19 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--lod-distance=")) {
+            const val = std.mem.sliceTo(arg["--lod-distance=".len..], 0);
+            const n = std.fmt.parseInt(i32, val, 10) catch {
+                std.log.err("--lod-distance: invalid value '{s}'. Expected an integer from 0 to 32.", .{val});
+                fatalExit(1);
+                unreachable;
+            };
+            if (n < 0 or n > 32) {
+                std.log.err("--lod-distance: value {} out of range [0, 32].", .{n});
+                fatalExit(1);
+            }
+            state.lod_distance = n;
+        }
         if (std.mem.startsWith(u8, arg, "--cave-cull=")) {
             const val = std.mem.sliceTo(arg["--cave-cull=".len..], 0);
             if (std.mem.eql(u8, val, "on")) {
@@ -1492,6 +1509,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // (D6, D7). The first frame plans the loading of the spawn area.
     state.scheduler = scheduler_mod.Scheduler.init(ctx.allocator(), state.render_distance, state.ao_strategy, state.lighting_mode);
     state.scheduler.setSmoothLight(state.smooth_light);
+    state.scheduler.setLodDistance(state.lod_distance);
     try startExecutor(ctx);
     state.last_frame = .{};
 

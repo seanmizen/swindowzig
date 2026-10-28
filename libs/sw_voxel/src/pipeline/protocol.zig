@@ -34,6 +34,7 @@ const chunk_mod = @import("../chunk.zig");
 const mesher_mod = @import("../mesher.zig");
 const content = @import("../content.zig");
 const stages = @import("stages.zig");
+const lod = @import("lod.zig");
 
 const BlockType = chunk_mod.BlockType;
 const PalettedBlocks = chunk_mod.PalettedBlocks;
@@ -46,7 +47,7 @@ pub const SLOTS = stages.SLOTS;
 /// "VXCP" as little-endian bytes.
 pub const MAGIC: u32 = 0x50435856;
 /// Increment this value for each change of the layout.
-pub const VERSION: u16 = 4;
+pub const VERSION: u16 = 5;
 
 pub const HEADER_LEN = 16;
 pub const HELLO_LEN = 24 + content.GEN_CONFIG_LEN;
@@ -145,7 +146,9 @@ pub const Edit = struct {
 ///              bit 1 = flat light, smooth light off (mesh)
 ///   4  i32     cx
 ///   8  i32     cz
-///   12 u32     reserved, 0
+///   12 u8      level of detail, 0 to lod.MAX_LEVEL (mesh, REQ-VOXEL-021)
+///   13 u8      reserved, 0
+///   14 u16     reserved, 0
 ///   16 u32×9   block versions
 ///   52 u32×9   light versions
 pub const Job = struct {
@@ -159,6 +162,8 @@ pub const Job = struct {
     want_blocks: bool = false,
     /// Mesh: false gives flat light (REQ-VOXEL-008).
     smooth_light: bool = true,
+    /// Mesh: the level of detail, 0 to `lod.MAX_LEVEL` (REQ-VOXEL-021).
+    lod: u8 = 0,
     blocks: [SLOTS]Version = @splat(0),
     light: [SLOTS]Version = @splat(0),
 };
@@ -373,7 +378,9 @@ pub fn encodeJob(allocator: std.mem.Allocator, id: u32, job: Job) ![]u8 {
     o.int(u8, @as(u8, @intFromBool(job.want_blocks)) | (@as(u8, @intFromBool(!job.smooth_light)) << 1));
     o.int(i32, job.cx);
     o.int(i32, job.cz);
-    o.int(u32, 0);
+    o.int(u8, job.lod);
+    o.int(u8, 0);
+    o.int(u16, 0);
     for (job.blocks) |v| o.int(u32, v);
     for (job.light) |v| o.int(u32, v);
     return finish(o);
@@ -579,7 +586,9 @@ pub fn decode(bytes: []const u8) DecodeError!Decoded {
             j.smooth_light = flags & 2 == 0;
             j.cx = b.int(i32);
             j.cz = b.int(i32);
-            if (b.int(u32) != 0) return error.BadField;
+            j.lod = b.int(u8);
+            if (j.lod > lod.MAX_LEVEL) return error.BadField;
+            if (b.int(u8) != 0 or b.int(u16) != 0) return error.BadField;
             for (&j.blocks) |*v| v.* = b.int(u32);
             for (&j.light) |*v| v.* = b.int(u32);
             break :blk .{ .job = j };

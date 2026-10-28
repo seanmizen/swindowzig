@@ -5,7 +5,8 @@ ticket of #102, in the order of the batch.
 
 ## Summary
 
-- Done: 13. Skipped: 2. Not started: 0.
+- Done: 15. Skipped: 0. Not started: 0. #40 has no occlusion queries (see
+  its entry).
 - Setup:
   - ziglang.org and bun.sh are blocked in the cloud sandbox. Zig 0.17.0 came
     from the official `ziglang` wheel on PyPI, and Bun from the npm package
@@ -304,24 +305,68 @@ ticket of #102, in the order of the batch.
 
 ## #39 far terrain level of detail in sw_voxel
 
-- Status: skipped
+- Status: done (the first commit skipped it, and Sean asked for it in the
+  batch)
 - Commit: see `git log --grep SWZ-39`
-- Reason: the ticket does not fit in the time limit of one ticket. A
-  pure stage that makes a coarse mesh is small. But "chunks past a set
-  distance use" it needs changes to the chunk pipeline design:
-  - the mesh Job message (`protocol.zig`) needs the level, so the
-    protocol version changes, and `worker_world.zig` must handle it.
-  - the scheduler must keep the mesh level of each chunk, and remesh a
-    chunk when the player moves it over a level border.
-  - the border between two levels needs skirts or a stitch, and a test
-    that finds no gap in a rendered frame.
-- Open questions:
-  - Can a coarse quad use the current PackedQuad format? A quad of
-    factor 2, 4 or 8 fits in the chunk-local position and size fields.
-    The light and the AO of a coarse quad need a rule.
-  - Proposal: split the ticket. Part 1: the pure LOD stage, with skirts
-    and tests. Part 2: the scheduler and the protocol.
-- Risks: none. No code changed.
+- What changed:
+  - New pure stage `libs/sw_voxel/src/pipeline/lod.zig`:
+    - `coarsen`: the blocks of level 1, 2 or 3 (cells of 2, 4 or 8
+      blocks). A coarse cell is a full cube when one of its blocks is a
+      full cube, with the block of its highest full cube.
+    - `mesh`: level 0 is `stages.meshWith`. Above level 0, the greedy
+      mesher meshes the coarse blocks, with the real blocks of the
+      neighbours across the border. A coarse mesh has no AO, flat light
+      and a merge cap of 16, so it merges more faces.
+    - The file has the proof that no gap shows at a level border.
+  - `stages.meshBlocks`: `meshWith` with other blocks for the middle
+    chunk.
+  - `mesher.MeshOptions.max_merge`: the merge cap, default 6 (no change).
+  - Scheduler: `setLodDistance(d)` and `lodLevel(dx, dz)`. Past d chunks
+    a chunk gets level 1, past 2d level 2, past 4d level 3. 0 is off (the
+    default). A mesh can keep the level of a distance 1 chunk nearer or
+    further (hysteresis). A new level for a fresh mesh has the class
+    "other", so it does not delay the edits.
+  - Protocol version 5: byte 12 of the Job body is the level.
+    `LoadedChunk.mesh_lod` keeps the level of the mesh.
+  - Voxel demo: new flag `--lod-distance=<0..32>`, default 0.
+- Changes of the acceptance criteria: the demo default is off, so the
+  frames and the goldens do not change. A coarse mesh uses the PackedQuad
+  format, so the upload and the shader do not change.
+- What ran:
+  - `zig build test`: the lod tests (fewer quads at each level, and each
+    quad on the border of a coarse cell). The border test meshes two
+    chunks for each of the 16 pairs of levels, and finds a face at each
+    point of the border plane where one side is a cube and the other side
+    is open. A scheduler test checks the levels, the hysteresis, a long
+    move, the off switch, and each mesh against a recompute at its level.
+  - Quads on the hilly preset, R = 9, far terrain distance 2, against the
+    full meshes of the same chunks:
+
+    | Level | Chunks | Full quads | Coarse quads |
+    | --- | --- | --- | --- |
+    | 1 | 20 | 6846 | 3051 |
+    | 2 | 148 | 57272 | 12963 |
+    | 3 | 56 | 27864 | 3190 |
+
+  - The demo, hilly, R = 16, `flatland_forward.tas`: 302974 quads with
+    `--lod-distance=0`, 68076 quads with `--lod-distance=3`. The frame
+    shows no gap.
+  - The voxel gate, `bun backends/wasm/headless.ts` and
+    `bun test backends/wasm/worker-pool.test.ts` with protocol version 5.
+- Expected changes:
+  - quad hash: no change (the default merge cap stays 6)
+  - goldens: none
+- CI changes needed: none.
+- Requirements: REQ-VOXEL-021, REQ-VOXEL-022
+- Breaking: protocol version 5. A Web Worker of an old build rejects the
+  Hello of a new build.
+- Risks:
+  - A coarse cell fills small caves and overhangs, and a coarse surface
+    can be up to 7 blocks above the real surface. The skirt at the border
+    then shows a step.
+  - The coarse mesh has no AO, so the shade changes at the first level
+    border.
+  - The horizon reference was not read (the sandbox has no `gh`).
 
 ## #40 occlusion culling and cave culling for chunks and entities
 

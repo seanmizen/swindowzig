@@ -109,7 +109,7 @@ swindowzig/
 │   ├── sw_net/         # WebSocket client: browser WebSocket (web), RFC 6455 on std.Io with TLS (native)
 │   ├── sw_jobs/        # Worker pools: native threads and Web Workers, one Transport API
 │   ├── sw_ui/          # UI tree: layout, focus, widgets, screen stack, on-screen keyboard, semantic tree, drawing
-│   └── sw_voxel/       # Voxel chunks: storage, light, greedy and model mesher, chunk pipeline, cave culling, collision, region files
+│   └── sw_voxel/       # Voxel chunks: storage, light, greedy and model mesher, chunk pipeline, far terrain LOD, cave culling, collision, region files
 │       ├── src/                 # Library. content.zig gives the content contract
 │       └── testing/content.zig  # Test content: numbered blocks, no game names
 ├── examples/

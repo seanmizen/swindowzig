@@ -41,6 +41,8 @@ pub const clock = @import("clock.zig");
 
 /// The pure chunk stages: generate, light and mesh (C2, C3).
 pub const stages = @import("pipeline/stages.zig");
+/// The far terrain mesh at a lower resolution (REQ-VOXEL-021).
+pub const lod = @import("pipeline/lod.zig");
 /// The chunk scheduler: desired state, priority, versions, eviction (C8).
 pub const scheduler = @import("pipeline/scheduler.zig");
 /// The bytes of the chunk messages (P6).
@@ -77,6 +79,7 @@ test {
     _ = frustum;
     _ = collision;
     _ = stages;
+    _ = lod;
     _ = scheduler;
     _ = protocol;
     _ = mesh_bytes;

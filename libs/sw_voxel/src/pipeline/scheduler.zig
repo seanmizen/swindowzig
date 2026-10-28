@@ -45,6 +45,7 @@ const std = @import("std");
 const stages = @import("stages.zig");
 const protocol = @import("protocol.zig");
 const mesh_bytes = @import("mesh_bytes.zig");
+const lod = @import("lod.zig");
 const chunk_mod = @import("../chunk.zig");
 const world_mod = @import("../world.zig");
 
@@ -142,6 +143,8 @@ pub const Job = struct {
     /// Generate: main needs the blocks (the prefetch radius, C6). A chunk
     /// in the World without blocks gets them from a generate job too.
     want_blocks: bool = false,
+    /// Mesh: the level of detail (REQ-VOXEL-021). 0 is the full mesh.
+    lod: u8 = 0,
 
     fn lessThan(_: void, a: Job, b: Job) bool {
         if (a.class != b.class) return @backingInt(a.class) < @backingInt(b.class);
@@ -168,6 +171,7 @@ pub const Started = struct {
             .ao = ao,
             .lighting = lighting,
             .want_blocks = self.job.want_blocks,
+            .lod = self.job.lod,
             .blocks = self.inputs.blocks,
             .light = self.inputs.light,
         };
@@ -286,6 +290,10 @@ pub const Scheduler = struct {
     /// The mesh options. It changes with `ao`, `lighting` or
     /// `smooth_light`, and a mesh with other options is stale.
     options: u32 = 1,
+    /// The distance in chunks where the far terrain starts (REQ-VOXEL-021).
+    /// Past it, a chunk gets a mesh at level 1, past 2 × it at level 2,
+    /// and past 4 × it at level 3. 0: each chunk gets the full mesh.
+    lod_distance: i32 = 0,
     /// The player chunk.
     center_cx: i32 = 0,
     center_cz: i32 = 0,
@@ -343,6 +351,44 @@ pub const Scheduler = struct {
         self.dirty = true;
     }
 
+    /// Set the distance of the far terrain (REQ-VOXEL-021). 0 turns it
+    /// off. The next plan remeshes each chunk with a different level.
+    pub fn setLodDistance(self: *Scheduler, d: i32) void {
+        std.debug.assert(d >= 0);
+        if (d == self.lod_distance) return;
+        self.lod_distance = d;
+        self.dirty = true;
+    }
+
+    /// The level of detail of a mesh at distance `d` in chunks from the
+    /// player chunk.
+    fn levelAt(self: *const Scheduler, d: f32) u8 {
+        if (self.lod_distance <= 0) return 0;
+        const l: f32 = @floatFromInt(self.lod_distance);
+        if (d <= l) return 0;
+        if (d <= 2 * l) return 1;
+        if (d <= 4 * l) return 2;
+        return lod.MAX_LEVEL;
+    }
+
+    /// The level of detail of the mesh of the chunk at offset (dx, dz) from
+    /// the player chunk.
+    pub fn lodLevel(self: *const Scheduler, dx: i32, dz: i32) u8 {
+        return self.levelAt(@sqrt(@as(f32, @floatFromInt(dx * dx + dz * dz))));
+    }
+
+    /// True when the level of the mesh of `lc` can stay. The levels of the
+    /// distances 1 chunk nearer and 1 chunk further can stay too, so a
+    /// chunk at a level border does not remesh when the player moves a
+    /// little (the hysteresis).
+    fn lodOk(self: *const Scheduler, lc: *const LoadedChunk) bool {
+        if (self.lod_distance <= 0) return lc.mesh_lod == 0;
+        const dx = lc.cx - self.center_cx;
+        const dz = lc.cz - self.center_cz;
+        const d = @sqrt(@as(f32, @floatFromInt(dx * dx + dz * dz)));
+        return lc.mesh_lod >= self.levelAt(@max(d - 1, 0)) and lc.mesh_lod <= self.levelAt(d + 1);
+    }
+
     /// Set the AO and lighting modes of the mesher. Each mesh becomes stale.
     pub fn setMeshOptions(self: *Scheduler, ao: stages.AOStrategy, lighting: stages.LightingMode) void {
         if (ao == self.ao and lighting == self.lighting) return;
@@ -388,8 +434,15 @@ pub const Scheduler = struct {
         return have.isCurrent(now);
     }
 
-    /// True when the mesh of `lc` is the mesh of its blocks and light now.
+    /// True when the mesh of `lc` is the mesh of its blocks and light now,
+    /// at a level of detail for its distance.
     pub fn meshCurrent(self: *const Scheduler, world: *const World, lc: *const LoadedChunk) bool {
+        return self.meshFresh(world, lc) and self.lodOk(lc);
+    }
+
+    /// True when the mesh of `lc` is the mesh of its blocks and light now,
+    /// at any level of detail.
+    fn meshFresh(self: *const Scheduler, world: *const World, lc: *const LoadedChunk) bool {
         const have = lc.mesh_inputs orelse return false;
         if (lc.mesh_options != self.options) return false;
         const now = inputsNow(world, .mesh, lc.cx, lc.cz) orelse return false;
@@ -664,6 +717,7 @@ pub const Scheduler = struct {
                 lc.setMesh(m.info, m.bytes);
                 lc.mesh_inputs = st.inputs;
                 lc.mesh_options = st.options;
+                lc.mesh_lod = st.job.lod;
             },
         }
         self.stats.installed[k] += 1;
@@ -723,8 +777,11 @@ pub const Scheduler = struct {
                 if (Region.mesh(dx, dz, r) and c.light_ok and !self.meshCurrent(world, lc) and
                     self.ring(cells, i, side, .light_ok))
                 {
-                    const class: Class = if (sim) .sim else if (lc.mesh_inputs != null) .edit else if (inView(cells, i, side, 0)) .view else .other;
-                    try self.queue.append(self.allocator, .{ .stage = .mesh, .cx = cx, .cz = cz, .class = class, .dist_sq = d2 });
+                    // A new level of detail for a mesh that is fresh is
+                    // not an edit: it waits for the other jobs.
+                    const relevel = self.meshFresh(world, lc);
+                    const class: Class = if (sim) .sim else if (relevel) .other else if (lc.mesh_inputs != null) .edit else if (inView(cells, i, side, 0)) .view else .other;
+                    try self.queue.append(self.allocator, .{ .stage = .mesh, .cx = cx, .cz = cz, .class = class, .dist_sq = d2, .lod = self.lodLevel(dx, dz) });
                 } else if (Region.light(dx, dz, r) and !c.light_ok and self.ring(cells, i, side, .blocks)) {
                     const class: Class = if (Region.simFeed(dx, dz, 1)) .sim else if (lc.light_inputs != null) .edit else if (inView(cells, i, side, 1)) .view else .other;
                     try self.queue.append(self.allocator, .{ .stage = .light, .cx = cx, .cz = cz, .class = class, .dist_sq = d2 });

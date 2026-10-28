@@ -97,6 +97,9 @@ pub const LoadedChunk = struct {
     mesh_inputs: ?Inputs = null,
     /// The mesh options (AO, lighting) of the installed mesh.
     mesh_options: u32 = 0,
+    /// The level of detail of the installed mesh (REQ-VOXEL-021). 0 is the
+    /// full mesh.
+    mesh_lod: u8 = 0,
 
     pub fn init(allocator: std.mem.Allocator, cx: i32, cz: i32) LoadedChunk {
         return .{

@@ -1316,6 +1316,9 @@ pub const MeshOptions = struct {
     /// when the getter uses other coordinates, as the mesh stage does
     /// (`pipeline/stages.zig`).
     origin: ?[2]i32 = null,
+    /// The largest size of a merged quad on each axis, in cells. The far
+    /// terrain mesh (REQ-VOXEL-021) uses a larger value.
+    max_merge: i32 = 6,
 
     fn originOr(self: MeshOptions, world_ox: i32, world_oz: i32) [2]i32 {
         return self.origin orelse .{ world_ox, world_oz };
@@ -1375,7 +1378,8 @@ pub fn generateMeshWith(
     // bottleneck is the merge rule, not the cap. The hardware depth test is
     // now always on, so a later change can lift the cap. That change gives
     // a new quad hash in bench_mesher and needs new lavapipe goldens.
-    const MAX_GREEDY_DIM: i32 = 6;
+    // `options.max_merge` holds the cap. Its default is 6.
+    const MAX_GREEDY_DIM: i32 = options.max_merge;
 
     inline for ([_]Face{ .px, .nx, .py, .ny, .pz, .nz }) |face| {
         const ext = greedyFaceExtents(face);

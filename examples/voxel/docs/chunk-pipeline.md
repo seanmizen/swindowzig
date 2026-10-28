@@ -157,7 +157,9 @@ Job, 88 bytes
            (smooth light off, REQ-VOXEL-008)
   4  i32   cx
   8  i32   cz
-  12 u32   0
+  12 u8    level of detail of a mesh, 0 to 3 (REQ-VOXEL-021)
+  13 u8    0
+  14 u16   0
   16 u32×9 block versions of the 3×3 chunks
   52 u32×9 light versions of the 3×3 chunks
 
@@ -189,7 +191,8 @@ Error, 16 bytes, then the text
 
 
 Protocol version 4 added the section connections for cave culling
-(REQ-VOXEL-019). The Result payload starts at byte 96 of the message in the
+(REQ-VOXEL-019). Protocol version 5 added the level of detail of a mesh
+job (REQ-VOXEL-021). The Result payload starts at byte 96 of the message in the
 demo (`protocol.PAYLOAD_OFFSET`, byte 64 before version 4), so the PackedQuad
 bytes of a mesh are 16-byte aligned, ready for upload (C5). The mesh hash
 is `protocol.meshHash` of the payload. The worker calculates it, so main

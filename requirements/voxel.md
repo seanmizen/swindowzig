@@ -436,3 +436,42 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   "visibility: each section on a line of sight is visible, and the walk
   culls a closed cave (REQ-VOXEL-020)"
 - **Relations:** depends-on REQ-VOXEL-019
+
+## REQ-VOXEL-021 — Far chunks get a mesh at a lower resolution
+
+- **Status:** active
+- **Source:** agent:SWZ-39
+- **Origin:** #39
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the far terrain distance is more than 0, the
+  scheduler shall give each chunk past that distance a mesh of cells of 2,
+  4 or 8 blocks, from the distance of the chunk.
+- **Rationale:** A far chunk costs as much as a near chunk, but it covers
+  few pixels. A mesh of larger cells has fewer quads, so the render
+  distance can be larger. The mesh stays a pure stage (C2), and the quads
+  keep the PackedQuad format.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/pipeline/lod.zig` › "lod: level 0 is the
+    full mesh, and each level has fewer quads (REQ-VOXEL-021)"
+  - Test — `examples/voxel/scheduler_test.zig` › "scheduler: far chunks
+    get a mesh at their level of detail (REQ-VOXEL-021)"
+- **Relations:** none
+
+## REQ-VOXEL-022 — No gap shows at the border between two levels of detail
+
+- **Status:** active
+- **Source:** agent:SWZ-39
+- **Origin:** #39
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** At the border between two chunks at any two levels of
+  detail, the meshes shall have a face at each point where one side is a
+  full cube and the other side is open.
+- **Rationale:** A gap at a level border shows the sky or the far
+  terrain through the ground. Each coarse cell holds each full cube of
+  its blocks, and each mesh reads the real blocks across the border, so
+  one of the two meshes always draws the face.
+- **Verification:** Test — `libs/sw_voxel/src/pipeline/lod.zig` › "lod:
+  no gap at the border between two levels (REQ-VOXEL-022)"
+- **Relations:** depends-on REQ-VOXEL-021
