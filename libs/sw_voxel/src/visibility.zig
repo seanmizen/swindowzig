@@ -9,9 +9,11 @@
 //!
 //! `walk` starts at the section of the camera and goes from section to
 //! section. It enters a neighbour through a face, and leaves the neighbour
-//! only through a face that connects to the entry face. It never goes back
+//! only through a face that connects to an entry face. It never goes back
 //! in a direction opposite to a direction of its path, so the path goes
-//! away from the camera. A section that the walk does not reach can not be
+//! away from the camera. Each path to a section has the same length, so
+//! the walk records each face that a path enters through before it leaves
+//! the section (REQ-VOXEL-024). A section that the walk does not reach can not be
 //! seen: a line of sight to it goes through closed cells. The walk keeps a
 //! section that it can not prove hidden, so the image does not change.
 //!
@@ -188,15 +190,22 @@ pub const Graph = struct {
 pub const VisibleSet = struct {
     sections: std.AutoHashMapUnmanaged(SectionPos, void) = .empty,
     columns: std.AutoHashMapUnmanaged([2]i32, void) = .empty,
+    /// The work lists of `walk`, kept for the next walk.
+    queue: std.ArrayList(Node) = .empty,
+    index: std.AutoHashMapUnmanaged(SectionPos, u32) = .empty,
 
     pub fn deinit(self: *VisibleSet, allocator: std.mem.Allocator) void {
         self.sections.deinit(allocator);
         self.columns.deinit(allocator);
+        self.queue.deinit(allocator);
+        self.index.deinit(allocator);
     }
 
     pub fn clear(self: *VisibleSet) void {
         self.sections.clearRetainingCapacity();
         self.columns.clearRetainingCapacity();
+        self.queue.clearRetainingCapacity();
+        self.index.clearRetainingCapacity();
     }
 
     pub fn section(self: *const VisibleSet, p: SectionPos) bool {
@@ -224,43 +233,72 @@ pub const WalkOptions = struct {
     frustum: ?*const frustum_mod.Frustum = null,
 };
 
-const Node = struct {
+pub const Node = struct {
     p: SectionPos,
-    entry: Face,
+    /// The faces that the paths entered through: one bit for each Face.
+    entries: u6,
     /// The directions of the path from the start: one bit for each Face.
     dirs: u6,
 };
 
 /// Find the sections that the camera at section `start` can see, into
 /// `out` (cleared first).
+///
+/// The walk is breadth first. Each step goes away from the camera on its
+/// axis, so each path to a section has the same number of steps: the
+/// distance on x, y and z. So the walk enters a section through all its
+/// paths before it leaves the section, and it leaves through each face
+/// that connects to one of the entry faces (REQ-VOXEL-024). A line of
+/// sight goes through open cells from one face of a section to another,
+/// so the walk follows each line of sight.
 pub fn walk(allocator: std.mem.Allocator, start: SectionPos, graph: Graph, options: WalkOptions, out: *VisibleSet) !void {
     out.clear();
     _ = try out.add(allocator, start);
-    var queue: std.ArrayList(Node) = .empty;
-    defer queue.deinit(allocator);
     // From the start section, each direction is open: the camera can be in
     // any cell of it.
     for (std.enums.values(Face)) |f| {
         const n = neighbour(start, f);
         if (!inRange(start, n, options)) continue;
-        if (!try out.add(allocator, n)) continue;
-        try queue.append(allocator, .{ .p = n, .entry = f.opposite(), .dirs = @as(u6, 1) << @backingInt(f) });
+        try enter(allocator, out, n, f.opposite(), bitOf(f));
     }
     var head: usize = 0;
-    while (head < queue.items.len) : (head += 1) {
-        const node = queue.items[head];
+    while (head < out.queue.items.len) : (head += 1) {
+        const node = out.queue.items[head];
         const conn = graph.connFn(graph.ctx, node.p) orelse all;
         for (std.enums.values(Face)) |f| {
             // Never back toward the camera.
-            if (node.dirs & (@as(u6, 1) << @backingInt(f.opposite())) != 0) continue;
-            if (!connects(conn, node.entry, f)) continue;
+            if (node.dirs & bitOf(f.opposite()) != 0) continue;
+            if (!connectsAny(conn, node.entries, f)) continue;
             const n = neighbour(node.p, f);
             if (!inRange(start, n, options)) continue;
-            if (out.section(n)) continue;
-            _ = try out.add(allocator, n);
-            try queue.append(allocator, .{ .p = n, .entry = f.opposite(), .dirs = node.dirs | (@as(u6, 1) << @backingInt(f)) });
+            try enter(allocator, out, n, f.opposite(), node.dirs | bitOf(f));
         }
     }
+}
+
+fn bitOf(f: Face) u6 {
+    return @as(u6, 1) << @backingInt(f);
+}
+
+/// True when face `exit` connects to one of the faces in `entries`.
+fn connectsAny(c: Connectivity, entries: u6, exit: Face) bool {
+    for (std.enums.values(Face)) |e| {
+        if (entries & bitOf(e) != 0 and connects(c, e, exit)) return true;
+    }
+    return false;
+}
+
+/// Enter section `n` through face `entry`. A section in the queue gets the
+/// entry face too.
+fn enter(allocator: std.mem.Allocator, out: *VisibleSet, n: SectionPos, entry: Face, dirs: u6) !void {
+    const gop = try out.index.getOrPut(allocator, n);
+    if (gop.found_existing) {
+        out.queue.items[gop.value_ptr.*].entries |= bitOf(entry);
+        return;
+    }
+    gop.value_ptr.* = @intCast(out.queue.items.len);
+    try out.queue.append(allocator, .{ .p = n, .entries = bitOf(entry), .dirs = dirs });
+    _ = try out.add(allocator, n);
 }
 
 fn neighbour(p: SectionPos, f: Face) SectionPos {
@@ -428,6 +466,30 @@ test "visibility: the walk stops at closed sections, and keeps the walls (REQ-VO
     try testing.expect(vis.section(.{ .cx = 2, .sy = 0, .cz = -2 }));
     try testing.expect(!vis.column(3, 0));
     try testing.expectEqual(@as(usize, 25 * SECTION_COUNT), vis.sections.count());
+}
+
+test "visibility: the walk leaves a section through each face that a path entered (REQ-VOXEL-024)" {
+    // Two paths go into section T = (1, 2, 1): through (1, 2, 0), which
+    // enters T at its -z face, and through (0, 2, 1), which enters T at
+    // its -x face. T connects only -x and +z. A line of sight goes from the
+    // camera through (0, 2, 1) and T to (1, 2, 2).
+    const a = testing.allocator;
+    const G = struct {
+        fn conn(_: *const anyopaque, p: SectionPos) ?Connectivity {
+            if (p.sy != 2) return none;
+            if (p.cx == 1 and p.cz == 1) return pairBit(.nx, .pz);
+            if ((p.cx == 0 and p.cz == 0) or (p.cx == 1 and p.cz == 0) or (p.cx == 0 and p.cz == 1)) return all;
+            return none;
+        }
+    };
+    var vis: VisibleSet = .{};
+    defer vis.deinit(a);
+    const g: Graph = .{ .ctx = &vis, .connFn = G.conn };
+    try walk(a, .{ .cx = 0, .sy = 2, .cz = 0 }, g, .{ .radius = 8 }, &vis);
+    try testing.expect(vis.section(.{ .cx = 1, .sy = 2, .cz = 1 }));
+    try testing.expect(vis.section(.{ .cx = 1, .sy = 2, .cz = 2 }));
+    // T does not connect -z to +x, so the walk does not leave T at +x.
+    try testing.expect(!vis.section(.{ .cx = 2, .sy = 2, .cz = 1 }));
 }
 
 test "visibility: the box cull keeps the boxes in visible sections (REQ-VOXEL-020)" {

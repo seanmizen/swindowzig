@@ -14,6 +14,7 @@ const protocol = @import("sw_voxel").protocol;
 const stages = @import("sw_voxel").stages;
 const worker_world = @import("sw_voxel").worker_world;
 const chunk_mod = @import("sw_voxel").chunk;
+const mesher_mod = @import("sw_voxel").mesher;
 const world_gen = @import("voxel_content").world_gen;
 
 const PalettedBlocks = chunk_mod.PalettedBlocks;
@@ -23,6 +24,13 @@ fn hilly(seed: u64) world_gen.WorldGenConfig {
     var c = world_gen.presetConfig(.hilly);
     c.seed = seed;
     return c;
+}
+
+/// Draw ranges with each of `count` quads in section 0 (REQ-VOXEL-023).
+fn rangesOf(count: u24) mesher_mod.SectionRanges {
+    var r = mesher_mod.EMPTY_RANGES;
+    for (&r) |*x| x.end = count;
+    return r;
 }
 
 /// Encode the decoded message `d` again.
@@ -152,7 +160,7 @@ test "protocol: Result and Error round trip, with the payload bytes ready for up
     var m = try stages.mesh(a, &hood, .moore, .skylight);
     defer m.deinit(a);
     try std.testing.expect(m.quads.len > 0);
-    const mh: protocol.ResultHead = .{ .stage = .mesh, .cx = 2, .cz = -1, .block_ver = 0, .y_min = m.y_min, .y_max = m.y_max, .job_us = 99 };
+    const mh: protocol.ResultHead = .{ .stage = .mesh, .cx = 2, .cz = -1, .block_ver = 0, .y_min = m.y_min, .y_max = m.y_max, .job_us = 99, .ranges = m.ranges };
     const mb = try protocol.encodeResult(a, 5, mh, .{ .quads = m.quads });
     defer a.free(mb);
     try std.testing.expectEqual(protocol.PAYLOAD_OFFSET + 16 * m.quads.len, mb.len);
@@ -213,7 +221,9 @@ test "protocol: the fields are at the documented offsets, little-endian" {
 
     var sections: [protocol.SECTION_COUNT]u16 = @splat(0x7FFF);
     sections[1] = 0x0123;
-    const r = try protocol.encodeResult(a, 1, .{ .stage = .mesh, .cx = 0, .cz = 0, .y_min = 1.5, .y_max = 70, .job_us = 7, .sections = sections }, .{ .quads = &.{.{ 1, 2, 3, 4 }} });
+    var ranges = rangesOf(1);
+    ranges[0] = .{ .end = 0, .top = 1 };
+    const r = try protocol.encodeResult(a, 1, .{ .stage = .mesh, .cx = 0, .cz = 0, .y_min = 1.5, .y_max = 70, .job_us = 7, .sections = sections, .ranges = ranges }, .{ .quads = &.{.{ 1, 2, 3, 4 }} });
     defer a.free(r);
     const p = protocol.PAYLOAD_OFFSET;
     try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 1.5))), std.mem.readInt(u32, r[32..36], .little));
@@ -224,11 +234,24 @@ test "protocol: the fields are at the documented offsets, little-endian" {
     // The section connections (REQ-VOXEL-019), then the quads.
     try std.testing.expectEqual(@as(u16, 0x7FFF), std.mem.readInt(u16, r[64..66], .little));
     try std.testing.expectEqual(@as(u16, 0x0123), std.mem.readInt(u16, r[66..68], .little));
-    try std.testing.expectEqual(@as(usize, 64 + protocol.SECTIONS_LEN), p);
+    // The draw ranges (REQ-VOXEL-023): end in bits 0-23, top in bits 24-31.
+    const rg = 64 + protocol.SECTIONS_LEN;
+    try std.testing.expectEqual(@as(u32, 1 << 24), std.mem.readInt(u32, r[rg..][0..4], .little));
+    try std.testing.expectEqual(@as(u32, 1 | 1 << 24), std.mem.readInt(u32, r[rg + 4 ..][0..4], .little));
+    try std.testing.expectEqual(@as(usize, 64 + protocol.SECTIONS_LEN + protocol.RANGES_LEN), p);
     try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, r[p..][0..4], .little));
     try std.testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, r[p + 12 ..][0..4], .little));
     const decoded = try protocol.decode(r);
     try std.testing.expectEqualSlices(u16, &sections, &decoded.msg.result.head.sections);
+    try std.testing.expectEqual(ranges, decoded.msg.result.head.ranges);
+    // Ranges that go down, or that do not end at the quad count, are bad.
+    var bad = try a.dupe(u8, r);
+    defer a.free(bad);
+    std.mem.writeInt(u32, bad[rg + 4 ..][0..4], 0, .little);
+    try std.testing.expectError(error.BadField, protocol.decode(bad));
+    @memcpy(bad, r);
+    std.mem.writeInt(u32, bad[rg..][0..4], 2, .little);
+    try std.testing.expectError(error.BadField, protocol.decode(bad));
 }
 
 test "protocol: a bad header gives an error" {
@@ -271,7 +294,7 @@ fn corpus(a: std.mem.Allocator, list: *std.ArrayList([]u8)) !void {
     try pb.set(a, 65535, .wood);
     try list.append(a, try protocol.encodeResult(a, 3, .{ .stage = .generate, .cx = 0, .cz = 0 }, .{ .blocks = &pb }));
     try list.append(a, try protocol.encodeResult(a, 4, .{ .stage = .light, .cx = 0, .cz = 0, .light_hash = 5 }, .none));
-    try list.append(a, try protocol.encodeResult(a, 5, .{ .stage = .mesh, .cx = 0, .cz = 0 }, .{ .quads = &.{ .{ 1, 2, 3, 4 }, .{ 5, 6, 7, 8 } } }));
+    try list.append(a, try protocol.encodeResult(a, 5, .{ .stage = .mesh, .cx = 0, .cz = 0, .ranges = rangesOf(2) }, .{ .quads = &.{ .{ 1, 2, 3, 4 }, .{ 5, 6, 7, 8 } } }));
     try list.append(a, try protocol.encodeError(a, 6, .{ .code = .bad_message, .text = "x" }));
 }
 

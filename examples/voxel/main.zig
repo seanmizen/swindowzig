@@ -786,6 +786,36 @@ const QuadBufferPool = struct {
     }
 };
 
+/// The box test result of one chunk (REQ-VOXEL-025). The result is
+/// correct only for the eye and the scene generation of its frame.
+const OccResult = struct {
+    tag: u64,
+    eye: [3]f32,
+    view_proj: [16]f32,
+    gen: u64,
+    /// No sample of the box passed the depth test.
+    hidden: bool,
+    /// The box was on the screen in full.
+    on_screen: bool,
+};
+
+/// The chunks of one box test frame (REQ-VOXEL-025), in the order of the
+/// queries.
+const OccFrame = struct {
+    tag: u64 = std.math.maxInt(u64),
+    eye: [3]f32 = .{ 0, 0, 0 },
+    view_proj: [16]f32 = @splat(0),
+    gen: u64 = 0,
+    keys: std.ArrayList(world_mod.ChunkKey) = .empty,
+    /// The box was on the screen in full, so the test saw each part of it.
+    on_screen: std.ArrayList(bool) = .empty,
+
+    fn deinit(self: *OccFrame, allocator: std.mem.Allocator) void {
+        self.keys.deinit(allocator);
+        self.on_screen.deinit(allocator);
+    }
+};
+
 /// The GPU side of one chunk mesh. Main keeps no CPU copy of the quads
 /// (C5).
 const ChunkGPU = struct {
@@ -795,6 +825,9 @@ const ChunkGPU = struct {
     /// The world y range of the mesh, for the frustum cull.
     y_min: f32 = chunk_mod.MIN_Y,
     y_max: f32 = chunk_mod.MIN_Y + chunk_mod.CHUNK_H,
+    /// The draw range of each section of the mesh in the buffer
+    /// (REQ-VOXEL-023).
+    ranges: mesher_mod.SectionRanges = mesher_mod.EMPTY_RANGES,
     /// The value of State.debug_tick when the mesh was last rebuilt. The
     /// header of the quad buffer holds it, and vs_chunk tints the chunk
     /// orange for 64 ticks after it when GPU debug is on.
@@ -804,6 +837,9 @@ const ChunkGPU = struct {
     fn release(self: *ChunkGPU) void {
         if (self.quads) |qb| state.quad_pool.put(state.allocator, qb);
         self.* = .{};
+        // The depth of the scene can change: old occlusion results are
+        // not correct now (REQ-VOXEL-025).
+        state.scene_gen +%= 1;
     }
 };
 
@@ -987,6 +1023,34 @@ const State = struct {
     lod_distance: i32 = 0,
     /// The sections that the camera can see, from the walk of each frame.
     cave_visible: visibility.VisibleSet = .{},
+    /// The sections that the section cull did not draw in the last frame,
+    /// in the chunks that it drew (REQ-VOXEL-024).
+    sections_culled: u32 = 0,
+    /// GPU occlusion queries (REQ-VOXEL-025): skip a chunk that a box test
+    /// found hidden from the same eye and the same scene.
+    /// --occlusion=<on|off>.
+    occlusion: bool = true,
+    occ: ?gpu_mod.OcclusionQueries = null,
+    /// The last box test result of each chunk.
+    occ_results: std.AutoHashMapUnmanaged(world_mod.ChunkKey, OccResult) = .empty,
+    /// The chunks of each box test frame that waits for its results, by
+    /// tag modulo the length.
+    occ_frames: [8]OccFrame = @splat(.{}),
+    occ_tag: u64 = 0,
+    /// Changes when a mesh on the GPU changes (an upload or a release).
+    scene_gen: u64 = 0,
+    /// The chunks that the occlusion cull skipped in the last frame.
+    occlusion_culled: u32 = 0,
+    /// Frames with the same eye and scene, for the --dump-frame capture.
+    occ_stable_frames: u32 = 0,
+    occ_last_eye: [3]f32 = .{ 0, 0, 0 },
+    occ_last_gen: u64 = 0,
+    /// Frames since the scheduler became idle, for the --dump-frame
+    /// capture.
+    idle_frames: u32 = 0,
+    /// The debug entity boxes of the last frame that `visibility.cullBoxes`
+    /// removed (REQ-VOXEL-026).
+    entities_culled: u32 = 0,
     /// F3-style debug overlay rolling FPS sampler. Captured at the top of
     /// voxelRender from real-time deltas (not the fixed-step sim tick rate),
     /// so the displayed FPS reflects actual present cadence even when the
@@ -1157,6 +1221,17 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.cave_culled = 0;
     state.lod_distance = 0;
     state.cave_visible = .{};
+    state.sections_culled = 0;
+    state.occlusion = true;
+    state.occ = null;
+    state.occ_results = .empty;
+    state.occ_frames = @splat(.{});
+    state.occ_tag = 0;
+    state.scene_gen = 0;
+    state.occlusion_culled = 0;
+    state.occ_stable_frames = 0;
+    state.idle_frames = 0;
+    state.entities_culled = 0;
     state.fps_window_ns = @splat(0);
     state.fps_window_idx = 0;
     state.fps_window_filled = false;
@@ -1376,6 +1451,17 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
             state.lod_distance = n;
+        }
+        if (std.mem.startsWith(u8, arg, "--occlusion=")) {
+            const val = std.mem.sliceTo(arg["--occlusion=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.occlusion = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.occlusion = false;
+            } else {
+                std.log.err("--occlusion: invalid value '{s}'. Accepted: on, off", .{val});
+                fatalExit(1);
+            }
         }
         if (std.mem.startsWith(u8, arg, "--cave-cull=")) {
             const val = std.mem.sliceTo(arg["--cave-cull=".len..], 0);
@@ -1828,6 +1914,169 @@ fn sectionConnectivity(ctx: *const anyopaque, p: visibility.SectionPos) ?visibil
     return lc.mesh.sections[@intCast(p.sy)];
 }
 
+/// The entities of the demo (REQ-VOXEL-026). The demo has no game
+/// entities: the debug view (Cmd+D) draws these. The list goes through
+/// the box cull of sw_voxel as game entities would.
+const DebugEntity = enum(u8) {
+    player,
+    spawn_marker,
+};
+
+/// The box of each debug entity, in world coordinates.
+fn entityBoxes() [std.enums.values(DebugEntity).len]visibility.Box {
+    const r = player_mod.PLAYER_RADIUS;
+    const feet = state.player.feet_pos;
+    const spawn = state.spawn_point;
+    return .{
+        .{ .min = .{ feet[0] - r, feet[1], feet[2] - r }, .max = .{ feet[0] + r, feet[1] + player_mod.PLAYER_HEIGHT, feet[2] + r } },
+        .{ .min = .{ spawn[0] - r, spawn[1], spawn[2] - r }, .max = .{ spawn[0] + r, spawn[1] + 0.02, spawn[2] + r } },
+    };
+}
+
+/// Cull the debug entities (REQ-VOXEL-026): true for each entity to draw.
+/// With the cave cull, `visibility.cullBoxes` tests each box against the
+/// frustum and the sections of this frame. With no cave cull, only the
+/// frustum. The strategy `none` keeps each entity.
+fn cullEntities(cave: bool, frustum: *const frustum_mod.Frustum) [std.enums.values(DebugEntity).len]bool {
+    const boxes = entityBoxes();
+    var keep: [boxes.len]bool = @splat(true);
+    const fr: ?*const frustum_mod.Frustum = if (state.frustum_strategy == .frustum) frustum else null;
+    if (cave) {
+        _ = visibility.cullBoxes(&boxes, &state.cave_visible, fr, &keep);
+    } else if (fr) |f| {
+        for (boxes, &keep) |b, *k| {
+            k.* = !frustum_mod.aabbOutside(f.*, math.Aabb.init(math.Vec3.init(b.min[0], b.min[1], b.min[2]), math.Vec3.init(b.max[0], b.max[1], b.max[2])));
+        }
+    }
+    state.entities_culled = 0;
+    for (keep) |k| state.entities_culled += @intFromBool(!k);
+    return keep;
+}
+
+/// A bit for each section of a chunk column (REQ-VOXEL-024).
+const SectionMask = u64;
+const ALL_SECTIONS: SectionMask = std.math.maxInt(SectionMask) >> (64 - chunk_mod.SECTION_COUNT);
+comptime {
+    std.debug.assert(chunk_mod.SECTION_COUNT <= 64);
+}
+
+/// The sections of chunk (cx, cz) that the walk of this frame reached
+/// (REQ-VOXEL-024). In the 3×3 chunks around the camera, the sections next
+/// to the camera section are always visible, as the column rule keeps
+/// these chunks.
+fn visibleSections(cx: i32, cz: i32, near: bool, cam_sy: i32) SectionMask {
+    var m: SectionMask = 0;
+    for (0..chunk_mod.SECTION_COUNT) |sy| {
+        if (state.cave_visible.section(.{ .cx = cx, .sy = @intCast(sy), .cz = cz })) m |= @as(SectionMask, 1) << @intCast(sy);
+    }
+    if (near) {
+        var sy = @max(cam_sy - 1, 0);
+        while (sy <= @min(cam_sy + 1, chunk_mod.SECTION_COUNT - 1)) : (sy += 1) m |= @as(SectionMask, 1) << @intCast(sy);
+    }
+    return m;
+}
+
+/// Draw the ranges of the sections in `mask` (REQ-VOXEL-023,
+/// REQ-VOXEL-024). The range of section s is drawn when a section from s
+/// to its top is in `mask`. Ranges next to each other go in one draw, so
+/// with each section visible it is one draw of the full mesh, as before.
+/// Returns the number of ranges with quads that it did not draw.
+fn drawSections(pass: gpu_mod.RenderPassEncoder, cg: ChunkGPU, mask: SectionMask) u32 {
+    const ranges = cg.ranges;
+    if (mask == ALL_SECTIONS or ranges[chunk_mod.SECTION_COUNT - 1].end != cg.quad_count) {
+        pass.draw(cg.quad_count * 6, 1, 0, 0);
+        return 0;
+    }
+    var culled: u32 = 0;
+    var run: ?u32 = null;
+    var start: u32 = 0;
+    for (ranges, 0..) |r, sy| {
+        const end: u32 = r.end;
+        defer start = end;
+        if (end == start) continue;
+        const reach = (ALL_SECTIONS >> @intCast(chunk_mod.SECTION_COUNT - 1 - @as(usize, r.top))) & ~((@as(SectionMask, 1) << @intCast(sy)) - 1);
+        if (mask & reach != 0) {
+            if (run == null) run = start;
+        } else {
+            if (run) |first| pass.draw((start - first) * 6, 1, first * 6, 0);
+            run = null;
+            culled += 1;
+        }
+    }
+    if (run) |first| pass.draw((cg.quad_count - first) * 6, 1, first * 6, 0);
+    return culled;
+}
+
+/// The box margin of a chunk in the box test, in blocks (REQ-VOXEL-025).
+/// The box is a little larger than the mesh, so its faces are in front of
+/// the mesh faces on its sides.
+const OCC_MARGIN: f32 = 0.25;
+/// The most chunks that get a box test in one frame.
+const OCC_CAPACITY: u32 = 2048;
+/// --dump-frame waits for this many frames with the same eye and scene,
+/// so the results of the box tests come back.
+const OCC_SETTLE_FRAMES: u32 = 8;
+/// --dump-frame waits at most this many frames after the scheduler is
+/// idle.
+const OCC_SETTLE_LIMIT: u32 = 120;
+
+fn eyeEql(a: [3]f32, b: [3]f32) bool {
+    return a[0] == b[0] and a[1] == b[1] and a[2] == b[2];
+}
+
+/// Add the box of a chunk to the box tests of frame `f` (REQ-VOXEL-025).
+fn occlusionTest(f: *OccFrame, key: world_mod.ChunkKey, wx: f32, wz: f32, y_min: f32, y_max: f32, view_proj: [16]f32) void {
+    const w: f32 = @floatFromInt(chunk_mod.CHUNK_W);
+    const min = [3]f32{ wx - OCC_MARGIN, y_min - OCC_MARGIN, wz - OCC_MARGIN };
+    const max = [3]f32{ wx + w + OCC_MARGIN, y_max + OCC_MARGIN, wz + w + OCC_MARGIN };
+    _ = state.occ.?.add(min, max) orelse return;
+    f.keys.append(state.allocator, key) catch return state.occ.?.cancel();
+    f.on_screen.append(state.allocator, gpu_mod.occlusion_plan.boxOnScreen(view_proj, min, max)) catch return state.occ.?.cancel();
+}
+
+/// True when the last box test of the chunk found it hidden, and the
+/// result is correct for this frame (REQ-VOXEL-025). The test frame had
+/// the same eye and the same meshes on the GPU. Then:
+///
+///   - With the same view and projection, this frame has the same pixels
+///     as the test frame, and the depth of the test frame hid each pixel
+///     of the box.
+///   - After a turn of the camera, the result stays correct only for a box
+///     that was on the screen in full: the test saw each line of sight to
+///     the box, and a turn does not change a line of sight.
+///
+/// A move or a mesh change makes the result old, and the chunk is drawn in
+/// that same frame. So a chunk that comes into view does not appear late.
+fn occlusionHidden(key: world_mod.ChunkKey, eye: [3]f32, view_proj: [16]f32) bool {
+    if (state.occ == null) return false;
+    const r = state.occ_results.get(key) orelse return false;
+    if (!r.hidden or r.gen != state.scene_gen or !eyeEql(r.eye, eye)) return false;
+    return r.on_screen or std.mem.eql(f32, &r.view_proj, &view_proj);
+}
+
+/// Read the box test results that the GPU gave (REQ-VOXEL-025).
+fn pollOcclusion(g: *gpu_mod.GPU) void {
+    const q = if (state.occ) |*q| q else return;
+    while (q.poll(g)) |r| {
+        const f = &state.occ_frames[@intCast(r.tag % state.occ_frames.len)];
+        // A frame of metadata that a newer frame took: no results.
+        if (f.tag != r.tag or f.keys.items.len != r.samples.len) continue;
+        for (f.keys.items, f.on_screen.items, r.samples) |key, on_screen, samples| {
+            const gop = state.occ_results.getOrPut(state.allocator, key) catch return;
+            // A result of an older frame does not replace a newer one.
+            if (gop.found_existing and gop.value_ptr.tag > r.tag) continue;
+            gop.value_ptr.* = .{
+                .tag = r.tag,
+                .eye = f.eye,
+                .view_proj = f.view_proj,
+                .gen = f.gen,
+                .hidden = samples == 0,
+                .on_screen = on_screen,
+            };
+        }
+    }
+}
+
 /// The view frustum test for the scheduler priority (C8, class 3).
 fn chunkInView(ctx: *const anyopaque, cx: i32, cz: i32) bool {
     const f: *const frustum_mod.Frustum = @ptrCast(@alignCast(ctx));
@@ -1895,6 +2144,7 @@ fn voxelFrame(ctx: *sw.Context) !void {
     }
 
     for (state.scheduler.evicted.items) |key| {
+        _ = state.occ_results.remove(key);
         if (state.chunk_gpu.fetchRemove(key)) |kv| {
             var cg = kv.value;
             cg.release();
@@ -3019,6 +3269,29 @@ fn voxelRender(ctx: *sw.Context) !void {
         .depth_clear_value = 1.0,
         .stencil_read_only = true,
     };
+    // Occlusion queries (REQ-VOXEL-025): read the results that the GPU
+    // gave, then start the box tests of this frame.
+    const cam_eye = [3]f32{ state.camera.position.x, state.camera.position.y, state.camera.position.z };
+    pollOcclusion(g);
+    if (eyeEql(cam_eye, state.occ_last_eye) and state.scene_gen == state.occ_last_gen) {
+        state.occ_stable_frames +|= 1;
+    } else {
+        state.occ_stable_frames = 0;
+    }
+    state.occ_last_eye = cam_eye;
+    state.occ_last_gen = state.scene_gen;
+    var occ_frame: ?*OccFrame = null;
+    if (state.occ) |*q| if (q.begin(g, view_proj.data, state.occ_tag)) {
+        const f = &state.occ_frames[@intCast(state.occ_tag % state.occ_frames.len)];
+        f.tag = state.occ_tag;
+        f.eye = cam_eye;
+        f.view_proj = view_proj.data;
+        f.gen = state.scene_gen;
+        f.keys.clearRetainingCapacity();
+        f.on_screen.clearRetainingCapacity();
+        occ_frame = f;
+        state.occ_tag += 1;
+    };
     const pass = encoder.beginRenderPass(.{
         .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
             .view = color_view,
@@ -3028,6 +3301,7 @@ fn voxelRender(ctx: *sw.Context) !void {
             .clear_value = .{ .r = 0.5, .g = 0.7, .b = 1.0, .a = 1.0 }, // Sky blue
         }},
         .depth_stencil_attachment = depth_attachment,
+        .occlusion_query_set = if (occ_frame != null) state.occ.?.querySet() else null,
     }) catch |err| {
         std.log.err("Failed to begin render pass: {}", .{err});
         return;
@@ -3047,6 +3321,8 @@ fn voxelRender(ctx: *sw.Context) !void {
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
     state.cave_culled = 0;
+    state.sections_culled = 0;
+    state.occlusion_culled = 0;
     // Cave culling (REQ-VOXEL-020): the sections that the camera can see
     // through open space. A walk that fails (no memory) culls nothing.
     const cave = state.cave_cull and state.frustum_strategy != .none and blk: {
@@ -3078,6 +3354,18 @@ fn voxelRender(ctx: *sw.Context) !void {
             if (cave and !near and !state.cave_visible.column(lc_ptr.*.cx, lc_ptr.*.cz)) {
                 state.cave_culled += 1;
                 continue;
+            }
+            // Occlusion (REQ-VOXEL-025). Each chunk that the culls above
+            // keep gets a box test in this frame, also a chunk that is not
+            // drawn, so its result stays current. The 3×3 chunks around the
+            // camera are never culled: the camera can be in the box.
+            if (!near) {
+                const key = world_mod.ChunkKey{ .cx = lc_ptr.*.cx, .cz = lc_ptr.*.cz };
+                if (occ_frame) |f| occlusionTest(f, key, lc_ptr.*.worldXf(), lc_ptr.*.worldZf(), y_min, y_max, view_proj.data);
+                if (occlusionHidden(key, cam_eye, view_proj.data)) {
+                    state.occlusion_culled += 1;
+                    continue;
+                }
             }
             state.frustum_drawn += 1;
             sorted_chunks.append(ctx.allocator(), lc_ptr.*) catch continue;
@@ -3111,18 +3399,32 @@ fn voxelRender(ctx: *sw.Context) !void {
     pass.setPipeline(state.chunk_pipeline.?);
     pass.setBindGroup(0, state.bind_group.?);
     pass.setBindGroup(2, state.model_bind_group.?);
+    const cam_sy = visibility.sectionOf(live_frustum.eye[0], live_frustum.eye[1], live_frustum.eye[2]).sy;
     for (sorted_chunks.items) |lc| {
         const key = world_mod.ChunkKey{ .cx = lc.cx, .cz = lc.cz };
         const cg = state.chunk_gpu.get(key) orelse continue;
         const qb = cg.quads orelse continue;
         if (cg.quad_count == 0) continue;
         pass.setBindGroup(1, qb.bind_group);
-        pass.draw(cg.quad_count * 6, 1, 0, 0);
+        // The section cull (REQ-VOXEL-024): draw only the ranges of the
+        // sections that the walk reached. With no cave cull, each section.
+        const near = @abs(lc.cx - live_frustum.cam_cx) <= 1 and @abs(lc.cz - live_frustum.cam_cz) <= 1;
+        const mask: SectionMask = if (cave) visibleSections(lc.cx, lc.cz, near, cam_sy) else ALL_SECTIONS;
+        state.sections_culled += drawSections(pass, cg, mask);
     }
+    // The box tests go after each chunk draw, so the depth is complete.
+    if (occ_frame != null) {
+        state.occ.?.draw(g, pass);
+        pass.setBindGroup(0, state.bind_group.?);
+    }
+    // The debug entities (REQ-VOXEL-026): the player hitbox and the spawn
+    // marker. `visibility.cullBoxes` removes each entity box that is out of
+    // the frustum or in no visible section.
+    const entity_keep = cullEntities(cave, &live_frustum);
     // =========================================================================
     // Player hitbox cylinder (drawn after voxels; no face culling so always visible)
     // =========================================================================
-    if (state.debug_mode and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
+    if (state.debug_mode and entity_keep[@backingInt(DebugEntity.player)] and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
         player_mod.buildCylinderMesh(
             state.player.feet_pos,
             100, // cyan
@@ -3150,7 +3452,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     // Reuses the same scratch buffers and GPU buffers as the player hitbox —
     // they're drawn sequentially so there's no overlap.
     // =========================================================================
-    if (state.debug_mode and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
+    if (state.debug_mode and entity_keep[@backingInt(DebugEntity.spawn_marker)] and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
         player_mod.buildDiscMesh(
             state.spawn_point,
             102, // bright red
@@ -3613,6 +3915,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     pass.end();
+    if (occ_frame != null) state.occ.?.resolve(encoder);
 
     // FXAA post-process pass: blit the offscreen scene texture to the swapchain.
     // Runs BEFORE the UI pass so the UI draws on top of the FXAA-resolved scene
@@ -3652,6 +3955,8 @@ fn voxelRender(ctx: *sw.Context) !void {
         return;
     };
 
+    if (state.scheduler.isIdle()) state.idle_frames +|= 1 else state.idle_frames = 0;
+
     // --dump-frame / --compare-golden: capture the rendered texture BEFORE present,
     // optionally write PPM, optionally compare against a golden, then exit.
     // When a TAS is running, defer capture until the TAS has finished so both MSAA
@@ -3666,6 +3971,11 @@ fn voxelRender(ctx: *sw.Context) !void {
         // whole desired state (C8) and no job runs, so the frame does not
         // depend on timing. See docs/chunk-pipeline.md.
         if (!state.scheduler.isIdle()) break :blk false;
+        // Occlusion queries (REQ-VOXEL-025): let the box tests of this eye
+        // come back, so the capture uses the occlusion cull. The cull does
+        // not change the image. A camera that does not stop gets the
+        // capture after OCC_SETTLE_LIMIT frames.
+        if (state.occ != null and state.occ_stable_frames < OCC_SETTLE_FRAMES and state.idle_frames < OCC_SETTLE_LIMIT) break :blk false;
         break :blk true;
     };
     // --dump-frame / --compare-golden: native only. WASM builds don't accept
@@ -3748,6 +4058,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     };
 
     g.submit(&[_]gpu_mod.CommandBuffer{cmd});
+    if (state.occ) |*q| q.submitted(g);
     g.present();
 }
 
@@ -3885,6 +4196,10 @@ fn voxelShutdown(ctx: *sw.Context) !void {
     state.chunk_gpu.deinit();
     state.quad_pool.deinit(state.allocator);
     state.cave_visible.deinit(state.allocator);
+    if (state.occ) |*q| q.deinit(ctx.gpu());
+    state.occ = null;
+    state.occ_results.deinit(state.allocator);
+    for (&state.occ_frames) |*f| f.deinit(state.allocator);
     state.world.deinit();
 
     state.overlay.deinit();
@@ -4108,6 +4423,21 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         .depth_stencil = cylinder_depth_stencil,
     });
 
+    // Occlusion queries (REQ-VOXEL-025): the box tests draw in the scene
+    // pass, so they use its formats and sample count. With no queries,
+    // each chunk that the other culls keep is drawn.
+    if (state.occlusion) {
+        state.occ = gpu_mod.OcclusionQueries.init(state.allocator, g, .{
+            .capacity = OCC_CAPACITY,
+            .color_format = .bgra8unorm,
+            .depth_format = .depth24plus,
+            .sample_count = sample_count,
+        }) catch |err| blk: {
+            std.log.warn("[OCC] no occlusion queries ({s}). Each chunk is drawn", .{@errorName(err)});
+            break :blk null;
+        };
+    }
+
     // Pre-allocate fixed-size cylinder GPU buffers (size never changes)
     state.cylinder_vertex_buffer = try g.createBuffer(.{
         .size = player_mod.CYLINDER_VERT_COUNT * @sizeOf(VoxelVertex),
@@ -4155,8 +4485,8 @@ fn logGpuMeshStats() void {
             });
         }
     };
-    std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s}) cave_culled={}", .{
-        state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(), state.cave_culled,
+    std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s}) cave_culled={} sections_culled={} occlusion_culled={} entities_culled={}", .{
+        state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(), state.cave_culled, state.sections_culled, state.occlusion_culled, state.entities_culled,
     });
     // C5: main keeps no CPU copy of a mesh after its upload. `waiting` is
     // the meshes whose bytes wait for the upload.
@@ -4242,6 +4572,9 @@ fn uploadNewMeshes(g: *gpu_mod.GPU) void {
 fn uploadChunkMesh(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !void {
     const bytes = lc.upload.?;
     const n = lc.mesh.quad_count;
+    // The depth of the scene can change: old occlusion results are not
+    // correct now (REQ-VOXEL-025).
+    state.scene_gen +%= 1;
     if (n == 0) {
         // Nothing to draw. The buffer goes back to the pool.
         if (cg.quads) |qb| state.quad_pool.put(state.allocator, qb);
@@ -4274,6 +4607,7 @@ fn uploadChunkMesh(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !
     cg.quad_count = n;
     cg.y_min = lc.mesh.y_min;
     cg.y_max = lc.mesh.y_max;
+    cg.ranges = lc.mesh.ranges;
     lc.dropUpload();
 }
 

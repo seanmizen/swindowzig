@@ -80,6 +80,10 @@ export class StubGpu {
   readonly liveViews = new Set<number>();
   /** The canvas views that the bridge gave, from the start. */
   viewsMade = 0;
+  /** The frame of each buffer map that is not unmapped (REQ-GPU-038). */
+  readonly maps = new Map<number, number>();
+  /** Buffer maps from the start. */
+  mapsStarted = 0;
 
   constructor(
     private nextHandle: () => number,
@@ -150,6 +154,31 @@ export class StubGpu {
       webgpuCreateBindGroup: (): number => {
         this.bindGroups++;
         return this.nextHandle();
+      },
+      // Buffer reads (REQ-GPU-038): a map completes one frame later, and
+      // each occlusion result is 1 (visible), so the stub hides nothing.
+      webgpuBufferMapReadAsync: (handle: number): void => {
+        this.maps.set(handle, this.frame);
+        this.mapsStarted++;
+      },
+      webgpuBufferMapState: (handle: number): number => {
+        const at = this.maps.get(handle);
+        if (at === undefined) return 0;
+        return this.frame > at ? 2 : 1;
+      },
+      webgpuBufferReadMapped: (
+        _handle: number,
+        _offset: bigint,
+        size: bigint,
+        ptr: number,
+      ): void => {
+        const out = new DataView(this.getMemory().buffer, ptr, Number(size));
+        for (let i = 0; i + 8 <= out.byteLength; i += 8) {
+          out.setBigUint64(i, 1n, true);
+        }
+      },
+      webgpuBufferUnmap: (handle: number): void => {
+        this.maps.delete(handle);
       },
       webgpuWriteBuffer: (
         _queue: number,
@@ -574,10 +603,11 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
 
 /**
  * The size of the head of a Result: the part that app.wasm copies (C5).
- * protocol.PAYLOAD_OFFSET of the demo: 16 header bytes, 48 fixed bytes and
- * 32 bytes of section connections (REQ-VOXEL-019).
+ * protocol.PAYLOAD_OFFSET of the demo: 16 header bytes, 48 fixed bytes, 32
+ * bytes of section connections (REQ-VOXEL-019) and 64 bytes of section draw
+ * ranges (REQ-VOXEL-023).
  */
-export const RESULT_HEAD_BYTES = 96;
+export const RESULT_HEAD_BYTES = 160;
 /** The GPU header of a chunk quad buffer: (origin x, tick, origin z, 0). */
 const GPU_HEADER_BYTES = 16;
 const CHUNK_W = 16;
@@ -600,7 +630,7 @@ export interface UploadReport {
  *   - JS wrote no mesh quad into the wasm memory. For each result, JS wrote
  *     at most RESULT_HEAD_BYTES into the wasm memory.
  *   - Each mesh went to the GPU from the held bytes: one held write for
- *     each upload, at byte 16 of the buffer, from byte 96 of the message,
+ *     each upload, at byte 16 of the buffer, from byte 160 of the message,
  *     with the size of the quads. Just before it, main wrote the 16-byte
  *     GPU header of the same chunk to the same buffer.
  * With no pool (`pooled` false): no held upload. With null (a run that

@@ -54,6 +54,9 @@ pub const MeshInfo = struct {
     /// The face connections of each section, for cave culling
     /// (REQ-VOXEL-019). Each pair connects until the mesh arrives.
     sections: [chunk_mod.SECTION_COUNT]u16 = @splat(0x7FFF),
+    /// The draw range of each section, for the section cull
+    /// (REQ-VOXEL-023).
+    ranges: mesher_mod.SectionRanges = mesher_mod.EMPTY_RANGES,
 
     pub fn quadCount(self: MeshInfo) usize {
         return self.quad_count;

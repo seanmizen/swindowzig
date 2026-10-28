@@ -788,3 +788,98 @@ Textures, samplers and other resources of `sw_gpu`.
     brighter. With the sun behind the camera, each pixel must match the
     CPU reference with no shafts.
 - **Relations:** depends-on REQ-GPU-030
+
+## REQ-GPU-035 — A query set has a type that goes through a named map
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** constraint
+- **Priority:** P2
+- **Statement:** `GPU.createQuerySet` shall give the query type to
+  wgpu-native and to the web bridge through a named map, not through the
+  number of the Zig enum.
+- **Rationale:** The Zig enums of `types.zig` do not have the numbers of
+  `webgpu.h`, and a raw enum number gave the wrong value for other enums
+  before (`.claude/rules/libs.md`). Occlusion queries work on native and on
+  the web. Timestamp queries need the device feature, so the web build
+  gives an error for them.
+- **Verification:** Test — `libs/sw_gpu/src/types.zig` › "query type: the
+  native and web codes are the named values (REQ-GPU-035)"
+- **Relations:** none
+
+## REQ-GPU-036 — A render pass counts the samples of each occlusion query
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a render pass has an occlusion query set, sw_gpu
+  shall count the samples that pass the depth test between
+  `beginOcclusionQuery` and `endOcclusionQuery` into the query of the
+  index, on native and on the web.
+- **Rationale:** A box that gets no sample is behind the depth of the
+  frame. The voxel demo uses it to skip chunks that a hill or a wall
+  hides (REQ-VOXEL-025).
+- **Verification:** Test — `examples/voxel/tests/cave_cull.sh` › the
+  `all` runs give `occlusion_culled` above 0 for the `hills` TAS on a GPU,
+  and the same frame as the runs with no occlusion cull.
+- **Relations:** depends-on REQ-GPU-035
+
+## REQ-GPU-037 — The web build resolves query sets and copies buffers
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The web bridge shall record `resolveQuerySet` and
+  `copyBufferToBuffer` with the arguments of the native path.
+- **Rationale:** Before, the two calls did nothing on the web, so a query
+  result could not get to a buffer that the CPU reads. The same Zig code
+  now runs on native and on the web.
+- **Verification:** Inspection — `backends/wasm/webgpu.ts`:
+  `webgpuCommandEncoderResolveQuerySet` and
+  `webgpuCommandEncoderCopyBufferToBuffer`.
+- **Relations:** none
+
+## REQ-GPU-038 — A buffer read does not wait for the GPU
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** `BufferRead.poll` shall give the state of a read map
+  with no wait for the GPU, on native and on the web.
+- **Rationale:** `GPU.readBuffer` waits until the GPU completes all work,
+  so it stops the frame. Results that a game reads in each frame, such as
+  occlusion results, must come back some frames later with no stop.
+- **Verification:** Test — `backends/wasm/headless.ts` › step 9: the
+  voxel demo starts buffer reads with the stub bridge, which completes a
+  map one frame later, and at most 3 reads wait after the last frame.
+- **Relations:** none
+
+## REQ-GPU-039 — Occlusion queries of boxes come back with the tag of their frame
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the GPU completes a frame of box tests,
+  `OcclusionQueries.poll` shall give the sample count of each box of that
+  frame with the tag of its `begin`.
+- **Rationale:** The results come some frames later. With the tag, the
+  game finds the camera and the scene of the test frame, and decides if
+  a result is still correct. The box test draws no colour and writes no
+  depth, so it does not change the image.
+- **Verification:**
+  - Test — `libs/sw_gpu/src/occlusion_plan.zig` › "occlusion: the 36
+    corners give each face of the box two triangles (REQ-GPU-039)"
+  - Test — `libs/sw_gpu/src/occlusion_plan.zig` › "occlusion: a box is on
+    the screen when each corner is in the clip volume (REQ-GPU-039)"
+- **Relations:**
+  - depends-on REQ-GPU-036
+  - depends-on REQ-GPU-038

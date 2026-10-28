@@ -29,6 +29,7 @@ pub const WebGPUCommandEncoder = u32;
 pub const WebGPURenderPassEncoder = u32;
 pub const WebGPUComputePassEncoder = u32;
 pub const WebGPUCommandBuffer = u32;
+pub const WebGPUQuerySet = u32;
 
 // =============================================================================
 // JavaScript WebGPU API Functions
@@ -302,7 +303,45 @@ pub extern "webgpu" fn webgpuCommandEncoderBeginRenderPass(
     stencil_load_op: u32,
     stencil_store_op: u32,
     stencil_clear_value: u32,
+    /// The query set of the occlusion queries of the pass, 0 for none
+    /// (REQ-GPU-036).
+    occlusion_query_set: WebGPUQuerySet,
 ) WebGPURenderPassEncoder;
+
+// Query sets (REQ-GPU-035 to REQ-GPU-037)
+
+/// Make a query set. `type_code` is `types.webQueryTypeCode`.
+pub extern "webgpu" fn webgpuCreateQuerySet(device: WebGPUDevice, type_code: u32, count: u32) WebGPUQuerySet;
+pub extern "webgpu" fn webgpuQuerySetDestroy(query_set: WebGPUQuerySet) void;
+pub extern "webgpu" fn webgpuRenderPassBeginOcclusionQuery(pass: WebGPURenderPassEncoder, query_index: u32) void;
+pub extern "webgpu" fn webgpuRenderPassEndOcclusionQuery(pass: WebGPURenderPassEncoder) void;
+pub extern "webgpu" fn webgpuCommandEncoderResolveQuerySet(
+    encoder: WebGPUCommandEncoder,
+    query_set: WebGPUQuerySet,
+    first_query: u32,
+    query_count: u32,
+    destination: WebGPUBuffer,
+    destination_offset: u64,
+) void;
+pub extern "webgpu" fn webgpuCommandEncoderCopyBufferToBuffer(
+    encoder: WebGPUCommandEncoder,
+    source: WebGPUBuffer,
+    source_offset: u64,
+    destination: WebGPUBuffer,
+    destination_offset: u64,
+    size: u64,
+) void;
+
+// Buffer reads that do not wait (REQ-GPU-038)
+
+/// Start `mapAsync(GPUMapMode.READ, offset, size)` on the buffer.
+pub extern "webgpu" fn webgpuBufferMapReadAsync(buffer: WebGPUBuffer, offset: u64, size: u64) void;
+/// The state of the last map of the buffer: 0 no map, 1 pending,
+/// 2 mapped, 3 failed.
+pub extern "webgpu" fn webgpuBufferMapState(buffer: WebGPUBuffer) u32;
+/// Copy `size` bytes at `offset` of the mapped buffer to `dst` in the wasm
+/// memory.
+pub extern "webgpu" fn webgpuBufferReadMapped(buffer: WebGPUBuffer, offset: u64, size: u64, dst: [*]u8) void;
 
 pub const RenderPassColorAttachmentJS = extern struct {
     view: WebGPUTextureView,

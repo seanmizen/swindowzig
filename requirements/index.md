@@ -49,6 +49,11 @@
 | [`REQ-GPU-031`](gpu.md#req-gpu-031--a-cloud-puts-a-moving-shadow-on-the-ground-under-it) | A cloud puts a moving shadow on the ground under it | active | functional | P2 | agent:SWZ-101 |
 | [`REQ-GPU-032`](gpu.md#req-gpu-032--soft-clouds-have-semi-transparent-edges-and-a-rim-toward-the-sun) | Soft clouds have semi-transparent edges and a rim toward the sun | active | functional | P2 | agent:SWZ-101 |
 | [`REQ-GPU-033`](gpu.md#req-gpu-033--light-shafts-go-toward-the-sun-on-the-screen) | Light shafts go toward the sun on the screen | active | functional | P2 | agent:SWZ-101 |
+| [`REQ-GPU-035`](gpu.md#req-gpu-035--a-query-set-has-a-type-that-goes-through-a-named-map) | A query set has a type that goes through a named map | active | constraint | P2 | agent:SWZ-40 |
+| [`REQ-GPU-036`](gpu.md#req-gpu-036--a-render-pass-counts-the-samples-of-each-occlusion-query) | A render pass counts the samples of each occlusion query | active | functional | P2 | agent:SWZ-40 |
+| [`REQ-GPU-037`](gpu.md#req-gpu-037--the-web-build-resolves-query-sets-and-copies-buffers) | The web build resolves query sets and copies buffers | active | functional | P2 | agent:SWZ-40 |
+| [`REQ-GPU-038`](gpu.md#req-gpu-038--a-buffer-read-does-not-wait-for-the-gpu) | A buffer read does not wait for the GPU | active | functional | P2 | agent:SWZ-40 |
+| [`REQ-GPU-039`](gpu.md#req-gpu-039--occlusion-queries-of-boxes-come-back-with-the-tag-of-their-frame) | Occlusion queries of boxes come back with the tag of their frame | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -93,6 +98,10 @@
 | [`REQ-VOXEL-020`](voxel.md#req-voxel-020--cave-culling-removes-only-the-sections-that-the-camera-can-not-see) | Cave culling removes only the sections that the camera can not see | active | quality | P2 | agent:SWZ-40 |
 | [`REQ-VOXEL-021`](voxel.md#req-voxel-021--far-chunks-get-a-mesh-at-a-lower-resolution) | Far chunks get a mesh at a lower resolution | active | functional | P2 | agent:SWZ-39 |
 | [`REQ-VOXEL-022`](voxel.md#req-voxel-022--no-gap-shows-at-the-border-between-two-levels-of-detail) | No gap shows at the border between two levels of detail | active | quality | P2 | agent:SWZ-39 |
+| [`REQ-VOXEL-023`](voxel.md#req-voxel-023--each-mesh-has-a-draw-range-for-each-section) | Each mesh has a draw range for each section | active | functional | P2 | agent:SWZ-40 |
+| [`REQ-VOXEL-024`](voxel.md#req-voxel-024--the-demo-draws-only-the-sections-that-the-walk-reaches) | The demo draws only the sections that the walk reaches | active | quality | P2 | agent:SWZ-40 |
+| [`REQ-VOXEL-025`](voxel.md#req-voxel-025--the-occlusion-cull-skips-a-chunk-only-while-its-result-is-correct) | The occlusion cull skips a chunk only while its result is correct | active | quality | P2 | agent:SWZ-40 |
+| [`REQ-VOXEL-026`](voxel.md#req-voxel-026--the-demo-culls-its-entity-boxes-with-the-visible-sections) | The demo culls its entity boxes with the visible sections | active | functional | P3 | agent:SWZ-40 |
 
 ## Dependency graph
 
@@ -142,6 +151,11 @@ graph TD
   REQ_GPU_031["REQ-GPU-031<br/>A cloud puts a moving shadow on the ground under it"]
   REQ_GPU_032["REQ-GPU-032<br/>Soft clouds have semi-transparent edges and a rim toward the sun"]
   REQ_GPU_033["REQ-GPU-033<br/>Light shafts go toward the sun on the screen"]
+  REQ_GPU_035["REQ-GPU-035<br/>A query set has a type that goes through a named map"]
+  REQ_GPU_036["REQ-GPU-036<br/>A render pass counts the samples of each occlusion query"]
+  REQ_GPU_037["REQ-GPU-037<br/>The web build resolves query sets and copies buffers"]
+  REQ_GPU_038["REQ-GPU-038<br/>A buffer read does not wait for the GPU"]
+  REQ_GPU_039["REQ-GPU-039<br/>Occlusion queries of boxes come back with the tag of their frame"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -186,6 +200,10 @@ graph TD
   REQ_VOXEL_020["REQ-VOXEL-020<br/>Cave culling removes only the sections that the camera can not see"]
   REQ_VOXEL_021["REQ-VOXEL-021<br/>Far chunks get a mesh at a lower resolution"]
   REQ_VOXEL_022["REQ-VOXEL-022<br/>No gap shows at the border between two levels of detail"]
+  REQ_VOXEL_023["REQ-VOXEL-023<br/>Each mesh has a draw range for each section"]
+  REQ_VOXEL_024["REQ-VOXEL-024<br/>The demo draws only the sections that the walk reaches"]
+  REQ_VOXEL_025["REQ-VOXEL-025<br/>The occlusion cull skips a chunk only while its result is correct"]
+  REQ_VOXEL_026["REQ-VOXEL-026<br/>The demo culls its entity boxes with the visible sections"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -214,6 +232,9 @@ graph TD
   REQ_GPU_031 -->|depends-on| REQ_GPU_030
   REQ_GPU_032 -->|depends-on| REQ_GPU_020
   REQ_GPU_033 -->|depends-on| REQ_GPU_030
+  REQ_GPU_036 -->|depends-on| REQ_GPU_035
+  REQ_GPU_039 -->|depends-on| REQ_GPU_036
+  REQ_GPU_039 -->|depends-on| REQ_GPU_038
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
   REQ_TEXT_004 -->|refines| REQ_TEXT_001
@@ -233,6 +254,10 @@ graph TD
   REQ_VOXEL_016 -->|refines| REQ_VOXEL_014
   REQ_VOXEL_020 -->|depends-on| REQ_VOXEL_019
   REQ_VOXEL_022 -->|depends-on| REQ_VOXEL_021
+  REQ_VOXEL_024 -->|depends-on| REQ_VOXEL_020
+  REQ_VOXEL_024 -->|depends-on| REQ_VOXEL_023
+  REQ_VOXEL_025 -->|depends-on| REQ_GPU_039
+  REQ_VOXEL_026 -->|depends-on| REQ_VOXEL_020
 ```
 
 ## Derived reverse links
@@ -250,6 +275,10 @@ graph TD
 - `REQ-GPU-020` — required-by REQ-GPU-031, required-by REQ-GPU-032
 - `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024
 - `REQ-GPU-030` — required-by REQ-GPU-031, required-by REQ-GPU-033
+- `REQ-GPU-035` — required-by REQ-GPU-036
+- `REQ-GPU-036` — required-by REQ-GPU-039
+- `REQ-GPU-038` — required-by REQ-GPU-039
+- `REQ-GPU-039` — required-by REQ-VOXEL-025
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
 - `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-009
@@ -260,4 +289,6 @@ graph TD
 - `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
 - `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016
 - `REQ-VOXEL-019` — required-by REQ-VOXEL-020
+- `REQ-VOXEL-020` — required-by REQ-VOXEL-024, required-by REQ-VOXEL-026
 - `REQ-VOXEL-021` — required-by REQ-VOXEL-022
+- `REQ-VOXEL-023` — required-by REQ-VOXEL-024

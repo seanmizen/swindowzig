@@ -12,6 +12,12 @@ pub const TileSize = mip_chain.TileSize;
 /// post chain of sw_render runs FXAA from this source.
 pub const fxaa = @import("fxaa.zig");
 
+/// Occlusion queries of boxes, with results that come back some frames
+/// later (REQ-GPU-039). `occlusion_plan` has the rules with no GPU code.
+pub const occlusion = @import("occlusion.zig");
+pub const occlusion_plan = @import("occlusion_plan.zig");
+pub const OcclusionQueries = occlusion.OcclusionQueries;
+
 /// Mip level generation on the GPU, native and web.
 pub const MipmapGenerator = mipmap_mod.MipmapGenerator;
 pub const MipmapTarget = mipmap_mod.MipmapTarget;
@@ -85,6 +91,10 @@ pub const RenderPassColorAttachment = gpu_mod.RenderPassColorAttachment;
 pub const RenderPassDepthStencilAttachment = gpu_mod.RenderPassDepthStencilAttachment;
 pub const RenderPassTimestampWrites = gpu_mod.RenderPassTimestampWrites;
 pub const QuerySet = gpu_mod.QuerySet;
+pub const QueryType = types_mod.QueryType;
+pub const QuerySetDescriptor = types_mod.QuerySetDescriptor;
+pub const MapState = gpu_mod.MapState;
+pub const BufferRead = gpu_mod.BufferRead;
 pub const BindGroupDescriptor = gpu_mod.BindGroupDescriptor;
 pub const BindGroupEntry = gpu_mod.BindGroupEntry;
 pub const PipelineLayoutDescriptor = gpu_mod.PipelineLayoutDescriptor;

@@ -30,18 +30,25 @@ pub const VoxelVertex = extern struct {
 };
 
 /// The mesh of one chunk, in the GPU format: one 16-byte PackedQuad per quad,
-/// and the y range of the quads. The greedy quads come first, then the model
-/// quad records (see "Model quad records" below). The upload writes `quads` to the GPU as it
-/// is. The mesher makes the GPU format directly, so a mesh can cross a
-/// thread or worker boundary with no conversion.
+/// and the y range of the quads. The quads are in order of their section
+/// (`ranges`, REQ-VOXEL-023). In a section, the greedy quads come first,
+/// then the model quad records (see "Model quad records" below). The upload
+/// writes `quads` to the GPU as it is. The mesher makes the GPU format
+/// directly, so a mesh can cross a thread or worker boundary with no
+/// conversion.
 pub const Mesh = struct {
     allocator: std.mem.Allocator,
-    /// One PackedQuad per quad, in the order the mesher makes them.
+    /// One PackedQuad per quad, in order of section.
     quads: std.ArrayList(PackedQuad),
     /// The lowest and the highest world y of the quads, for the frustum
     /// cull. With no quads, y_min is MIN_Y + CHUNK_H and y_max is MIN_Y.
     y_min: f32 = EMPTY_Y_MIN,
     y_max: f32 = EMPTY_Y_MAX,
+    /// The draw range of each section (REQ-VOXEL-023).
+    ranges: SectionRanges = EMPTY_RANGES,
+    /// While the mesher runs: the lowest and the highest section of each
+    /// quad, in the order of `quads`.
+    spans: std.ArrayList([2]u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Mesh {
         return .{ .allocator = allocator, .quads = .empty };
@@ -49,6 +56,7 @@ pub const Mesh = struct {
 
     pub fn deinit(self: *Mesh) void {
         self.quads.deinit(self.allocator);
+        self.spans.deinit(self.allocator);
     }
 
     pub fn quadCount(self: *const Mesh) usize {
@@ -57,8 +65,10 @@ pub const Mesh = struct {
 
     pub fn clear(self: *Mesh) void {
         self.quads.clearRetainingCapacity();
+        self.spans.clearRetainingCapacity();
         self.y_min = EMPTY_Y_MIN;
         self.y_max = EMPTY_Y_MAX;
+        self.ranges = EMPTY_RANGES;
     }
 
     /// Release ALL host-side mesh allocations back to the allocator. Unlike
@@ -71,17 +81,100 @@ pub const Mesh = struct {
     /// this Mesh works and grows the storage again as it appends.
     pub fn freeHostBuffers(self: *Mesh) void {
         self.quads.clearAndFree(self.allocator);
+        self.spans.clearAndFree(self.allocator);
         self.y_min = EMPTY_Y_MIN;
         self.y_max = EMPTY_Y_MAX;
+        self.ranges = EMPTY_RANGES;
     }
 
     /// Append one quad that spans y_lo..y_hi.
     fn addQuad(self: *Mesh, q: PackedQuad, y_lo: f32, y_hi: f32) !void {
         try self.quads.append(self.allocator, q);
+        try self.spans.append(self.allocator, quadSpan(y_lo, y_hi));
         self.y_min = @min(self.y_min, y_lo);
         self.y_max = @max(self.y_max, y_hi);
     }
+
+    /// Put the quads in order of their lowest section, and set `ranges`
+    /// (REQ-VOXEL-023). The sort is stable: in a section, the quads keep
+    /// the order of the mesher. Call it before the tint records go in.
+    fn sortBySection(self: *Mesh) !void {
+        std.debug.assert(self.spans.items.len == self.quads.items.len);
+        var counts: [SECTION_COUNT]u32 = @splat(0);
+        var tops: [SECTION_COUNT]u8 = undefined;
+        for (&tops, 0..) |*t, s| t.* = @intCast(s);
+        for (self.spans.items) |sp| {
+            counts[sp[0]] += 1;
+            tops[sp[0]] = @max(tops[sp[0]], sp[1]);
+        }
+        var starts: [SECTION_COUNT]u32 = undefined;
+        var at: u32 = 0;
+        for (&starts, counts, 0..) |*st, c, s| {
+            st.* = at;
+            at += c;
+            self.ranges[s] = .{ .end = @intCast(at), .top = tops[s] };
+        }
+        // Quads that are in order already do not move.
+        var in_order = true;
+        if (self.spans.items.len > 1) for (self.spans.items[1..], 0..) |sp, i| {
+            if (sp[0] < self.spans.items[i][0]) {
+                in_order = false;
+                break;
+            }
+        };
+        if (in_order) {
+            self.spans.clearRetainingCapacity();
+            return;
+        }
+        const sorted = try self.allocator.alloc(PackedQuad, self.quads.items.len);
+        defer self.allocator.free(sorted);
+        for (self.quads.items, self.spans.items) |q, sp| {
+            sorted[starts[sp[0]]] = q;
+            starts[sp[0]] += 1;
+        }
+        @memcpy(self.quads.items, sorted);
+        self.spans.clearRetainingCapacity();
+    }
+
+    /// Move each range end by `n` quads: the tint records at the start.
+    fn shiftRanges(self: *Mesh, n: usize) void {
+        for (&self.ranges) |*r| r.end += @intCast(n);
+    }
 };
+
+/// The draw range of one section of a mesh (REQ-VOXEL-023). The quads of
+/// section s are from the `end` of section s - 1 (0 for section 0) to the
+/// `end` of section s. A quad is in the section of its lowest point. A
+/// quad can go up into the sections above it: `top` is the highest section
+/// that a quad of the range touches. Draw the range when a section from s
+/// to `top` is visible. The tint records at the start of a mesh are in the
+/// range of section 0.
+pub const SectionRange = packed struct(u32) {
+    end: u24,
+    top: u8,
+};
+pub const SectionRanges = [SECTION_COUNT]SectionRange;
+pub const SECTION_COUNT = chunk_mod.SECTION_COUNT;
+/// The ranges of a mesh with no quads.
+pub const EMPTY_RANGES: SectionRanges = blk: {
+    var r: SectionRanges = undefined;
+    for (&r, 0..) |*x, s| x.* = .{ .end = 0, .top = s };
+    break :blk r;
+};
+
+/// The sections of the cells that a quad from y_lo to y_hi (world y)
+/// touches. A flat quad on a section border is in the two sections: the
+/// two cells on its sides.
+fn quadSpan(y_lo: f32, y_hi: f32) [2]u8 {
+    const lo = if (y_hi > y_lo or y_lo != @floor(y_lo)) y_lo else y_lo - 1;
+    const hi = if (y_hi > y_lo) @max(lo, @ceil(y_hi) - 1) else y_hi;
+    return .{ sectionOfY(lo), sectionOfY(hi) };
+}
+
+fn sectionOfY(y: f32) u8 {
+    const s = @divFloor(@as(i32, @intFromFloat(@floor(y))) - MIN_Y, 16);
+    return @intCast(std.math.clamp(s, 0, SECTION_COUNT - 1));
+}
 
 /// The y range of a mesh with no quads: y_min above y_max.
 pub const EMPTY_Y_MIN: f32 = MIN_Y + CHUNK_H;
@@ -920,6 +1013,7 @@ const TintPalette = struct {
         for (self.colors[0..self.len], 0..) |c, i| records[i / 4][i % 4] = c;
         for (records[0..n]) |*r| r[3] |= TINT_RECORD_SLOT << TINT_SLOT_SHIFT;
         try mesh.quads.insertSlice(mesh.allocator, 0, records[0..n]);
+        mesh.shiftRanges(n);
     }
 };
 
@@ -1476,6 +1570,7 @@ pub fn generateMeshWith(
         }
     }
     try generateModelQuads(chunk, mesh, world_ox, world_oz, getter, options, &palette);
+    try mesh.sortBySection();
     try palette.writeRecords(mesh);
     std.log.info("[MESH greedy: {} quads]", .{mesh.quadCount()});
 }
@@ -1992,6 +2087,65 @@ test "faces at the bottom and the top of the column" {
     try std.testing.expectEqual(@as(usize, 6), high);
     try std.testing.expectEqual(@as(f32, MIN_Y), mesh.y_min);
     try std.testing.expectEqual(@as(f32, MIN_Y + CHUNK_H), mesh.y_max);
+}
+
+test "each section has a draw range, and each quad is in the range of its lowest section (REQ-VOXEL-023)" {
+    const allocator = std.testing.allocator;
+    var chunk = Chunk.init(allocator);
+    defer chunk.deinit();
+    // A floor, and a pillar from local y 13 to 37: its side faces go over
+    // two section borders. A flat top at y 48 is on a section border. A
+    // half block with a model at y 70.
+    for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| try chunk.setBlock(@intCast(x), 0, @intCast(z), .solid);
+    for (13..38) |y| try chunk.setBlock(1, @intCast(y), 1, .solid);
+    try chunk.setBlock(9, 47, 9, .solid);
+    try chunk.setBlock(5, 70, 6, .b19);
+    var mesh = Mesh.init(allocator);
+    defer mesh.deinit();
+    try meshAlone(&chunk, &mesh);
+    try std.testing.expect(mesh.quadCount() > 0);
+    try std.testing.expectEqual(@as(usize, mesh.quadCount()), mesh.ranges[SECTION_COUNT - 1].end);
+    try std.testing.expectEqual(@as(usize, 0), mesh.spans.items.len);
+    var start: usize = 0;
+    var spans_two = false;
+    for (mesh.ranges, 0..) |r, s| {
+        try std.testing.expect(r.end >= start);
+        try std.testing.expect(r.top >= s and r.top < SECTION_COUNT);
+        var top: usize = s;
+        for (mesh.quads.items[start..r.end]) |q| {
+            if (isTintRecord(q)) continue;
+            var y_lo: f32 = std.math.inf(f32);
+            var y_hi: f32 = -std.math.inf(f32);
+            for (0..4) |c| {
+                const v = unpackCorner(q, c, 0, 0);
+                y_lo = @min(y_lo, v.pos[1]);
+                y_hi = @max(y_hi, v.pos[1]);
+            }
+            const sp = quadSpan(y_lo, y_hi);
+            // A quad is in the range of its lowest section, and the range
+            // reaches its highest section.
+            try std.testing.expectEqual(@as(u8, @intCast(s)), sp[0]);
+            try std.testing.expect(sp[1] <= r.top);
+            top = @max(top, sp[1]);
+            if (sp[1] > sp[0]) spans_two = true;
+        }
+        try std.testing.expectEqual(top, r.top);
+        start = r.end;
+    }
+    try std.testing.expect(spans_two);
+
+    // A flat face on a section border is in the two sections.
+    const b: f32 = @floatFromInt(MIN_Y + 48);
+    try std.testing.expectEqual([2]u8{ sectionOfY(b - 1), sectionOfY(b) }, quadSpan(b, b));
+    try std.testing.expectEqual([2]u8{ sectionOfY(b), sectionOfY(b) }, quadSpan(b + 0.5, b + 0.5));
+    // A side face of 16 cells from a border is in one section.
+    try std.testing.expectEqual([2]u8{ sectionOfY(b), sectionOfY(b) }, quadSpan(b, b + 16));
+
+    // A mesh with no quads has empty ranges.
+    var empty_chunk = Chunk.init(allocator);
+    defer empty_chunk.deinit();
+    try meshAlone(&empty_chunk, &mesh);
+    try std.testing.expectEqual(EMPTY_RANGES, mesh.ranges);
 }
 
 /// Count the greedy quads and the model records of a mesh.

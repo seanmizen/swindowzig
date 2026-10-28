@@ -475,3 +475,96 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
 - **Verification:** Test — `libs/sw_voxel/src/pipeline/lod.zig` › "lod:
   no gap at the border between two levels (REQ-VOXEL-022)"
 - **Relations:** depends-on REQ-VOXEL-021
+
+## REQ-VOXEL-023 — Each mesh has a draw range for each section
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The mesher shall put the quads of a mesh in order of the
+  lowest section that each quad touches, and give the end and the highest
+  section of the range of each section.
+- **Rationale:** With a range for each section, a game draws only the
+  sections that the camera can see, not the full column. A quad can go up
+  into the sections above it, and a flat quad on a section border is in
+  the two sections, so each range records the highest section that its
+  quads touch. The sort is stable, and with each section visible the
+  game draws the full mesh in one draw, so the image does not change. The
+  chunk protocol carries the ranges in the head of a mesh Result.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/mesher.zig` › "each section has a draw
+    range, and each quad is in the range of its lowest section
+    (REQ-VOXEL-023)"
+  - Test — `examples/voxel/protocol_test.zig` › "protocol: the fields
+    are at the documented offsets, little-endian"
+- **Relations:** none
+
+## REQ-VOXEL-024 — The demo draws only the sections that the walk reaches
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** While the cave cull is on, the voxel demo shall draw the
+  range of a section only when the walk reaches a section from that
+  section to the top of its range.
+- **Rationale:** The column cull draws a full column when one section of
+  it is visible. The section cull also removes the hidden sections of the
+  columns that it draws. The walk records each face that a path enters a
+  section through, so it follows each line of sight through a section with
+  partial connections. The image must not change.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/visibility.zig` › "visibility: the walk
+    leaves a section through each face that a path entered
+    (REQ-VOXEL-024)"
+  - Test — `examples/voxel/tests/cave_cull.sh` › each TAS gives the same
+    frame with the section cull and with no cull.
+- **Relations:**
+  - depends-on REQ-VOXEL-020
+  - depends-on REQ-VOXEL-023
+
+## REQ-VOXEL-025 — The occlusion cull skips a chunk only while its result is correct
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** While `--occlusion=on`, the voxel demo shall skip a
+  chunk only when its last box test found it hidden, from the same eye and
+  with the same meshes on the GPU, and the test had the same view or the
+  box was on the screen in full.
+- **Rationale:** Occlusion results come back some frames after their
+  test. If the demo used an old result after a move or a mesh change, a
+  chunk that comes into view would appear late. With the same eye, a turn
+  does not change a line of sight, so a box that was on the screen in full
+  stays hidden. Each chunk that the other culls keep gets a box test in
+  each frame, also when it is not drawn. `--occlusion=off` turns the cull
+  off.
+- **Verification:** Test — `examples/voxel/tests/cave_cull.sh` › each TAS
+  gives the same frame with the occlusion cull and with no cull, and the
+  `hills` TAS draws fewer chunks.
+- **Relations:** depends-on REQ-GPU-039
+
+## REQ-VOXEL-026 — The demo culls its entity boxes with the visible sections
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** The voxel demo shall test the box of each entity of its
+  list with `visibility.cullBoxes`, and draw only the entities that the
+  test keeps.
+- **Rationale:** The demo has no game entities. The debug view draws the
+  player hitbox and the spawn marker, so these are the entity list. A game
+  that adds entities uses the same call.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/visibility.zig` › "visibility: the box cull
+    keeps the boxes in visible sections (REQ-VOXEL-020)"
+  - Inspection — `examples/voxel/main.zig`: `cullEntities` and the debug
+    draws of the player hitbox and the spawn marker.
+- **Relations:** depends-on REQ-VOXEL-020

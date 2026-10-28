@@ -734,6 +734,51 @@ pub fn nativeTextureFormat(format: TextureFormat) u32 {
     };
 }
 
+/// The kind of the queries in a query set (REQ-GPU-035).
+/// Spec: https://www.w3.org/TR/webgpu/#enumdef-gpuquerytype
+pub const QueryType = enum(u32) {
+    /// The number of samples that pass the depth and stencil tests between
+    /// `beginOcclusionQuery` and `endOcclusionQuery`. 0 when none passes.
+    occlusion = 0,
+    /// A GPU time in nanoseconds. It needs the device timestamp feature.
+    timestamp = 1,
+};
+
+/// A query set: `count` queries of one type (REQ-GPU-035).
+pub const QuerySetDescriptor = struct {
+    label: ?[]const u8 = null,
+    type: QueryType,
+    count: u32,
+};
+
+/// The `WGPUQueryType` value of `t` in webgpu.h. A named map: the Zig
+/// values are not part of the C ABI (REQ-GPU-035).
+pub fn nativeQueryType(t: QueryType) u32 {
+    return switch (t) {
+        .occlusion => 0x00000000, // WGPUQueryType_Occlusion
+        .timestamp => 0x00000001, // WGPUQueryType_Timestamp
+    };
+}
+
+/// The code of `t` for the web bridge: `QUERY_TYPES` in
+/// backends/wasm/webgpu.ts. 0 is no type (REQ-GPU-035).
+pub fn webQueryTypeCode(t: QueryType) u32 {
+    return switch (t) {
+        .occlusion => 1,
+        .timestamp => 2,
+    };
+}
+
+/// The bytes of one query result after `resolveQuerySet`: a u64.
+pub const QUERY_RESULT_SIZE: u64 = 8;
+
+test "query type: the native and web codes are the named values (REQ-GPU-035)" {
+    try std.testing.expectEqual(@as(u32, 0), nativeQueryType(.occlusion));
+    try std.testing.expectEqual(@as(u32, 1), nativeQueryType(.timestamp));
+    try std.testing.expectEqual(@as(u32, 1), webQueryTypeCode(.occlusion));
+    try std.testing.expectEqual(@as(u32, 2), webQueryTypeCode(.timestamp));
+}
+
 test "texture format: the native numbers are the webgpu.h numbers" {
     // The formats that the engine uses, from `WGPUTextureFormat` in webgpu.h.
     try std.testing.expectEqual(@as(u32, 0x12), nativeTextureFormat(.rgba8unorm));

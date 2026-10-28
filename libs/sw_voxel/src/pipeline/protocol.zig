@@ -47,7 +47,7 @@ pub const SLOTS = stages.SLOTS;
 /// "VXCP" as little-endian bytes.
 pub const MAGIC: u32 = 0x50435856;
 /// Increment this value for each change of the layout.
-pub const VERSION: u16 = 5;
+pub const VERSION: u16 = 6;
 
 pub const HEADER_LEN = 16;
 pub const HELLO_LEN = 24 + content.GEN_CONFIG_LEN;
@@ -57,7 +57,10 @@ pub const JOB_LEN = 88;
 /// one u16 for each section, to a multiple of 16 bytes.
 pub const SECTION_COUNT = chunk_mod.SECTION_COUNT;
 pub const SECTIONS_LEN = std.mem.alignForward(usize, chunk_mod.SECTION_COUNT * 2, 16);
-pub const RESULT_HEAD_LEN = 48 + SECTIONS_LEN;
+/// The length of the draw ranges of a mesh Result (REQ-VOXEL-023): one u32
+/// (`mesher.SectionRange`) for each section, to a multiple of 16 bytes.
+pub const RANGES_LEN = std.mem.alignForward(usize, chunk_mod.SECTION_COUNT * 4, 16);
+pub const RESULT_HEAD_LEN = 48 + SECTIONS_LEN + RANGES_LEN;
 pub const ERROR_HEAD_LEN = 16;
 /// The offset of a Result payload in the message.
 pub const PAYLOAD_OFFSET = HEADER_LEN + RESULT_HEAD_LEN;
@@ -186,7 +189,10 @@ pub const Job = struct {
 ///   48 u16  mesh: the face connections of each section (visibility.zig),
 ///           SECTION_COUNT values, then 0 to a multiple of 16 bytes
 ///           (SECTIONS_LEN). generate and light: 0
-///   48 + SECTIONS_LEN ...  payload: mesh: PackedQuad × count.
+///   48 + SECTIONS_LEN  u32  mesh: the draw range of each section
+///           (mesher.SectionRange), SECTION_COUNT values, then 0 to a
+///           multiple of 16 bytes (RANGES_LEN). generate and light: 0
+///   48 + SECTIONS_LEN + RANGES_LEN ...  payload: mesh: PackedQuad × count.
 ///           generate: the blocks
 pub const ResultHead = struct {
     stage: Stage,
@@ -201,6 +207,8 @@ pub const ResultHead = struct {
     mesh_hash: u64 = 0,
     /// Mesh: the face connections of each section (REQ-VOXEL-019).
     sections: [chunk_mod.SECTION_COUNT]u16 = @splat(0x7FFF),
+    /// Mesh: the draw range of each section (REQ-VOXEL-023).
+    ranges: mesher_mod.SectionRanges = mesher_mod.EMPTY_RANGES,
 };
 
 /// The hash of the quad bytes of a mesh. The worker calculates it, so main
@@ -444,6 +452,8 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
     o.int(u64, 0);
     for (head.sections) |c| o.int(u16, if (head.stage == .mesh) c else 0);
     o.zeros(SECTIONS_LEN - chunk_mod.SECTION_COUNT * 2);
+    for (head.ranges) |r| o.int(u32, if (head.stage == .mesh) @bitCast(r) else 0);
+    o.zeros(RANGES_LEN - chunk_mod.SECTION_COUNT * 4);
     switch (payload) {
         .none => {},
         .quads => |q| {
@@ -673,11 +683,27 @@ fn resultInfo(bytes: []const u8, kind: Kind, body_len: u32, id: u32) DecodeError
     for (0..SECTIONS_LEN - chunk_mod.SECTION_COUNT * 2) |_| {
         if (b.int(u8) != 0) return error.BadField;
     }
+    var prev_end: u32 = 0;
+    for (&r.ranges, 0..) |*rg, s| {
+        const w = b.int(u32);
+        if (r.stage != .mesh) {
+            if (w != 0) return error.BadField;
+            continue;
+        }
+        rg.* = @bitCast(w);
+        if (rg.end < prev_end or rg.top < s or rg.top >= chunk_mod.SECTION_COUNT) return error.BadField;
+        prev_end = rg.end;
+    }
+    if (r.stage != .mesh) r.ranges = mesher_mod.EMPTY_RANGES;
+    for (0..RANGES_LEN - chunk_mod.SECTION_COUNT * 4) |_| {
+        if (b.int(u8) != 0) return error.BadField;
+    }
     const payload_len: usize = body_len - RESULT_HEAD_LEN;
     switch (r.stage) {
         .mesh => {
             if (has_blocks) return error.BadField;
             if (@as(u64, count) * @sizeOf(PackedQuad) != payload_len) return error.BadLength;
+            if (r.ranges[chunk_mod.SECTION_COUNT - 1].end != count) return error.BadField;
         },
         .generate => {
             if (count != payload_len) return error.BadLength;
