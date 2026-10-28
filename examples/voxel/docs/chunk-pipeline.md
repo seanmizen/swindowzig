@@ -481,7 +481,7 @@ Production files have content-hashed names (`bundle.sh`):
 |------|------|
 | `chunks.wasm` | `chunks-<16 hex digits of SHA-256>.wasm` |
 | The worker bundle | `chunk-worker-<16 hex digits>.js` |
-| `boot.js` | the same name. It holds the two names above (`bun build --define`). |
+| `boot.js` | the same name. It holds the two names above (the RSBuild `source.define`). |
 
 `serve.json` gives the hashed files `Cache-Control: public,
 max-age=31536000, immutable`, and each other file `no-cache`. An old

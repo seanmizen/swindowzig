@@ -172,6 +172,13 @@ jobs:
       - name: Type check of backends/wasm
         run: yarn typecheck:web
 
+      - name: Bundle boot.js and chunk-worker.js (RSBuild)
+        # The same bundles as `yarn build`. A bundle error fails this step.
+        run: |
+          yarn build:js
+          test -s zig-out/bin/boot.js
+          test -s zig-out/bin/chunk-worker.js
+
       - name: Find the Playwright version
         id: playwright
         run: |
