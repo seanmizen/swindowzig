@@ -10,7 +10,9 @@
 // Native `--check`: no window. The example makes the mip levels on the GPU,
 // reads each level back, compares it with the CPU reference in
 // sw_gpu.mip_chain, and exits with 0 (pass) or 1 (fail). See REQ-GPU-001
-// and REQ-GPU-002.
+// and REQ-GPU-002. The check also draws layer 1 through a view with the
+// explicit dimension `2d-array`, and through a view with the explicit
+// dimension `2d`. It compares each result with level 0 (REQ-GPU-034).
 const std = @import("std");
 const builtin = @import("builtin");
 const sw = @import("sw_app");
@@ -203,11 +205,15 @@ const Callbacks = struct {
 
         if (comptime !builtin.cpu.arch.isWasm()) {
             if (check_mode) {
-                const ok = check(ctx.allocator(), gpu, tex, levels) catch |err| blk: {
+                const mips_ok = check(ctx.allocator(), gpu, tex, levels) catch |err| blk: {
                     std.log.err("mipmaps: check failed: {s}", .{@errorName(err)});
                     break :blk false;
                 };
-                std.process.exit(if (ok) 0 else 1);
+                const views_ok = checkViews(ctx.allocator(), gpu, tex) catch |err| blk: {
+                    std.log.err("mipmaps: view check failed: {s}", .{@errorName(err)});
+                    break :blk false;
+                };
+                std.process.exit(if (mips_ok and views_ok) 0 else 1);
             }
         }
 
@@ -407,4 +413,136 @@ fn check(allocator: std.mem.Allocator, gpu: *gpu_mod.GPU, tex: gpu_mod.Texture, 
     }
     std.log.info("mipmaps: check {s}", .{if (ok) "passed" else "FAILED"});
     return ok;
+}
+
+// =============================================================================
+// Native check: views with an explicit dimension (REQ-GPU-034)
+// =============================================================================
+
+/// The array layer that the view check reads.
+const view_check_layer = 1;
+
+/// A shader that copies level 0 of one atlas layer to the target, one texel
+/// for each pixel. `tex_type` is the WGSL texture type. `layer_arg` is the
+/// layer argument of `textureLoad`, or empty for a `texture_2d`.
+fn viewCheckShader(comptime tex_type: []const u8, comptime layer_arg: []const u8) []const u8 {
+    return "@group(0) @binding(0) var atlas: " ++ tex_type ++ ";\n" ++
+        \\@vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+        \\    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+        \\    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+        \\}
+        \\@fragment fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+        \\    let c = vec2i(pos.xy);
+        \\
+    ++ "    return textureLoad(atlas, c" ++ layer_arg ++ ", 0);\n}\n";
+}
+
+/// Draw level 0 of layer `view_check_layer` through one view, read the
+/// target back, and compare it with the texels that `makeLayer` wrote. If
+/// the view has the wrong dimension, the view does not match the bind group
+/// layout, and the GPU rejects the bind group.
+fn checkOneView(
+    allocator: std.mem.Allocator,
+    gpu: *gpu_mod.GPU,
+    view: *gpu_mod.TextureView,
+    view_dimension: gpu_mod.TextureViewDimension,
+    code: []const u8,
+    name: []const u8,
+) !bool {
+    const target = try gpu.createTexture(.{
+        .label = "view check target",
+        .size = .{ .width = atlas_px, .height = atlas_px, .depth_or_array_layers = 1 },
+        .format = atlas_format,
+        .usage = .{ .render_attachment = true, .copy_src = true },
+    });
+    defer target.destroy();
+    var target_view = try target.createView(.{ .dimension = .@"2d" });
+    defer target_view.release();
+
+    var bgl = try gpu.createBindGroupLayout(.{
+        .entries = &[_]gpu_mod.BindGroupLayoutEntry{.{
+            .binding = 0,
+            .visibility = .{ .fragment = true },
+            .texture = .{ .sample_type = .float, .view_dimension = view_dimension },
+        }},
+    });
+    const bind_group = try gpu.createBindGroup(.{
+        .layout = &bgl,
+        .entries = &[_]gpu_mod.BindGroupEntry{.{ .binding = 0, .texture_view = view }},
+    });
+    defer bind_group.release();
+    var layout = try gpu.createPipelineLayout(.{
+        .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{&bgl},
+    });
+    var shader = try gpu.createShaderModule(.{ .code = code });
+    const p = try gpu.createRenderPipeline(.{
+        .layout = &layout,
+        .vertex = .{ .module = &shader, .entry_point = "vs_main" },
+        .fragment = .{
+            .module = &shader,
+            .entry_point = "fs_main",
+            .targets = &[_]gpu_mod.ColorTargetState{.{ .format = atlas_format }},
+        },
+        .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
+    });
+
+    const encoder = try gpu.createCommandEncoder();
+    const pass = try encoder.beginRenderPass(.{
+        .color_attachments = &[_]gpu_mod.RenderPassColorAttachment{.{
+            .view = &target_view,
+            .load_op = .clear,
+            .store_op = .store,
+        }},
+    });
+    pass.setPipeline(p);
+    pass.setBindGroup(0, bind_group);
+    pass.draw(3, 1, 0, 0);
+    pass.end();
+    const cmd = try encoder.finish();
+    gpu.submit(&[_]gpu_mod.CommandBuffer{cmd});
+
+    const got = try gpu.readTexture(allocator, target, 0, 0, atlas_px, atlas_px);
+    defer allocator.free(got);
+    const want = try allocator.alloc(u8, atlas_px * atlas_px * 4);
+    defer allocator.free(want);
+    makeLayer(view_check_layer, want);
+
+    var worst: u32 = 0;
+    for (want, got) |w, g| worst = @max(worst, @abs(@as(i32, w) - @as(i32, g)));
+    const ok = worst <= tolerance;
+    std.log.info("mipmaps: {s} view of layer {d}: largest difference {d} ({s})", .{
+        name, view_check_layer, worst, if (ok) "pass" else "FAIL",
+    });
+    return ok;
+}
+
+/// Make one view with the explicit dimension `2d-array` and one view with
+/// the explicit dimension `2d`. Draw with each view (REQ-GPU-034).
+fn checkViews(allocator: std.mem.Allocator, gpu: *gpu_mod.GPU, tex: gpu_mod.Texture) !bool {
+    var array_view = try tex.createView(.{ .dimension = .@"2d-array" });
+    defer array_view.release();
+    const array_ok = try checkOneView(
+        allocator,
+        gpu,
+        &array_view,
+        .@"2d-array",
+        comptime viewCheckShader("texture_2d_array<f32>", std.fmt.comptimePrint(", {d}", .{view_check_layer})),
+        "2d-array",
+    );
+
+    var layer_view = try tex.createView(.{
+        .dimension = .@"2d",
+        .base_array_layer = view_check_layer,
+        .array_layer_count = 1,
+    });
+    defer layer_view.release();
+    const layer_ok = try checkOneView(
+        allocator,
+        gpu,
+        &layer_view,
+        .@"2d",
+        comptime viewCheckShader("texture_2d<f32>", ""),
+        "2d",
+    );
+    return array_ok and layer_ok;
 }

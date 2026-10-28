@@ -27,13 +27,22 @@ desc.field = value;
 `uint16=1`, `uint32=2`. The `setIndexBuffer` wrapper now uses an explicit switch
 to map correctly. Do not use raw `@intFromEnum` for this conversion.
 
-### TextureViewDimension enum mismatch (fixed in gpu.zig — createBindGroupLayout)
+### TextureViewDimension enum mismatch (fixed in gpu.zig — createBindGroupLayout and createView)
 `types.TextureViewDimension` starts at 0 (`@"1d"=0, @"2d"=1`), but native
-`WGPUTextureViewDimension` has `undefined=0, 1d=1, 2d=2`. Raw `@intFromEnum`
-would map `.@"2d"→1` which is `WGPUTextureViewDimension.1d` — wrong, crashes
-with "Texture binding N expects dimension = D1, but given a view with dimension = D2".
-`createBindGroupLayout` now uses explicit switch maps for both `.texture.view_dimension`
-and `.storage_texture.view_dimension`. Do not use raw `@intFromEnum` for these.
+`WGPUTextureViewDimension` and the web bridge (`webgpuCreateTextureView` in
+`backends/wasm/webgpu.ts`) have `undefined=0, 1d=1, 2d=2`. A raw
+`@intFromEnum` maps `.@"2d"` to 1, and 1 is `1d`. wgpu then stops with
+"Invalid texture view dimension `D1` with texture of dimension `D2`" or
+"Texture binding N expects dimension = D1, but given a view with dimension = D2".
+- `createBindGroupLayout` uses explicit switch maps for
+  `.texture.view_dimension` and `.storage_texture.view_dimension`.
+- `Texture.createView` sends `types.viewDimensionCode(desc.dimension)` on the
+  web path and the native path. A null dimension gives 0, the dimension of
+  the texture.
+- `types.zig` tests the numbers. `mipmaps --check` draws through an
+  explicit `2d-array` view and an explicit `2d` view (REQ-GPU-034).
+
+Do not use raw `@intFromEnum` for a view dimension.
 
 ### TextureFormat enum mismatch (fixed in gpu.zig — toNativeTextureFormat)
 `types.TextureFormat` keeps the numbers that the web bridge uses
@@ -53,12 +62,10 @@ reject every fragment (blank sky-only output). `createRenderPipeline` now uses
 fields (depth_compare, stencil_front.compare, stencil_back.compare).
 Do not use raw `@intFromEnum` for CompareFunction conversions.
 
-### Sampler and view enum mismatches (fixed in gpu.zig)
+### Sampler enum mismatch (fixed in gpu.zig)
 `types.AddressMode` starts with `clamp_to_edge=0`, but `WGPUAddressMode` starts
-with `repeat=0`. `types.TextureViewDimension` starts with `1d=0`, but the
-native enum and webgpu.ts use `undefined=0, 1d=1, 2d=2`. `createSampler` and
-`Texture.createView` use named maps (`toNativeAddressMode`,
-`viewDimensionCode`). A sampler with `max_anisotropy > 1` needs linear
+with `repeat=0`. `createSampler` uses the named map `toNativeAddressMode`.
+A sampler with `max_anisotropy > 1` needs linear
 filters: `SamplerDescriptor.validate` gives an error before the GPU sees it.
 
 ### Hardware depth testing (macOS/Metal)

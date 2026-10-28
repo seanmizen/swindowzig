@@ -37,6 +37,7 @@
 | [`REQ-GPU-018`](gpu.md#req-gpu-018--a-setting-turns-the-shadows-off) | A setting turns the shadows off | active | functional | P2 | agent:SWZ-38 |
 | [`REQ-GPU-020`](gpu.md#req-gpu-020--the-cloud-layer-moves-with-the-wind-and-takes-its-shape-from-the-game) | The cloud layer moves with the wind and takes its shape from the game | active | functional | P3 | agent:SWZ-37 |
 | [`REQ-GPU-021`](gpu.md#req-gpu-021--rain-and-snow-fall-around-the-camera-and-stop-at-the-height-map) | Rain and snow fall around the camera and stop at the height map | active | functional | P3 | agent:SWZ-37 |
+| [`REQ-GPU-034`](gpu.md#req-gpu-034--a-texture-view-gets-the-dimension-that-the-game-gives) | A texture view gets the dimension that the game gives | active | functional | P3 | agent:SWZ-4 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -106,6 +107,7 @@ graph TD
   REQ_GPU_018["REQ-GPU-018<br/>A setting turns the shadows off"]
   REQ_GPU_020["REQ-GPU-020<br/>The cloud layer moves with the wind and takes its shape from the game"]
   REQ_GPU_021["REQ-GPU-021<br/>Rain and snow fall around the camera and stop at the height map"]
+  REQ_GPU_034["REQ-GPU-034<br/>A texture view gets the dimension that the game gives"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
