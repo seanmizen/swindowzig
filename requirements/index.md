@@ -119,6 +119,7 @@
 | [`REQ-VOXEL-029`](voxel.md#req-voxel-029--a-translucent-block-has-faces-with-their-centres-in-world-space) | A translucent block has faces with their centres in world space | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-VOXEL-030`](voxel.md#req-voxel-030--the-mesh-result-carries-the-translucent-quads-and-their-centres) | The mesh result carries the translucent quads and their centres | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-VOXEL-031`](voxel.md#req-voxel-031--the-demo-draws-translucent-blocks-with-sw_render-translucent) | The demo draws translucent blocks with sw_render Translucent | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-032`](voxel.md#req-voxel-032--a-merged-quad-has-the-shade-of-the-11-quads) | A merged quad has the shade of the 1×1 quads | active | functional | P2 | agent:SWZ-17 |
 
 ## Dependency graph
 
@@ -238,6 +239,7 @@ graph TD
   REQ_VOXEL_029["REQ-VOXEL-029<br/>A translucent block has faces with their centres in world space"]
   REQ_VOXEL_030["REQ-VOXEL-030<br/>The mesh result carries the translucent quads and their centres"]
   REQ_VOXEL_031["REQ-VOXEL-031<br/>The demo draws translucent blocks with sw_render Translucent"]
+  REQ_VOXEL_032["REQ-VOXEL-032<br/>A merged quad has the shade of the 1×1 quads"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -305,6 +307,7 @@ graph TD
   REQ_VOXEL_031 -->|depends-on| REQ_VOXEL_030
   REQ_VOXEL_031 -->|depends-on| REQ_GPU_040
   REQ_VOXEL_031 -->|depends-on| REQ_GPU_023
+  REQ_VOXEL_032 -->|refines| REQ_VOXEL_010
 ```
 
 ## Derived reverse links
@@ -339,6 +342,7 @@ graph TD
 - `REQ-VOXEL-006` — required-by REQ-VOXEL-007
 - `REQ-VOXEL-008` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-009` — refined-by REQ-VOXEL-010
+- `REQ-VOXEL-010` — refined-by REQ-VOXEL-032
 - `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
 - `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016, required-by REQ-VOXEL-027
 - `REQ-VOXEL-019` — required-by REQ-VOXEL-020

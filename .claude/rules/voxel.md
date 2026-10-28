@@ -112,6 +112,10 @@ were already correct.
   `MeshOptions` (`generateMeshWith`) turns AO (`.ao = .none`) and smooth
   light (`.smooth_light = false`) off. The greedy mesher merges only
   faces with equal AO, light and tint (REQ-VOXEL-010).
+- A mesher test compares the merged mesh with a mesh of 1×1 quads
+  (`max_merge = 1`) at sample points of each block face, with the GPU
+  triangle split (REQ-VOXEL-032). It replaces the old frame test
+  `greedy_vs_naive.sh`, which went away with the 1×1 path.
 - `bench_mesher` (`zig build bench-mesher -Doptimize=ReleaseFast`) hashes
   the packed quads of a fixed world. The quad hash is `8c11e81d4ec42623`
   (the demo tints changed it from `4b4f00654f783b36`). A mesher change

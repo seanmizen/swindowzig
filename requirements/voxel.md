@@ -692,3 +692,27 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   - depends-on REQ-VOXEL-030
   - depends-on REQ-GPU-040
   - depends-on REQ-GPU-023
+
+## REQ-VOXEL-032 — A merged quad has the shade of the 1×1 quads
+
+- **Status:** active
+- **Source:** agent:SWZ-17
+- **Origin:** #17
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The `sw_voxel` greedy mesher shall give each block face
+  the same block, tint, AO, sky light and block light at each point of the
+  face as a mesh with one quad for each block face (`max_merge = 1`). The
+  GPU split of each quad into 2 triangles applies to both meshes.
+- **Rationale:** Greedy meshing must change the quad count only, not the
+  image. The GPU interpolates the corner values in each triangle. A merged
+  quad has the values of one cell on its 4 corners, so it gives the 1×1
+  result only when each merged face has 4 equal corners
+  (REQ-VOXEL-010). On lavapipe, the regression scenes meshed with
+  `max_merge = 1` and with the default merge differ in at most 0.016% of
+  the pixels, as single pixels on the edges of quads, with RMS at most
+  0.7/255.
+- **Verification:** Test — `libs/sw_voxel/src/mesher.zig` › "merged quads
+  give each block face the shade of 1x1 quads (REQ-VOXEL-032)"
+- **Relations:**
+  - refines REQ-VOXEL-010

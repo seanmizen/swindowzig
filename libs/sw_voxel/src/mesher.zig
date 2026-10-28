@@ -2540,6 +2540,142 @@ test "greedy faces with different AO, light or tint do not merge (REQ-VOXEL-010)
     }
 }
 
+/// The AO, sky light and block light of a packed quad at the point (u, v)
+/// of its face, in cells along the axes i and j. The GPU draws the quad as
+/// the triangles 0, 1, 2 and 0, 2, 3 (TRI_CORNERS in voxel.wgsl), and
+/// interpolates the corner values linearly in each triangle.
+fn quadShadeAt(q: PackedQuad, u: f32, v: f32) [3]f32 {
+    const fl = face_layouts[@backingInt(quadFace(q))];
+    const w: f32 = @floatFromInt(((q[0] >> 19) & 0xF) + 1);
+    const h: f32 = @floatFromInt(((q[0] >> 23) & 0xFF) + 1);
+    var p: [4][2]f32 = undefined;
+    var val: [4][3]f32 = undefined;
+    for (0..4) |c| {
+        p[c] = .{ @as(f32, @floatFromInt(fl.pos[c][0])) * w, @as(f32, @floatFromInt(fl.pos[c][1])) * h };
+        const vx = unpackCorner(q, c, 0, 0);
+        val[c] = .{ vx.ao, vx.skylight, vx.block_light };
+    }
+    const cross = struct {
+        fn f(a: [2]f32, b: [2]f32, c: [2]f32) f32 {
+            return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        }
+    }.f;
+    const pt = [2]f32{ u, v };
+    for ([_][3]usize{ .{ 0, 1, 2 }, .{ 0, 2, 3 } }) |tri| {
+        const area = cross(p[tri[0]], p[tri[1]], p[tri[2]]);
+        const l0 = cross(pt, p[tri[1]], p[tri[2]]) / area;
+        const l1 = cross(p[tri[0]], pt, p[tri[2]]) / area;
+        const l2 = 1 - l0 - l1;
+        if (l0 < -1e-6 or l1 < -1e-6 or l2 < -1e-6) continue;
+        var out: [3]f32 = undefined;
+        for (0..3) |k| out[k] = l0 * val[tri[0]][k] + l1 * val[tri[1]][k] + l2 * val[tri[2]][k];
+        return out;
+    }
+    unreachable;
+}
+
+/// Mesh `chunk` two times: with merged quads, and with one quad for each
+/// block face (`max_merge = 1`). Each block face must get the same block,
+/// tint and shade at each sample point in the two meshes. Returns the
+/// number of merged quads, so a caller can see that merges occurred.
+fn expectMergedShadeEqualsOneByOne(chunk: *Chunk, options: MeshOptions) !usize {
+    const allocator = std.testing.allocator;
+    var merged = Mesh.init(allocator);
+    defer merged.deinit();
+    var single = Mesh.init(allocator);
+    defer single.deinit();
+    try meshWith(chunk, &merged, options);
+    var one = options;
+    one.max_merge = 1;
+    try meshWith(chunk, &single, one);
+
+    // The quad of each block face in the 1×1 mesh, by face and cell.
+    const Key = struct { face: u3, x: u32, y: u32, z: u32 };
+    var faces: std.AutoHashMapUnmanaged(Key, PackedQuad) = .empty;
+    defer faces.deinit(allocator);
+    var single_count: usize = 0;
+    for (quadsOnly(&single)) |q| {
+        if (isModelRecord(q)) continue;
+        try std.testing.expectEqual(@as(u32, 0), (q[0] >> 19) & 0xF);
+        try std.testing.expectEqual(@as(u32, 0), (q[0] >> 23) & 0xFF);
+        const key: Key = .{ .face = @backingInt(quadFace(q)), .x = q[0] & 0xF, .y = cellY(q), .z = (q[0] >> 12) & 0xF };
+        try faces.put(allocator, key, q);
+        single_count += 1;
+    }
+
+    const samples = [_]f32{ 0.1, 0.5, 0.9 };
+    var covered: usize = 0;
+    var merged_quads: usize = 0;
+    for (quadsOnly(&merged)) |q| {
+        if (isModelRecord(q)) continue;
+        const face = quadFace(q);
+        const fl = face_layouts[@backingInt(face)];
+        const w = ((q[0] >> 19) & 0xF) + 1;
+        const h = ((q[0] >> 23) & 0xFF) + 1;
+        if (w * h > 1) merged_quads += 1;
+        for (0..w) |a| for (0..h) |b| {
+            var cell = [3]u32{ q[0] & 0xF, cellY(q), (q[0] >> 12) & 0xF };
+            cell[fl.i_axis] += @intCast(a);
+            cell[fl.j_axis] += @intCast(b);
+            const key: Key = .{ .face = @backingInt(face), .x = cell[0], .y = cell[1], .z = cell[2] };
+            const sq = faces.fetchRemove(key) orelse return error.TestBlockFaceMissingIn1x1Mesh;
+            covered += 1;
+            try std.testing.expectEqual((q[3] >> 12) & 0xFF, (sq.value[3] >> 12) & 0xFF);
+            try std.testing.expectEqual(quadTint(merged.quads.items, q), quadTint(single.quads.items, sq.value));
+            for (samples) |s| for (samples) |t| {
+                const fa: f32 = @floatFromInt(a);
+                const fb: f32 = @floatFromInt(b);
+                const got = quadShadeAt(q, fa + s, fb + t);
+                const want = quadShadeAt(sq.value, s, t);
+                for (0..3) |k| try std.testing.expectApproxEqAbs(want[k], got[k], 1e-5);
+            };
+        };
+    }
+    // Each block face of the 1×1 mesh is in exactly one merged quad.
+    try std.testing.expectEqual(single_count, covered);
+    try std.testing.expectEqual(@as(u32, 0), faces.count());
+    return merged_quads;
+}
+
+/// A low cave: a floor, a roof over most of the chunk, and a wall under
+/// the roof with dug holes and an emitter. The sky light falls off under the
+/// roof, so the floor has large areas of uniform light with a different
+/// value in each area, next to faces with AO and light gradients.
+fn testCaveChunk(allocator: std.mem.Allocator) !Chunk {
+    var chunk = Chunk.init(allocator);
+    errdefer chunk.deinit();
+    for (0..CHUNK_W) |x| for (0..CHUNK_W) |z| for (0..61) |y| {
+        try chunk.setBlock(@intCast(x), @intCast(y), @intCast(z), .solid);
+    };
+    for (0..12) |x| for (0..12) |z| try chunk.setBlock(@intCast(x), 66, @intCast(z), .solid);
+    for (0..12) |z| for (61..66) |y| try chunk.setBlock(9, @intCast(y), @intCast(z), .b3);
+    // Dug holes and a short tunnel in the wall.
+    try chunk.setBlock(9, 62, 3, .air);
+    try chunk.setBlock(9, 63, 4, .air);
+    for (6..9) |z| try chunk.setBlock(9, 61, @intCast(z), .air);
+    try chunk.setBlock(4, 61, 9, .emitter);
+    try chunk.computeSkylight();
+    try chunk.computeBlockLight();
+    return chunk;
+}
+
+test "merged quads give each block face the shade of 1x1 quads (REQ-VOXEL-032)" {
+    // A merged quad must look the same as the 1×1 quads (one quad for each
+    // block face) that it replaces: the same AO, sky light and block light
+    // at each point, with the triangle split of the GPU.
+    const allocator = std.testing.allocator;
+    for (0..2) |world| {
+        var chunk = if (world == 0) try testHillChunk(allocator) else try testCaveChunk(allocator);
+        defer chunk.deinit();
+        for ([_]AOStrategy{ .none, .classic, .moore }) |ao| {
+            for ([_]bool{ true, false }) |smooth| {
+                const merges = try expectMergedShadeEqualsOneByOne(&chunk, .{ .ao = ao, .smooth_light = smooth });
+                try std.testing.expect(merges > 0);
+            }
+        }
+    }
+}
+
 test "quads with a tint index get the tint colour of the content (REQ-VOXEL-009)" {
     const allocator = std.testing.allocator;
     var chunk = Chunk.init(allocator);
