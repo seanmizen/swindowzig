@@ -19,6 +19,8 @@
     "native:windows": "zig build run -Dexample=windows",
     "native:voxel": "zig build run -Dexample=voxel -Doptimize=ReleaseFast --",
     "native:justabox": "zig build run -Dexample=justabox",
+    "voxel:windows": "bash scripts/voxel-windows.sh",
+    "windows:deps": "bash scripts/windows-deps.sh",
     "build:native": "zig build native",
     "test": "zig build test",
     "test:web": "bash test-web-build.sh",

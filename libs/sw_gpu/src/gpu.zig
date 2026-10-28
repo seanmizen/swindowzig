@@ -573,6 +573,17 @@ pub const GPU = struct {
             // Wait for adapter (simple spin-wait for now)
             while (!adapter_result.received) {}
             if (adapter_result.adapter == null) return error.AdapterRequestFailed;
+            // The adapter and its backend. On Windows, a GPU gives d3d12
+            // or vulkan with the GPU name. lavapipe is a cpu adapter
+            // (REQ-BUILD-003).
+            var adapter_info = std.mem.zeroes(native.WGPUAdapterInfo);
+            native.wgpuAdapterGetInfo(adapter_result.adapter.?, &adapter_info);
+            std.log.info("sw_gpu: adapter \"{s}\" backend={s} type={s}", .{
+                if (adapter_info.device) |d| std.mem.span(d) else "?",
+                std.enums.tagName(native.WGPUBackendType, adapter_info.backend_type) orelse "?",
+                std.enums.tagName(native.WGPUAdapterType, adapter_info.adapter_type) orelse "?",
+            });
+            native.wgpuAdapterInfoFreeMembers(adapter_info);
 
             // Create surface from SDL window (windowed mode only). Headless
             // offscreen mode leaves `self.surface = null` and renders to a

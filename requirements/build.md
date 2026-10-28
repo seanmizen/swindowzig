@@ -27,3 +27,40 @@ dependent package uses, and the targets that the build supports.
   - Inspection — `build.zig` › `addWebExample` uses the same `webExample`
     function as the `web` step.
 - **Relations:** none
+
+## REQ-BUILD-002 — The native examples cross-compile to Windows
+
+- **Status:** active
+- **Source:** agent:SWZ-9
+- **Origin:** #9
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When the target is `x86_64-windows-gnu`, `zig build native`
+  shall link the Windows releases of SDL2 and wgpu-native from the
+  `windows-deps` folder and install `SDL2.dll` and `wgpu_native.dll` next to
+  the executable.
+- **Rationale:** WSL2 has no Vulkan driver for the GPU, so a Linux build in
+  WSL draws on the CPU (lavapipe). A Windows executable uses D3D12 or Vulkan
+  on the GPU. Zig cross-compiles it from Linux, so no Windows toolchain is
+  necessary.
+- **Verification:**
+  - Demonstration — `scripts/voxel-windows.sh` (`yarn voxel:windows`)
+    builds `zig-out/bin/voxel.exe` with the two DLLs.
+- **Relations:** none
+
+## REQ-BUILD-003 — On Windows, the native surface is the Win32 window
+
+- **Status:** active
+- **Source:** agent:SWZ-9
+- **Origin:** #9
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When `sw_gpu` runs on Windows, it shall make its wgpu
+  surface from the HWND and the HINSTANCE of the SDL2 window.
+- **Rationale:** wgpu-native picks D3D12 or Vulkan for a Win32 surface.
+  Before this, the Windows path stopped with `NotImplementedYet`.
+- **Verification:**
+  - Demonstration — on Windows, `voxel.exe` logs
+    `sw_gpu: adapter "<GPU name>" backend=d3d12` (or `vulkan`) and draws
+    the world.
+- **Relations:** none

@@ -94,6 +94,32 @@ On WSL, `which bun` must show `~/.bun/bin/bun`. A Windows bun on the PATH
 export PATH="$HOME/.bun/bin:$PATH"
 ```
 
+**Windows (cross-compiled from Linux or WSL):**
+
+WSL has no Vulkan driver for the GPU, so a Linux build in WSL uses lavapipe
+(the CPU). A Windows `.exe` uses D3D12 or Vulkan on the GPU. Zig
+cross-compiles it from Linux to `x86_64-windows-gnu`:
+
+```bash
+yarn voxel:windows   # build zig-out/bin/voxel.exe, then start it (WSL only)
+```
+
+`scripts/windows-deps.sh` downloads the Windows files to `~/.local/windows`:
+SDL2 2.32.10 (MinGW development files) and wgpu-native v22.1.0.5
+(`x86_64-gnu`). `yarn voxel:windows` runs it first. The build copies
+`SDL2.dll` and `wgpu_native.dll` next to `voxel.exe` in `zig-out/bin`. In
+WSL, the script copies the three files to `%TEMP%\swindowzig-voxel` and
+starts `voxel.exe` there. Outside WSL, it only builds. To build another
+example, or to use another folder:
+
+```bash
+./scripts/windows-deps.sh <dir>
+zig build native -Dexample=<name> -Dtarget=x86_64-windows-gnu -Dwindows-deps=<dir>
+```
+
+The log line `sw_gpu: adapter "<name>" backend=<backend> type=<type>` names
+the GPU. On Windows, the backend is `d3d12` or `vulkan`.
+
 **macOS (arm64):**
 ```bash
 brew install sdl2

@@ -53,6 +53,15 @@ pub fn build(b: *std.Build) void {
         "Native builds: send the sw_ui semantic tree to AccessKit (needs libaccesskit in ~/.local/lib)",
     ) orelse false;
 
+    // The folder of the Windows SDL2 and wgpu-native files
+    // (scripts/windows-deps.sh, REQ-BUILD-002). Only a Windows target reads it.
+    const windows_deps = b.option(
+        []const u8,
+        "windows-deps",
+        "Windows targets: the folder that scripts/windows-deps.sh fills (default: ~/.local/windows)",
+    );
+    const deps = nativeDeps(b, target.result.os.tag, windows_deps);
+
     // The exported modules. `b.addModule` makes them importable from a
     // dependent package.
     const exported_sdl: ?*std.Build.Module = if (platform == .native) blk: {
@@ -61,7 +70,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        if (target.result.os.tag == .macos) sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        if (deps.sdl_include) |dir| sdl_c.addSystemIncludePath(.{ .cwd_relative = dir });
         break :blk sdl_c.createModule();
     } else null;
     const exported = addLibs(b, exported_sdl, true, accesskit and platform == .native);
@@ -106,7 +115,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    if (target.result.os.tag == .macos) sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    if (deps.sdl_include) |dir| sdl_c.addSystemIncludePath(.{ .cwd_relative = dir });
     const native_libs = if (platform == .native) exported else addLibs(b, sdl_c.createModule(), false, accesskit);
 
     const native_exe = b.addExecutable(.{
@@ -131,18 +140,23 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_voxel", native_voxel.voxel);
     native_exe.root_module.addImport("voxel_content", native_voxel.content);
 
-    // Link SDL2 for native builds.
-    native_exe.root_module.linkSystemLibrary("SDL2", .{});
+    // Link SDL2 for native builds. On Windows, SDL2 and wgpu-native are
+    // DLLs: link their MinGW import libraries from deps.lib. pkg-config
+    // gives the host folders, so it is not used there.
     native_exe.root_module.link_libc = true;
+    if (target.result.os.tag == .windows) {
+        for ([_][]const u8{ "libSDL2.dll.a", "libwgpu_native.dll.a" }) |lib| {
+            native_exe.root_module.addObjectFile(.{ .cwd_relative = b.pathJoin(&.{ deps.lib, lib }) });
+        }
+    } else {
+        native_exe.root_module.linkSystemLibrary("SDL2", .{});
+    }
 
-    // Link wgpu-native from ~/.local
-    const home = b.graph.environ_map.get("HOME") orelse @panic("HOME is not set");
-    const wgpu_lib_path = std.fs.path.join(b.allocator, &[_][]const u8{ home, ".local", "lib" }) catch unreachable;
-    const wgpu_include_path = std.fs.path.join(b.allocator, &[_][]const u8{ home, ".local", "include" }) catch unreachable;
-
-    native_exe.root_module.addLibraryPath(.{ .cwd_relative = wgpu_lib_path });
-    native_exe.root_module.addIncludePath(.{ .cwd_relative = wgpu_include_path });
-    native_exe.root_module.linkSystemLibrary("wgpu_native", .{});
+    // Link wgpu-native from the folders of nativeDeps: ~/.local on Linux
+    // and macOS, the windows-deps folder on Windows.
+    native_exe.root_module.addLibraryPath(.{ .cwd_relative = deps.lib });
+    native_exe.root_module.addIncludePath(.{ .cwd_relative = deps.include });
+    if (target.result.os.tag != .windows) native_exe.root_module.linkSystemLibrary("wgpu_native", .{});
 
     // accesskit-c (optional, REQ-A11Y-007): the static library of the
     // release zip, in ~/.local/lib. The system libraries are the ones that
@@ -179,6 +193,11 @@ pub fn build(b: *std.Build) void {
     }
 
     const install_native = b.addInstallArtifact(native_exe, .{});
+    // Windows: the .exe loads SDL2.dll and wgpu_native.dll from its own
+    // folder, so install them next to it in zig-out/bin (REQ-BUILD-002).
+    for (deps.dlls) |dll| {
+        install_native.step.dependOn(&b.addInstallBinFile(.{ .cwd_relative = dll }, std.fs.path.basename(dll)).step);
+    }
 
     // Native build step
     const native_step_desc = b.fmt("Build '{s}' example for native", .{example_name});
@@ -771,6 +790,41 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&chunks_wasm.step);
     const worker_wasm_step = b.step("worker-wasm", "Build zig-out/bin/chunks.wasm: the chunk worker of the Web Worker pool");
     worker_wasm_step.dependOn(&install_chunks.step);
+}
+
+/// The folders of the native libraries (SDL2 and wgpu-native) for one
+/// target OS (REQ-BUILD-002).
+const NativeDeps = struct {
+    /// The folder of the wgpu-native headers.
+    include: []const u8,
+    /// The folder of the wgpu-native library (and of SDL2 on Windows).
+    lib: []const u8,
+    /// A folder with the SDL2/ headers that is not a system folder, or null.
+    sdl_include: ?[]const u8,
+    /// The DLLs to install next to the executable.
+    dlls: []const []const u8,
+};
+
+/// Linux and macOS: wgpu-native from ~/.local, SDL2 from the system (and
+/// Homebrew on macOS). Windows: all from `windows_deps`, or from
+/// ~/.local/windows (scripts/windows-deps.sh fills the folder).
+fn nativeDeps(b: *std.Build, os: std.Target.Os.Tag, windows_deps: ?[]const u8) NativeDeps {
+    const home = b.graph.environ_map.get("HOME") orelse b.graph.environ_map.get("USERPROFILE") orelse "";
+    if (os == .windows) {
+        const dir = windows_deps orelse b.pathJoin(&.{ home, ".local", "windows" });
+        const include = b.pathJoin(&.{ dir, "include" });
+        const dlls = b.allocator.dupe([]const u8, &.{
+            b.pathJoin(&.{ dir, "bin", "SDL2.dll" }),
+            b.pathJoin(&.{ dir, "bin", "wgpu_native.dll" }),
+        }) catch @panic("OOM");
+        return .{ .include = include, .lib = b.pathJoin(&.{ dir, "lib" }), .sdl_include = include, .dlls = dlls };
+    }
+    return .{
+        .include = b.pathJoin(&.{ home, ".local", "include" }),
+        .lib = b.pathJoin(&.{ home, ".local", "lib" }),
+        .sdl_include = if (os == .macos) "/opt/homebrew/include" else null,
+        .dlls = &.{},
+    };
 }
 
 /// The settings of addWebExample.
