@@ -282,6 +282,11 @@ fn shadeVertex(in: VertexInput) -> VertexOutput {
 
     out.color = base_color;
     out.alpha = select(1.0, 0.2, block_type == 100u || block_type == 101u || block_type == 102u);
+    // The chunk border lines of debug mode: fs_main draws them pale and
+    // unlit, at a higher alpha, so that they do not look like a dark gap.
+    if (block_type == 101u) {
+        out.alpha = 0.6;
+    }
     out.uv = in.uv;
     out.ao = in.ao;
     out.skylight = in.skylight;
@@ -348,6 +353,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // edges on merged faces, and the jump would give a false fade.
     let fine_fade = texelNoiseFade(in.uv * 16.0);
     let coarse_fade = texelNoiseFade(in.uv * 4.0);
+
+    // Chunk border lines of debug mode: the plain colour, with no light. The
+    // lines have no normal, so the lit colour was the ambient term only: a
+    // dark grey line on the ground and the sky.
+    if (in.block_type == 101u) {
+        return vec4<f32>(in.color, in.alpha);
+    }
 
     // Hover outline: detect if this fragment is on the hovered block's face edge
     if (uniforms.hover_active > 0.5) {
