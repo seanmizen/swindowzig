@@ -151,6 +151,21 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Install Mesa Vulkan (from the apt cache)
+        # The old single job had these packages when the browser tests ran,
+        # and justabox passed there. Without them, Chromium got a WebGPU
+        # adapter, but the device dropped ("Instance dropped in
+        # popErrorScope"). This job does not set VK_LOADER_DRIVERS_SELECT,
+        # so Chromium can still use SwiftShader.
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: mesa-vulkan-drivers vulkan-tools
+          version: 1
+
+      - name: Refresh the library cache
+        # cache-apt-pkgs-action does not run the postinst scripts.
+        run: sudo ldconfig
+
       - name: Install the Node packages
         run: yarn install --immutable
 
