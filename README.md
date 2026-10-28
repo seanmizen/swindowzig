@@ -4,16 +4,16 @@
 Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS/Linux).
 
 <!-- progress:start -->
-![engine progress](https://img.shields.io/badge/engine-90.5%25-1D76DB)
+![engine progress](https://img.shields.io/badge/engine-92.9%25-1D76DB)
 
-**Engine: 90.5% complete** `██████████████████░░` (38 of 42 issues)
+**Engine: 92.9% complete** `███████████████████░` (39 of 42 issues)
 
 | State | Issues |
 |---|---|
-| done | 38 |
+| done | 39 |
 | in-review | 0 |
 | in-progress | 0 |
-| ready | 2 |
+| ready | 1 |
 | backlog | 2 |
 
 A GitHub workflow writes this block from the
