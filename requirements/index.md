@@ -49,6 +49,7 @@
 | [`REQ-GPU-031`](gpu.md#req-gpu-031--a-cloud-puts-a-moving-shadow-on-the-ground-under-it) | A cloud puts a moving shadow on the ground under it | active | functional | P2 | agent:SWZ-101 |
 | [`REQ-GPU-032`](gpu.md#req-gpu-032--soft-clouds-have-semi-transparent-edges-and-a-rim-toward-the-sun) | Soft clouds have semi-transparent edges and a rim toward the sun | active | functional | P2 | agent:SWZ-101 |
 | [`REQ-GPU-033`](gpu.md#req-gpu-033--light-shafts-go-toward-the-sun-on-the-screen) | Light shafts go toward the sun on the screen | active | functional | P2 | agent:SWZ-101 |
+| [`REQ-GPU-034`](gpu.md#req-gpu-034--a-texture-view-gets-the-dimension-that-the-game-gives) | A texture view gets the dimension that the game gives | active | functional | P3 | agent:SWZ-4 |
 | [`REQ-GPU-035`](gpu.md#req-gpu-035--a-query-set-has-a-type-that-goes-through-a-named-map) | A query set has a type that goes through a named map | active | constraint | P2 | agent:SWZ-40 |
 | [`REQ-GPU-036`](gpu.md#req-gpu-036--a-render-pass-counts-the-samples-of-each-occlusion-query) | A render pass counts the samples of each occlusion query | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-037`](gpu.md#req-gpu-037--the-web-build-resolves-query-sets-and-copies-buffers) | The web build resolves query sets and copies buffers | active | functional | P2 | agent:SWZ-40 |
@@ -61,6 +62,7 @@
 | [`REQ-INPUT-005`](input.md#req-input-005--gamepads-are-recorded-input-that-binds-to-actions) | Gamepads are recorded input that binds to actions | active | functional | P2 | agent:SWZ-50 |
 | [`REQ-INPUT-006`](input.md#req-input-006--old-recordings-still-play) | Old recordings still play | active | constraint | P1 | agent:SWZ-50 |
 | [`REQ-INPUT-007`](input.md#req-input-007--a-key-press-shorter-than-one-tick-is-not-lost) | A key press shorter than one tick is not lost | active | functional | P2 | agent:SWZ-92 |
+| [`REQ-INPUT-008`](input.md#req-input-008--the-wheel-snapshot-is-in-lines) | The wheel snapshot is in lines | active | functional | P2 | agent:SWZ-77 |
 | [`REQ-JOBS-001`](jobs.md#req-jobs-001--a-native-worker-runs-its-messages-in-order-and-can-stop) | A native worker runs its messages in order, and can stop | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-JOBS-002`](jobs.md#req-jobs-002--native-threads-and-web-workers-have-one-transport-api) | Native threads and Web Workers have one Transport API | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-NET-001`](net.md#req-net-001--the-game-polls-network-events) | The game polls network events | active | constraint | P1 | agent:SWZ-53 |
@@ -151,6 +153,7 @@ graph TD
   REQ_GPU_031["REQ-GPU-031<br/>A cloud puts a moving shadow on the ground under it"]
   REQ_GPU_032["REQ-GPU-032<br/>Soft clouds have semi-transparent edges and a rim toward the sun"]
   REQ_GPU_033["REQ-GPU-033<br/>Light shafts go toward the sun on the screen"]
+  REQ_GPU_034["REQ-GPU-034<br/>A texture view gets the dimension that the game gives"]
   REQ_GPU_035["REQ-GPU-035<br/>A query set has a type that goes through a named map"]
   REQ_GPU_036["REQ-GPU-036<br/>A render pass counts the samples of each occlusion query"]
   REQ_GPU_037["REQ-GPU-037<br/>The web build resolves query sets and copies buffers"]
@@ -163,6 +166,7 @@ graph TD
   REQ_INPUT_005["REQ-INPUT-005<br/>Gamepads are recorded input that binds to actions"]
   REQ_INPUT_006["REQ-INPUT-006<br/>Old recordings still play"]
   REQ_INPUT_007["REQ-INPUT-007<br/>A key press shorter than one tick is not lost"]
+  REQ_INPUT_008["REQ-INPUT-008<br/>The wheel snapshot is in lines"]
   REQ_JOBS_001["REQ-JOBS-001<br/>A native worker runs its messages in order, and can stop"]
   REQ_JOBS_002["REQ-JOBS-002<br/>Native threads and Web Workers have one Transport API"]
   REQ_NET_001["REQ-NET-001<br/>The game polls network events"]
