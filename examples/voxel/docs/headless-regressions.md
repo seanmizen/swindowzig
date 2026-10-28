@@ -125,8 +125,9 @@ cave_skylight_none           PASS
 cave_skylight_skylight       PASS
 dig_relight                  PASS
 water_pool                   PASS
+glass_blocks                 PASS
 
-Summary: 11 passed, 0 failed, 0 missing (backend=metal)
+Summary: 12 passed, 0 failed, 0 missing (backend=metal)
 ```
 
 ### Verified backends

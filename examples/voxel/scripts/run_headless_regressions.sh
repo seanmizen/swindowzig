@@ -100,6 +100,7 @@ declare -a RUNS=(
     "cave_skylight_skylight|examples/voxel/tests/cave_skylight.tas|--aa=none --lighting=skylight --world=flatland|0.1|2"
     "dig_relight|examples/voxel/tests/dig_relight.tas|--aa=none --world=flatland|0.1|2"
     "water_pool|examples/voxel/tests/water_pool.tas|--aa=none --world=flatland --place-block=water|0.1|2"
+    "glass_blocks|examples/voxel/tests/glass_blocks.tas|--aa=none --world=flatland --place-block=glass|0.1|2"
 )
 
 # Flags for every run, so that one TAS gives the same frame every time:

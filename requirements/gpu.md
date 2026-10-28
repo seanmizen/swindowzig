@@ -912,3 +912,28 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Relations:**
   - depends-on REQ-GPU-036
   - depends-on REQ-GPU-038
+
+## REQ-GPU-040 — Translucent quads draw in a render pass of the game with no frame graph
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The sw_render `TranslucentPipeline` shall draw the quads
+  of a `TranslucentBatch` far to near in a render pass of the game, with
+  the frame uniforms of a `FrameBinding`.
+- **Rationale:** A game with its own scene pass, for example the voxel
+  demo, has many sets of translucent quads: one for each chunk. Each
+  batch has its own buffers and its own sort. The game can write the
+  vertices to the batch buffer from bytes that it does not hold, and give
+  only the centres (`setCenters`). The pipeline takes the sample count of
+  the pass (MSAA). `Translucent` with a frame graph does not change.
+- **Verification:**
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: the
+    sort puts the furthest quad first, and ties keep their order
+    (REQ-GPU-023)"
+  - Demonstration — the `glass_blocks` golden of the voxel demo
+    (`examples/voxel/scripts/run_headless_regressions.sh`, lavapipe, in
+    CI) draws two batches in the scene pass of the demo.
+- **Relations:** refines REQ-GPU-022

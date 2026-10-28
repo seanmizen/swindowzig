@@ -41,7 +41,8 @@ pub const MeshBytes = union(enum) {
     },
 
     /// The length of the payload: the quad bytes, then the fluid
-    /// vertices (REQ-VOXEL-027).
+    /// vertices (REQ-VOXEL-027), then the translucent vertices and their
+    /// centres (REQ-VOXEL-030).
     pub fn payloadLen(self: MeshBytes) usize {
         return switch (self) {
             .local => |l| l.msg.len - protocol.PAYLOAD_OFFSET,
@@ -54,8 +55,25 @@ pub const MeshBytes = union(enum) {
         self.copyAt(protocol.PAYLOAD_OFFSET, std.mem.sliceAsBytes(out));
     }
 
-    /// Copy the bytes of the message from `offset` into `out`. Only the
-    /// tests use it: main does not copy a stream of a mesh (C5).
+    /// Read the centres of the translucent quads, at `offset` in the
+    /// message, into `out` (REQ-VOXEL-030). Main reads them for the sort.
+    /// They are 12 bytes for each quad, not the quads (C5).
+    pub fn readCenters(self: MeshBytes, allocator: std.mem.Allocator, offset: usize, out: [][3]f32) !void {
+        const len = out.len * protocol.CENTER_LEN;
+        switch (self) {
+            .local => |l| protocol.readCenters(l.msg[offset..][0..len], out),
+            .held => {
+                const tmp = try allocator.alloc(u8, len);
+                defer allocator.free(tmp);
+                self.copyAt(offset, tmp);
+                protocol.readCenters(tmp, out);
+            },
+        }
+    }
+
+    /// Copy the bytes of the message from `offset` into `out`. The tests
+    /// use it, and `readCenters`: main does not copy a quad stream of a
+    /// mesh (C5).
     pub fn copyAt(self: MeshBytes, offset: usize, out: []u8) void {
         switch (self) {
             .local => |l| @memcpy(out, l.msg[offset..][0..out.len]),

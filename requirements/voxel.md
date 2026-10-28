@@ -615,3 +615,80 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   - Test — `examples/voxel/content.zig` › "water fills the low columns to
     the sea level only with the water flag (REQ-VOXEL-028)"
 - **Relations:** depends-on REQ-VOXEL-027
+
+## REQ-VOXEL-029 — A translucent block has faces with their centres in world space
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** Where the content gives a colour for a translucent block,
+  the `sw_voxel` translucent mesher shall make each face of a cell of that
+  block that is not next to the same block or a full cube, with its
+  centre, in world space.
+- **Rationale:** Translucent faces must draw far to near, so the game
+  needs the centre of each face for the sort. The worker calculates the
+  centres, so main does not read the vertices (C5). World space lets the
+  game sort the faces of a chunk with no chunk offset, and gives the
+  vertices to sw_render `Translucent` as they are. A translucent block is
+  not a full cube: the faces of the blocks next to it show, and it does
+  not darken AO.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/translucent.zig` › "a translucent cell has
+    6 faces in world space, with a centre for each face (REQ-VOXEL-029)"
+  - Test — `libs/sw_voxel/src/translucent.zig` › "two cells of one
+    translucent block have no face between them, a full cube hides a face
+    (REQ-VOXEL-029)"
+- **Relations:** none
+
+## REQ-VOXEL-030 — The mesh result carries the translucent quads and their centres
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a chunk holds translucent cells, the `sw_voxel` mesh
+  stage shall put the translucent quads and their centres in the mesh
+  result after the fluid quads.
+- **Rationale:** The vertices go from the result bytes to a GPU buffer, and
+  main reads only the 12 bytes of each centre for the sort (C5). On the
+  web, JS counts the centre bytes apart from the quad bytes, so the test
+  of C5 still proves that no quad goes into the wasm memory. A chunk with
+  no translucent block gives the payload bytes of protocol version 7.
+- **Verification:**
+  - Test — `examples/voxel/protocol_test.zig` › "protocol: a mesh Result
+    holds the translucent quads and their centres after the fluid quads
+    (REQ-VOXEL-030)"
+  - Test — `backends/wasm/worker-pool.test.ts` › "translucent: glass gives
+    a translucent stream from the held bytes, and main reads only the
+    centres (REQ-VOXEL-030)"
+- **Relations:**
+  - depends-on REQ-VOXEL-029
+  - depends-on REQ-VOXEL-027
+
+## REQ-VOXEL-031 — The demo draws translucent blocks with sw_render Translucent
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a chunk mesh has translucent quads, the voxel demo
+  shall draw them with a sw_render `TranslucentBatch`, sorted far to near
+  by the centres from the worker, after the opaque chunks.
+- **Rationale:** The demo has its own scene pass, so it uses the pipeline
+  and the batches of sw_render with no frame graph (REQ-GPU-040). Each
+  chunk has one batch. The chunks draw far to near, and in a chunk the
+  batch sorts its quads again only when the camera moves 1 block. The
+  generator places no glass, so the default terrain and its goldens do
+  not change. `--place-block=glass` places glass.
+- **Verification:**
+  - Demonstration — the `glass_blocks` golden of
+    `examples/voxel/scripts/run_headless_regressions.sh` (lavapipe, in
+    CI): two glass blocks on the grass.
+- **Relations:**
+  - depends-on REQ-VOXEL-030
+  - depends-on REQ-GPU-040
+  - depends-on REQ-GPU-023

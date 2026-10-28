@@ -46,6 +46,11 @@ pub const Block = enum(u8) {
     /// translucent (REQ-VOXEL-028). The generator puts it in only with
     /// `GenConfig.water` (`--water=on`). `--place-block=water` places it.
     water = 10,
+    /// Glass: a translucent block (sw_voxel REQ-VOXEL-029). The demo draws
+    /// its faces with sw_render `Translucent`, sorted far to near
+    /// (REQ-VOXEL-031). The generator does not place it.
+    /// `--place-block=glass` places it.
+    glass = 11,
     debug_marker = 99,
 };
 const BlockType = Block;
@@ -65,7 +70,7 @@ pub fn emission(block: Block) u8 {
 /// blocks stop all light.
 pub fn opacity(block: Block) u8 {
     return switch (block) {
-        .air, .slab, .water => 0,
+        .air, .slab, .water, .glass => 0,
         else => 15,
     };
 }
@@ -75,6 +80,15 @@ pub fn opacity(block: Block) u8 {
 pub fn fluid(block: Block) ?sw_voxel.fluid.Level {
     return switch (block) {
         .water => .{ .fluid = 1, .level = sw_voxel.fluid.MAX_LEVEL },
+        else => null,
+    };
+}
+
+/// The colour of a translucent block (sw_voxel REQ-VOXEL-029): glass is a
+/// pale blue, mostly clear.
+pub fn translucent(block: Block) ?[4]u8 {
+    return switch (block) {
+        .glass => .{ 190, 225, 245, 100 },
         else => null,
     };
 }

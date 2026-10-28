@@ -46,7 +46,18 @@ pub const Block = enum(u8) {
     b22 = 22,
     b23 = 23,
     b24 = 24,
+    // b25 is translucent (REQ-VOXEL-029).
+    b25 = 25,
 };
+
+/// b25 is translucent red at alpha 128 (REQ-VOXEL-029). The generator
+/// does not place it.
+pub fn translucent(block: Block) ?[4]u8 {
+    return switch (block) {
+        .b25 => .{ 255, 0, 0, 128 },
+        else => null,
+    };
+}
 
 /// The fluids b21 to b24. The generator does not place them.
 pub fn fluid(block: Block) ?sw_voxel.fluid.Level {
@@ -144,7 +155,7 @@ pub fn emission(block: Block) u8 {
 /// light of full cubes.
 pub fn opacity(block: Block) u8 {
     return switch (block) {
-        .air, .b18, .b19, .b20 => 0,
+        .air, .b18, .b19, .b20, .b25 => 0,
         .b21, .b22, .b23, .b24 => 2,
         .b17 => 3,
         else => 15,

@@ -1,0 +1,45 @@
+# glass_blocks.tas — translucent blocks from sw_render Translucent
+# (REQ-VOXEL-031).
+#
+# Purpose: show the translucent stream of the mesh result. With
+# --place-block=glass, hotbar slot 1 holds glass. The player places a
+# glass block on the grass, then one more glass block to the right. The
+# glass faces draw after the opaque chunks, sorted far to near by their
+# centres.
+#
+# Scene (flatland, the same spawn each run): the player looks down about
+# 20 degrees. The grass and the far faces of each glass block show
+# through its near faces.
+#
+# Usage (from the repo root):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --world=flatland --aa=none --place-block=glass \
+#     --tas examples/voxel/tests/glass_blocks.tas \
+#     --dump-frame=glass_blocks.ppm
+#
+# The golden `glass_blocks` of run_headless_regressions.sh is this frame.
+#
+# Tick numbering is relative to the first post-loading tick.
+
+# --- Capture mouse ---
+1 mouse_down left
+2 mouse_up left
+
+# --- Look down about 20 degrees. ---
+3 mouse_move 0 120
+
+# --- Place glass on the ground. ---
+6 mouse_down right
+7 mouse_up right
+
+# --- Turn right and look up a little, then place glass on the grass
+#     further away. ---
+16 mouse_move 250 -100
+20 mouse_down right
+21 mouse_up right
+
+# --- Turn back so the glass blocks are in the frame. ---
+25 mouse_move -150 40
+
+# --- Hold steady so --dump-frame lands on a stable view. ---
+32 mouse_move 0 0

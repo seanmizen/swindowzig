@@ -47,6 +47,8 @@ pub const MeshInfo = struct {
     quad_count: u32 = 0,
     /// The fluid quads after the quads in the mesh bytes (REQ-VOXEL-027).
     fluid_quad_count: u32 = 0,
+    /// The translucent quads after the fluid quads (REQ-VOXEL-030).
+    translucent_quad_count: u32 = 0,
     /// The y range of the quads, for the frustum cull. With no quads, y_min
     /// is mesher.EMPTY_Y_MIN and y_max is mesher.EMPTY_Y_MAX.
     y_min: f32 = mesher_mod.EMPTY_Y_MIN,
@@ -66,7 +68,7 @@ pub const MeshInfo = struct {
 
     /// True when the mesh has nothing to draw.
     pub fn isEmpty(self: MeshInfo) bool {
-        return self.quad_count == 0 and self.fluid_quad_count == 0;
+        return self.quad_count == 0 and self.fluid_quad_count == 0 and self.translucent_quad_count == 0;
     }
 };
 

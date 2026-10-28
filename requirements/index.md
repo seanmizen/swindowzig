@@ -55,6 +55,7 @@
 | [`REQ-GPU-037`](gpu.md#req-gpu-037--the-web-build-resolves-query-sets-and-copies-buffers) | The web build resolves query sets and copies buffers | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-038`](gpu.md#req-gpu-038--a-buffer-read-does-not-wait-for-the-gpu) | A buffer read does not wait for the GPU | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-039`](gpu.md#req-gpu-039--occlusion-queries-of-boxes-come-back-with-the-tag-of-their-frame) | Occlusion queries of boxes come back with the tag of their frame | active | functional | P2 | agent:SWZ-40 |
+| [`REQ-GPU-040`](gpu.md#req-gpu-040--translucent-quads-draw-in-a-render-pass-of-the-game-with-no-frame-graph) | Translucent quads draw in a render pass of the game with no frame graph | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -109,6 +110,9 @@
 | [`REQ-VOXEL-026`](voxel.md#req-voxel-026--the-demo-culls-its-entity-boxes-with-the-visible-sections) | The demo culls its entity boxes with the visible sections | active | functional | P3 | agent:SWZ-40 |
 | [`REQ-VOXEL-027`](voxel.md#req-voxel-027--the-mesh-result-carries-the-fluid-quads-after-the-packed-quads) | The mesh result carries the fluid quads after the packed quads | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-VOXEL-028`](voxel.md#req-voxel-028--the-demo-draws-water-in-a-fluid-pass-after-the-opaque-chunks) | The demo draws water in a fluid pass after the opaque chunks | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-029`](voxel.md#req-voxel-029--a-translucent-block-has-faces-with-their-centres-in-world-space) | A translucent block has faces with their centres in world space | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-030`](voxel.md#req-voxel-030--the-mesh-result-carries-the-translucent-quads-and-their-centres) | The mesh result carries the translucent quads and their centres | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-031`](voxel.md#req-voxel-031--the-demo-draws-translucent-blocks-with-sw_render-translucent) | The demo draws translucent blocks with sw_render Translucent | active | functional | P2 | agent:SWZ-112 |
 
 ## Dependency graph
 
@@ -164,6 +168,7 @@ graph TD
   REQ_GPU_037["REQ-GPU-037<br/>The web build resolves query sets and copies buffers"]
   REQ_GPU_038["REQ-GPU-038<br/>A buffer read does not wait for the GPU"]
   REQ_GPU_039["REQ-GPU-039<br/>Occlusion queries of boxes come back with the tag of their frame"]
+  REQ_GPU_040["REQ-GPU-040<br/>Translucent quads draw in a render pass of the game with no frame graph"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -218,6 +223,9 @@ graph TD
   REQ_VOXEL_026["REQ-VOXEL-026<br/>The demo culls its entity boxes with the visible sections"]
   REQ_VOXEL_027["REQ-VOXEL-027<br/>The mesh result carries the fluid quads after the packed quads"]
   REQ_VOXEL_028["REQ-VOXEL-028<br/>The demo draws water in a fluid pass after the opaque chunks"]
+  REQ_VOXEL_029["REQ-VOXEL-029<br/>A translucent block has faces with their centres in world space"]
+  REQ_VOXEL_030["REQ-VOXEL-030<br/>The mesh result carries the translucent quads and their centres"]
+  REQ_VOXEL_031["REQ-VOXEL-031<br/>The demo draws translucent blocks with sw_render Translucent"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -249,6 +257,7 @@ graph TD
   REQ_GPU_036 -->|depends-on| REQ_GPU_035
   REQ_GPU_039 -->|depends-on| REQ_GPU_036
   REQ_GPU_039 -->|depends-on| REQ_GPU_038
+  REQ_GPU_040 -->|refines| REQ_GPU_022
   REQ_INPUT_009 -->|refines| REQ_INPUT_007
   REQ_JOBS_003 -->|depends-on| REQ_JOBS_002
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
@@ -276,6 +285,11 @@ graph TD
   REQ_VOXEL_026 -->|depends-on| REQ_VOXEL_020
   REQ_VOXEL_027 -->|depends-on| REQ_VOXEL_014
   REQ_VOXEL_028 -->|depends-on| REQ_VOXEL_027
+  REQ_VOXEL_030 -->|depends-on| REQ_VOXEL_029
+  REQ_VOXEL_030 -->|depends-on| REQ_VOXEL_027
+  REQ_VOXEL_031 -->|depends-on| REQ_VOXEL_030
+  REQ_VOXEL_031 -->|depends-on| REQ_GPU_040
+  REQ_VOXEL_031 -->|depends-on| REQ_GPU_023
 ```
 
 ## Derived reverse links
@@ -291,12 +305,14 @@ graph TD
 - `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
 - `REQ-GPU-016` — refined-by REQ-GPU-018
 - `REQ-GPU-020` — required-by REQ-GPU-031, required-by REQ-GPU-032
-- `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024
+- `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024, refined-by REQ-GPU-040
+- `REQ-GPU-023` — required-by REQ-VOXEL-031
 - `REQ-GPU-030` — required-by REQ-GPU-031, required-by REQ-GPU-033
 - `REQ-GPU-035` — required-by REQ-GPU-036
 - `REQ-GPU-036` — required-by REQ-GPU-039
 - `REQ-GPU-038` — required-by REQ-GPU-039
 - `REQ-GPU-039` — required-by REQ-VOXEL-025
+- `REQ-GPU-040` — required-by REQ-VOXEL-031
 - `REQ-INPUT-007` — refined-by REQ-INPUT-009
 - `REQ-JOBS-002` — required-by REQ-JOBS-003
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
@@ -312,4 +328,6 @@ graph TD
 - `REQ-VOXEL-020` — required-by REQ-VOXEL-024, required-by REQ-VOXEL-026
 - `REQ-VOXEL-021` — required-by REQ-VOXEL-022
 - `REQ-VOXEL-023` — required-by REQ-VOXEL-024
-- `REQ-VOXEL-027` — required-by REQ-VOXEL-028
+- `REQ-VOXEL-027` — required-by REQ-VOXEL-028, required-by REQ-VOXEL-030
+- `REQ-VOXEL-029` — required-by REQ-VOXEL-030
+- `REQ-VOXEL-030` — required-by REQ-VOXEL-031

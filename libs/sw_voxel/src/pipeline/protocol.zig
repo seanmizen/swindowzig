@@ -33,6 +33,7 @@ const builtin = @import("builtin");
 const chunk_mod = @import("../chunk.zig");
 const mesher_mod = @import("../mesher.zig");
 const fluid_mod = @import("../fluid.zig");
+const translucent_mod = @import("../translucent.zig");
 const content = @import("../content.zig");
 const stages = @import("stages.zig");
 const lod = @import("lod.zig");
@@ -44,6 +45,12 @@ pub const PackedQuad = mesher_mod.PackedQuad;
 pub const FluidVertex = fluid_mod.Vertex;
 /// The bytes of one fluid quad in a mesh payload: 4 `fluid.Vertex`.
 pub const FLUID_QUAD_LEN = 4 * @sizeOf(FluidVertex);
+pub const TranslucentVertex = translucent_mod.Vertex;
+/// The bytes of one translucent quad in a mesh payload: 4
+/// `translucent.Vertex`.
+pub const TRANSLUCENT_QUAD_LEN = 4 * @sizeOf(TranslucentVertex);
+/// The bytes of the centre of one translucent quad: 3 f32.
+pub const CENTER_LEN = 12;
 pub const Stage = stages.Stage;
 pub const Version = stages.Version;
 pub const SLOTS = stages.SLOTS;
@@ -51,7 +58,7 @@ pub const SLOTS = stages.SLOTS;
 /// "VXCP" as little-endian bytes.
 pub const MAGIC: u32 = 0x50435856;
 /// Increment this value for each change of the layout.
-pub const VERSION: u16 = 7;
+pub const VERSION: u16 = 8;
 
 pub const HEADER_LEN = 16;
 pub const HELLO_LEN = 24 + content.GEN_CONFIG_LEN;
@@ -78,7 +85,7 @@ pub const MAX_ERROR_TEXT = 256;
 /// version and the sizes that the stages use.
 pub const BUILD_HASH: u64 = blk: {
     var h = std.hash.Wyhash.init(0);
-    const parts = [_]u64{ VERSION, chunk_mod.CHUNK_W, chunk_mod.CHUNK_H, @bitCast(@as(i64, chunk_mod.MIN_Y)), @sizeOf(PackedQuad), SLOTS, std.enums.values(BlockType).len, @sizeOf(FluidVertex) };
+    const parts = [_]u64{ VERSION, chunk_mod.CHUNK_W, chunk_mod.CHUNK_H, @bitCast(@as(i64, chunk_mod.MIN_Y)), @sizeOf(PackedQuad), SLOTS, std.enums.values(BlockType).len, @sizeOf(FluidVertex), @sizeOf(TranslucentVertex) };
     for (parts) |p| h.update(std.mem.asBytes(&p));
     break :blk h.final();
 };
@@ -90,6 +97,7 @@ comptime {
     std.debug.assert(@sizeOf(PackedQuad) == 16);
     // The fluid quads keep the next stream 16-byte aligned.
     std.debug.assert(FLUID_QUAD_LEN % 16 == 0);
+    std.debug.assert(TRANSLUCENT_QUAD_LEN % 16 == 0);
 }
 
 pub const Kind = enum(u8) {
@@ -193,7 +201,8 @@ pub const Job = struct {
 ///   32 u64  mesh: meshHash of the payload. generate and light: 0
 ///   40 u32  mesh: the fluid quad count (REQ-VOXEL-027). generate and
 ///           light: 0
-///   44 u32  reserved, 0
+///   44 u32  mesh: the translucent quad count (REQ-VOXEL-030). generate
+///           and light: 0
 ///   48 u16  mesh: the face connections of each section (visibility.zig),
 ///           SECTION_COUNT values, then 0 to a multiple of 16 bytes
 ///           (SECTIONS_LEN). generate and light: 0
@@ -201,8 +210,9 @@ pub const Job = struct {
 ///           (mesher.SectionRange), SECTION_COUNT values, then 0 to a
 ///           multiple of 16 bytes (RANGES_LEN). generate and light: 0
 ///   48 + SECTIONS_LEN + RANGES_LEN ...  payload: mesh: PackedQuad × count,
-///           then fluid.Vertex × 4 × the fluid quad count. generate: the
-///           blocks
+///           then fluid.Vertex × 4 × the fluid quad count, then
+///           translucent.Vertex × 4 × the translucent quad count, then the
+///           centre (3 f32) of each translucent quad. generate: the blocks
 pub const ResultHead = struct {
     stage: Stage,
     cx: i32,
@@ -221,6 +231,9 @@ pub const ResultHead = struct {
     /// Mesh: the fluid quads after the PackedQuads (REQ-VOXEL-027). The
     /// encoder sets it from the payload.
     fluid_quads: u32 = 0,
+    /// Mesh: the translucent quads after the fluid quads (REQ-VOXEL-030).
+    /// The encoder sets it from the payload.
+    translucent_quads: u32 = 0,
 };
 
 /// The hash of the quad bytes of a mesh. The worker calculates it, so main
@@ -249,6 +262,26 @@ pub const ResultInfo = struct {
     pub fn fluidLen(self: ResultInfo) usize {
         return @as(usize, self.head.fluid_quads) * FLUID_QUAD_LEN;
     }
+
+    /// Mesh: the offset of the translucent vertices in the message.
+    pub fn translucentOffset(self: ResultInfo) usize {
+        return self.fluidOffset() + self.fluidLen();
+    }
+
+    /// Mesh: the length of the translucent vertices.
+    pub fn translucentLen(self: ResultInfo) usize {
+        return @as(usize, self.head.translucent_quads) * TRANSLUCENT_QUAD_LEN;
+    }
+
+    /// Mesh: the offset of the translucent quad centres in the message.
+    pub fn centersOffset(self: ResultInfo) usize {
+        return self.translucentOffset() + self.translucentLen();
+    }
+
+    /// Mesh: the length of the translucent quad centres.
+    pub fn centersLen(self: ResultInfo) usize {
+        return @as(usize, self.head.translucent_quads) * CENTER_LEN;
+    }
 };
 
 /// The streams of a mesh Result.
@@ -256,6 +289,10 @@ pub const MeshPayload = struct {
     quads: []const PackedQuad,
     /// 4 vertices for each fluid quad (REQ-VOXEL-027).
     fluid: []const FluidVertex = &.{},
+    /// 4 vertices for each translucent quad (REQ-VOXEL-030).
+    translucent: []const TranslucentVertex = &.{},
+    /// The centre of each translucent quad.
+    centers: []const [3]f32 = &.{},
 };
 
 pub const Payload = union(enum) {
@@ -273,14 +310,43 @@ pub const Result = struct {
     payload: []const u8,
     has_blocks: bool,
 
+    fn tailLen(self: Result) usize {
+        return @as(usize, self.head.fluid_quads) * FLUID_QUAD_LEN + @as(usize, self.head.translucent_quads) * (TRANSLUCENT_QUAD_LEN + CENTER_LEN);
+    }
+
     /// The bytes of the PackedQuads of a mesh.
     pub fn quadBytes(self: Result) []const u8 {
-        return self.payload[0 .. self.payload.len - @as(usize, self.head.fluid_quads) * FLUID_QUAD_LEN];
+        return self.payload[0 .. self.payload.len - self.tailLen()];
     }
 
     /// The bytes of the fluid vertices of a mesh (REQ-VOXEL-027).
     pub fn fluidBytes(self: Result) []const u8 {
-        return self.payload[self.quadBytes().len..];
+        return self.payload[self.quadBytes().len..][0 .. @as(usize, self.head.fluid_quads) * FLUID_QUAD_LEN];
+    }
+
+    /// The bytes of the translucent vertices of a mesh (REQ-VOXEL-030).
+    pub fn translucentBytes(self: Result) []const u8 {
+        const start = self.quadBytes().len + self.fluidBytes().len;
+        return self.payload[start..][0 .. @as(usize, self.head.translucent_quads) * TRANSLUCENT_QUAD_LEN];
+    }
+
+    /// The bytes of the translucent quad centres of a mesh.
+    pub fn centerBytes(self: Result) []const u8 {
+        return self.payload[self.payload.len - @as(usize, self.head.translucent_quads) * CENTER_LEN ..];
+    }
+
+    /// Copy the translucent vertices into `out` (4 × the quad count) and
+    /// the centres into `centers` (the quad count).
+    pub fn copyTranslucent(self: Result, out: []TranslucentVertex, centers: [][3]f32) void {
+        std.debug.assert(out.len == @as(usize, self.head.translucent_quads) * 4);
+        std.debug.assert(centers.len == self.head.translucent_quads);
+        const vb = self.translucentBytes();
+        for (out, 0..) |*v, i| {
+            var in: In = .{ .buf = vb[i * @sizeOf(TranslucentVertex) ..][0..@sizeOf(TranslucentVertex)] };
+            for (&v.pos) |*f| f.* = in.float();
+            for (&v.color) |*f| f.* = in.float();
+        }
+        readCenters(self.centerBytes(), centers);
     }
 
     pub fn quadCount(self: Result) usize {
@@ -317,6 +383,16 @@ pub const Result = struct {
         }
     }
 };
+
+/// Read the centres of translucent quads (3 little-endian f32 each) from
+/// `bytes` into `out`. Main reads them from a mesh Result for the sort
+/// (REQ-VOXEL-030).
+pub fn readCenters(bytes: []const u8, out: [][3]f32) void {
+    std.debug.assert(bytes.len == out.len * CENTER_LEN);
+    for (out, 0..) |*c, i| {
+        for (c, 0..) |*f, k| f.* = @bitCast(std.mem.readInt(u32, bytes[i * CENTER_LEN + k * 4 ..][0..4], .little));
+    }
+}
 
 pub const ErrorCode = enum(u16) {
     /// The message is not a valid message of this protocol.
@@ -485,10 +561,14 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
         .mesh => |m| m,
         else => null,
     };
-    if (mesh) |m| std.debug.assert(m.fluid.len % 4 == 0);
+    if (mesh) |m| {
+        std.debug.assert(m.fluid.len % 4 == 0);
+        std.debug.assert(m.translucent.len == m.centers.len * 4);
+    }
     const payload_len: usize = switch (payload) {
         .none => 0,
-        .quads, .mesh => mesh.?.quads.len * @sizeOf(PackedQuad) + mesh.?.fluid.len * @sizeOf(FluidVertex),
+        .quads, .mesh => mesh.?.quads.len * @sizeOf(PackedQuad) + mesh.?.fluid.len * @sizeOf(FluidVertex) +
+            mesh.?.centers.len * (TRANSLUCENT_QUAD_LEN + CENTER_LEN),
         .blocks => |pb| blocksLen(pb),
     };
     var o = try begin(allocator, PAYLOAD_OFFSET + payload_len, .result, id);
@@ -515,7 +595,7 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
     // payload bytes.
     o.int(u64, 0);
     o.int(u32, if (mesh) |m| @intCast(m.fluid.len / 4) else 0);
-    o.int(u32, 0);
+    o.int(u32, if (mesh) |m| @intCast(m.centers.len) else 0);
     for (head.sections) |c| o.int(u16, if (head.stage == .mesh) c else 0);
     o.zeros(SECTIONS_LEN - chunk_mod.SECTION_COUNT * 2);
     for (head.ranges) |r| o.int(u32, if (head.stage == .mesh) @bitCast(r) else 0);
@@ -534,6 +614,11 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
                 for (v.uv) |f| o.float(f);
                 o.int(u32, v.info);
             }
+            for (m.translucent) |v| {
+                for (v.pos) |f| o.float(f);
+                for (v.color) |f| o.float(f);
+            }
+            for (m.centers) |c| for (c) |f| o.float(f);
         },
         .blocks => |pb| {
             o.int(u16, chunk_mod.SECTION_COUNT);
@@ -747,8 +832,8 @@ fn resultInfo(bytes: []const u8, kind: Kind, body_len: u32, id: u32) DecodeError
     r.job_us = b.int(u32);
     r.mesh_hash = b.int(u64);
     r.fluid_quads = b.int(u32);
-    if (r.stage != .mesh and r.fluid_quads != 0) return error.BadField;
-    if (b.int(u32) != 0) return error.BadField;
+    r.translucent_quads = b.int(u32);
+    if (r.stage != .mesh and (r.fluid_quads != 0 or r.translucent_quads != 0)) return error.BadField;
     for (&r.sections) |*c| {
         c.* = b.int(u16);
         if (c.* > 0x7FFF or (r.stage != .mesh and c.* != 0)) return error.BadField;
@@ -776,7 +861,8 @@ fn resultInfo(bytes: []const u8, kind: Kind, body_len: u32, id: u32) DecodeError
     switch (r.stage) {
         .mesh => {
             if (has_blocks) return error.BadField;
-            if (@as(u64, count) * @sizeOf(PackedQuad) + @as(u64, r.fluid_quads) * FLUID_QUAD_LEN != payload_len) return error.BadLength;
+            if (@as(u64, count) * @sizeOf(PackedQuad) + @as(u64, r.fluid_quads) * FLUID_QUAD_LEN +
+                @as(u64, r.translucent_quads) * (TRANSLUCENT_QUAD_LEN + CENTER_LEN) != payload_len) return error.BadLength;
             if (r.ranges[chunk_mod.SECTION_COUNT - 1].end != count) return error.BadField;
         },
         .generate => {

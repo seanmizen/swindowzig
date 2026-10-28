@@ -57,6 +57,15 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
   mesh covers them. The demo draws them with `fluid.wgsl` after the
   opaque chunks, far to near, depth write off (REQ-VOXEL-028). The demo
   water is opacity 0, so the light stage keeps its fast queue.
+- The content can give translucent blocks (REQ-VOXEL-029):
+  `translucent(block) ?[4]u8` (RGBA). Such a block is not a full cube
+  and does not darken AO. `translucent.generate` makes its faces in
+  world space, with a centre for each face. The mesh stage puts them and
+  the centres after the fluid quads (REQ-VOXEL-030). The demo (`glass`)
+  gives each chunk a sw_render `TranslucentBatch` and draws it with a
+  `TranslucentPipeline` and a `FrameBinding` after the fluid of the chunk
+  (REQ-VOXEL-031, REQ-GPU-040). Main reads only the centres (12 bytes for
+  each quad) for the sort.
 - `build.zig` wires it with `addVoxel`. The demo gives
   `examples/voxel/content.zig`. The unit tests of the library give
   `libs/sw_voxel/testing/content.zig`, with numbered blocks.
@@ -263,6 +272,9 @@ TAS scripts for regression live under `examples/voxel/`:
   chunk boundaries). Run with `./examples/voxel/tests/glowstone_cave.sh`
   (or `--skip-build` to reuse an existing binary).
 
+- `tests/glass_blocks.tas` — flatland, `--place-block=glass`: two glass
+  blocks on the grass. The `glass_blocks` golden checks the translucent
+  stream and the sort (REQ-VOXEL-031).
 - `tests/water_pool.tas` — flatland, `--place-block=water`: water in a
   dug hole and on the grass. The `water_pool` golden checks the fluid pass
   (REQ-VOXEL-028).
@@ -511,6 +523,7 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `region.zig` | Region files: 16 × 16 chunks, each compressed (zlib), with an offset table and a format version. `Store(sw_assets.cache)` saves and loads them. The file has no light (REQ-VOXEL-011 to 013) |
 | `frustum.zig` | Chunk cull strategies: none, sphere, cone, frustum |
 | `fluid.zig` | The fluid surface mesher: corner heights, no face between cells of one fluid, flow UVs (REQ-VOXEL-014 to 016) |
+| `translucent.zig` | The translucent block mesher: faces and their centres in world space, in the vertex layout of sw_render `Translucent` (REQ-VOXEL-029) |
 | `clock.zig` | Monotonic clock for the perf logs. main sets `clock.io` |
 | `pipeline/stages.zig` | The pure chunk stages: generate, light, mesh (C2), and versions (C3) |
 | `pipeline/scheduler.zig` | The chunk scheduler: desired state, priority, version checks, eviction, edits (C8) |

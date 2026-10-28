@@ -4,6 +4,7 @@ const model_mod = @import("model.zig");
 const section_mod = @import("section.zig");
 const models = @import("models.zig");
 const fluid = @import("fluid.zig");
+const translucent = @import("translucent.zig");
 const content = @import("content.zig");
 const gpu_mod = @import("sw_gpu");
 const Chunk = chunk_mod.Chunk;
@@ -240,9 +241,21 @@ fn isSolid(chunk: *const Chunk, getter: BlockGetter, world_ox: i32, world_oz: i3
     return occludes(getter.getBlock(wx, wy + MIN_Y, wz));
 }
 
-/// True when `block` darkens the AO of a corner: not air and not a fluid.
+/// The blocks that darken the AO of a corner: not air, not a fluid and not
+/// translucent. One table, so the AO pays one read for each block.
+const occluder_table: [256]bool = blk: {
+    @setEvalBranchQuota(100_000);
+    var t: [256]bool = @splat(false);
+    for (@typeInfo(BlockType).@"enum".field_values) |v| {
+        const b: BlockType = @fromBackingInt(v);
+        t[v] = b != .air and !fluid.isFluid(b) and !translucent.isTranslucent(b);
+    }
+    break :blk t;
+};
+
+/// True when `block` darkens the AO of a corner.
 inline fn occludes(block: BlockType) bool {
-    return block != .air and !fluid.isFluid(block);
+    return occluder_table[@backingInt(block)];
 }
 
 fn aoValue(s1: bool, s2: bool, c: bool) f32 {

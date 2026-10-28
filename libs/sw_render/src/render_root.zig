@@ -118,6 +118,7 @@ pub const Frame = animation.Frame;
 
 pub const FrameGraph = frame_graph_mod.FrameGraph;
 pub const FrameGraphOptions = frame_graph_mod.Options;
+pub const FrameBinding = frame_graph_mod.FrameBinding;
 pub const Pass = frame_graph_mod.Pass;
 pub const PassDesc = frame_graph_mod.PassDesc;
 pub const PassId = frame_graph_mod.PassId;
@@ -185,6 +186,9 @@ pub const TranslucentOptions = translucent_mod.Options;
 pub const TranslucentPassOptions = translucent_mod.PassOptions;
 pub const TranslucentVertex = translucent.Vertex;
 pub const TranslucentQuad = translucent.Quad;
+pub const TranslucentPipeline = translucent_mod.Pipeline;
+pub const TranslucentPipelineOptions = translucent_mod.PipelineOptions;
+pub const TranslucentBatch = translucent_mod.Batch;
 pub const Particles = particles_mod.Particles;
 pub const ParticleOptions = particles_mod.Options;
 pub const ParticlePassOptions = particles_mod.PassOptions;

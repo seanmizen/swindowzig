@@ -57,6 +57,8 @@ export interface StubWrite {
     quads: number;
     /** The fluid quads after the quads (REQ-VOXEL-027). */
     fluidQuads: number;
+    /** The translucent quads after the fluid quads (REQ-VOXEL-030). */
+    translucentQuads: number;
     messageLength: number;
   };
 }
@@ -248,6 +250,7 @@ export class StubGpu {
             cz: view.getInt32(HEADER_LEN + 8, true),
             quads: view.getUint32(HEADER_LEN + 24, true),
             fluidQuads: view.getUint32(HEADER_LEN + 40, true),
+            translucentQuads: view.getUint32(HEADER_LEN + 44, true),
             messageLength: bytes.byteLength,
           };
         }
@@ -624,6 +627,13 @@ export const RESULT_HEAD_BYTES = 160;
  * quads.
  */
 export const FLUID_QUAD_BYTES = 96;
+/**
+ * The bytes of one translucent quad: 4 vertices of 28 bytes
+ * (protocol.TRANSLUCENT_QUAD_LEN), and its centre, 12 bytes, at the end of
+ * the payload (REQ-VOXEL-030).
+ */
+export const TRANSLUCENT_QUAD_BYTES = 112;
+export const CENTER_BYTES = 12;
 /** The GPU header of a chunk quad buffer: (origin x, tick, origin z, 0). */
 const GPU_HEADER_BYTES = 16;
 const CHUNK_W = 16;
@@ -636,6 +646,8 @@ export interface UploadReport {
   heldWrites: number;
   /** GPU writes of fluid streams from held bytes (REQ-VOXEL-027). */
   fluidWrites: number;
+  /** GPU writes of translucent streams from held bytes (REQ-VOXEL-030). */
+  translucentWrites: number;
   /** Bytes that JS wrote into the wasm memory for each held result. */
   headBytesPerResult: number;
 }
@@ -651,9 +663,12 @@ export interface UploadReport {
  *     each upload, at byte 16 of the buffer, from byte 160 of the message,
  *     with the size of the quads. A mesh with fluid quads has one more
  *     held write: the fluid vertices, at byte 16 of their buffer, from the
- *     end of the quads (REQ-VOXEL-027). Each stream is in the payload,
- *     and the streams fill the payload. Just before each held write, main
- *     wrote the 16-byte GPU header of the same chunk to the same buffer.
+ *     end of the quads (REQ-VOXEL-027). A mesh with translucent quads
+ *     has one more: the translucent vertices, at byte 0 of their vertex
+ *     buffer, from the end of the fluid vertices (REQ-VOXEL-030). The
+ *     streams and the translucent quad centres fill the payload. Just
+ *     before each held write of quads or fluid, main wrote the 16-byte GPU
+ *     header of the same chunk to the same buffer.
  * With no pool (`pooled` false): no held upload. With null (a run that
  * changed from the pool to the Inline executor), no check of the kind.
  *
@@ -675,6 +690,7 @@ export function checkMeshUploads(
   // The list of writes exists only when the stub records it.
   const last = new Map<number, StubWrite>();
   let fluidHeldWrites = 0;
+  let translucentHeldWrites = 0;
   for (const w of app.gpu.writes) {
     if (w.source === 'held') {
       const m = w.mesh;
@@ -684,9 +700,31 @@ export function checkMeshUploads(
       } else {
         const quadBytes = m.quads * 16;
         const fluidBytes = m.fluidQuads * FLUID_QUAD_BYTES;
-        if (quadBytes + fluidBytes !== m.messageLength - RESULT_HEAD_BYTES)
+        const transBytes = m.translucentQuads * TRANSLUCENT_QUAD_BYTES;
+        if (
+          quadBytes +
+            fluidBytes +
+            transBytes +
+            m.translucentQuads * CENTER_BYTES !==
+          m.messageLength - RESULT_HEAD_BYTES
+        )
           failures.push(`${where}: the streams do not fill the payload`);
         const fluid = w.heldOffset === RESULT_HEAD_BYTES + quadBytes;
+        const trans =
+          w.heldOffset === RESULT_HEAD_BYTES + quadBytes + fluidBytes;
+        if (trans && m.translucentQuads > 0) {
+          translucentHeldWrites++;
+          if (w.size !== transBytes)
+            failures.push(
+              `${where}: ${w.size} bytes for ${m.translucentQuads} translucent quads`,
+            );
+          if (w.offset !== 0)
+            failures.push(
+              `${where}: translucent vertices at buffer offset ${w.offset}`,
+            );
+          last.set(w.buffer, w);
+          continue;
+        }
         if (fluid && m.fluidQuads > 0) {
           fluidHeldWrites++;
           if (w.size !== fluidBytes)
@@ -732,7 +770,8 @@ export function checkMeshUploads(
     failures.push(`JS still holds ${app.held.count} results`);
   // One held write for the quads of each held upload, and one for each
   // fluid stream (REQ-VOXEL-027).
-  const heldWrites = app.gpu.heldWrites - fluidHeldWrites;
+  const heldWrites =
+    app.gpu.heldWrites - fluidHeldWrites - translucentHeldWrites;
   if (pooled === true) {
     if (g.uploadsHeld === 0 || heldWrites === 0)
       failures.push('no mesh went to the GPU from held bytes');
@@ -753,6 +792,7 @@ export function checkMeshUploads(
     failures: failures.slice(0, 20),
     heldWrites,
     fluidWrites: fluidHeldWrites,
+    translucentWrites: translucentHeldWrites,
     headBytesPerResult,
   };
 }

@@ -230,6 +230,17 @@ const mesher_mod = @import("sw_voxel").mesher;
 const models_mod = @import("sw_voxel").models;
 const mesh_bytes = @import("sw_voxel").mesh_bytes;
 const protocol_mod = @import("sw_voxel").protocol;
+const sw_render = @import("sw_render");
+
+comptime {
+    // The translucent vertices of sw_voxel go to sw_render Translucent as
+    // they are (REQ-VOXEL-031).
+    const V = @import("sw_voxel").translucent.Vertex;
+    const R = sw_render.TranslucentVertex;
+    std.debug.assert(@sizeOf(V) == @sizeOf(R));
+    std.debug.assert(@offsetOf(V, "pos") == @offsetOf(R, "pos"));
+    std.debug.assert(@offsetOf(V, "color") == @offsetOf(R, "color"));
+}
 const Mesh = mesher_mod.Mesh;
 const VoxelVertex = mesher_mod.VoxelVertex;
 
@@ -839,11 +850,15 @@ const ChunkGPU = struct {
     /// quad is FLUID_ELEMENTS elements of 16 bytes.
     fluid: ?QuadBuffer = null,
     fluid_quads: u32 = 0,
+    /// The translucent quads of the mesh and their sort, or null
+    /// (REQ-VOXEL-031).
+    glass: ?sw_render.TranslucentBatch = null,
 
     /// Give the buffers to the pool.
     fn release(self: *ChunkGPU) void {
         if (self.quads) |qb| state.quad_pool.put(state.allocator, qb);
         if (self.fluid) |fb| state.quad_pool.put(state.allocator, fb);
+        if (self.glass) |*b| b.deinit();
         self.* = .{};
         // The depth of the scene can change: old occlusion results are
         // not correct now (REQ-VOXEL-025).
@@ -877,6 +892,10 @@ const State = struct {
     chunk_pipeline: ?gpu_mod.RenderPipeline = null,
     /// The fluid pass (fluid.wgsl, REQ-VOXEL-028).
     fluid_pipeline: ?gpu_mod.RenderPipeline = null,
+    /// The frame uniforms and the pipeline of the translucent quads
+    /// (sw_render, REQ-VOXEL-031).
+    frame_binding: ?sw_render.FrameBinding = null,
+    translucent_pipeline: ?sw_render.TranslucentPipeline = null,
     chunk_bg_layout: ?gpu_mod.BindGroupLayout = null,
     /// The baked model quads of the content (sw_voxel `models.gpu_table`),
     /// uploaded one time. The model quad records of the chunks index it.
@@ -1767,6 +1786,7 @@ fn hotbarBlockColor(bt: chunk_mod.BlockType) [3]f32 {
         .sand => .{ 0.85, 0.78, 0.48 },
         .slab => .{ 0.66, 0.68, 0.74 },
         .water => .{ 0.17, 0.38, 0.75 },
+        .glass => .{ 0.75, 0.88, 0.96 },
         .debug_marker => .{ 1.0, 0.0, 0.0 },
         .air => .{ 0.0, 0.0, 0.0 },
     };
@@ -3447,25 +3467,34 @@ fn voxelRender(ctx: *sw.Context) !void {
         state.occ.?.draw(g, pass);
         pass.setBindGroup(0, state.bind_group.?);
     }
-    // The fluid pass (REQ-VOXEL-028): after the opaque chunks and the box
-    // tests, so the fluids do not hide a chunk from a box test. The chunks
-    // draw far to near for the alpha blend.
+    // The fluid pass (REQ-VOXEL-028) and the translucent blocks
+    // (REQ-VOXEL-031): after the opaque chunks and the box tests, so they
+    // do not hide a chunk from a box test. The chunks draw far to near for
+    // the alpha blend. In a chunk, the fluid draws first, then the
+    // translucent quads, sorted far to near by their centres.
     if (state.fluid_pipeline) |fp| {
-        var bound = false;
+        if (state.frame_binding) |*fbind| fbind.write(g, .{
+            .view_proj = view_proj.data,
+            .camera_pos = .{ cam_eye[0], cam_eye[1], cam_eye[2], 1 },
+        });
         var i = sorted_chunks.items.len;
         while (i > 0) {
             i -= 1;
             const lc = sorted_chunks.items[i];
-            const cg = state.chunk_gpu.get(.{ .cx = lc.cx, .cz = lc.cz }) orelse continue;
-            const fb = cg.fluid orelse continue;
-            if (cg.fluid_quads == 0) continue;
-            if (!bound) {
+            const cg = state.chunk_gpu.getPtr(.{ .cx = lc.cx, .cz = lc.cz }) orelse continue;
+            if (cg.fluid) |fb| if (cg.fluid_quads > 0) {
                 pass.setPipeline(fp);
                 pass.setBindGroup(0, state.bind_group.?);
-                bound = true;
+                pass.setBindGroup(1, fb.bind_group);
+                pass.draw(cg.fluid_quads * 6, 1, 0, 0);
+            };
+            if (cg.glass) |*batch| {
+                _ = batch.update(g, cam_eye) catch |err| {
+                    std.log.err("Translucent sort failed: {}", .{err});
+                    continue;
+                };
+                state.translucent_pipeline.?.draw(pass, state.frame_binding.?.bind_group, batch);
             }
-            pass.setBindGroup(1, fb.bind_group);
-            pass.draw(cg.fluid_quads * 6, 1, 0, 0);
         }
     }
     // The debug entities (REQ-VOXEL-026): the player hitbox and the spawn
@@ -3571,7 +3600,7 @@ fn voxelRender(ctx: *sw.Context) !void {
         const cam_by: i32 = @intFromFloat(@floor(state.camera.position.y));
         const cam_bz: i32 = @intFromFloat(@floor(state.camera.position.z));
         const cam_block = state.world.getBlock(cam_bx, cam_by, cam_bz);
-        if (cam_block != .air and cam_block != .water) {
+        if (cam_block != .air and cam_block != .water and cam_block != .glass) {
             // Dark purple base
             state.overlay.rect(0, 0, overlay_w, overlay_h, .{ 0.08, 0.02, 0.12, 1 }, overlay_w, overlay_h) catch {};
 
@@ -4476,6 +4505,15 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         .depth_stencil = fluid_depth_stencil,
     });
 
+    // Translucent blocks (REQ-VOXEL-031): sw_render Translucent in the
+    // scene pass, with the sw_render frame uniforms at group 0.
+    state.frame_binding = try sw_render.FrameBinding.init(g);
+    state.translucent_pipeline = try sw_render.TranslucentPipeline.init(g, &state.frame_binding.?.layout, .{
+        .color_format = .bgra8unorm,
+        .depth_format = .depth24plus,
+        .sample_count = sample_count,
+    });
+
     // Cylinder pipeline: no face culling + alpha blending so the hitbox is semi-transparent
     // and visible from both inside (first-person) and outside (third-person, F5).
     // depth_stencil must match the render pass attachment.
@@ -4729,10 +4767,41 @@ fn uploadChunkMesh(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !
         cg.quad_count = n;
     }
     try uploadFluid(g, lc, cg, header);
+    try uploadTranslucent(g, lc, cg);
     cg.y_min = lc.mesh.y_min;
     cg.y_max = lc.mesh.y_max;
     cg.ranges = lc.mesh.ranges;
     lc.dropUpload();
+}
+
+/// Write the translucent quads of the new mesh of `lc` to its batch, and
+/// give the batch their centres (REQ-VOXEL-031). The vertices go from the
+/// mesh bytes to the GPU. Main reads only the centres, for the sort.
+fn uploadTranslucent(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !void {
+    const bytes = lc.upload.?;
+    const t = lc.mesh.translucent_quad_count;
+    if (t == 0) {
+        if (cg.glass) |*b| b.deinit();
+        cg.glass = null;
+        return;
+    }
+    if (cg.glass) |*b| if (b.capacity < t) {
+        b.deinit();
+        cg.glass = null;
+    };
+    if (cg.glass == null) cg.glass = try sw_render.TranslucentBatch.init(state.allocator, g, std.math.ceilPowerOfTwoAssert(u32, @max(t, 16)), 1);
+    const batch = &cg.glass.?;
+    const info_offset = mesh_bytes.QUADS_OFFSET + @as(usize, lc.mesh.quad_count) * @sizeOf(mesher_mod.PackedQuad) +
+        @as(usize, lc.mesh.fluid_quad_count) * protocol_mod.FLUID_QUAD_LEN;
+    const len = @as(usize, t) * protocol_mod.TRANSLUCENT_QUAD_LEN;
+    switch (bytes) {
+        .local => |l| g.writeBuffer(batch.vertex_buffer, 0, l.msg[info_offset..][0..len]),
+        .held => |h| g.writeBufferHeld(batch.vertex_buffer, 0, h.handle, @intCast(info_offset), len),
+    }
+    const centers = try state.allocator.alloc([3]f32, t);
+    defer state.allocator.free(centers);
+    try bytes.readCenters(state.allocator, info_offset + len, centers);
+    try batch.setCenters(centers);
 }
 
 /// The 16-byte elements of one fluid quad in a quad pool buffer.
