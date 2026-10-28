@@ -322,6 +322,7 @@ export interface PoolSetup {
   size?: number;
   createWorker?: WorkerPoolOptions['createWorker'];
   maxRestarts?: number;
+  stallTimeoutMs?: number;
   /** Tests only: change the handshake values of app.wasm. */
   appHandshake?: {
     protocolVersion?: number;
@@ -427,6 +428,7 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
       size: opts.pool.size,
       createWorker: opts.pool.createWorker,
       maxRestarts: opts.pool.maxRestarts,
+      stallTimeoutMs: opts.pool.stallTimeoutMs,
       logPrefix: '[headless chunks]',
     });
   }

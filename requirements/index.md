@@ -67,6 +67,7 @@
 | [`REQ-INPUT-010`](input.md#req-input-010--a-recording-with-a-bad-wheel-mode-gives-an-error) | A recording with a bad wheel mode gives an error | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-JOBS-001`](jobs.md#req-jobs-001--a-native-worker-runs-its-messages-in-order-and-can-stop) | A native worker runs its messages in order, and can stop | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-JOBS-002`](jobs.md#req-jobs-002--native-threads-and-web-workers-have-one-transport-api) | Native threads and Web Workers have one Transport API | active | functional | P2 | agent:SWZ-26 |
+| [`REQ-JOBS-003`](jobs.md#req-jobs-003--the-web-worker-pool-starts-again-a-worker-that-stops-with-no-event) | The Web Worker pool starts again a worker that stops with no event | active | functional | P3 | agent:SWZ-5 |
 | [`REQ-NET-001`](net.md#req-net-001--the-game-polls-network-events) | The game polls network events | active | constraint | P1 | agent:SWZ-53 |
 | [`REQ-NET-002`](net.md#req-net-002--the-native-client-masks-each-frame) | The native client masks each frame | active | functional | P1 | agent:SWZ-53 |
 | [`REQ-NET-003`](net.md#req-net-003--the-reconnect-delay-doubles-to-a-limit) | The reconnect delay doubles to a limit | active | functional | P2 | agent:SWZ-53 |
@@ -173,6 +174,7 @@ graph TD
   REQ_INPUT_010["REQ-INPUT-010<br/>A recording with a bad wheel mode gives an error"]
   REQ_JOBS_001["REQ-JOBS-001<br/>A native worker runs its messages in order, and can stop"]
   REQ_JOBS_002["REQ-JOBS-002<br/>Native threads and Web Workers have one Transport API"]
+  REQ_JOBS_003["REQ-JOBS-003<br/>The Web Worker pool starts again a worker that stops with no event"]
   REQ_NET_001["REQ-NET-001<br/>The game polls network events"]
   REQ_NET_002["REQ-NET-002<br/>The native client masks each frame"]
   REQ_NET_003["REQ-NET-003<br/>The reconnect delay doubles to a limit"]
@@ -244,6 +246,7 @@ graph TD
   REQ_GPU_039 -->|depends-on| REQ_GPU_036
   REQ_GPU_039 -->|depends-on| REQ_GPU_038
   REQ_INPUT_009 -->|refines| REQ_INPUT_007
+  REQ_JOBS_003 -->|depends-on| REQ_JOBS_002
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
   REQ_TEXT_004 -->|refines| REQ_TEXT_001
@@ -289,6 +292,7 @@ graph TD
 - `REQ-GPU-038` — required-by REQ-GPU-039
 - `REQ-GPU-039` — required-by REQ-VOXEL-025
 - `REQ-INPUT-007` — refined-by REQ-INPUT-009
+- `REQ-JOBS-002` — required-by REQ-JOBS-003
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
 - `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-009

@@ -20,6 +20,9 @@
 //      It sends the Module, the Hello, all the edits, then the jobs in
 //      flight of the old worker, in their order. After MAX_RESTARTS, the
 //      slot stops, and the pool sends its jobs to another worker.
+//      A browser can stop a worker with no event (out of memory). So a
+//      worker with jobs in flight and no reply for STALL_TIMEOUT_MS gets
+//      the same restart (REQ-JOBS-003).
 //   5. When no worker runs, app.wasm uses the Inline executor (the
 //      fallback). Without a pool, jobImports() gives 0 slots.
 //
@@ -38,6 +41,12 @@ export const MAX_WORKERS = 4;
 export const MAX_RESTARTS = 3;
 /** The time that a worker has to send its handshake values. */
 export const START_TIMEOUT_MS = 10_000;
+/**
+ * The time that a worker with jobs in flight can send no reply. After this
+ * time, the pool starts the worker again. It is much longer than the
+ * slowest job (about 10 ms in wasm).
+ */
+export const STALL_TIMEOUT_MS = 5_000;
 
 const KIND_HELLO = 1;
 const KIND_ERROR = 5;
@@ -66,6 +75,10 @@ export interface WorkerPoolOptions {
   /** The restarts of one slot before the slot stops. */
   maxRestarts?: number;
   startTimeoutMs?: number;
+  /** A worker with jobs in flight and no reply for this time starts again. */
+  stallTimeoutMs?: number;
+  /** The clock in ms. The default is performance.now(). */
+  now?: () => number;
 }
 
 /** min(hardwareConcurrency - 1, 4), and 1 or more (C9, D5). */
@@ -87,6 +100,8 @@ interface Slot {
   /** The job messages in flight, by job id, in the order that they went. */
   pending: Map<number, ArrayBuffer>;
   restarts: number;
+  /** The time of the last reply, or of the first job after an idle time. */
+  lastProgressMs: number;
 }
 
 /** A counter set for the tests and the debug overlay (C12). */
@@ -155,12 +170,16 @@ export class WorkerPool {
   private edits: ArrayBuffer[] = [];
   private queue: Uint8Array[] = [];
   private queueHead = 0;
+  private stallTimeoutMs: number;
+  private now: () => number;
 
   private constructor(module: WebAssembly.Module, options: WorkerPoolOptions) {
     this.module = module;
     this.options = options;
     this.logPrefix = options.logPrefix ?? '[chunks]';
     this.maxRestarts = options.maxRestarts ?? MAX_RESTARTS;
+    this.stallTimeoutMs = options.stallTimeoutMs ?? STALL_TIMEOUT_MS;
+    this.now = options.now ?? (() => performance.now());
   }
 
   /**
@@ -199,6 +218,7 @@ export class WorkerPool {
         handshake: null,
         pending: new Map(),
         restarts: 0,
+        lastProgressMs: pool.now(),
       };
       pool.slots.push(slot);
       ready.push(pool.launch(slot));
@@ -281,6 +301,7 @@ export class WorkerPool {
       msg.byteLength,
     ).getUint32(12, true);
     const copy = msg.slice().buffer;
+    if (s.pending.size === 0) s.lastProgressMs = this.now();
     s.pending.set(id, copy);
     this.jobsPosted++;
     this.send(s, copy.slice(0));
@@ -303,9 +324,36 @@ export class WorkerPool {
     return true;
   }
 
-  /** The length of the next result, or 0. */
+  /** The length of the next result, or 0. app.wasm calls it each frame. */
   nextLength(): number {
+    this.checkStalls();
     return this.queue[this.queueHead]?.byteLength ?? 0;
+  }
+
+  /**
+   * Start again each worker that has jobs in flight and sent no reply for
+   * the stall time. A browser can stop a worker with no event, for example
+   * when the worker runs out of memory (REQ-JOBS-003).
+   */
+  checkStalls(): void {
+    const now = this.now();
+    for (const slot of this.slots) {
+      if (!slot.alive || !slot.worker || !slot.handshake) continue;
+      if (slot.pending.size === 0) continue;
+      const quiet = now - slot.lastProgressMs;
+      if (quiet > this.stallTimeoutMs) {
+        this.restart(
+          slot,
+          `the worker sent no reply for ${Math.round(quiet)} ms`,
+        );
+      }
+    }
+  }
+
+  /** Tests only: make the worker in `slot` ignore all its messages. */
+  hang(slot: number): void {
+    const s = this.slots[slot];
+    s?.worker?.postMessage({ type: 'hang' } satisfies ToWorker);
   }
 
   /** Remove the next result from the queue and return it, or null. */
@@ -346,6 +394,7 @@ export class WorkerPool {
     }
     slot.worker = worker;
     slot.handshake = null;
+    slot.lastProgressMs = this.now();
 
     let settle: () => void = () => {};
     const ready = new Promise<void>((resolve) => {
@@ -436,6 +485,7 @@ export class WorkerPool {
       }
       return;
     }
+    slot.lastProgressMs = this.now();
     if (!slot.pending.delete(id)) return;
     this.results++;
     this.queue.push(bytes);

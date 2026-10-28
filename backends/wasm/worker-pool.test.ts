@@ -269,6 +269,27 @@ describe('chunk worker pool (real Bun Web Workers)', () => {
   );
 
   test(
+    'stall: a worker that stops with no event starts again, and its jobs run',
+    async () => {
+      const ref = await inlineReference();
+      const o = await run(
+        { size: 2, stallTimeoutMs: 1_000 },
+        EDITS,
+        (app, frame) => {
+          // The worker ignores its messages from now: no error, no close, no
+          // reply. Only the stall timer can find it.
+          if (frame === 3) app.pool?.hang(0);
+        },
+      );
+      expect(o.pool?.restarts).toBeGreaterThanOrEqual(1);
+      expect(o.pool?.alive).toBe(2);
+      expectWorkersOnly(o);
+      expectSameState(o, ref);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     'fallback: when the Worker constructor throws, the Inline executor runs the jobs',
     async () => {
       const ref = await inlineReference();
