@@ -62,6 +62,9 @@ pub const KeyboardState = struct {
     down: std.bit_set.IntegerBitSet(256) = .empty,
     pressed: std.bit_set.IntegerBitSet(256) = .empty,
     released: std.bit_set.IntegerBitSet(256) = .empty,
+    /// The presses (up to down) of each key in this tick. It stops at 255
+    /// (REQ-INPUT-009).
+    press_count: [256]u8 = @splat(0),
 
     pub fn isKeyDown(self: *const KeyboardState, key: KeyCode) bool {
         const code = @backingInt(key);
@@ -76,6 +79,11 @@ pub const KeyboardState = struct {
     pub fn isKeyReleased(self: *const KeyboardState, key: KeyCode) bool {
         const code = @backingInt(key);
         return code < 256 and self.released.isSet(code);
+    }
+
+    pub fn keyPressCount(self: *const KeyboardState, key: KeyCode) u8 {
+        const code = @backingInt(key);
+        return if (code < 256) self.press_count[code] else 0;
     }
 };
 
@@ -277,6 +285,7 @@ pub const InputSnapshot = struct {
         var press_mods: ?Modifiers = null;
         self.keyboard.pressed = .empty;
         self.keyboard.released = .empty;
+        self.keyboard.press_count = @splat(0);
         self.mouse.pressed = .empty;
         self.mouse.released = .empty;
         self.mouse.delta_x = 0;
@@ -327,6 +336,8 @@ pub const InputSnapshot = struct {
                         if (k.down) {
                             if (!self.keyboard.down.isSet(code)) {
                                 self.keyboard.pressed.set(code);
+                                const n = &self.keyboard.press_count[code];
+                                n.* +|= 1;
                                 press_mods = k.mods;
                             }
                             self.keyboard.down.set(code);
@@ -409,6 +420,13 @@ pub const InputSnapshot = struct {
     /// Was this key just pressed this tick? (goes from up to down)
     pub fn keyPressed(self: *const InputSnapshot, key: KeyCode) bool {
         return self.keyboard.isKeyPressed(key);
+    }
+
+    /// The number of presses (up to down) of this key in this tick. A slow
+    /// tick can hold two presses of one key, and `keyPressed` gives true for
+    /// both. A key repeat is not a press. It stops at 255 (REQ-INPUT-009).
+    pub fn keyPressCount(self: *const InputSnapshot, key: KeyCode) u8 {
+        return self.keyboard.keyPressCount(key);
     }
 
     /// Was this key just released this tick? (goes from down to up)
@@ -678,4 +696,36 @@ test "gamepad dead zones (REQ-INPUT-005)" {
     try std.testing.expectEqual(@as(f32, 0.6), big.stick_dead_zone);
     big.setTriggerDeadZone(5);
     try std.testing.expectEqual(GamepadSettings.max_dead_zone, big.trigger_dead_zone);
+}
+
+test "InputSnapshot counts the presses of one key in one tick (REQ-INPUT-009)" {
+    var snapshot = InputSnapshot.init();
+    const repeat = Event.init(0, 0, 0, .{ .key = .{ .keycode = .A, .scancode = 0, .down = true, .repeat = true, .mods = .{} } });
+    snapshot.updateFromEvents(&.{
+        keyEvent(.A, true, .{}),
+        repeat,
+        keyEvent(.A, false, .{}),
+        keyEvent(.A, true, .{}),
+        keyEvent(.A, false, .{}),
+        keyEvent(.B, true, .{}),
+    });
+    // Two presses of A. The key repeat is not a press. keyPressed stays a bool.
+    try std.testing.expectEqual(@as(u8, 2), snapshot.keyPressCount(.A));
+    try std.testing.expect(snapshot.keyPressed(.A));
+    try std.testing.expectEqual(@as(u8, 1), snapshot.keyPressCount(.B));
+    try std.testing.expectEqual(@as(u8, 0), snapshot.keyPressCount(.C));
+
+    // B is still down. The next tick has no press of A or B.
+    snapshot.updateFromEvents(&.{keyEvent(.B, true, .{})});
+    try std.testing.expectEqual(@as(u8, 0), snapshot.keyPressCount(.A));
+    try std.testing.expectEqual(@as(u8, 0), snapshot.keyPressCount(.B));
+    try std.testing.expect(!snapshot.keyPressed(.B));
+}
+
+test "InputSnapshot key press count stops at 255 (REQ-INPUT-009)" {
+    var snapshot = InputSnapshot.init();
+    var events: [600]Event = undefined;
+    for (&events, 0..) |*e, i| e.* = keyEvent(.Space, i % 2 == 0, .{});
+    snapshot.updateFromEvents(&events);
+    try std.testing.expectEqual(@as(u8, 255), snapshot.keyPressCount(.Space));
 }

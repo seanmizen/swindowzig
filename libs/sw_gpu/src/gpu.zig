@@ -1112,11 +1112,12 @@ pub const GPU = struct {
                         .sint => 4,
                         .uint => 5,
                     } else 0,
-                    .texture_view_dimension = if (entry.texture) |tex| @backingInt(tex.view_dimension) else 0,
+                    // REQ-GPU-034: the same map as `createView`. webgpu.ts reads 1d = 1.
+                    .texture_view_dimension = if (entry.texture) |tex| types.viewDimensionCode(tex.view_dimension) else 0,
                     .texture_multisampled = if (entry.texture) |tex| @as(u32, if (tex.multisampled) 1 else 0) else 0,
                     .storage_access = if (entry.storage_texture) |st| @backingInt(st.access) + 1 else 0,
                     .storage_format = if (entry.storage_texture) |st| @backingInt(st.format) else 0,
-                    .storage_view_dimension = if (entry.storage_texture) |st| @backingInt(st.view_dimension) else 0,
+                    .storage_view_dimension = if (entry.storage_texture) |st| types.viewDimensionCode(st.view_dimension) else 0,
                 };
             }
 
@@ -1171,17 +1172,8 @@ pub const GPU = struct {
                         .sint => .sint,
                         .uint => .uint,
                     };
-                    // Explicit mapping: types.TextureViewDimension starts at 0 (no 'undefined'),
-                    // but WGPUTextureViewDimension has undefined=0, 1d=1, 2d=2, etc.
-                    // Raw @intFromEnum would map .@"2d"→1 (WGPUTextureViewDimension.1d) — wrong.
-                    native_entries[i].texture.view_dimension = switch (tex.view_dimension) {
-                        .@"1d" => .@"1d",
-                        .@"2d" => .@"2d",
-                        .@"2d-array" => .@"2d_array",
-                        .cube => .cube,
-                        .cube_array => .cube_array,
-                        .@"3d" => .@"3d",
-                    };
+                    // REQ-GPU-034: the same map as `createView`, not a raw enum number.
+                    native_entries[i].texture.view_dimension = @fromBackingInt(types.viewDimensionCode(tex.view_dimension));
                     native_entries[i].texture.multisampled = if (tex.multisampled) @as(u32, 1) else 0;
                 }
                 if (entry.storage_texture) |st| {
@@ -1191,14 +1183,7 @@ pub const GPU = struct {
                         .read_write => .read_write,
                     };
                     native_entries[i].storage_texture.format = toNativeTextureFormat(st.format);
-                    native_entries[i].storage_texture.view_dimension = switch (st.view_dimension) {
-                        .@"1d" => .@"1d",
-                        .@"2d" => .@"2d",
-                        .@"2d-array" => .@"2d_array",
-                        .cube => .cube,
-                        .cube_array => .cube_array,
-                        .@"3d" => .@"3d",
-                    };
+                    native_entries[i].storage_texture.view_dimension = @fromBackingInt(types.viewDimensionCode(st.view_dimension));
                 }
             }
 

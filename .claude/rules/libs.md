@@ -34,11 +34,10 @@ to map correctly. Do not use raw `@intFromEnum` for this conversion.
 `@intFromEnum` maps `.@"2d"` to 1, and 1 is `1d`. wgpu then stops with
 "Invalid texture view dimension `D1` with texture of dimension `D2`" or
 "Texture binding N expects dimension = D1, but given a view with dimension = D2".
-- `createBindGroupLayout` uses explicit switch maps for
-  `.texture.view_dimension` and `.storage_texture.view_dimension`.
-- `Texture.createView` sends `types.viewDimensionCode(desc.dimension)` on the
-  web path and the native path. A null dimension gives 0, the dimension of
-  the texture.
+- `Texture.createView` and `createBindGroupLayout` send
+  `types.viewDimensionCode(...)` on the web path and the native path. A null
+  dimension gives 0, the dimension of the texture. `webgpu.ts` reads the
+  code with one map, `VIEW_DIMENSIONS`.
 - `types.zig` tests the numbers. `mipmaps --check` draws through an
   explicit `2d-array` view and an explicit `2d` view (REQ-GPU-034).
 

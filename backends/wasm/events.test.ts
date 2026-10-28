@@ -7,6 +7,8 @@ import { keyNumber, wheelDeltas } from './events';
 import './window.test';
 // The gamepad tests of the web backend (REQ-INPUT-005).
 import './gamepad.test';
+// The texture view dimensions of the web bridge (REQ-GPU-034).
+import './webgpu.test';
 
 describe('keyNumber', () => {
   test('letters and digits follow the layout', () => {

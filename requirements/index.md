@@ -63,6 +63,8 @@
 | [`REQ-INPUT-006`](input.md#req-input-006--old-recordings-still-play) | Old recordings still play | active | constraint | P1 | agent:SWZ-50 |
 | [`REQ-INPUT-007`](input.md#req-input-007--a-key-press-shorter-than-one-tick-is-not-lost) | A key press shorter than one tick is not lost | active | functional | P2 | agent:SWZ-92 |
 | [`REQ-INPUT-008`](input.md#req-input-008--the-wheel-snapshot-is-in-lines) | The wheel snapshot is in lines | active | functional | P2 | agent:SWZ-77 |
+| [`REQ-INPUT-009`](input.md#req-input-009--the-snapshot-counts-the-presses-of-one-key-in-one-tick) | The snapshot counts the presses of one key in one tick | active | functional | P3 | agent:SWZ-112 |
+| [`REQ-INPUT-010`](input.md#req-input-010--a-recording-with-a-bad-wheel-mode-gives-an-error) | A recording with a bad wheel mode gives an error | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-JOBS-001`](jobs.md#req-jobs-001--a-native-worker-runs-its-messages-in-order-and-can-stop) | A native worker runs its messages in order, and can stop | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-JOBS-002`](jobs.md#req-jobs-002--native-threads-and-web-workers-have-one-transport-api) | Native threads and Web Workers have one Transport API | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-NET-001`](net.md#req-net-001--the-game-polls-network-events) | The game polls network events | active | constraint | P1 | agent:SWZ-53 |
@@ -167,6 +169,8 @@ graph TD
   REQ_INPUT_006["REQ-INPUT-006<br/>Old recordings still play"]
   REQ_INPUT_007["REQ-INPUT-007<br/>A key press shorter than one tick is not lost"]
   REQ_INPUT_008["REQ-INPUT-008<br/>The wheel snapshot is in lines"]
+  REQ_INPUT_009["REQ-INPUT-009<br/>The snapshot counts the presses of one key in one tick"]
+  REQ_INPUT_010["REQ-INPUT-010<br/>A recording with a bad wheel mode gives an error"]
   REQ_JOBS_001["REQ-JOBS-001<br/>A native worker runs its messages in order, and can stop"]
   REQ_JOBS_002["REQ-JOBS-002<br/>Native threads and Web Workers have one Transport API"]
   REQ_NET_001["REQ-NET-001<br/>The game polls network events"]
@@ -239,6 +243,7 @@ graph TD
   REQ_GPU_036 -->|depends-on| REQ_GPU_035
   REQ_GPU_039 -->|depends-on| REQ_GPU_036
   REQ_GPU_039 -->|depends-on| REQ_GPU_038
+  REQ_INPUT_009 -->|refines| REQ_INPUT_007
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
   REQ_TEXT_004 -->|refines| REQ_TEXT_001
@@ -283,6 +288,7 @@ graph TD
 - `REQ-GPU-036` — required-by REQ-GPU-039
 - `REQ-GPU-038` — required-by REQ-GPU-039
 - `REQ-GPU-039` — required-by REQ-VOXEL-025
+- `REQ-INPUT-007` — refined-by REQ-INPUT-009
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
 - `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-009

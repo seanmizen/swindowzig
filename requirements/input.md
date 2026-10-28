@@ -126,7 +126,8 @@ input actions that a game binds to them.
   A short Shift+Tab then has the Shift up after the Tab, and a game that
   reads the modifiers at the end of the tick sees no Shift. The browser
   tests on SwiftShader draw a few frames each second, and lost key presses
-  in this way. Two presses of one key in one tick are still one press.
+  in this way. Two presses of one key in one tick are still one press for
+  `keyPressed`. `keyPressCount` gives the number of presses (REQ-INPUT-009).
 - **Verification:**
   - Test — `libs/sw_core/src/input.zig` › "InputSnapshot keeps a key press
     shorter than one tick (REQ-INPUT-007)"
@@ -154,6 +155,52 @@ input actions that a game binds to them.
   event keeps its raw deltas and its mode, so a recording does not change.
   A browser notch is often more than one line, because the browser sets
   the size of a notch.
+- The snapshot does not make one notch the same number of lines on each
+  backend. Chrome gives about 2.5 lines for one notch (100 pixels), Firefox
+  gives 3 lines, and SDL gives 1 line. The size of a browser notch also
+  changes with the operating system scroll setting, and a trackpad gives
+  pixels with no notch. So a constant for each backend is not correct on
+  all computers, and a notch detector breaks the trackpad. A change of the
+  scale also changes the wheel for each game that reads lines now. A game
+  that wants one step for each notch uses the sign of `delta_y`, or adds
+  the lines and steps at each full line.
 - **Verification:** Test — `libs/sw_core/src/input.zig` › "InputSnapshot
   wheel is in lines on all backends (REQ-INPUT-008)"
+- **Relations:** none
+
+## REQ-INPUT-009 — The snapshot counts the presses of one key in one tick
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** The `sw_core` `InputSnapshot` shall give, with
+  `keyPressCount`, the number of up-to-down changes of a key in the tick,
+  up to 255.
+- **Rationale:** A slow tick can hold two presses of one key, for example
+  two fast presses of Space at a few frames each second. `keyPressed` gives
+  a bool, and it stays a bool so that the games that read it do not change.
+  A game that must not lose a press reads the count. A key repeat is not a
+  press. The count is 256 bytes in the snapshot, and the tick clears it.
+- **Verification:** Test — `libs/sw_core/src/input.zig` › "InputSnapshot
+  counts the presses of one key in one tick (REQ-INPUT-009)"
+- **Relations:** refines REQ-INPUT-007
+
+## REQ-INPUT-010 — A recording with a bad wheel mode gives an error
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** If a wheel event in a recording has a `mode` byte that is
+  not a `WheelMode`, then the `sw_core` `Deserializer` shall give
+  `error.InvalidWheelMode`.
+- **Rationale:** A recording is a file from the disk or from a bug report,
+  so its bytes can be bad. Before this requirement, the reader put the byte
+  into the `WheelMode` enum with no check. A value above 2 gave an enum
+  value that is not valid. A switch on that value has undefined behaviour.
+- **Verification:** Test — `libs/sw_core/src/serialize.zig` › "a wheel event
+  with a bad mode byte gives an error (REQ-INPUT-010)"
 - **Relations:** none

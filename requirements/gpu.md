@@ -803,9 +803,16 @@ Textures, samplers and other resources of `sw_gpu`.
   and the web bridge start at "no dimension" = 0, then `1d` = 1. A raw enum
   number gives the dimension before the correct one, so a `2d` view becomes
   a `1d` view. `types.viewDimensionCode` is the one map that both paths use.
+  `createBindGroupLayout` uses the same map for its texture and storage
+  texture view dimensions, and `webgpu.ts` has one map (`VIEW_DIMENSIONS`)
+  for the two calls.
 - **Verification:**
   - Test — `libs/sw_gpu/src/types.zig` › "texture view: each explicit
     dimension has its webgpu.h number (REQ-GPU-034)"
+  - Test — `libs/sw_gpu/src/types.zig` › "texture view: each code is the
+    native dimension of the same name (REQ-GPU-034)"
+  - Test — `backends/wasm/webgpu.test.ts` › "each code of viewDimensionCode
+    gives its WebGPU dimension"
   - Demonstration — `mipmaps --check` (native) draws one layer of the atlas
     through a `2d-array` view and through a `2d` view. Each result has the
     texels of level 0.

@@ -195,7 +195,7 @@ pub const Deserializer = struct {
         return switch (tag) {
             0 => .{ .pointer_move = try self.reader.takeStruct(@TypeOf(dummy.pointer_move), .little) },
             1 => .{ .pointer_button = try self.reader.takeStruct(@TypeOf(dummy.pointer_button), .little) },
-            2 => .{ .wheel = try self.reader.takeStruct(@TypeOf(dummy.wheel), .little) },
+            2 => .{ .wheel = try self.readWheel() },
             3 => .{ .key = try self.reader.takeStruct(@TypeOf(dummy.key), .little) },
             4 => .{ .text_input = try self.reader.takeStruct(@TypeOf(dummy.text_input), .little) },
             5 => .{ .resize = try self.reader.takeStruct(@TypeOf(dummy.resize), .little) },
@@ -232,6 +232,17 @@ pub const Deserializer = struct {
             } },
             else => error.InvalidPayloadTag,
         };
+    }
+
+    const Wheel = @FieldType(event.EventPayload, "wheel");
+
+    /// Reads a wheel event. A `mode` byte that is not a `WheelMode` gives
+    /// `error.InvalidWheelMode`, not an invalid enum value (REQ-INPUT-010).
+    fn readWheel(self: *Deserializer) !Wheel {
+        const raw = try self.reader.peek(@sizeOf(Wheel));
+        const mode = raw[@offsetOf(Wheel, "mode")];
+        if (std.enums.fromInt(event.WheelMode, mode) == null) return error.InvalidWheelMode;
+        return self.reader.takeStruct(Wheel, .little);
     }
 
     fn readPad(self: *Deserializer) !u8 {
@@ -406,4 +417,27 @@ test "a version 1 file reads, and cannot have the gamepad tags (REQ-INPUT-006)" 
     try std.testing.expectError(error.UnsupportedVersion, future.validate());
     future.version = 0;
     try std.testing.expectError(error.UnsupportedVersion, future.validate());
+}
+
+test "a wheel event with a bad mode byte gives an error (REQ-INPUT-010)" {
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
+    var serializer = Serializer.init(&buffer.writer);
+    try serializer.writeHeader(120);
+    try serializer.writeEvent(Event.init(1, 10, 0, .{ .wheel = .{ .dx = 0, .dy = 1, .mode = .page, .mods = .{} } }));
+    const bad_at = buffer.written().len;
+    try serializer.writeEvent(Event.init(1, 10, 1, .{ .wheel = .{ .dx = 0, .dy = 1, .mode = .line, .mods = .{} } }));
+
+    // The event head is 21 bytes: two u64 deltas, a u32 seq and the tag.
+    const head = 8 + 8 + 4 + 1;
+    const bytes = buffer.written();
+    bytes[bad_at + head + @offsetOf(Deserializer.Wheel, "mode")] = 3;
+
+    var reader: std.Io.Reader = .fixed(bytes);
+    var deserializer = Deserializer.init(&reader);
+    _ = try deserializer.readHeader();
+    const good = (try deserializer.readEvent()).payload.wheel;
+    try std.testing.expectEqual(event.WheelMode.page, good.mode);
+    try std.testing.expectEqual(@as(f32, 1), good.dy);
+    try std.testing.expectError(error.InvalidWheelMode, deserializer.readEvent());
 }
