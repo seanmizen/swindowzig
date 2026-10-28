@@ -191,7 +191,9 @@ const server = serve({
       const ext = filePath.substring(filePath.lastIndexOf('.'));
       const contentType = contentTypes[ext] || 'application/octet-stream';
 
-      // Transpile TypeScript files
+      // Transpile each TypeScript file alone: remove the types, and keep
+      // the imports. The browser loads each module from this server. This
+      // is not a bundle. RSBuild makes the bundles (`yarn build:js`).
       let responseBody: BlobPart;
       if (ext === '.ts') {
         const transpiler = new Bun.Transpiler({ loader: 'ts' });

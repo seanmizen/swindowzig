@@ -122,7 +122,7 @@ pub fn expectMatchesRecompute(a: std.mem.Allocator, sched: *const Scheduler, wor
 /// frees it. Tests only: main does not copy the quads (C5).
 pub fn uploadQuads(a: std.mem.Allocator, lc: *const world_mod.LoadedChunk) ![]stages.PackedQuad {
     const bytes = lc.upload orelse return error.NoUpload;
-    const out = try a.alloc(stages.PackedQuad, bytes.quadBytesLen() / @sizeOf(stages.PackedQuad));
+    const out = try a.alloc(stages.PackedQuad, lc.mesh.quad_count);
     bytes.copyQuads(out);
     return out;
 }

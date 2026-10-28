@@ -13,7 +13,7 @@
 // 'chunk <stage> <cx>,<cz>' (C12).
 //
 // This file has no imports, so the dev server can send it as one
-// transpiled file, and `bun build` makes one small bundle.
+// transpiled file, and RSBuild makes one small bundle (rsbuild.config.ts).
 
 export type ToWorker =
   | { type: 'init'; module: WebAssembly.Module; slot: number }

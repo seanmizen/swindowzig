@@ -52,8 +52,20 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
   A fluid block is not a full cube: the greedy mesher skips it, and it
   does not darken AO. `fluid.generate(chunk, &fluid_mesh, ox, oz,
   getter)` makes its quads (`fluid.Vertex`, 4 for each quad) with corner
-  heights and flow UVs. The chunk pipeline and the demo do not use it
-  yet.
+  heights and flow UVs. The mesh stage puts the fluid quads in the mesh
+  result after the packed quads (REQ-VOXEL-027), and the y range of the
+  mesh covers them. The demo draws them with `fluid.wgsl` after the
+  opaque chunks, far to near, depth write off (REQ-VOXEL-028). The demo
+  water is opacity 0, so the light stage keeps its fast queue.
+- The content can give translucent blocks (REQ-VOXEL-029):
+  `translucent(block) ?[4]u8` (RGBA). Such a block is not a full cube
+  and does not darken AO. `translucent.generate` makes its faces in
+  world space, with a centre for each face. The mesh stage puts them and
+  the centres after the fluid quads (REQ-VOXEL-030). The demo (`glass`)
+  gives each chunk a sw_render `TranslucentBatch` and draws it with a
+  `TranslucentPipeline` and a `FrameBinding` after the fluid of the chunk
+  (REQ-VOXEL-031, REQ-GPU-040). Main reads only the centres (12 bytes for
+  each quad) for the sort.
 - `build.zig` wires it with `addVoxel`. The demo gives
   `examples/voxel/content.zig`. The unit tests of the library give
   `libs/sw_voxel/testing/content.zig`, with numbered blocks.
@@ -171,6 +183,7 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (per-vertex Mojang face-plane AO), `moore` (**default** — extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
 | `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation. Caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block updates the light incrementally (`light.update`), then meshes the chunk again. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
 | `--smooth-light=<on\|off>` | Smooth light of the mesher. `on` (default): each corner gets the mean light of the 4 cells at the corner. `off`: flat light, each face gets the light of the cell in front of it (REQ-VOXEL-008). Goes through `Scheduler.setSmoothLight`. |
+| `--water=<on\|off>` | Water in the generator (REQ-VOXEL-028). `off` is the default, so the default terrain and the goldens do not change. `on` fills each hilly column below the sea level (63) with water. The GenConfig bit goes to the workers in the Hello. |
 | `--place-block=<name>` | Puts the named block in hotbar slot 1, the slot that is selected at the start. Right-click then places it. Accepted: a block name of `content.zig`, for example `stone` or `glowstone`. With no flag, slot 1 is stone. `tests/glowstone_cave.sh` uses it to place an emitter from a TAS with no key presses. The script opens a window: run it under `xvfb-run` on Linux with no display. |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete. If a TAS is running, waits for the TAS to finish. Then waits for the chunk scheduler to be idle (`Scheduler.isIdle`), so the captured state does not depend on timing. |
 | `--debug-page=<general\|pipeline>` | The first page of the debug overlay. `pipeline` shows the chunk pipeline counters (C12). Cmd+P (Ctrl+P) changes the page at runtime. |
@@ -258,6 +271,13 @@ TAS scripts for regression live under `examples/voxel/`:
   — verifies block light did NOT leak beyond the BFS radius or across
   chunk boundaries). Run with `./examples/voxel/tests/glowstone_cave.sh`
   (or `--skip-build` to reuse an existing binary).
+
+- `tests/glass_blocks.tas` — flatland, `--place-block=glass`: two glass
+  blocks on the grass. The `glass_blocks` golden checks the translucent
+  stream and the sort (REQ-VOXEL-031).
+- `tests/water_pool.tas` — flatland, `--place-block=water`: water in a
+  dug hole and on the grass. The `water_pool` golden checks the fluid pass
+  (REQ-VOXEL-028).
 
 - `tests/chunk_border.sh` — the terrain hides the chunk border lines of
   debug mode. Each TAS turns debug mode on. With no depth test, the corner
@@ -481,6 +501,7 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `game_state.zig` | Pure-state struct (no GPU deps), shared across files |
 | `keyboard_hud.zig` | On-screen keyboard layout diagram |
 | `voxel.wgsl` | Voxel vertex+fragment shader, `PackedQuad` decode, GPU debug tint |
+| `fluid.wgsl` | The fluid pass: reads the fluid vertices of a chunk from a storage buffer, alpha blend (REQ-VOXEL-028) |
 | `libs/sw_gpu/src/fxaa.wgsl` | FXAA 3.11 post-process shader, fullscreen triangle VS + luminance-based edge search FS |
 | `terrain_hash.zig` | Block hash of a 9×9 hilly area for a seed. Native CLI and tests. `terrain_hash_wasm.zig` is the wasm root, and `scripts/terrain_hash_wasm.mjs` runs it in Node or Bun |
 | `framespike.tas` | TAS script used by the mandatory headless regression test |
@@ -502,6 +523,7 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `region.zig` | Region files: 16 × 16 chunks, each compressed (zlib), with an offset table and a format version. `Store(sw_assets.cache)` saves and loads them. The file has no light (REQ-VOXEL-011 to 013) |
 | `frustum.zig` | Chunk cull strategies: none, sphere, cone, frustum |
 | `fluid.zig` | The fluid surface mesher: corner heights, no face between cells of one fluid, flow UVs (REQ-VOXEL-014 to 016) |
+| `translucent.zig` | The translucent block mesher: faces and their centres in world space, in the vertex layout of sw_render `Translucent` (REQ-VOXEL-029) |
 | `clock.zig` | Monotonic clock for the perf logs. main sets `clock.io` |
 | `pipeline/stages.zig` | The pure chunk stages: generate, light, mesh (C2), and versions (C3) |
 | `pipeline/scheduler.zig` | The chunk scheduler: desired state, priority, version checks, eviction, edits (C8) |

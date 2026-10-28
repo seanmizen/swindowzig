@@ -28,6 +28,8 @@ system: see `README.md`.
 ## Hard rules
 
 - **Yarn 4 only.** Never `npm install` or `bun install`. Bun is a runtime only.
+  Bundling belongs to RSBuild (`rsbuild.config.ts`, `yarn build:js`), never
+  `bun build`.
 - **Before you finish:** run `yarn fix` (Biome), `zig build test` and
   `zig build web`. Fix every error. A change to the voxel example also runs
   the mandatory headless tests below.

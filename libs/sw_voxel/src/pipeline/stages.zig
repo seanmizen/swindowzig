@@ -23,6 +23,8 @@ const std = @import("std");
 const chunk_mod = @import("../chunk.zig");
 const visibility = @import("../visibility.zig");
 const mesher_mod = @import("../mesher.zig");
+const fluid_mod = @import("../fluid.zig");
+const translucent_mod = @import("../translucent.zig");
 const content = @import("../content.zig");
 const light_rules = @import("../light.zig");
 
@@ -517,10 +519,24 @@ pub const MeshResult = struct {
     sections: [chunk_mod.SECTION_COUNT]visibility.Connectivity = @splat(visibility.all),
     /// The draw range of each section (REQ-VOXEL-023).
     ranges: mesher_mod.SectionRanges = mesher_mod.EMPTY_RANGES,
+    /// The fluid quads, 4 vertices for each quad (REQ-VOXEL-027). The x
+    /// and z are relative to the chunk origin, as for the quads.
+    fluid: []fluid_mod.Vertex = &.{},
+    /// The translucent quads, 4 vertices for each quad, in world space
+    /// (REQ-VOXEL-029).
+    translucent: []translucent_mod.Vertex = &.{},
+    /// The centre of each translucent quad, in world space, for the sort.
+    translucent_centers: [][3]f32 = &.{},
 
     pub fn deinit(self: *MeshResult, allocator: std.mem.Allocator) void {
         allocator.free(self.quads);
         self.quads = &.{};
+        allocator.free(self.fluid);
+        self.fluid = &.{};
+        allocator.free(self.translucent);
+        self.translucent = &.{};
+        allocator.free(self.translucent_centers);
+        self.translucent_centers = &.{};
     }
 };
 
@@ -586,10 +602,40 @@ pub fn meshBlocks(
     var opts = options;
     opts.origin = .{ cx * CHUNK_W, cz * CHUNK_W };
     try mesher_mod.generateMeshWith(&view, &m, 0, 0, getter.asBlockGetter(), opts);
+    // The fluid surfaces (REQ-VOXEL-027). The mesher reads 1 cell of each
+    // neighbour, inside BORDER.
+    var fm = fluid_mod.Mesh.init(allocator);
+    defer fm.deinit();
+    try fluid_mod.generate(&view, &fm, 0, 0, getter.asBlockGetter());
+    const fluid = try fm.vertices.toOwnedSlice(allocator);
+    errdefer allocator.free(fluid);
+    // The translucent blocks (REQ-VOXEL-029), in world space.
+    var tm = translucent_mod.Mesh.init(allocator);
+    defer tm.deinit();
+    try translucent_mod.generate(&view, &tm, 0, 0, getter.asBlockGetter(), .{ cx * CHUNK_W, cz * CHUNK_W });
+    const trans = try tm.vertices.toOwnedSlice(allocator);
+    errdefer allocator.free(trans);
+    const centers = try tm.centers.toOwnedSlice(allocator);
+    errdefer allocator.free(centers);
+    // The y range covers the fluid and the translucent quads too, for the
+    // frustum cull. With neither, it is the range of the quads.
+    var y_min = m.y_min;
+    var y_max = m.y_max;
+    for (fluid) |v| {
+        y_min = @min(y_min, v.pos[1]);
+        y_max = @max(y_max, v.pos[1]);
+    }
+    for (trans) |v| {
+        y_min = @min(y_min, v.pos[1]);
+        y_max = @max(y_max, v.pos[1]);
+    }
     return .{
+        .fluid = fluid,
+        .translucent = trans,
+        .translucent_centers = centers,
         .quads = try m.quads.toOwnedSlice(allocator),
-        .y_min = m.y_min,
-        .y_max = m.y_max,
+        .y_min = y_min,
+        .y_max = y_max,
         .sections = visibility.chunkConnectivity(&real),
         .ranges = m.ranges,
     };

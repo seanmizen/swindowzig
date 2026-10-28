@@ -26,6 +26,9 @@ pub const model = @import("model.zig");
 pub const models = @import("models.zig");
 /// The fluid surface mesher: corner heights and flow UVs (REQ-VOXEL-014).
 pub const fluid = @import("fluid.zig");
+/// The translucent block mesher: faces in world space and their centres
+/// for the sort (REQ-VOXEL-029).
+pub const translucent = @import("translucent.zig");
 /// The chunks of main, with versions and cross-chunk light.
 pub const world = @import("world.zig");
 /// Region files: the compressed blocks of a square of chunks, for save
@@ -74,6 +77,7 @@ test {
     _ = model;
     _ = models;
     _ = fluid;
+    _ = translucent;
     _ = world;
     _ = region;
     _ = frustum;

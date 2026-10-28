@@ -216,7 +216,32 @@ pub const WGPUBackendType = enum(u32) {
     vulkan = 0x00000006,
     open_gl = 0x00000007,
     open_gles = 0x00000008,
+    _,
 };
+
+pub const WGPUAdapterType = enum(u32) {
+    discrete_gpu = 0x00000000,
+    integrated_gpu = 0x00000001,
+    cpu = 0x00000002,
+    unknown = 0x00000003,
+    _,
+};
+
+/// webgpu.h WGPUAdapterInfo. wgpuAdapterInfoFreeMembers frees the strings.
+pub const WGPUAdapterInfo = extern struct {
+    next_in_chain: ?*anyopaque = null,
+    vendor: ?[*:0]const u8 = null,
+    architecture: ?[*:0]const u8 = null,
+    device: ?[*:0]const u8 = null,
+    description: ?[*:0]const u8 = null,
+    backend_type: WGPUBackendType = .undefined,
+    adapter_type: WGPUAdapterType = .unknown,
+    vendor_id: u32 = 0,
+    device_id: u32 = 0,
+};
+
+pub extern fn wgpuAdapterGetInfo(adapter: WGPUAdapter, info: *WGPUAdapterInfo) void;
+pub extern fn wgpuAdapterInfoFreeMembers(info: WGPUAdapterInfo) void;
 
 pub const WGPURequestAdapterOptions = extern struct {
     next_in_chain: ?*const WGPUChainedStruct = null,
@@ -1088,7 +1113,8 @@ pub extern fn SDL_Metal_CreateView(window: *anyopaque) ?*anyopaque;
 pub extern fn SDL_Metal_GetLayer(view: *anyopaque) ?*anyopaque;
 pub extern fn SDL_Metal_DestroyView(view: *anyopaque) void;
 
-// SDL2 X11 declarations
+// SDL2 window system declarations (SDL_syswm.h: SDL_SYSWM_TYPE)
+const SDL_SYSWM_WINDOWS = 1;
 const SDL_SYSWM_X11 = 2;
 const SDL_SYSWM_WAYLAND = 3;
 
@@ -1104,6 +1130,12 @@ const SDL_SysWMinfo = extern struct {
             display: *anyopaque,
             surface: *anyopaque,
         },
+        // SDL_syswm.h: HWND window, HDC hdc, HINSTANCE hinstance.
+        win: extern struct {
+            window: ?*anyopaque,
+            hdc: ?*anyopaque,
+            hinstance: ?*anyopaque,
+        },
         dummy: [64]u8,
     },
 };
@@ -1113,6 +1145,9 @@ const SDL_version = extern struct {
     minor: u8,
     patch: u8,
 };
+
+// kernel32: the module handle of the .exe, if SDL gives no HINSTANCE.
+extern "kernel32" fn GetModuleHandleW(name: ?[*:0]const u16) callconv(.winapi) ?*anyopaque;
 
 pub extern fn SDL_GetVersion(ver: *SDL_version) void;
 pub extern fn SDL_GetWindowWMInfo(window: *anyopaque, info: *SDL_SysWMinfo) c_int;
@@ -1202,8 +1237,30 @@ pub fn createSurfaceFromSDLWindow(instance: WGPUInstance, sdl_window: *anyopaque
             }
         },
         .windows => {
-            // TODO: Implement Windows HWND surface creation
-            return error.NotImplementedYet;
+            // A Win32 HWND surface: wgpu-native picks D3D12 or Vulkan on it
+            // (REQ-BUILD-003).
+            var wm_info = std.mem.zeroes(SDL_SysWMinfo);
+            SDL_GetVersion(&wm_info.version);
+            if (SDL_GetWindowWMInfo(sdl_window, &wm_info) == 0) return error.SDLWMInfoFailed;
+            if (wm_info.subsystem != SDL_SYSWM_WINDOWS) return error.UnsupportedWindowSystem;
+            const hwnd = wm_info.info.win.window orelse return error.SDLWMInfoFailed;
+            const hinstance = wm_info.info.win.hinstance orelse GetModuleHandleW(null) orelse return error.SDLWMInfoFailed;
+
+            const hwnd_desc = WGPUSurfaceDescriptorFromWindowsHWND{
+                .chain = .{
+                    .next = null,
+                    .s_type = .surface_descriptor_from_windows_hwnd,
+                },
+                .hinstance = hinstance,
+                .hwnd = hwnd,
+            };
+            const surface_desc = WGPUSurfaceDescriptor{
+                .next_in_chain = @ptrCast(&hwnd_desc),
+                .label = null,
+            };
+            const surface = wgpuInstanceCreateSurface(instance, &surface_desc);
+            if (surface == null) return error.SurfaceCreationFailed;
+            return surface;
         },
         else => {
             return error.UnsupportedPlatform;

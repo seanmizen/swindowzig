@@ -702,7 +702,7 @@ function createWebGPUImports(
           };
           entry.storageTexture = {
             access: accessMap[storageAccess],
-            format: storageFormat as GPUTextureFormat,
+            format: TEXTURE_FORMAT_MAP[storageFormat],
             viewDimension: VIEW_DIMENSIONS[storageViewDimension],
           };
         }

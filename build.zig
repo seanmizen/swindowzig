@@ -53,6 +53,24 @@ pub fn build(b: *std.Build) void {
         "Platform of the exported modules: web (default, no SDL) or native (SDL2)",
     ) orelse .web;
 
+    // The native screen-reader backend of sw_ui (REQ-A11Y-007). It links
+    // accesskit-c from ~/.local/lib. Off by default: then nothing links, and
+    // the native build does not change. See docs/accesskit.md.
+    const accesskit = b.option(
+        bool,
+        "accesskit",
+        "Native builds: send the sw_ui semantic tree to AccessKit (needs libaccesskit in ~/.local/lib)",
+    ) orelse false;
+
+    // The folder of the Windows SDL2 and wgpu-native files
+    // (scripts/windows-deps.sh, REQ-BUILD-002). Only a Windows target reads it.
+    const windows_deps = b.option(
+        []const u8,
+        "windows-deps",
+        "Windows targets: the folder that scripts/windows-deps.sh fills (default: ~/.local/windows)",
+    );
+    const deps = nativeDeps(b, target.result.os.tag, windows_deps);
+
     // The exported modules. `b.addModule` makes them importable from a
     // dependent package.
     const exported_sdl: ?*std.Build.Module = if (platform == .native) blk: {
@@ -61,10 +79,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        if (target.result.os.tag == .macos) sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        if (deps.sdl_include) |dir| sdl_c.addSystemIncludePath(.{ .cwd_relative = dir });
         break :blk sdl_c.createModule();
     } else null;
-    const exported = addLibs(b, exported_sdl, true);
+    const exported = addLibs(b, exported_sdl, true, accesskit and platform == .native);
 
     // A dependent package stops here. The examples, steps and tests below
     // belong to this package alone, and they need HOME and SDL.
@@ -72,92 +90,25 @@ pub fn build(b: *std.Build) void {
 
     // The web build gets its own set of library modules, with no SDL. The
     // minecraft dockerfile has no SDL headers.
-    const web_libs = if (platform == .web) exported else addLibs(b, null, false);
+    const web_libs = if (platform == .web) exported else addLibs(b, null, false, false);
 
-    // Example app - WASM build
+    // Example app - WASM build. webExample makes app.wasm and chunks.wasm.
+    // A dependent package gets the same artifacts from addWebExample
+    // (REQ-BUILD-001).
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
     });
-
-    // Construct path to example (try src/main.zig first, then main.zig)
-    const example_path = blk: {
-        if (demo_name) |d| break :blk b.fmt("demos/{s}/main.zig", .{d});
-        const src_path = b.fmt("examples/{s}/src/main.zig", .{example_name});
-        const root_path = b.fmt("examples/{s}/main.zig", .{example_name});
-
-        // Check if src/main.zig exists
-        b.root.access(b.graph.io, src_path, .{}) catch {
-            // Fall back to root main.zig
-            break :blk root_path;
-        };
-        break :blk src_path;
-    };
-
-    const example = b.addExecutable(.{
-        .name = "app",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path(example_path),
-            .target = wasm_target,
-            .optimize = optimize,
-        }),
-    });
-    example.root_module.addImport("sw_app", web_libs.app);
-    example.root_module.addImport("sw_math", web_libs.math);
-    example.root_module.addImport("sw_gpu", web_libs.gpu);
-    example.root_module.addImport("sw_core", web_libs.core);
-    example.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
-    example.root_module.addImport("sw_text", web_libs.text);
-    example.root_module.addImport("sw_ui", web_libs.ui);
-    example.root_module.addImport("sw_assets", web_libs.assets);
-    example.root_module.addImport("sw_render", web_libs.render);
-    // sw_platform is needed by examples that drive their own wasm entry
-    // (e.g. voxel, which constructs a WasmBackend directly in its
-    // swindowzig_init export).
-    example.root_module.addImport("sw_platform", web_libs.platform);
-    // The shared frame of the demos (demos/common).
-    example.root_module.addImport("demo_common", addDemoCommon(b, web_libs, .{}));
-    // The voxel demo: sw_voxel with the demo content (examples/voxel/content.zig).
-    const web_voxel = addVoxel(b, web_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
-    example.root_module.addImport("sw_voxel", web_voxel.voxel);
-    example.root_module.addImport("voxel_content", web_voxel.content);
-    example.rdynamic = true; // Export symbols for WASM
-    // Voxel's Chunk.init() constructs a stack-allocated struct value.
-    // At CHUNK_W=16: 16×256×16 blocks + skylight ≈ 128 KB. At CHUNK_W=48
-    // (the old size) it was ~1.17 MB. Keep 16 MB for headroom — recursive
-    // meshing + several chunk call frames can still stack up.
-    example.stack_size = 16 * 1024 * 1024;
+    const example_path = if (demo_name) |d| b.fmt("demos/{s}/main.zig", .{d}) else examplePath(b, example_name);
+    const web_example = webExample(b, web_libs, example_path, optimize);
+    const example = web_example.app;
+    const chunks_wasm = web_example.chunks;
+    const chunk_build = web_example.chunk_build;
+    const web_voxel = web_example.voxel;
 
     const install_example = b.addInstallArtifact(example, .{});
     b.getInstallStep().dependOn(&install_example.step);
 
-    // The build id of the voxel web pair (C9): app.wasm and chunks.wasm
-    // export it, and the worker pool starts only when the two are equal.
-    const chunk_build = b.addOptions();
-    chunk_build.addOption(u64, "id", voxelBuildId(b));
-    example.root_module.addOptions("chunk_build", chunk_build);
-
-    // chunks.wasm: the chunk worker of the Web Worker pool (C9). Its only
-    // wasm imports are the clock and the log. It has no GPU code.
-    const chunks_wasm = b.addExecutable(.{
-        .name = "chunks",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/voxel/chunks_wasm.zig"),
-            .target = wasm_target,
-            .optimize = optimize,
-            .single_threaded = true,
-            // Each Web Worker downloads it: no debug info in a release.
-            .strip = optimize != .debug,
-        }),
-    });
-    // sw_voxel takes the AO and lighting enums from sw_gpu. They are types
-    // only: chunks.wasm imports no WebGPU function.
-    chunks_wasm.root_module.addImport("sw_voxel", web_voxel.voxel);
-    chunks_wasm.root_module.addOptions("chunk_build", chunk_build);
-    chunks_wasm.entry = .disabled;
-    chunks_wasm.rdynamic = true;
-    // The light stage scratch is on the heap. The stages use a small stack.
-    chunks_wasm.stack_size = 16 * 1024 * 1024;
     const install_chunks = b.addInstallArtifact(chunks_wasm, .{});
 
     // Web build step. The voxel web build also installs chunks.wasm.
@@ -173,8 +124,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    if (target.result.os.tag == .macos) sdl_c.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-    const native_libs = if (platform == .native) exported else addLibs(b, sdl_c.createModule(), false);
+    if (deps.sdl_include) |dir| sdl_c.addSystemIncludePath(.{ .cwd_relative = dir });
+    const native_libs = if (platform == .native) exported else addLibs(b, sdl_c.createModule(), false, accesskit);
 
     const native_exe = b.addExecutable(.{
         .name = b.fmt("{s}", .{program_name}),
@@ -199,18 +150,41 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_voxel", native_voxel.voxel);
     native_exe.root_module.addImport("voxel_content", native_voxel.content);
 
-    // Link SDL2 for native builds.
-    native_exe.root_module.linkSystemLibrary("SDL2", .{});
+    // Link SDL2 for native builds. On Windows, SDL2 and wgpu-native are
+    // DLLs: link their MinGW import libraries from deps.lib. pkg-config
+    // gives the host folders, so it is not used there.
     native_exe.root_module.link_libc = true;
+    if (target.result.os.tag == .windows) {
+        for ([_][]const u8{ "libSDL2.dll.a", "libwgpu_native.dll.a" }) |lib| {
+            native_exe.root_module.addObjectFile(.{ .cwd_relative = b.pathJoin(&.{ deps.lib, lib }) });
+        }
+    } else {
+        native_exe.root_module.linkSystemLibrary("SDL2", .{});
+    }
 
-    // Link wgpu-native from ~/.local
-    const home = b.graph.environ_map.get("HOME") orelse @panic("HOME is not set");
-    const wgpu_lib_path = std.fs.path.join(b.allocator, &[_][]const u8{ home, ".local", "lib" }) catch unreachable;
-    const wgpu_include_path = std.fs.path.join(b.allocator, &[_][]const u8{ home, ".local", "include" }) catch unreachable;
+    // Link wgpu-native from the folders of nativeDeps: ~/.local on Linux
+    // and macOS, the windows-deps folder on Windows.
+    native_exe.root_module.addLibraryPath(.{ .cwd_relative = deps.lib });
+    native_exe.root_module.addIncludePath(.{ .cwd_relative = deps.include });
+    if (target.result.os.tag != .windows) native_exe.root_module.linkSystemLibrary("wgpu_native", .{});
 
-    native_exe.root_module.addLibraryPath(.{ .cwd_relative = wgpu_lib_path });
-    native_exe.root_module.addIncludePath(.{ .cwd_relative = wgpu_include_path });
-    native_exe.root_module.linkSystemLibrary("wgpu_native", .{});
+    // accesskit-c (optional, REQ-A11Y-007): the static library of the
+    // release zip, in ~/.local/lib. The system libraries are the ones that
+    // accesskit-config.cmake names for the static library.
+    if (accesskit) {
+        native_exe.root_module.linkSystemLibrary("accesskit", .{ .preferred_link_mode = .static });
+        switch (target.result.os.tag) {
+            .macos => {
+                native_exe.root_module.linkFramework("AppKit", .{});
+                native_exe.root_module.linkFramework("CoreFoundation", .{});
+                native_exe.root_module.linkSystemLibrary("objc", .{});
+            },
+            .windows => for ([_][]const u8{ "bcrypt", "ntdll", "propsys", "runtimeobject", "uiautomationcore", "userenv", "ws2_32" }) |lib| {
+                native_exe.root_module.linkSystemLibrary(lib, .{});
+            },
+            else => native_exe.root_module.linkSystemLibrary("m", .{}),
+        }
+    }
 
     // Platform-specific frameworks
     if (target.result.os.tag == .macos) {
@@ -229,6 +203,11 @@ pub fn build(b: *std.Build) void {
     }
 
     const install_native = b.addInstallArtifact(native_exe, .{});
+    // Windows: the .exe loads SDL2.dll and wgpu_native.dll from its own
+    // folder, so install them next to it in zig-out/bin (REQ-BUILD-002).
+    for (deps.dlls) |dll| {
+        install_native.step.dependOn(&b.addInstallBinFile(.{ .cwd_relative = dll }, std.fs.path.basename(dll)).step);
+    }
 
     // Native build step
     const native_step_desc = b.fmt("Build '{s}' for native", .{program_name});
@@ -301,6 +280,20 @@ pub fn build(b: *std.Build) void {
         "demos/common/voxel_mesh.zig",
         "demos/common/cow_model.zig",
     };
+
+    // sw_ui: the AccessKit backend, built with the option off, and its map
+    // from the semantic tree to AccessKit nodes (accesskit_map.zig). The
+    // test checks that the backend does nothing and links no accesskit-c
+    // symbol.
+    const accesskit_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_ui/src/accesskit.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    accesskit_tests.root_module.addOptions("sw_ui_options", uiOptions(b, false));
+    test_step.dependOn(&b.addRunArtifact(accesskit_tests).step);
 
     // sw_assets: byte loading and PNG decoding. The PNG decoder is C
     // (stb_image), so these tests link libc.
@@ -490,6 +483,7 @@ pub fn build(b: *std.Build) void {
         "libs/sw_render/src/lighting_plan.zig",
         "libs/sw_render/src/weather_plan.zig",
         "libs/sw_render/src/translucent_plan.zig",
+        "libs/sw_render/src/blend_plan.zig",
         "libs/sw_render/src/settings.zig",
         "libs/sw_render/src/frame_pacing.zig",
         "libs/sw_render/src/shafts_plan.zig",
@@ -816,6 +810,170 @@ pub fn build(b: *std.Build) void {
     worker_wasm_step.dependOn(&install_chunks.step);
 }
 
+/// The folders of the native libraries (SDL2 and wgpu-native) for one
+/// target OS (REQ-BUILD-002).
+const NativeDeps = struct {
+    /// The folder of the wgpu-native headers.
+    include: []const u8,
+    /// The folder of the wgpu-native library (and of SDL2 on Windows).
+    lib: []const u8,
+    /// A folder with the SDL2/ headers that is not a system folder, or null.
+    sdl_include: ?[]const u8,
+    /// The DLLs to install next to the executable.
+    dlls: []const []const u8,
+};
+
+/// Linux and macOS: wgpu-native from ~/.local, SDL2 from the system (and
+/// Homebrew on macOS). Windows: all from `windows_deps`, or from
+/// ~/.local/windows (scripts/windows-deps.sh fills the folder).
+fn nativeDeps(b: *std.Build, os: std.Target.Os.Tag, windows_deps: ?[]const u8) NativeDeps {
+    const home = b.graph.environ_map.get("HOME") orelse b.graph.environ_map.get("USERPROFILE") orelse "";
+    if (os == .windows) {
+        const dir = windows_deps orelse b.pathJoin(&.{ home, ".local", "windows" });
+        const include = b.pathJoin(&.{ dir, "include" });
+        const dlls = b.allocator.dupe([]const u8, &.{
+            b.pathJoin(&.{ dir, "bin", "SDL2.dll" }),
+            b.pathJoin(&.{ dir, "bin", "wgpu_native.dll" }),
+        }) catch @panic("OOM");
+        return .{ .include = include, .lib = b.pathJoin(&.{ dir, "lib" }), .sdl_include = include, .dlls = dlls };
+    }
+    return .{
+        .include = b.pathJoin(&.{ home, ".local", "include" }),
+        .lib = b.pathJoin(&.{ home, ".local", "lib" }),
+        .sdl_include = if (os == .macos) "/opt/homebrew/include" else null,
+        .dlls = &.{},
+    };
+}
+
+/// The settings of addWebExample.
+pub const WebExampleOptions = struct {
+    /// The directory name of the example in `examples/`, for example "voxel".
+    example: []const u8,
+    optimize: std.builtin.Optimize = .debug,
+};
+
+/// The wasm artifacts of one example. Install them with
+/// `b.installArtifact`. `chunks` is the chunk worker (chunks.wasm). Only the
+/// voxel example has one: it is null for the other examples.
+pub const WebExample = struct {
+    app: *std.Build.Step.Compile,
+    chunks: ?*std.Build.Step.Compile,
+};
+
+/// Build one example to wasm32-freestanding from a package that depends on
+/// swindowzig (REQ-BUILD-001). `dep` is `b.dependency("swindowzig", .{})`.
+/// The artifacts are the same as the ones of `zig build web` in this
+/// package: app.wasm, and chunks.wasm for voxel. The sources come from the
+/// dependency, so `zig build --fork=<checkout>` builds the checkout.
+///
+///     const sw = b.dependency("swindowzig", .{});
+///     const web = @import("swindowzig").addWebExample(b, sw, .{ .example = "voxel", .optimize = optimize });
+///     b.installArtifact(web.app);
+///     if (web.chunks) |c| b.installArtifact(c);
+pub fn addWebExample(b: *std.Build, dep: *std.Build.Dependency, options: WebExampleOptions) WebExample {
+    _ = b;
+    const sw = dep.builder;
+    const libs = addLibs(sw, null, false, false);
+    const path = examplePath(sw, options.example);
+    sw.root.access(sw.graph.io, path, .{}) catch
+        std.debug.panic("swindowzig has no example '{s}' ({s} is missing)", .{ options.example, path });
+    const web = webExample(sw, libs, path, options.optimize);
+    return .{
+        .app = web.app,
+        .chunks = if (std.mem.eql(u8, options.example, "voxel")) web.chunks else null,
+    };
+}
+
+/// The root source file of an example: examples/<name>/src/main.zig if it
+/// exists, else examples/<name>/main.zig.
+fn examplePath(b: *std.Build, name: []const u8) []const u8 {
+    const src_path = b.fmt("examples/{s}/src/main.zig", .{name});
+    b.root.access(b.graph.io, src_path, .{}) catch return b.fmt("examples/{s}/main.zig", .{name});
+    return src_path;
+}
+
+const WebArtifacts = struct {
+    app: *std.Build.Step.Compile,
+    chunks: *std.Build.Step.Compile,
+    chunk_build: *std.Build.Step.Options,
+    voxel: VoxelModules,
+};
+
+/// Make the wasm artifacts of one example: app.wasm (the example at
+/// `example_path`), chunks.wasm (the voxel chunk worker), and the build id
+/// that the two share. `b` is the builder of this package: the build of
+/// this package, or `dep.builder` in addWebExample.
+fn webExample(b: *std.Build, web_libs: Libs, example_path: []const u8, optimize: std.builtin.Optimize) WebArtifacts {
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+
+    const example = b.addExecutable(.{
+        .name = "app",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(example_path),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    example.root_module.addImport("sw_app", web_libs.app);
+    example.root_module.addImport("sw_math", web_libs.math);
+    example.root_module.addImport("sw_gpu", web_libs.gpu);
+    example.root_module.addImport("sw_core", web_libs.core);
+    example.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
+    example.root_module.addImport("sw_text", web_libs.text);
+    example.root_module.addImport("sw_ui", web_libs.ui);
+    example.root_module.addImport("sw_assets", web_libs.assets);
+    example.root_module.addImport("sw_render", web_libs.render);
+    // sw_platform is needed by examples that drive their own wasm entry
+    // (e.g. voxel, which constructs a WasmBackend directly in its
+    // swindowzig_init export).
+    example.root_module.addImport("sw_platform", web_libs.platform);
+    // The shared frame of the demos (demos/common, REQ-DEMO-001).
+    example.root_module.addImport("demo_common", addDemoCommon(b, web_libs, .{}));
+    // The voxel demo: sw_voxel with the demo content (examples/voxel/content.zig).
+    const web_voxel = addVoxel(b, web_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
+    example.root_module.addImport("sw_voxel", web_voxel.voxel);
+    example.root_module.addImport("voxel_content", web_voxel.content);
+    example.rdynamic = true; // Export symbols for WASM
+    // Voxel's Chunk.init() constructs a stack-allocated struct value.
+    // At CHUNK_W=16: 16×256×16 blocks + skylight ≈ 128 KB. At CHUNK_W=48
+    // (the old size) it was ~1.17 MB. Keep 16 MB for headroom — recursive
+    // meshing + several chunk call frames can still stack up.
+    example.stack_size = 16 * 1024 * 1024;
+
+    // The build id of the voxel web pair (C9): app.wasm and chunks.wasm
+    // export it, and the worker pool starts only when the two are equal.
+    const chunk_build = b.addOptions();
+    chunk_build.addOption(u64, "id", voxelBuildId(b));
+    example.root_module.addOptions("chunk_build", chunk_build);
+
+    // chunks.wasm: the chunk worker of the Web Worker pool (C9). Its only
+    // wasm imports are the clock and the log. It has no GPU code.
+    const chunks_wasm = b.addExecutable(.{
+        .name = "chunks",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/chunks_wasm.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+            .single_threaded = true,
+            // Each Web Worker downloads it: no debug info in a release.
+            .strip = optimize != .debug,
+        }),
+    });
+    // sw_voxel takes the AO and lighting enums from sw_gpu. They are types
+    // only: chunks.wasm imports no WebGPU function.
+    chunks_wasm.root_module.addImport("sw_voxel", web_voxel.voxel);
+    chunks_wasm.root_module.addOptions("chunk_build", chunk_build);
+    chunks_wasm.entry = .disabled;
+    chunks_wasm.rdynamic = true;
+    // The light stage scratch is on the heap. The stages use a small stack.
+    chunks_wasm.stack_size = 16 * 1024 * 1024;
+
+    return .{ .app = example, .chunks = chunks_wasm, .chunk_build = chunk_build, .voxel = web_voxel };
+}
+
 /// The build id of the voxel web build (C9): a hash of the path and the
 /// bytes of each .zig file under examples/voxel and libs/sw_voxel. app.wasm
 /// and chunks.wasm of one build have the same id. A browser cache that keeps
@@ -941,7 +1099,8 @@ fn libModule(
 
 /// Create the swindowzig library modules. `sdl` is the translated SDL2 headers
 /// for a native build, or null for the web build.
-fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
+/// `accesskit` turns on the AccessKit backend of sw_ui (REQ-A11Y-007).
+fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool, accesskit: bool) Libs {
     const core = libModule(b, exported, "sw_core", "libs/sw_core/src/core.zig");
     const platform = libModule(b, exported, "sw_platform", "libs/sw_platform/src/platform_root.zig");
     platform.addImport("sw_core", core);
@@ -964,6 +1123,7 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     const ui = libModule(b, exported, "sw_ui", "libs/sw_ui/src/ui_root.zig");
     ui.addImport("sw_gfx2d", gfx2d);
     ui.addImport("sw_text", text);
+    ui.addOptions("sw_ui_options", uiOptions(b, accesskit));
     // sw_voxel needs a content module from the dependent package:
     // voxel.addImport("sw_voxel_content", content). See
     // libs/sw_voxel/src/content.zig.
@@ -985,6 +1145,13 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
     return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .net = net, .jobs = jobs, .text = text, .ui = ui, .voxel = voxel, .render = render, .app = app };
+}
+
+/// The build options of sw_ui.
+fn uiOptions(b: *std.Build, accesskit: bool) *std.Build.Step.Options {
+    const opts = b.addOptions();
+    opts.addOption(bool, "accesskit", accesskit);
+    return opts;
 }
 
 /// Compile stb_vorbis (libs/sw_audio/c) into `module`. The file needs no C

@@ -46,7 +46,15 @@ fn reencode(a: std.mem.Allocator, d: protocol.Decoded) ![]u8 {
                     const q = try a.alloc(PackedQuad, r.quadCount());
                     defer a.free(q);
                     r.copyQuads(q);
-                    break :blk protocol.encodeResult(a, d.id, r.head, .{ .quads = q });
+                    const f = try a.alloc(protocol.FluidVertex, r.fluidQuadCount() * 4);
+                    defer a.free(f);
+                    r.copyFluid(f);
+                    const t = try a.alloc(protocol.TranslucentVertex, @as(usize, r.head.translucent_quads) * 4);
+                    defer a.free(t);
+                    const c = try a.alloc([3]f32, r.head.translucent_quads);
+                    defer a.free(c);
+                    r.copyTranslucent(t, c);
+                    break :blk protocol.encodeResult(a, d.id, r.head, .{ .mesh = .{ .quads = q, .fluid = f, .translucent = t, .centers = c } });
                 },
                 .generate => if (r.has_blocks) {
                     var pb = try protocol.decodeBlocks(a, r);
@@ -197,6 +205,110 @@ test "protocol: Result and Error round trip, with the payload bytes ready for up
     const ed = try expectRoundTrip(a, eb);
     try std.testing.expectEqual(protocol.ErrorCode.stale_input, ed.msg.err.code);
     try std.testing.expectEqualStrings("versions", ed.msg.err.text);
+}
+
+test "protocol: a mesh Result holds the fluid quads after the quads (REQ-VOXEL-027)" {
+    const a = std.testing.allocator;
+    var blocks = try stages.generate(a, 0, world_gen.presetConfig(.flatland), 0, 0);
+    defer blocks.deinit(a);
+    // A pool of water on the grass (y 63): 3 × 3 cells at y 64.
+    for (4..7) |x| for (4..7) |z| {
+        try blocks.set(a, chunk_mod.blockLinearIdx(@intCast(x), 64, @intCast(z)), .water);
+    };
+    var empty: stages.ChunkLight = .{};
+    var hood: stages.Neighbourhood = undefined;
+    for (&hood) |*h| h.* = .{ .blocks = &blocks, .light = &empty };
+    var m = try stages.meshWith(a, &hood, 0, 0, .{ .ao = .moore, .lighting = .skylight });
+    defer m.deinit(a);
+    // 9 tops and 12 sides. The grass hides the bottoms.
+    try std.testing.expectEqual(@as(usize, 21 * 4), m.fluid.len);
+    // The y range covers the water surface.
+    try std.testing.expect(m.y_max > 64);
+
+    const head: protocol.ResultHead = .{ .stage = .mesh, .cx = 0, .cz = 0, .y_min = m.y_min, .y_max = m.y_max, .ranges = m.ranges };
+    const mb = try protocol.encodeResult(a, 3, head, .{ .mesh = .{ .quads = m.quads, .fluid = m.fluid } });
+    defer a.free(mb);
+    const quad_len = m.quads.len * @sizeOf(PackedQuad);
+    try std.testing.expectEqual(protocol.PAYLOAD_OFFSET + quad_len + 21 * protocol.FLUID_QUAD_LEN, mb.len);
+    // The fluid quad count is at body byte 40, then 0.
+    try std.testing.expectEqual(@as(u32, 21), std.mem.readInt(u32, mb[56..60], .little));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, mb[60..64], .little));
+    // The quads keep their place, and the fluid vertices follow them.
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(m.quads), mb[protocol.PAYLOAD_OFFSET..][0..quad_len]);
+    const info = (try protocol.decodeResultHead(mb[0..protocol.PAYLOAD_OFFSET], mb.len)).?;
+    try std.testing.expectEqual(@as(u32, 21), info.head.fluid_quads);
+    try std.testing.expectEqual(protocol.PAYLOAD_OFFSET + quad_len, info.fluidOffset());
+    try std.testing.expectEqual(@as(usize, 21 * protocol.FLUID_QUAD_LEN), info.fluidLen());
+    // The hash covers the fluid vertices.
+    try std.testing.expectEqual(protocol.meshHash(mb[protocol.PAYLOAD_OFFSET..]), info.head.mesh_hash);
+    const d = try expectRoundTrip(a, mb);
+    try std.testing.expectEqual(m.quads.len, d.msg.result.quadCount());
+    const got = try a.alloc(protocol.FluidVertex, m.fluid.len);
+    defer a.free(got);
+    d.msg.result.copyFluid(got);
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(m.fluid), std.mem.sliceAsBytes(got));
+    // A fluid count that does not match the payload is an error.
+    const bad = try a.dupe(u8, mb);
+    defer a.free(bad);
+    std.mem.writeInt(u32, bad[56..60], 20, .little);
+    try std.testing.expectError(error.BadLength, protocol.decode(bad));
+    // A chunk with no fluid gives the bytes of version 6 after the head.
+    var no_fluid = try stages.generate(a, 0, world_gen.presetConfig(.flatland), 0, 0);
+    defer no_fluid.deinit(a);
+    for (&hood) |*h| h.* = .{ .blocks = &no_fluid, .light = &empty };
+    var m2 = try stages.meshWith(a, &hood, 0, 0, .{ .ao = .moore, .lighting = .skylight });
+    defer m2.deinit(a);
+    try std.testing.expectEqual(@as(usize, 0), m2.fluid.len);
+}
+
+test "protocol: a mesh Result holds the translucent quads and their centres after the fluid quads (REQ-VOXEL-030)" {
+    const a = std.testing.allocator;
+    var blocks = try stages.generate(a, 0, world_gen.presetConfig(.flatland), 0, 0);
+    defer blocks.deinit(a);
+    // Two glass blocks on the grass (y 63), and one water cell.
+    try blocks.set(a, chunk_mod.blockLinearIdx(5, 64, 5), .glass);
+    try blocks.set(a, chunk_mod.blockLinearIdx(6, 64, 5), .glass);
+    try blocks.set(a, chunk_mod.blockLinearIdx(9, 64, 9), .water);
+    var empty: stages.ChunkLight = .{};
+    var hood: stages.Neighbourhood = undefined;
+    for (&hood) |*h| h.* = .{ .blocks = &blocks, .light = &empty };
+    var m = try stages.meshWith(a, &hood, 2, -3, .{ .ao = .moore, .lighting = .skylight });
+    defer m.deinit(a);
+    // 12 faces, less the 2 faces between the blocks and the 2 bottoms on
+    // the grass.
+    try std.testing.expectEqual(@as(usize, 8), m.translucent_centers.len);
+    try std.testing.expectEqual(@as(usize, 8 * 4), m.translucent.len);
+    // World space: chunk (2, -3) starts at x 32, z -48.
+    for (m.translucent_centers) |c| {
+        try std.testing.expect(c[0] >= 37 and c[0] <= 39);
+        try std.testing.expect(c[2] >= -43 and c[2] <= -42);
+    }
+
+    const head: protocol.ResultHead = .{ .stage = .mesh, .cx = 2, .cz = -3, .y_min = m.y_min, .y_max = m.y_max, .ranges = m.ranges };
+    const mb = try protocol.encodeResult(a, 4, head, .{ .mesh = .{ .quads = m.quads, .fluid = m.fluid, .translucent = m.translucent, .centers = m.translucent_centers } });
+    defer a.free(mb);
+    const tail = 8 * (protocol.TRANSLUCENT_QUAD_LEN + protocol.CENTER_LEN);
+    try std.testing.expectEqual(protocol.PAYLOAD_OFFSET + m.quads.len * @sizeOf(PackedQuad) + m.fluid.len * @sizeOf(protocol.FluidVertex) + tail, mb.len);
+    // The translucent quad count is at body byte 44.
+    try std.testing.expectEqual(@as(u32, 8), std.mem.readInt(u32, mb[60..64], .little));
+    const info = (try protocol.decodeResultHead(mb[0..protocol.PAYLOAD_OFFSET], mb.len)).?;
+    try std.testing.expectEqual(@as(u32, 8), info.head.translucent_quads);
+    try std.testing.expectEqual(info.fluidOffset() + info.fluidLen(), info.translucentOffset());
+    try std.testing.expectEqual(mb.len - info.centersLen(), info.centersOffset());
+    // Main reads the centres from the message bytes.
+    var centers: [8][3]f32 = undefined;
+    protocol.readCenters(mb[info.centersOffset()..], &centers);
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(m.translucent_centers), std.mem.sliceAsBytes(&centers));
+    // The vertex bytes are the sw_render vertex layout, as they are.
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(m.translucent), mb[info.translucentOffset()..][0..info.translucentLen()]);
+    const d = try expectRoundTrip(a, mb);
+    try std.testing.expectEqual(m.quads.len, d.msg.result.quadCount());
+    try std.testing.expectEqual(m.fluid.len / 4, d.msg.result.fluidQuadCount());
+    // A count that does not match the payload is an error.
+    const bad = try a.dupe(u8, mb);
+    defer a.free(bad);
+    std.mem.writeInt(u32, bad[60..64], 9, .little);
+    try std.testing.expectError(error.BadLength, protocol.decode(bad));
 }
 
 test "protocol: the fields are at the documented offsets, little-endian" {

@@ -11,10 +11,15 @@
 | [`REQ-A11Y-004`](a11y.md#req-a11y-004--the-mirror-is-visually-hidden) | The mirror is visually hidden | active | constraint | P1 | sean |
 | [`REQ-A11Y-005`](a11y.md#req-a11y-005--an-unchanged-tree-is-not-sent-to-js) | An unchanged tree is not sent to JS | active | quality | P1 | sean |
 | [`REQ-A11Y-006`](a11y.md#req-a11y-006--each-widget-has-its-aria-role-in-the-mirror) | Each widget has its ARIA role in the mirror | active | functional | P2 | agent:SWZ-47 |
+| [`REQ-A11Y-007`](a11y.md#req-a11y-007--the-native-build-can-send-the-semantic-tree-to-accesskit) | The native build can send the semantic tree to AccessKit | active | functional | P3 | sean |
+| [`REQ-A11Y-008`](a11y.md#req-a11y-008--accesskit-gets-the-focus-and-the-live-region-changes) | AccessKit gets the focus and the live-region changes | active | functional | P3 | sean |
 | [`REQ-ASSETS-001`](assets.md#req-assets-001--opening-a-zip-archive-does-not-decompress-it) | Opening a zip archive does not decompress it | active | quality | P1 | agent:SWZ-54 |
 | [`REQ-ASSETS-002`](assets.md#req-assets-002--the-cache-tells-why-opfs-is-missing) | The cache tells why OPFS is missing | active | functional | P2 | agent:SWZ-54 |
 | [`REQ-AUDIO-001`](audio.md#req-audio-001--the-waveform-api-does-not-change) | The waveform API does not change | active | constraint | P1 | agent:SWZ-48 |
 | [`REQ-AUDIO-002`](audio.md#req-audio-002--a-stream-does-not-decode-all-of-its-data) | A stream does not decode all of its data | active | quality | P1 | agent:SWZ-48 |
+| [`REQ-BUILD-001`](build.md#req-build-001--a-dependent-package-builds-an-example-to-wasm-with-no-nested-build) | A dependent package builds an example to wasm with no nested build | active | functional | P2 | agent:SWZ-21 |
+| [`REQ-BUILD-002`](build.md#req-build-002--the-native-examples-cross-compile-to-windows) | The native examples cross-compile to Windows | active | functional | P3 | agent:SWZ-9 |
+| [`REQ-BUILD-003`](build.md#req-build-003--on-windows-the-native-surface-is-the-win32-window) | On Windows, the native surface is the Win32 window | active | functional | P3 | agent:SWZ-9 |
 | [`REQ-CAMERA-001`](camera.md#req-camera-001--the-camera-result-does-not-depend-on-the-frame-rate) | The camera result does not depend on the frame rate | active | quality | P2 | agent:SWZ-43 |
 | [`REQ-CAMERA-002`](camera.md#req-camera-002--the-camera-controller-reads-no-platform-input) | The camera controller reads no platform input | active | constraint | P2 | agent:SWZ-43 |
 | [`REQ-DEMO-001`](demo.md#req-demo-001--each-demo-takes-one-command-line) | Each demo takes one command line | active | functional | P2 | agent:SWZ-79 |
@@ -62,6 +67,8 @@
 | [`REQ-GPU-037`](gpu.md#req-gpu-037--the-web-build-resolves-query-sets-and-copies-buffers) | The web build resolves query sets and copies buffers | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-038`](gpu.md#req-gpu-038--a-buffer-read-does-not-wait-for-the-gpu) | A buffer read does not wait for the GPU | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-039`](gpu.md#req-gpu-039--occlusion-queries-of-boxes-come-back-with-the-tag-of-their-frame) | Occlusion queries of boxes come back with the tag of their frame | active | functional | P2 | agent:SWZ-40 |
+| [`REQ-GPU-040`](gpu.md#req-gpu-040--translucent-quads-draw-in-a-render-pass-of-the-game-with-no-frame-graph) | Translucent quads draw in a render pass of the game with no frame graph | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-GPU-041`](gpu.md#req-gpu-041--particles-and-translucent-quads-draw-in-one-far-to-near-order) | Particles and translucent quads draw in one far-to-near order | active | functional | P3 | agent:SWZ-112 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -114,6 +121,11 @@
 | [`REQ-VOXEL-024`](voxel.md#req-voxel-024--the-demo-draws-only-the-sections-that-the-walk-reaches) | The demo draws only the sections that the walk reaches | active | quality | P2 | agent:SWZ-40 |
 | [`REQ-VOXEL-025`](voxel.md#req-voxel-025--the-occlusion-cull-skips-a-chunk-only-while-its-result-is-correct) | The occlusion cull skips a chunk only while its result is correct | active | quality | P2 | agent:SWZ-40 |
 | [`REQ-VOXEL-026`](voxel.md#req-voxel-026--the-demo-culls-its-entity-boxes-with-the-visible-sections) | The demo culls its entity boxes with the visible sections | active | functional | P3 | agent:SWZ-40 |
+| [`REQ-VOXEL-027`](voxel.md#req-voxel-027--the-mesh-result-carries-the-fluid-quads-after-the-packed-quads) | The mesh result carries the fluid quads after the packed quads | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-028`](voxel.md#req-voxel-028--the-demo-draws-water-in-a-fluid-pass-after-the-opaque-chunks) | The demo draws water in a fluid pass after the opaque chunks | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-029`](voxel.md#req-voxel-029--a-translucent-block-has-faces-with-their-centres-in-world-space) | A translucent block has faces with their centres in world space | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-030`](voxel.md#req-voxel-030--the-mesh-result-carries-the-translucent-quads-and-their-centres) | The mesh result carries the translucent quads and their centres | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-031`](voxel.md#req-voxel-031--the-demo-draws-translucent-blocks-with-sw_render-translucent) | The demo draws translucent blocks with sw_render Translucent | active | functional | P2 | agent:SWZ-112 |
 
 ## Dependency graph
 
@@ -125,10 +137,15 @@ graph TD
   REQ_A11Y_004["REQ-A11Y-004<br/>The mirror is visually hidden"]
   REQ_A11Y_005["REQ-A11Y-005<br/>An unchanged tree is not sent to JS"]
   REQ_A11Y_006["REQ-A11Y-006<br/>Each widget has its ARIA role in the mirror"]
+  REQ_A11Y_007["REQ-A11Y-007<br/>The native build can send the semantic tree to AccessKit"]
+  REQ_A11Y_008["REQ-A11Y-008<br/>AccessKit gets the focus and the live-region changes"]
   REQ_ASSETS_001["REQ-ASSETS-001<br/>Opening a zip archive does not decompress it"]
   REQ_ASSETS_002["REQ-ASSETS-002<br/>The cache tells why OPFS is missing"]
   REQ_AUDIO_001["REQ-AUDIO-001<br/>The waveform API does not change"]
   REQ_AUDIO_002["REQ-AUDIO-002<br/>A stream does not decode all of its data"]
+  REQ_BUILD_001["REQ-BUILD-001<br/>A dependent package builds an example to wasm with no nested build"]
+  REQ_BUILD_002["REQ-BUILD-002<br/>The native examples cross-compile to Windows"]
+  REQ_BUILD_003["REQ-BUILD-003<br/>On Windows, the native surface is the Win32 window"]
   REQ_CAMERA_001["REQ-CAMERA-001<br/>The camera result does not depend on the frame rate"]
   REQ_CAMERA_002["REQ-CAMERA-002<br/>The camera controller reads no platform input"]
   REQ_DEMO_001["REQ-DEMO-001<br/>Each demo takes one command line"]
@@ -176,6 +193,8 @@ graph TD
   REQ_GPU_037["REQ-GPU-037<br/>The web build resolves query sets and copies buffers"]
   REQ_GPU_038["REQ-GPU-038<br/>A buffer read does not wait for the GPU"]
   REQ_GPU_039["REQ-GPU-039<br/>Occlusion queries of boxes come back with the tag of their frame"]
+  REQ_GPU_040["REQ-GPU-040<br/>Translucent quads draw in a render pass of the game with no frame graph"]
+  REQ_GPU_041["REQ-GPU-041<br/>Particles and translucent quads draw in one far-to-near order"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -228,11 +247,17 @@ graph TD
   REQ_VOXEL_024["REQ-VOXEL-024<br/>The demo draws only the sections that the walk reaches"]
   REQ_VOXEL_025["REQ-VOXEL-025<br/>The occlusion cull skips a chunk only while its result is correct"]
   REQ_VOXEL_026["REQ-VOXEL-026<br/>The demo culls its entity boxes with the visible sections"]
+  REQ_VOXEL_027["REQ-VOXEL-027<br/>The mesh result carries the fluid quads after the packed quads"]
+  REQ_VOXEL_028["REQ-VOXEL-028<br/>The demo draws water in a fluid pass after the opaque chunks"]
+  REQ_VOXEL_029["REQ-VOXEL-029<br/>A translucent block has faces with their centres in world space"]
+  REQ_VOXEL_030["REQ-VOXEL-030<br/>The mesh result carries the translucent quads and their centres"]
+  REQ_VOXEL_031["REQ-VOXEL-031<br/>The demo draws translucent blocks with sw_render Translucent"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_005 -->|refines| REQ_A11Y_001
   REQ_A11Y_006 -->|refines| REQ_A11Y_001
+  REQ_A11Y_008 -->|refines| REQ_A11Y_007
   REQ_DEMO_003 -->|depends-on| REQ_DEMO_004
   REQ_DEMO_007 -->|depends-on| REQ_DEMO_004
   REQ_GPU_002 -->|refines| REQ_GPU_001
@@ -261,6 +286,9 @@ graph TD
   REQ_GPU_036 -->|depends-on| REQ_GPU_035
   REQ_GPU_039 -->|depends-on| REQ_GPU_036
   REQ_GPU_039 -->|depends-on| REQ_GPU_038
+  REQ_GPU_040 -->|refines| REQ_GPU_022
+  REQ_GPU_041 -->|refines| REQ_GPU_023
+  REQ_GPU_041 -->|refines| REQ_GPU_024
   REQ_INPUT_009 -->|refines| REQ_INPUT_007
   REQ_JOBS_003 -->|depends-on| REQ_JOBS_002
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
@@ -286,11 +314,19 @@ graph TD
   REQ_VOXEL_024 -->|depends-on| REQ_VOXEL_023
   REQ_VOXEL_025 -->|depends-on| REQ_GPU_039
   REQ_VOXEL_026 -->|depends-on| REQ_VOXEL_020
+  REQ_VOXEL_027 -->|depends-on| REQ_VOXEL_014
+  REQ_VOXEL_028 -->|depends-on| REQ_VOXEL_027
+  REQ_VOXEL_030 -->|depends-on| REQ_VOXEL_029
+  REQ_VOXEL_030 -->|depends-on| REQ_VOXEL_027
+  REQ_VOXEL_031 -->|depends-on| REQ_VOXEL_030
+  REQ_VOXEL_031 -->|depends-on| REQ_GPU_040
+  REQ_VOXEL_031 -->|depends-on| REQ_GPU_023
 ```
 
 ## Derived reverse links
 
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
+- `REQ-A11Y-007` — refined-by REQ-A11Y-008
 - `REQ-DEMO-004` — required-by REQ-DEMO-003, required-by REQ-DEMO-007
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
@@ -302,12 +338,15 @@ graph TD
 - `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
 - `REQ-GPU-016` — refined-by REQ-GPU-018
 - `REQ-GPU-020` — required-by REQ-GPU-031, required-by REQ-GPU-032
-- `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024
+- `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024, refined-by REQ-GPU-040
+- `REQ-GPU-023` — refined-by REQ-GPU-041, required-by REQ-VOXEL-031
+- `REQ-GPU-024` — refined-by REQ-GPU-041
 - `REQ-GPU-030` — required-by REQ-GPU-031, required-by REQ-GPU-033
 - `REQ-GPU-035` — required-by REQ-GPU-036
 - `REQ-GPU-036` — required-by REQ-GPU-039
 - `REQ-GPU-038` — required-by REQ-GPU-039
 - `REQ-GPU-039` — required-by REQ-VOXEL-025
+- `REQ-GPU-040` — required-by REQ-VOXEL-031
 - `REQ-INPUT-007` — refined-by REQ-INPUT-009
 - `REQ-JOBS-002` — required-by REQ-JOBS-003
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
@@ -318,8 +357,11 @@ graph TD
 - `REQ-VOXEL-008` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-009` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
-- `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016
+- `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016, required-by REQ-VOXEL-027
 - `REQ-VOXEL-019` — required-by REQ-VOXEL-020
 - `REQ-VOXEL-020` — required-by REQ-VOXEL-024, required-by REQ-VOXEL-026
 - `REQ-VOXEL-021` — required-by REQ-VOXEL-022
 - `REQ-VOXEL-023` — required-by REQ-VOXEL-024
+- `REQ-VOXEL-027` — required-by REQ-VOXEL-028, required-by REQ-VOXEL-030
+- `REQ-VOXEL-029` — required-by REQ-VOXEL-030
+- `REQ-VOXEL-030` — required-by REQ-VOXEL-031

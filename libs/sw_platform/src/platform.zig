@@ -43,6 +43,31 @@ pub const CursorMode = enum(u8) {
     locked = 2,
 };
 
+/// The native window, for a library that talks to the platform directly,
+/// such as the AccessKit screen-reader backend of sw_ui (REQ-A11Y-007).
+/// The web build and a backend with no window give the default value.
+pub const NativeWindow = struct {
+    pub const Kind = enum { none, cocoa, win32, x11, wayland };
+
+    kind: Kind = .none,
+    /// macOS: the `NSWindow *`. Windows: the `HWND`. Else null.
+    handle: ?*anyopaque = null,
+    /// The window has the keyboard focus.
+    focused: bool = false,
+    /// The position of the client area on the screen, and its size, in the
+    /// units of the window system (points on macOS).
+    x: i32 = 0,
+    y: i32 = 0,
+    w: i32 = 0,
+    h: i32 = 0,
+    /// The size of the window frame on each side. Zero when the platform
+    /// does not tell it.
+    border_top: i32 = 0,
+    border_left: i32 = 0,
+    border_bottom: i32 = 0,
+    border_right: i32 = 0,
+};
+
 /// The DPI scale of a window: its pixels per window unit. `drawable` is the
 /// size in pixels, `logical` is the size in the units of the window system
 /// (points on macOS, CSS pixels on the web). A zero size gives 1.

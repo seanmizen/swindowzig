@@ -14,6 +14,15 @@ const HEADER_LEN = 16;
 const KIND_RESULT = 4;
 const STAGE_MESH = 2;
 
+/**
+ * The offset of the translucent quad centres in a mesh Result: the last
+ * 12 bytes for each translucent quad (body byte 44, REQ-VOXEL-030).
+ */
+export function centersOffset(bytes: Uint8Array): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return bytes.byteLength - view.getUint32(HEADER_LEN + 44, true) * 12;
+}
+
 /** True when `bytes` is a protocol Result of the mesh stage. */
 export function isMeshResult(bytes: Uint8Array): boolean {
   return (
@@ -35,6 +44,11 @@ export interface HeldStats {
   payloadBytes: number;
   /** The part of payloadBytes that was mesh quads. Must stay 0 (C5). */
   meshPayloadBytes: number;
+  /**
+   * Bytes of translucent quad centres that JS wrote into the wasm memory.
+   * Main reads them for the sort (REQ-VOXEL-030). Not in payloadBytes.
+   */
+  centerBytes: number;
   /** GPU writes from held bytes, and their bytes. */
   gpuWrites: number;
   gpuBytes: number;
@@ -50,6 +64,7 @@ export class HeldBytes {
     headBytes: 0,
     payloadBytes: 0,
     meshPayloadBytes: 0,
+    centerBytes: 0,
     gpuWrites: 0,
     gpuBytes: 0,
   };
@@ -96,7 +111,14 @@ export class HeldBytes {
   copyTo(handle: number, offset: number, out: Uint8Array): void {
     const bytes = this.get(handle);
     out.set(bytes.subarray(offset, offset + out.byteLength));
-    if (offset === 0) {
+    if (
+      offset > 0 &&
+      isMeshResult(bytes) &&
+      offset >= centersOffset(bytes) &&
+      offset + out.byteLength <= bytes.byteLength
+    ) {
+      this.stats.centerBytes += out.byteLength;
+    } else if (offset === 0) {
       this.stats.headBytes += out.byteLength;
     } else {
       this.stats.payloadBytes += out.byteLength;

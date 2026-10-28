@@ -49,6 +49,54 @@ pub const Options = struct {
     ring_capacity: u32 = 64 * 1024,
 };
 
+/// The frame uniforms (`sw_frame` of the WGSL prefix) with no frame graph:
+/// the buffer, the layout and the bind group of group 0. A game that has
+/// its own render pass uses it to draw a pass object of sw_render in that
+/// pass, for example `translucent.Pipeline` (REQ-GPU-040). `FrameGraph`
+/// makes one too.
+pub const FrameBinding = struct {
+    layout: gpu_mod.BindGroupLayout,
+    buffer: gpu_mod.Buffer,
+    bind_group: gpu_mod.BindGroup,
+
+    pub fn init(gpu: *gpu_mod.GPU) !FrameBinding {
+        var buffer = try gpu.createBuffer(.{
+            .label = "sw_render frame uniforms",
+            .size = @sizeOf(wgsl.FrameUniforms),
+            .usage = .{ .uniform = true, .copy_dst = true },
+        });
+        errdefer buffer.destroy();
+        var layout = try gpu.createBindGroupLayout(.{
+            .entries = &[_]gpu_mod.BindGroupLayoutEntry{.{
+                .binding = wgsl.frame_binding,
+                .visibility = .{ .vertex = true, .fragment = true },
+                .buffer = .{ .type = .uniform, .min_binding_size = @sizeOf(wgsl.FrameUniforms) },
+            }},
+        });
+        const bind_group = try gpu.createBindGroup(.{
+            .layout = &layout,
+            .entries = &[_]gpu_mod.BindGroupEntry{.{
+                .binding = wgsl.frame_binding,
+                .buffer = &buffer,
+                .size = @sizeOf(wgsl.FrameUniforms),
+            }},
+        });
+        return .{ .layout = layout, .buffer = buffer, .bind_group = bind_group };
+    }
+
+    /// Write the uniforms of this frame. Call it before the submit of the
+    /// pass that reads them.
+    pub fn write(self: *const FrameBinding, gpu: *gpu_mod.GPU, frame: wgsl.FrameUniforms) void {
+        gpu.writeBuffer(self.buffer, 0, std.mem.asBytes(&frame));
+    }
+
+    pub fn deinit(self: *FrameBinding) void {
+        self.bind_group.release();
+        self.buffer.destroy();
+        self.* = undefined;
+    }
+};
+
 /// The type-erased function of a pass.
 pub const Callback = struct {
     user: ?*anyopaque,
@@ -164,35 +212,15 @@ pub const FrameGraph = struct {
     timer: ?*gpu_timing.PassTimer = null,
 
     pub fn init(allocator: std.mem.Allocator, gpu: *gpu_mod.GPU, options: Options) !FrameGraph {
-        var frame_buffer = try gpu.createBuffer(.{
-            .label = "sw_render frame uniforms",
-            .size = @sizeOf(wgsl.FrameUniforms),
-            .usage = .{ .uniform = true, .copy_dst = true },
-        });
-        errdefer frame_buffer.destroy();
-        var frame_layout = try gpu.createBindGroupLayout(.{
-            .entries = &[_]gpu_mod.BindGroupLayoutEntry{.{
-                .binding = wgsl.frame_binding,
-                .visibility = .{ .vertex = true, .fragment = true },
-                .buffer = .{ .type = .uniform, .min_binding_size = @sizeOf(wgsl.FrameUniforms) },
-            }},
-        });
-        const frame_bind_group = try gpu.createBindGroup(.{
-            .layout = &frame_layout,
-            .entries = &[_]gpu_mod.BindGroupEntry{.{
-                .binding = wgsl.frame_binding,
-                .buffer = &frame_buffer,
-                .size = @sizeOf(wgsl.FrameUniforms),
-            }},
-        });
-        errdefer frame_bind_group.release();
+        var binding = try FrameBinding.init(gpu);
+        errdefer binding.deinit();
         const ring = try ring_mod.UniformRing.init(allocator, gpu, options.ring_capacity);
         return .{
             .gpu = gpu,
             .options = options,
-            .frame_layout = frame_layout,
-            .frame_bind_group = frame_bind_group,
-            .frame_buffer = frame_buffer,
+            .frame_layout = binding.layout,
+            .frame_bind_group = binding.bind_group,
+            .frame_buffer = binding.buffer,
             .ring = ring,
             .uploads = .init(allocator),
         };

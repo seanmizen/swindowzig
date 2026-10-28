@@ -6,6 +6,7 @@ const platform = @import("platform.zig");
 const WindowInfo = platform.WindowInfo;
 const WindowMode = platform.WindowMode;
 const CursorMode = platform.CursorMode;
+const NativeWindow = platform.NativeWindow;
 
 /// Backend interface that all platforms must implement
 pub const Backend = struct {
@@ -31,6 +32,7 @@ pub const Backend = struct {
         requestClipboardText: *const fn (ptr: *anyopaque) void = defaults.requestClipboardText,
         clipboardText: *const fn (ptr: *anyopaque) []const u8 = defaults.clipboardText,
         setPasteAsText: *const fn (ptr: *anyopaque, on: bool) void = defaults.setPasteAsText,
+        getNativeWindow: *const fn (ptr: *anyopaque) NativeWindow = defaults.getNativeWindow,
     };
 
     const defaults = struct {
@@ -48,6 +50,9 @@ pub const Backend = struct {
             return "";
         }
         fn setPasteAsText(_: *anyopaque, _: bool) void {}
+        fn getNativeWindow(_: *anyopaque) NativeWindow {
+            return .{};
+        }
     };
 
     pub fn init(self: Backend) !void {
@@ -129,5 +134,10 @@ pub const Backend = struct {
     /// only the `clipboard` event of kind `paste`.
     pub fn setPasteAsText(self: Backend, on: bool) void {
         self.vtable.setPasteAsText(self.ptr, on);
+    }
+
+    /// The native window handle, its focus and its place on the screen.
+    pub fn getNativeWindow(self: Backend) NativeWindow {
+        return self.vtable.getNativeWindow(self.ptr);
     }
 };

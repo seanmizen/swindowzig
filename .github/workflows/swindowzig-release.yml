@@ -75,6 +75,9 @@ jobs:
               exe.root_module.addImport("sw_app", swindowzig.module("sw_app"));
               exe.rdynamic = true;
               b.installArtifact(exe);
+              // A dependent package builds an example to wasm (REQ-BUILD-001).
+              const web = @import("swindowzig").addWebExample(b, swindowzig, .{ .example = "windows", .optimize = optimize });
+              b.installArtifact(web.app);
           }
           ZIG
           cat > main.zig <<'ZIG'
@@ -100,6 +103,7 @@ jobs:
           cat build.zig.zon
           zig build --summary all
           test -s zig-out/bin/consumer.wasm
+          test -s zig-out/bin/app.wasm
 
       - name: Keep the archive
         uses: actions/upload-artifact@v4

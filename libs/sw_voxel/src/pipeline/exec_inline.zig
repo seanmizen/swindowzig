@@ -113,12 +113,14 @@ pub fn resultOf(allocator: std.mem.Allocator, st: Started, reply: []u8, owner: s
 /// quad bytes. Main reads only the counts (C5). The Result takes `bytes`.
 pub fn meshResult(st: Started, info: protocol.ResultInfo, bytes: MeshBytes) Result {
     std.debug.assert(info.head.stage == .mesh);
-    std.debug.assert(bytes.quadBytesLen() == info.payload_len);
+    std.debug.assert(bytes.payloadLen() == info.payload_len);
     return .{
         .started = st,
         .output = .{ .mesh = .{
             .info = .{
                 .quad_count = info.quad_count,
+                .fluid_quad_count = info.head.fluid_quads,
+                .translucent_quad_count = info.head.translucent_quads,
                 .y_min = info.head.y_min,
                 .y_max = info.head.y_max,
                 .hash = info.head.mesh_hash,

@@ -53,7 +53,9 @@ pub fn Raycast(comptime Vec3Type: type, comptime ChunkType: type) type {
             while (iterations < 150 and distance < max_distance) : (iterations += 1) {
                 // Check current voxel (getBlock returns .air for out-of-bounds)
                 const block = chunk.getBlock(voxel_x, voxel_y, voxel_z);
-                if (block != .air) {
+                // The ray goes through water: the player digs and places
+                // through it.
+                if (block != .air and block != .water) {
                     return .{
                         .hit = true,
                         .block_pos = Vec3.init(@floatFromInt(voxel_x), @floatFromInt(voxel_y), @floatFromInt(voxel_z)),

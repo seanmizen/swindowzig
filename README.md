@@ -94,6 +94,32 @@ On WSL, `which bun` must show `~/.bun/bin/bun`. A Windows bun on the PATH
 export PATH="$HOME/.bun/bin:$PATH"
 ```
 
+**Windows (cross-compiled from Linux or WSL):**
+
+WSL has no Vulkan driver for the GPU, so a Linux build in WSL uses lavapipe
+(the CPU). A Windows `.exe` uses D3D12 or Vulkan on the GPU. Zig
+cross-compiles it from Linux to `x86_64-windows-gnu`:
+
+```bash
+yarn voxel:windows   # build zig-out/bin/voxel.exe, then start it (WSL only)
+```
+
+`scripts/windows-deps.sh` downloads the Windows files to `~/.local/windows`:
+SDL2 2.32.10 (MinGW development files) and wgpu-native v22.1.0.5
+(`x86_64-gnu`). `yarn voxel:windows` runs it first. The build copies
+`SDL2.dll` and `wgpu_native.dll` next to `voxel.exe` in `zig-out/bin`. In
+WSL, the script copies the three files to `%TEMP%\swindowzig-voxel` and
+starts `voxel.exe` there. Outside WSL, it only builds. To build another
+example, or to use another folder:
+
+```bash
+./scripts/windows-deps.sh <dir>
+zig build native -Dexample=<name> -Dtarget=x86_64-windows-gnu -Dwindows-deps=<dir>
+```
+
+The log line `sw_gpu: adapter "<name>" backend=<backend> type=<type>` names
+the GPU. On Windows, the backend is `d3d12` or `vulkan`.
+
 **macOS (arm64):**
 ```bash
 brew install sdl2
@@ -204,6 +230,33 @@ The package exports `sw_core`, `sw_platform`, `sw_gpu`, `sw_audio`, `sw_math`,
 ```zig
 const swindowzig = b.dependency("swindowzig", .{ .platform = .native });
 ```
+
+### Build an example to wasm from a dependent package
+
+`addWebExample` in the `build.zig` of swindowzig builds one example to
+wasm32-freestanding. It gives the same artifacts as `zig build web` in this
+repo: `app.wasm`, and `chunks.wasm` for `voxel` (`chunks` is null for the
+other examples). The build runs in the build of the dependent package. It
+starts no second `zig build`.
+
+```zig
+// build.zig of the dependent package
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const optimize = b.standardOptimizeOption(.{});
+    const sw = b.dependency("swindowzig", .{});
+    const web = @import("swindowzig").addWebExample(b, sw, .{
+        .example = "voxel",
+        .optimize = optimize,
+    });
+    b.installArtifact(web.app); // zig-out/bin/app.wasm
+    if (web.chunks) |chunks| b.installArtifact(chunks); // zig-out/bin/chunks.wasm
+}
+```
+
+The sources come from the dependency, so `--fork` (below) builds the
+example from the local checkout.
 
 ### Local engine work
 

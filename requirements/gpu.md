@@ -573,7 +573,8 @@ Textures, samplers and other resources of `sw_gpu`.
     face the camera and go from far to near (REQ-GPU-024)"
   - Demonstration — `models --check` (native, in CI) gives two particles,
     near particle first. The pixel through them has the CPU blend of the
-    far particle, then the near particle, and the pass uses one draw call.
+    far particle, then the near particle. The particles draw through
+    `SortedBlend` (REQ-GPU-041), with one draw call for each run.
 - **Relations:** depends-on REQ-GPU-022
 
 ## REQ-GPU-025 — A full particle system drops its oldest particle
@@ -912,3 +913,60 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Relations:**
   - depends-on REQ-GPU-036
   - depends-on REQ-GPU-038
+
+## REQ-GPU-040 — Translucent quads draw in a render pass of the game with no frame graph
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The sw_render `TranslucentPipeline` shall draw the quads
+  of a `TranslucentBatch` far to near in a render pass of the game, with
+  the frame uniforms of a `FrameBinding`.
+- **Rationale:** A game with its own scene pass, for example the voxel
+  demo, has many sets of translucent quads: one for each chunk. Each
+  batch has its own buffers and its own sort. The game can write the
+  vertices to the batch buffer from bytes that it does not hold, and give
+  only the centres (`setCenters`). The pipeline takes the sample count of
+  the pass (MSAA). `Translucent` with a frame graph does not change.
+- **Verification:**
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: the
+    sort puts the furthest quad first, and ties keep their order
+    (REQ-GPU-023)"
+  - Demonstration — the `glass_blocks` golden of the voxel demo
+    (`examples/voxel/scripts/run_headless_regressions.sh`, lavapipe, in
+    CI) draws two batches in the scene pass of the demo.
+- **Relations:** refines REQ-GPU-022
+
+## REQ-GPU-041 — Particles and translucent quads draw in one far-to-near order
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When a game draws a `Translucent` and a `Particles`
+  through a `SortedBlend`, sw_render shall draw their quads in one order
+  from far to near, so that a translucent quad blends over a particle
+  behind it.
+- **Rationale:** Two passes in a row draw each particle over each
+  translucent quad, also a particle behind the quad. Each object already
+  sorts its own quads. `blend_plan.mergeRuns` merges the two sorted lists
+  by the distance from the camera into runs of one kind, and one pass
+  draws the runs with the pipeline of each kind. The particles of a run
+  draw in one draw call. `Translucent` and `Particles` keep their API and
+  their own passes for a game with no blend.
+- **Verification:**
+  - Test — `libs/sw_render/src/blend_plan.zig` › "blend: a particle behind
+    a translucent quad draws before it (REQ-GPU-041)"
+  - Test — `libs/sw_render/src/blend_plan.zig` › "blend: the runs keep the
+    order of each kind and join neighbours of one kind (REQ-GPU-041)"
+  - Demonstration — `models --check` (native, in CI) puts a yellow
+    particle behind the red and the blue translucent quads. The pixel
+    through them has the CPU blend of the particle, then the red quad,
+    then the blue quad. With the two passes of the objects, the check
+    fails.
+- **Relations:**
+  - refines REQ-GPU-023
+  - refines REQ-GPU-024
