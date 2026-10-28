@@ -36,6 +36,15 @@ pub fn build(b: *std.Build) void {
         "Which example to build (default: windows)",
     ) orelse "justabox";
 
+    // A showcase demo in demos/<name>/ (REQ-DEMO-001). It takes the place of
+    // the example: zig build run -Ddemo=cow, zig build web -Ddemo=cow.
+    const demo_name = b.option(
+        []const u8,
+        "demo",
+        "Which demo in demos/ to build. It takes the place of -Dexample",
+    );
+    const program_name = demo_name orelse example_name;
+
     // Which platform the exported modules (sw_app, sw_platform, ...) use. A
     // dependent package gets web by default: no SDL, no system libraries.
     const platform = b.option(
@@ -73,6 +82,7 @@ pub fn build(b: *std.Build) void {
 
     // Construct path to example (try src/main.zig first, then main.zig)
     const example_path = blk: {
+        if (demo_name) |d| break :blk b.fmt("demos/{s}/main.zig", .{d});
         const src_path = b.fmt("examples/{s}/src/main.zig", .{example_name});
         const root_path = b.fmt("examples/{s}/main.zig", .{example_name});
 
@@ -105,6 +115,8 @@ pub fn build(b: *std.Build) void {
     // (e.g. voxel, which constructs a WasmBackend directly in its
     // swindowzig_init export).
     example.root_module.addImport("sw_platform", web_libs.platform);
+    // The shared frame of the demos (demos/common).
+    example.root_module.addImport("demo_common", addDemoCommon(b, web_libs, .{}));
     // The voxel demo: sw_voxel with the demo content (examples/voxel/content.zig).
     const web_voxel = addVoxel(b, web_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
     example.root_module.addImport("sw_voxel", web_voxel.voxel);
@@ -149,10 +161,10 @@ pub fn build(b: *std.Build) void {
     const install_chunks = b.addInstallArtifact(chunks_wasm, .{});
 
     // Web build step. The voxel web build also installs chunks.wasm.
-    const web_step_desc = b.fmt("Build '{s}' example for web (WASM)", .{example_name});
+    const web_step_desc = b.fmt("Build '{s}' for web (WASM)", .{program_name});
     const web_step = b.step("web", web_step_desc);
     web_step.dependOn(&install_example.step);
-    if (std.mem.eql(u8, example_name, "voxel")) web_step.dependOn(&install_chunks.step);
+    if (demo_name == null and std.mem.eql(u8, example_name, "voxel")) web_step.dependOn(&install_chunks.step);
 
     // Native executable (for SDL2/desktop). This step translates the SDL2
     // headers and gives them to sw_platform as the "sdl" module.
@@ -165,7 +177,7 @@ pub fn build(b: *std.Build) void {
     const native_libs = if (platform == .native) exported else addLibs(b, sdl_c.createModule(), false);
 
     const native_exe = b.addExecutable(.{
-        .name = b.fmt("{s}", .{example_name}),
+        .name = b.fmt("{s}", .{program_name}),
         .root_module = b.createModule(.{
             .root_source_file = b.path(example_path),
             .target = target,
@@ -182,6 +194,7 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
     native_exe.root_module.addImport("sw_render", native_libs.render);
     native_exe.root_module.addOptions("chunk_build", chunk_build);
+    native_exe.root_module.addImport("demo_common", addDemoCommon(b, native_libs, .{}));
     const native_voxel = addVoxel(b, native_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
     native_exe.root_module.addImport("sw_voxel", native_voxel.voxel);
     native_exe.root_module.addImport("voxel_content", native_voxel.content);
@@ -218,7 +231,7 @@ pub fn build(b: *std.Build) void {
     const install_native = b.addInstallArtifact(native_exe, .{});
 
     // Native build step
-    const native_step_desc = b.fmt("Build '{s}' example for native", .{example_name});
+    const native_step_desc = b.fmt("Build '{s}' for native", .{program_name});
     const native_step = b.step("native", native_step_desc);
     native_step.dependOn(&install_native.step);
 
@@ -227,7 +240,7 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(&install_native.step);
     run_cmd.addPassthruArgs();
 
-    const run_step_desc = b.fmt("Run '{s}' example natively", .{example_name});
+    const run_step_desc = b.fmt("Run '{s}' natively", .{program_name});
     const run_step = b.step("run", run_step_desc);
     run_step.dependOn(&run_cmd.step);
 
@@ -279,6 +292,14 @@ pub fn build(b: *std.Build) void {
         "libs/sw_render/src/animation.zig",
         // sw_math: vectors, matrices, quaternions, boxes, rays and planes.
         "libs/sw_math/src/math_root.zig",
+        // The demos: the command line, the script, the frame hashes, the
+        // settings by name, the voxel mesher and the cow model (no GPU).
+        "demos/common/cli.zig",
+        "demos/common/script.zig",
+        "demos/common/hashes.zig",
+        "demos/common/reflect.zig",
+        "demos/common/voxel_mesh.zig",
+        "demos/common/cow_model.zig",
     };
 
     // sw_assets: byte loading and PNG decoding. The PNG decoder is C
@@ -857,6 +878,23 @@ fn addVoxel(
 fn addVoxelDemo(module: *std.Build.Module, demo: VoxelModules) void {
     module.addImport("sw_voxel", demo.voxel);
     module.addImport("voxel_content", demo.content);
+}
+
+/// The shared frame of the demos (demos/common/demo.zig), with the
+/// library modules of one platform, and the overlay font.
+fn addDemoCommon(b: *std.Build, libs: Libs, options: std.Build.Module.CreateOptions) *std.Build.Module {
+    var o = options;
+    o.root_source_file = b.path("demos/common/demo.zig");
+    const m = b.createModule(o);
+    m.addImport("sw_app", libs.app);
+    m.addImport("sw_core", libs.core);
+    m.addImport("sw_gpu", libs.gpu);
+    m.addImport("sw_math", libs.math);
+    m.addImport("sw_gfx2d", libs.gfx2d);
+    m.addImport("sw_text", libs.text);
+    m.addImport("sw_render", libs.render);
+    m.addAnonymousImport("demo_font", .{ .root_source_file = b.path("examples/flat2d/assets/Lato-Regular.ttf") });
+    return m;
 }
 
 /// Compile stb_image (libs/sw_assets/c) into `module`. The shim headers stand

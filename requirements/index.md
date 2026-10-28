@@ -17,6 +17,13 @@
 | [`REQ-AUDIO-002`](audio.md#req-audio-002--a-stream-does-not-decode-all-of-its-data) | A stream does not decode all of its data | active | quality | P1 | agent:SWZ-48 |
 | [`REQ-CAMERA-001`](camera.md#req-camera-001--the-camera-result-does-not-depend-on-the-frame-rate) | The camera result does not depend on the frame rate | active | quality | P2 | agent:SWZ-43 |
 | [`REQ-CAMERA-002`](camera.md#req-camera-002--the-camera-controller-reads-no-platform-input) | The camera controller reads no platform input | active | constraint | P2 | agent:SWZ-43 |
+| [`REQ-DEMO-001`](demo.md#req-demo-001--each-demo-takes-one-command-line) | Each demo takes one command line | active | functional | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-002`](demo.md#req-demo-002--a-script-changes-the-demo-on-the-fixed-timestep) | A script changes the demo on the fixed timestep | active | functional | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-003`](demo.md#req-demo-003--ci-compares-the-frame-hashes-of-each-demo-script) | CI compares the frame hashes of each demo script | active | quality | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-004`](demo.md#req-demo-004--capture-and-check-runs-do-not-read-the-wall-clock) | Capture and check runs do not read the wall clock | active | constraint | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-005`](demo.md#req-demo-005--the-cow-is-an-original-voxel-model) | The cow is an original voxel model | active | constraint | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-006`](demo.md#req-demo-006--greedy-meshing-merges-only-faces-that-shade-the-same) | Greedy meshing merges only faces that shade the same | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-007`](demo.md#req-demo-007--the-record-script-makes-a-video-and-a-loop-for-each-run) | The record script makes a video and a loop for each run | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -124,6 +131,13 @@ graph TD
   REQ_AUDIO_002["REQ-AUDIO-002<br/>A stream does not decode all of its data"]
   REQ_CAMERA_001["REQ-CAMERA-001<br/>The camera result does not depend on the frame rate"]
   REQ_CAMERA_002["REQ-CAMERA-002<br/>The camera controller reads no platform input"]
+  REQ_DEMO_001["REQ-DEMO-001<br/>Each demo takes one command line"]
+  REQ_DEMO_002["REQ-DEMO-002<br/>A script changes the demo on the fixed timestep"]
+  REQ_DEMO_003["REQ-DEMO-003<br/>CI compares the frame hashes of each demo script"]
+  REQ_DEMO_004["REQ-DEMO-004<br/>Capture and check runs do not read the wall clock"]
+  REQ_DEMO_005["REQ-DEMO-005<br/>The cow is an original voxel model"]
+  REQ_DEMO_006["REQ-DEMO-006<br/>Greedy meshing merges only faces that shade the same"]
+  REQ_DEMO_007["REQ-DEMO-007<br/>The record script makes a video and a loop for each run"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
@@ -219,6 +233,8 @@ graph TD
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_005 -->|refines| REQ_A11Y_001
   REQ_A11Y_006 -->|refines| REQ_A11Y_001
+  REQ_DEMO_003 -->|depends-on| REQ_DEMO_004
+  REQ_DEMO_007 -->|depends-on| REQ_DEMO_004
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
@@ -275,6 +291,7 @@ graph TD
 ## Derived reverse links
 
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
+- `REQ-DEMO-004` — required-by REQ-DEMO-003, required-by REQ-DEMO-007
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
