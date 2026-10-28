@@ -55,9 +55,9 @@ export function requestPointerLockSafe(
 
 type FullscreenDocument = {
   documentElement: {
-    requestFullscreen?: (options?: {
-      navigationUI?: string;
-    }) => Promise<void> | undefined;
+    requestFullscreen?: (
+      options?: FullscreenOptions,
+    ) => Promise<void> | undefined;
     webkitRequestFullscreen?: () => void;
   };
   fullscreenElement?: Element | null;

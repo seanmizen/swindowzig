@@ -116,6 +116,24 @@ jobs:
       - name: Native build
         run: zig build native -Dexample=voxel
 
+      - name: Each voxel TAS script runs headless
+        # A TAS script that does not parse stops voxel with an error. Each
+        # script in examples/voxel/tests/ runs on the flatland world and
+        # must exit 0. The goldens and cave_cull.sh compare frames of some
+        # of these scripts. This step catches the other scripts.
+        run: |
+          status=0
+          for tas in examples/voxel/tests/*.tas; do
+            if timeout 200 ./zig-out/bin/voxel --headless --world=flatland --tas "$tas" > "$RUNNER_TEMP/tas.log" 2>&1; then
+              echo "PASS $tas"
+            else
+              echo "FAIL $tas (exit $?)"
+              tail -n 20 "$RUNNER_TEMP/tas.log"
+              status=1
+            fi
+          done
+          exit $status
+
       - name: Web and native build of the 2D example (flat2d)
         run: |
           zig build web -Dexample=flat2d
@@ -172,15 +190,23 @@ jobs:
           zig build native -Dexample=models
           ./zig-out/bin/models --check
 
-      - name: Screen-reader mirror in Chromium (flat2d)
+      - name: Install the Node packages
+        run: yarn install --immutable
+
+      - name: Type check of backends/wasm
+        run: yarn typecheck:web
+
+      - name: Browser tests in Chromium (flat2d and canvas)
         # Playwright opens flat2d with WebGPU, moves the focus with Tab, and
         # reads the accessibility tree (REQ-A11Y-001). Chromium uses its own
         # SwiftShader Vulkan driver. VK_LOADER_DRIVERS_SELECT='*lvp*' hides
         # that driver and gives no WebGPU adapter, so this step removes it.
+        # The flat2d tests run 10 times with no retry. A flaky test then
+        # fails the step (REQ-INPUT-007).
         run: |
-          yarn install --immutable
           yarn playwright install --with-deps --only-shell chromium
-          env -u VK_LOADER_DRIVERS_SELECT yarn test:a11y
+          env -u VK_LOADER_DRIVERS_SELECT yarn test:browser --project canvas
+          env -u VK_LOADER_DRIVERS_SELECT yarn test:browser --project flat2d --repeat-each=10 --retries=0
 
       - name: Compare with the goldens
         # The step takes about 1.5 minutes. The script stops a run after
@@ -188,16 +214,23 @@ jobs:
         # stops a hang outside the runs. On 2026-10-27 a job stopped at the
         # 30-minute job limit 21 s into this step. The apt and Playwright
         # installs used 25 minutes of the job. No golden run was hung.
+        id: goldens
         timeout-minutes: 10
         run: ./examples/voxel/scripts/run_headless_regressions.sh --out "$RUNNER_TEMP/frames"
 
+      - name: Cave cull, section cull and occlusion cull
+        # Each cull must give the same frame as the frustum cull only
+        # (REQ-VOXEL-020, REQ-VOXEL-024, REQ-VOXEL-025).
+        timeout-minutes: 15
+        run: ./examples/voxel/tests/cave_cull.sh --skip-build
+
       - name: Make new goldens
-        if: failure()
+        if: failure() && steps.goldens.outcome == 'failure'
         timeout-minutes: 10
         run: ./examples/voxel/scripts/run_headless_regressions.sh --update --out "$RUNNER_TEMP/frames/update"
 
       - name: Upload the new goldens
-        if: failure()
+        if: failure() && steps.goldens.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: voxel-lavapipe-goldens
@@ -205,7 +238,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload the frames and logs
-        if: failure()
+        if: failure() && steps.goldens.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: voxel-frames
@@ -213,7 +246,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: How to accept a deliberate visual change
-        if: failure()
+        if: failure() && steps.goldens.outcome == 'failure'
         run: |
           echo "If the change to the frames is deliberate, run this from the repo root and commit the result:"
           echo

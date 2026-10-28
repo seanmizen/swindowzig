@@ -161,7 +161,7 @@ export function createWebSocketImports(
       return ev.kind;
     },
 
-    swNetTake: (id: number, dst: number): void => {
+    swNetTake: (id: number, dst: number): undefined => {
       const ev = sockets.get(id)?.events.shift();
       if (ev?.kind === EV_MESSAGE && dst !== 0 && ev.data.length > 0) {
         bytes(dst, ev.data.length).set(ev.data);
@@ -173,7 +173,7 @@ export function createWebSocketImports(
       code: number,
       reasonPtr: number,
       reasonLen: number,
-    ): void => {
+    ): undefined => {
       const ws = sockets.get(id)?.ws;
       if (!ws) return;
       try {
@@ -184,7 +184,7 @@ export function createWebSocketImports(
       }
     },
 
-    swNetFree: (id: number): void => {
+    swNetFree: (id: number): undefined => {
       const sock = sockets.get(id);
       if (!sock) return;
       sockets.delete(id);
