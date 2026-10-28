@@ -35,7 +35,6 @@
 //! in-process WorkerWorlds. The Bun tests (backends/wasm/worker-pool.test.ts)
 //! run it with real Web Workers.
 const std = @import("std");
-const builtin = @import("builtin");
 const stages = @import("stages.zig");
 const protocol = @import("protocol.zig");
 const scheduler_mod = @import("scheduler.zig");
@@ -43,6 +42,7 @@ const exec_inline = @import("exec_inline.zig");
 const world_mod = @import("../world.zig");
 const content = @import("../content.zig");
 const mesh_bytes = @import("mesh_bytes.zig");
+const jobs = @import("sw_jobs");
 
 const Scheduler = scheduler_mod.Scheduler;
 const Started = scheduler_mod.Started;
@@ -73,64 +73,11 @@ pub fn depthFor(frame_ns: u64, job_ns: u64) usize {
     return @intCast(std.math.clamp(n + 1, JOBS_PER_WORKER, MAX_DEPTH));
 }
 
-/// The link from main to the worker pool. Each message is protocol bytes.
-/// The transport copies the bytes that main sends: the caller keeps them.
-/// The transport holds each result that main takes, until main releases it
-/// (C5).
-pub const Transport = struct {
-    ptr: *anyopaque,
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        /// The number of worker slots. It does not change.
-        slots: *const fn (ptr: *anyopaque) usize,
-        /// True when the worker in `slot` runs and can take jobs.
-        alive: *const fn (ptr: *anyopaque, slot: usize) bool,
-        /// Send a Job to the worker in `slot`. False when the message did
-        /// not go.
-        post: *const fn (ptr: *anyopaque, slot: usize, msg: []const u8) bool,
-        /// Send a Hello or an Edit to each worker. The pool keeps it, for a
-        /// worker that starts again.
-        broadcast: *const fn (ptr: *anyopaque, msg: []const u8) bool,
-        /// The length of the next result in the queue, or 0.
-        nextLen: *const fn (ptr: *anyopaque) usize,
-        /// Remove the next result from the queue, and hold it. Copy its
-        /// first `head.len` bytes into `head`. Returns the handle of the
-        /// held result, never 0.
-        takeHead: *const fn (ptr: *anyopaque, head: []u8) u32,
-        /// Read and release a held result.
-        held: mesh_bytes.Store.VTable,
-    };
-
-    pub fn slots(self: Transport) usize {
-        return self.vtable.slots(self.ptr);
-    }
-    pub fn alive(self: Transport, slot: usize) bool {
-        return self.vtable.alive(self.ptr, slot);
-    }
-    pub fn post(self: Transport, slot: usize, msg: []const u8) bool {
-        return self.vtable.post(self.ptr, slot, msg);
-    }
-    pub fn broadcast(self: Transport, msg: []const u8) bool {
-        return self.vtable.broadcast(self.ptr, msg);
-    }
-    pub fn nextLen(self: Transport) usize {
-        return self.vtable.nextLen(self.ptr);
-    }
-    pub fn takeHead(self: Transport, head: []u8) u32 {
-        return self.vtable.takeHead(self.ptr, head);
-    }
-    /// The store of the held results, for the mesh bytes (C5).
-    pub fn store(self: Transport) mesh_bytes.Store {
-        return .{ .ptr = self.ptr, .vtable = &self.vtable.held };
-    }
-    pub fn read(self: Transport, handle: u32, offset: usize, out: []u8) void {
-        self.vtable.held.read(self.ptr, handle, offset, out);
-    }
-    pub fn release(self: Transport, handle: u32) void {
-        self.vtable.held.release(self.ptr, handle);
-    }
-};
+/// The link from main to the worker pool (sw_jobs). Each message is
+/// protocol bytes. The transport copies the bytes that main sends: the
+/// caller keeps them. The transport holds each result that main takes,
+/// until main releases it (C5).
+pub const Transport = jobs.Transport;
 
 const InFlight = struct {
     started: Started,
@@ -385,62 +332,8 @@ pub const Web = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// The transport of the web build: imports from backends/wasm/worker-pool.ts
-// ---------------------------------------------------------------------------
-
-/// The JS imports (module "chunks"). worker-pool.ts has the other side.
-/// Without a pool, `jsChunkSlots` returns 0.
-const js = struct {
-    extern "chunks" fn jsChunkSlots() u32;
-    extern "chunks" fn jsChunkAlive(slot: u32) u32;
-    extern "chunks" fn jsChunkPost(slot: u32, ptr: [*]const u8, len: u32) u32;
-    extern "chunks" fn jsChunkBroadcast(ptr: [*]const u8, len: u32) u32;
-    extern "chunks" fn jsChunkNextLen() u32;
-    extern "chunks" fn jsChunkTakeHead(ptr: [*]u8, len: u32) u32;
-    extern "chunks" fn jsChunkRead(handle: u32, offset: u32, ptr: [*]u8, len: u32) void;
-    extern "chunks" fn jsChunkRelease(handle: u32) void;
-};
-
-fn webSlots(_: *anyopaque) usize {
-    return js.jsChunkSlots();
-}
-fn webAlive(_: *anyopaque, slot: usize) bool {
-    return js.jsChunkAlive(@intCast(slot)) != 0;
-}
-fn webPost(_: *anyopaque, slot: usize, msg: []const u8) bool {
-    return js.jsChunkPost(@intCast(slot), msg.ptr, @intCast(msg.len)) != 0;
-}
-fn webBroadcast(_: *anyopaque, msg: []const u8) bool {
-    return js.jsChunkBroadcast(msg.ptr, @intCast(msg.len)) != 0;
-}
-fn webNextLen(_: *anyopaque) usize {
-    return js.jsChunkNextLen();
-}
-fn webTakeHead(_: *anyopaque, head: []u8) u32 {
-    return js.jsChunkTakeHead(head.ptr, @intCast(head.len));
-}
-fn webRead(_: *anyopaque, handle: u32, offset: usize, out: []u8) void {
-    js.jsChunkRead(handle, @intCast(offset), out.ptr, @intCast(out.len));
-}
-fn webRelease(_: *anyopaque, handle: u32) void {
-    js.jsChunkRelease(handle);
-}
-
-var web_dummy: u8 = 0;
-const web_vtable: Transport.VTable = .{
-    .slots = webSlots,
-    .alive = webAlive,
-    .post = webPost,
-    .broadcast = webBroadcast,
-    .nextLen = webNextLen,
-    .takeHead = webTakeHead,
-    .held = .{ .read = webRead, .release = webRelease },
-};
-
-/// The transport of the web build: the JS worker pool. Only app.wasm uses
-/// it.
+/// The transport of the web build: the JS worker pool (sw_jobs). Only
+/// app.wasm uses it.
 pub fn webTransport() Transport {
-    comptime std.debug.assert(builtin.cpu.arch == .wasm32);
-    return .{ .ptr = &web_dummy, .vtable = &web_vtable };
+    return jobs.webTransport();
 }

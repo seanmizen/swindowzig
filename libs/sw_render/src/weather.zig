@@ -33,6 +33,7 @@ const frame_graph = @import("frame_graph.zig");
 const layout = @import("layout.zig");
 const plan = @import("plan.zig");
 const weather_plan = @import("weather_plan.zig");
+const post_mod = @import("post.zig");
 
 const FrameGraph = frame_graph.FrameGraph;
 const Pass = frame_graph.Pass;
@@ -254,6 +255,8 @@ pub const Clouds = struct {
     /// The game can change the settings at any time. `update` reads them.
     settings: CloudSettings,
     runner: *Runner,
+    /// The cloud shadow effect of `addShadowEffect`.
+    shadow_effect: ?struct { post: *post_mod.PostChain, id: post_mod.EffectId } = null,
 
     /// Add the cloud pass on `target` to `graph`. The graph must stay at
     /// its address while the clouds exist.
@@ -300,6 +303,27 @@ pub const Clouds = struct {
         if (shape.width == 0 or shape.height == 0) return error.EmptyShape;
         if (shape.pixels.len != @as(usize, shape.width) * shape.height * 4) return error.BadShapeSize;
         try self.runner.write(shape.width, shape.height, shape.pixels);
+        if (self.shadow_effect) |e| e.post.setEffectParams(e.id, self.runner.current.?.group);
+    }
+
+    /// Add the cloud shadows (REQ-GPU-031) as an HDR effect of `post` that
+    /// reads `depth`, the depth target of the scene. Each pixel with
+    /// geometry under a cloud gets darker, with `CloudSettings.shadow`.
+    /// The shadow uses the shape, the wind and the height of the cloud
+    /// layer. Turn it off with `post.setEffectEnabled`, or with a shadow
+    /// of 0. The clouds must stay at their address while the chain
+    /// exists. The pass is `sw_cloud_shadows`.
+    pub fn addShadowEffect(self: *Clouds, post: *post_mod.PostChain, depth: TargetId) !post_mod.EffectId {
+        if (self.shadow_effect != null) return error.DuplicateEffectName;
+        const id = try post.addEffect(.{
+            .name = "sw_cloud_shadows",
+            .kind = .hdr,
+            .code = weather_plan.cloud_shadow_shader,
+            .depth = depth,
+            .params = .{ .layout = &self.runner.layout, .bind_group = self.runner.current.?.group },
+        });
+        self.shadow_effect = .{ .post = post, .id = id };
+        return id;
     }
 
     /// The uniforms of the frame `input`, with the current settings.

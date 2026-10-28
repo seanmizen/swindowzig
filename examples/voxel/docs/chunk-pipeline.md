@@ -157,11 +157,13 @@ Job, 88 bytes
            (smooth light off, REQ-VOXEL-008)
   4  i32   cx
   8  i32   cz
-  12 u32   0
+  12 u8    level of detail of a mesh, 0 to 3 (REQ-VOXEL-021)
+  13 u8    0
+  14 u16   0
   16 u32×9 block versions of the 3×3 chunks
   52 u32×9 light versions of the 3×3 chunks
 
-Result, 48 bytes, then the payload
+Result, 48 + SECTIONS_LEN bytes (80 in the demo), then the payload
   0  u8    stage
   1  u8    flags: bit 0 = the payload holds blocks
   2  u16   0
@@ -173,7 +175,9 @@ Result, 48 bytes, then the payload
   28 u32   job time in µs
   32 u64   mesh hash (mesh), else 0
   40 u64   0
-  48 ...   payload
+  48 u16×n the face connections of each section (mesh), else 0, then 0
+           to a multiple of 16 bytes (SECTIONS_LEN: 32 in the demo)
+  80 ...   payload (demo: 16 sections)
 
 Error, 16 bytes, then the text
   0  u16   code
@@ -186,11 +190,14 @@ Error, 16 bytes, then the text
 ```
 
 
-The Result payload starts at byte 64 of the message, so the PackedQuad
+Protocol version 4 added the section connections for cave culling
+(REQ-VOXEL-019). Protocol version 5 added the level of detail of a mesh
+job (REQ-VOXEL-021). The Result payload starts at byte 96 of the message in the
+demo (`protocol.PAYLOAD_OFFSET`, byte 64 before version 4), so the PackedQuad
 bytes of a mesh are 16-byte aligned, ready for upload (C5). The mesh hash
 is `protocol.meshHash` of the payload. The worker calculates it, so main
-can compare meshes without the quads. Main reads only the first 64 bytes of
-a mesh Result (`protocol.decodeResultHead`). A generate payload holds the
+can compare meshes without the quads. Main reads only the first
+PAYLOAD_OFFSET bytes of a mesh Result (`protocol.decodeResultHead`). A generate payload holds the
 blocks: the section count u16, 0 u16, 0 u32, then each section from local
 y 0 up. A section is: index bits u8 (0, 1, 2, 4 or 8), 0 u8, palette
 length u16, the palette (padded to 8 bytes from the start of the section),
@@ -590,10 +597,10 @@ The quad bytes of a new mesh go from the worker to the GPU like this
 
 1. A worker sends the Result as a transferable ArrayBuffer.
 2. In the frame phase, `exec_web.zig` takes the next result
-   (`jsChunkTakeHead`). JS holds the ArrayBuffer under a handle
+   (`jsJobTakeHead`). JS holds the ArrayBuffer under a handle
    (`held-bytes.ts`), and copies its first 64 bytes into the wasm memory.
 3. For a mesh, the scheduler gets the counts and the handle. Any other
-   result comes into the wasm memory as a whole (`jsChunkRead`): a
+   result comes into the wasm memory as a whole (`jsJobRead`): a
    generate result has the blocks of the prefetch radius (C6).
 4. The render (`uploadNewMeshes` in `main.zig`) writes the 16-byte GPU
    header of the chunk from the wasm memory, then asks JS to write the

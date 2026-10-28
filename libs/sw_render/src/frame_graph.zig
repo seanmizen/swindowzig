@@ -35,6 +35,7 @@ const plan = @import("plan.zig");
 const ring_mod = @import("ring.zig");
 const upload_mod = @import("upload.zig");
 const wgsl = @import("wgsl.zig");
+const gpu_timing = @import("gpu_timing.zig");
 
 const TargetId = plan.TargetId;
 const Extent = plan.Extent;
@@ -158,6 +159,9 @@ pub const FrameGraph = struct {
     screen_view: ?gpu_mod.TextureView = null,
     /// The game added a target or a pass after the last check of the passes.
     unchecked: bool = true,
+    /// Times each render pass on the GPU when set (REQ-GPU-028). See
+    /// `setTimer`.
+    timer: ?*gpu_timing.PassTimer = null,
 
     pub fn init(allocator: std.mem.Allocator, gpu: *gpu_mod.GPU, options: Options) !FrameGraph {
         var frame_buffer = try gpu.createBuffer(.{
@@ -201,6 +205,14 @@ pub const FrameGraph = struct {
         self.ring.deinit();
         self.uploads.deinit();
         self.* = undefined;
+    }
+
+    /// Time each render pass of the next frames with `timer`, or stop
+    /// with null (REQ-GPU-028). `execute` then waits for the GPU after
+    /// the submit, to read the times. The timer must stay at its address
+    /// while the graph uses it.
+    pub fn setTimer(self: *FrameGraph, timer: ?*gpu_timing.PassTimer) void {
+        self.timer = timer;
     }
 
     /// Add a render target. The graph makes its texture at the next
@@ -320,15 +332,18 @@ pub const FrameGraph = struct {
         plan.sortPasses(orders[0..self.pass_count], sequence[0..self.pass_count]);
 
         const encoder = try gpu.createCommandEncoder();
+        if (self.timer) |t| t.begin();
         for (sequence[0..self.pass_count]) |i| {
             if (!self.passes[i].enabled) continue;
             try self.runPass(encoder, &self.passes[i]);
         }
+        if (self.timer) |t| t.resolve(encoder);
 
         self.uploads.flush(gpu);
         self.ring.flush(gpu);
         const commands = try encoder.finish();
         gpu.submit(&[_]gpu_mod.CommandBuffer{commands});
+        if (self.timer) |t| try t.collect();
         self.frame_count +%= 1;
         return true;
     }
@@ -383,6 +398,7 @@ pub const FrameGraph = struct {
             pass.render = try encoder.beginRenderPass(.{
                 .color_attachments = colors[0..att.colors.len],
                 .depth_stencil_attachment = depth,
+                .timestamp_writes = if (self.timer) |t| t.writes(p.desc.name) else null,
             });
         }
 

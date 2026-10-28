@@ -25,6 +25,7 @@ const std = @import("std");
 const chunk_mod = @import("../chunk.zig");
 const content = @import("../content.zig");
 const stages = @import("stages.zig");
+const lod = @import("lod.zig");
 const protocol = @import("protocol.zig");
 const light_rules = @import("../light.zig");
 
@@ -267,7 +268,7 @@ pub const WorkerWorld = struct {
                 }
                 var hood: stages.Neighbourhood = undefined;
                 for (lights, 0..) |e, s| hood[s] = .{ .blocks = &e.blocks, .light = &e.light.? };
-                var m = try stages.meshWith(self.allocator, &hood, job.cx, job.cz, .{
+                var m = try lod.mesh(self.allocator, &hood, job.cx, job.cz, job.lod, .{
                     .ao = job.ao,
                     .lighting = job.lighting,
                     .smooth_light = job.smooth_light,
@@ -275,6 +276,7 @@ pub const WorkerWorld = struct {
                 defer m.deinit(self.allocator);
                 head.y_min = m.y_min;
                 head.y_max = m.y_max;
+                head.sections = m.sections;
                 return protocol.encodeResult(self.allocator, id, head, .{ .quads = m.quads });
             },
         }

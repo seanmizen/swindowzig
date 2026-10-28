@@ -237,7 +237,7 @@ pub const TasScript = struct {
             if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
             // Parse line: tick command args...
-            var parts = std.mem.tokenizeScalar(u8, trimmed, ' ');
+            var parts = std.mem.tokenizeAny(u8, trimmed, " \t");
 
             const tick_str = parts.next() orelse {
                 std.log.err("Line {}: Missing tick number", .{line_num});
@@ -305,7 +305,7 @@ pub const TasScript = struct {
     }
 };
 
-fn parseCommand(cmd: []const u8, parts: *std.mem.TokenIterator(u8, .scalar), line_num: usize) !TasCommand {
+fn parseCommand(cmd: []const u8, parts: *std.mem.TokenIterator(u8, .any), line_num: usize) !TasCommand {
     if (std.mem.eql(u8, cmd, "keydown")) {
         const key_str = parts.next() orelse return error.MissingArgument;
         const key = keyFromString(key_str) catch |err| {
@@ -397,7 +397,7 @@ fn parseCommand(cmd: []const u8, parts: *std.mem.TokenIterator(u8, .scalar), lin
 }
 
 /// The optional gamepad slot at the end of a gamepad command. Default 0.
-fn parsePad(parts: *std.mem.TokenIterator(u8, .scalar), line_num: usize) !u8 {
+fn parsePad(parts: *std.mem.TokenIterator(u8, .any), line_num: usize) !u8 {
     const pad_str = parts.next() orelse return 0;
     const pad = std.fmt.parseInt(u8, pad_str, 10) catch {
         std.log.err("Line {}: Invalid gamepad slot '{s}'", .{ line_num, pad_str });
@@ -438,6 +438,18 @@ test "TAS script parsing" {
 
     const duration = script.getDuration();
     try std.testing.expectEqual(@as(u64, 181), duration);
+}
+
+test "TAS fields can have more than one space or a tab between them" {
+    const script_source = "5  keydown A\n35\tkeyup A\n37 mouse_move  1\t-2\n";
+    var script = try TasScript.parse(std.testing.allocator, script_source);
+    defer script.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), script.entries.items.len);
+    try std.testing.expectEqual(@as(u64, 5), script.entries.items[0].tick);
+    try std.testing.expectEqual(TasCommand.keydown, std.meta.activeTag(script.entries.items[0].command));
+    try std.testing.expectEqual(TasCommand.keyup, std.meta.activeTag(script.entries.items[1].command));
+    try std.testing.expectEqual(@as(f32, -2), script.entries.items[2].command.mouse_move.dy);
 }
 
 test "TAS to events conversion" {

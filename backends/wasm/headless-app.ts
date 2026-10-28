@@ -4,12 +4,13 @@
 // one import for each entry of WebAssembly.Module.imports(module):
 //   - The time import reads a clock that the caller controls ('sim'), or
 //     performance.now() ('real').
-//   - The "chunks" imports use a real WorkerPool (worker-pool.ts) with real
+//   - The "jobs" imports (sw_jobs) use a real WorkerPool (worker-pool.ts) with real
 //     Bun Web Workers, or no pool.
 //   - The storage and asset imports are the real ones.
 //   - The WebGPU buffer imports are a stub that records each buffer and each
 //     write (StubGpu), and checks the WebGPU rules of writeBuffer. The tests
-//     use it to check the mesh uploads (C5).
+//     use it to check the mesh uploads (C5). The stub also counts the canvas
+//     views that are live (REQ-GPU-012).
 //   - Each other import (WebGPU, canvas, audio) does nothing, and returns a
 //     new handle.
 
@@ -19,7 +20,7 @@ import { HeldBytes } from './held-bytes';
 import { createStorageImports } from './storage';
 import {
   attachPool,
-  chunkImports,
+  jobImports,
   type PoolHolder,
   WorkerPool,
   type WorkerPoolOptions,
@@ -72,6 +73,13 @@ export class StubGpu {
   /** Writes from held bytes, also when `record` is false. */
   heldWrites = 0;
   frame = 0;
+  /**
+   * The canvas views that the bridge gave and did not release. Each frame
+   * gets one view and releases it after the submit (REQ-GPU-012).
+   */
+  readonly liveViews = new Set<number>();
+  /** The canvas views that the bridge gave, from the start. */
+  viewsMade = 0;
 
   constructor(
     private nextHandle: () => number,
@@ -127,6 +135,17 @@ export class StubGpu {
           this.error(`destroy of buffer ${handle}, which is not live`);
         if (b) b.destroyed = true;
         this.destroyed++;
+      },
+      webgpuGetCurrentTextureView: (): number => {
+        const handle = this.nextHandle();
+        this.liveViews.add(handle);
+        this.viewsMade++;
+        return handle;
+      },
+      webgpuTextureViewRelease: (handle: number): void => {
+        // The stub records only the canvas views. A release of another
+        // view (for example a mip level) is correct.
+        this.liveViews.delete(handle);
       },
       webgpuCreateBindGroup: (): number => {
         this.bindGroups++;
@@ -394,7 +413,7 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
       ...createStorageImports(getMemory),
       ...createAssetImports(getMemory),
     },
-    chunks: chunkImports(holder, getMemory, held),
+    jobs: jobImports(holder, getMemory, held),
     files: createFileImports(getMemory),
     webgpu: gpu.imports(),
   };
@@ -553,8 +572,12 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
   };
 }
 
-/** The size of the head of a Result: the part that app.wasm copies (C5). */
-export const RESULT_HEAD_BYTES = 64;
+/**
+ * The size of the head of a Result: the part that app.wasm copies (C5).
+ * protocol.PAYLOAD_OFFSET of the demo: 16 header bytes, 48 fixed bytes and
+ * 32 bytes of section connections (REQ-VOXEL-019).
+ */
+export const RESULT_HEAD_BYTES = 96;
 /** The GPU header of a chunk quad buffer: (origin x, tick, origin z, 0). */
 const GPU_HEADER_BYTES = 16;
 const CHUNK_W = 16;
@@ -577,7 +600,7 @@ export interface UploadReport {
  *   - JS wrote no mesh quad into the wasm memory. For each result, JS wrote
  *     at most RESULT_HEAD_BYTES into the wasm memory.
  *   - Each mesh went to the GPU from the held bytes: one held write for
- *     each upload, at byte 16 of the buffer, from byte 64 of the message,
+ *     each upload, at byte 16 of the buffer, from byte 96 of the message,
  *     with the size of the quads. Just before it, main wrote the 16-byte
  *     GPU header of the same chunk to the same buffer.
  * With no pool (`pooled` false): no held upload. With null (a run that

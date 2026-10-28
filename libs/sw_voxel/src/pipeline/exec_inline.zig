@@ -122,6 +122,7 @@ pub fn meshResult(st: Started, info: protocol.ResultInfo, bytes: MeshBytes) Resu
                 .y_min = info.head.y_min,
                 .y_max = info.head.y_max,
                 .hash = info.head.mesh_hash,
+                .sections = info.head.sections,
             },
             .bytes = bytes,
         } },

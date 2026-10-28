@@ -42,7 +42,7 @@ import {
 } from './window';
 import {
   attachPool,
-  chunkImports,
+  jobImports,
   type PoolHolder,
   WorkerPool,
 } from './worker-pool';
@@ -284,7 +284,7 @@ export function createImports(
     net: createNetImports(getMemory),
     // The chunk worker pool (pipeline/exec_web.zig). The results go into the
     // held-bytes store of the WebGPU bridge (C5).
-    chunks: chunkImports(pool, getMemory, gpu.held),
+    jobs: jobImports(pool, getMemory, gpu.held),
     // The screen-reader mirror of the sw_ui semantic tree (REQ-A11Y-001).
     a11y: createA11yImports(getMemory),
     // Files from the player and the OPFS cache (sw_assets files and cache).

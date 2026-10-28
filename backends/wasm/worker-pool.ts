@@ -1,7 +1,7 @@
 // The chunk worker pool of the web build (C9).
 //
 // The pool runs chunks.wasm in Web Workers (chunk-worker.ts). app.wasm
-// sends protocol bytes to the pool through the "chunks" imports
+// sends protocol bytes to the pool through the "jobs" imports (sw_jobs)
 // (pipeline/exec_web.zig), and takes the results in the frame phase (C7).
 //
 // Lifecycle:
@@ -21,7 +21,7 @@
 //      flight of the old worker, in their order. After MAX_RESTARTS, the
 //      slot stops, and the pool sends its jobs to another worker.
 //   5. When no worker runs, app.wasm uses the Inline executor (the
-//      fallback). Without a pool, chunkImports() gives 0 slots.
+//      fallback). Without a pool, jobImports() gives 0 slots.
 //
 // No SharedArrayBuffer and no wasm threads (section 11). Each message is a
 // transferable ArrayBuffer. app.wasm takes a result in two steps (C5): JS
@@ -99,7 +99,7 @@ export interface PoolStats {
   queued: number;
 }
 
-/** Holds the pool that the "chunks" imports use. Null: no pool. */
+/** Holds the pool that the "jobs" imports use. Null: no pool. */
 export interface PoolHolder {
   pool: WorkerPool | null;
 }
@@ -491,13 +491,13 @@ const EMPTY_WASM = new Uint8Array([
 const EMPTY_RESULT = new Uint8Array(0);
 
 /**
- * The "chunks" imports of app.wasm (pipeline/exec_web.zig). They read the
+ * The "jobs" imports of app.wasm (sw_jobs web.zig). They read the
  * pool from `holder` when they run, so the loader can set the pool after
- * the instantiation. With no pool, jsChunkSlots returns 0, and app.wasm
+ * the instantiation. With no pool, jsJobSlots returns 0, and app.wasm
  * uses the Inline executor. `held` keeps each result that app.wasm takes,
  * until app.wasm releases it (C5). The WebGPU bridge reads the same store.
  */
-export function chunkImports(
+export function jobImports(
   holder: PoolHolder,
   getMemory: () => WebAssembly.Memory,
   held: HeldBytes,
@@ -505,24 +505,23 @@ export function chunkImports(
   const bytes = (ptr: number, len: number) =>
     new Uint8Array(getMemory().buffer, ptr, len);
   return {
-    jsChunkSlots: (): number => holder.pool?.size ?? 0,
-    jsChunkAlive: (slot: number): number =>
-      holder.pool?.isAlive(slot) ? 1 : 0,
-    jsChunkPost: (slot: number, ptr: number, len: number): number =>
+    jsJobSlots: (): number => holder.pool?.size ?? 0,
+    jsJobAlive: (slot: number): number => (holder.pool?.isAlive(slot) ? 1 : 0),
+    jsJobPost: (slot: number, ptr: number, len: number): number =>
       holder.pool?.post(slot, bytes(ptr, len)) ? 1 : 0,
-    jsChunkBroadcast: (ptr: number, len: number): number =>
+    jsJobBroadcast: (ptr: number, len: number): number =>
       holder.pool?.broadcast(bytes(ptr, len)) ? 1 : 0,
-    jsChunkNextLen: (): number => holder.pool?.nextLength() ?? 0,
+    jsJobNextLen: (): number => holder.pool?.nextLength() ?? 0,
     // Hold the next result, and copy its first `len` bytes into the wasm
     // memory. Returns the handle (0: no result).
-    jsChunkTakeHead: (ptr: number, len: number): number => {
+    jsJobTakeHead: (ptr: number, len: number): number => {
       const r = holder.pool?.takeNext();
       if (!r) return 0;
       const handle = held.hold(r);
       held.copyTo(handle, 0, bytes(ptr, len));
       return handle;
     },
-    jsChunkRead: (
+    jsJobRead: (
       handle: number,
       offset: number,
       ptr: number,
@@ -530,7 +529,7 @@ export function chunkImports(
     ): void => {
       held.copyTo(handle, offset, bytes(ptr, len));
     },
-    jsChunkRelease: (handle: number): void => {
+    jsJobRelease: (handle: number): void => {
       held.release(handle);
     },
   };

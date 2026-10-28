@@ -235,6 +235,7 @@ const VoxelVertex = mesher_mod.VoxelVertex;
 const world_mod = @import("sw_voxel").world;
 const world_gen = @import("voxel_content").world_gen;
 const clock = @import("sw_voxel").clock;
+const streaming = @import("sw_voxel").streaming;
 const stages = @import("sw_voxel").stages;
 const scheduler_mod = @import("sw_voxel").scheduler;
 const exec_inline = @import("sw_voxel").exec_inline;
@@ -287,7 +288,7 @@ const Executor = union(enum) {
     fn workerCount(self: *const Executor) usize {
         return switch (self.*) {
             .inline_exec => 0,
-            .threads => |p| if (comptime is_wasm) unreachable else p.workers.len,
+            .threads => |p| if (comptime is_wasm) unreachable else p.workerCount(),
             .web => |*w| if (comptime !is_wasm) unreachable else w.workerCount(),
         };
     }
@@ -310,6 +311,7 @@ const WorldRaycastType = @import("raycast.zig").Raycast(Vec3, world_mod.World);
 const worldRaycast = WorldRaycastType.raycast;
 const camera_clip = @import("camera_clip.zig");
 const frustum_mod = @import("sw_voxel").frustum;
+const visibility = @import("sw_voxel").visibility;
 
 /// 3PV camera-clip skin: distance to keep between the camera origin and the
 /// nearest solid voxel face. Must exceed the near-plane half-diagonal so the
@@ -926,12 +928,6 @@ const State = struct {
     /// light: each face takes the light of the cell in front of it
     /// (sw_voxel REQ-VOXEL-008). Default: on.
     smooth_light: bool = true,
-    /// Block type emitted by right-click placement. Parsed from
-    /// `--place-block=<stone|glowstone>`; default stone preserves prior
-    /// behaviour. Introduced alongside phase-3 block light so the
-    /// `glowstone_cave.tas` regression can place a glowstone without
-    /// needing an in-game block-picker UI.
-    place_block: chunk_mod.BlockType = .stone,
     /// --dump-frame=<path>: capture first rendered frame to a PPM file then exit.
     dump_frame_path: ?[]const u8 = null,
     dump_frame_done: bool = false,
@@ -981,6 +977,16 @@ const State = struct {
     /// game logic.
     frustum_drawn: u32 = 0,
     frustum_culled: u32 = 0,
+    /// Cave culling (REQ-VOXEL-020): skip the chunks that the camera can
+    /// not see through open space. --cave-cull=<on|off>.
+    cave_cull: bool = true,
+    /// The chunks that the cave cull skipped in the last frame.
+    cave_culled: u32 = 0,
+    /// The distance in chunks where the far terrain mesh starts
+    /// (REQ-VOXEL-021). 0 is off. --lod-distance=<0..32>.
+    lod_distance: i32 = 0,
+    /// The sections that the camera can see, from the walk of each frame.
+    cave_visible: visibility.VisibleSet = .{},
     /// F3-style debug overlay rolling FPS sampler. Captured at the top of
     /// voxelRender from real-time deltas (not the fixed-step sim tick rate),
     /// so the displayed FPS reflects actual present cadence even when the
@@ -1147,6 +1153,10 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.frozen_frustum = null;
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
+    state.cave_cull = true;
+    state.cave_culled = 0;
+    state.lod_distance = 0;
+    state.cave_visible = .{};
     state.fps_window_ns = @splat(0);
     state.fps_window_idx = 0;
     state.fps_window_filled = false;
@@ -1354,6 +1364,30 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
         }
+        if (std.mem.startsWith(u8, arg, "--lod-distance=")) {
+            const val = std.mem.sliceTo(arg["--lod-distance=".len..], 0);
+            const n = std.fmt.parseInt(i32, val, 10) catch {
+                std.log.err("--lod-distance: invalid value '{s}'. Expected an integer from 0 to 32.", .{val});
+                fatalExit(1);
+                unreachable;
+            };
+            if (n < 0 or n > 32) {
+                std.log.err("--lod-distance: value {} out of range [0, 32].", .{n});
+                fatalExit(1);
+            }
+            state.lod_distance = n;
+        }
+        if (std.mem.startsWith(u8, arg, "--cave-cull=")) {
+            const val = std.mem.sliceTo(arg["--cave-cull=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.cave_cull = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.cave_cull = false;
+            } else {
+                std.log.err("--cave-cull: invalid value '{s}'. Accepted: on, off", .{val});
+                fatalExit(1);
+            }
+        }
         if (std.mem.startsWith(u8, arg, "--frustum=")) {
             const val = std.mem.sliceTo(arg["--frustum=".len..], 0);
             if (frustum_mod.Strategy.fromString(val)) |s| {
@@ -1415,15 +1449,16 @@ fn voxelInit(ctx: *sw.Context) !void {
             };
         }
         if (std.mem.startsWith(u8, arg, "--place-block=")) {
-            const val = arg["--place-block=".len..];
-            if (std.mem.eql(u8, val, "stone")) {
-                state.place_block = .stone;
-            } else if (std.mem.eql(u8, val, "glowstone")) {
-                state.place_block = .glowstone;
-            } else {
-                std.log.err("--place-block: invalid value '{s}'. Accepted: stone, glowstone", .{val});
+            // Put the block in hotbar slot 1, the slot that is selected at
+            // the start. Then right-click places it. A TAS can place an
+            // emitter with no key presses (tests/glowstone_cave.sh).
+            const val = std.mem.sliceTo(arg["--place-block=".len..], 0);
+            const block = std.meta.stringToEnum(chunk_mod.BlockType, val) orelse .air;
+            if (block == .air) {
+                std.log.err("--place-block: invalid value '{s}'. Accepted: a block name, for example stone or glowstone", .{val});
                 fatalExit(1);
             }
+            state.hotbar_slots[0] = block;
         }
     }
     std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s}", .{
@@ -1474,6 +1509,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // (D6, D7). The first frame plans the loading of the spawn area.
     state.scheduler = scheduler_mod.Scheduler.init(ctx.allocator(), state.render_distance, state.ao_strategy, state.lighting_mode);
     state.scheduler.setSmoothLight(state.smooth_light);
+    state.scheduler.setLodDistance(state.lod_distance);
     try startExecutor(ctx);
     state.last_frame = .{};
 
@@ -1782,6 +1818,14 @@ fn startExecutor(ctx: *sw.Context) !void {
     }
     state.executor = .{ .inline_exec = try exec_inline.Inline.init(a, config, limit) };
     std.log.info("[PIPE] executor: Inline (main thread)", .{});
+}
+
+/// The face connections of a section for the cave cull (REQ-VOXEL-019).
+/// Null for a chunk that is not loaded: the walk goes through it.
+fn sectionConnectivity(ctx: *const anyopaque, p: visibility.SectionPos) ?visibility.Connectivity {
+    const w: *const world_mod.World = @ptrCast(@alignCast(ctx));
+    const lc = w.get(p.cx, p.cz) orelse return null;
+    return lc.mesh.sections[@intCast(p.sy)];
 }
 
 /// The view frustum test for the scheduler priority (C8, class 3).
@@ -2789,7 +2833,7 @@ fn drawPipelinePage(buf: *[96]u8, x: f32, y: *f32, line_h: f32, scale: f32, col:
     Line.draw(std.fmt.bufPrint(buf, "MAIN MS LAST FRAME: {d:.3}", .{ms(state.last_frame.main_ns)}) catch "?", x, y, line_h, scale, col, ow, oh);
     if (comptime !is_wasm) if (state.executor == .threads) {
         const pool = &state.executor.threads;
-        for (0..pool.workers.len) |i| {
+        for (0..pool.workerCount()) |i| {
             const info = pool.workerInfo(i);
             const lookups = info.stats.hits + info.stats.misses;
             const hit_pct = if (lookups == 0) 0 else info.stats.hits * 100 / lookups;
@@ -3002,6 +3046,17 @@ fn voxelRender(ctx: *sw.Context) !void {
     // strategy rejects.
     state.frustum_drawn = 0;
     state.frustum_culled = 0;
+    state.cave_culled = 0;
+    // Cave culling (REQ-VOXEL-020): the sections that the camera can see
+    // through open space. A walk that fails (no memory) culls nothing.
+    const cave = state.cave_cull and state.frustum_strategy != .none and blk: {
+        const eye = live_frustum.eye;
+        visibility.walk(state.allocator, visibility.sectionOf(eye[0], eye[1], eye[2]), .{ .ctx = &state.world, .connFn = sectionConnectivity }, .{
+            .radius = state.world.render_distance + 1,
+            .frustum = if (state.frustum_strategy == .frustum) &live_frustum else null,
+        }, &state.cave_visible) catch break :blk false;
+        break :blk true;
+    };
     var sorted_chunks: std.ArrayList(*world_mod.LoadedChunk) = .empty;
     defer sorted_chunks.deinit(ctx.allocator());
     {
@@ -3015,6 +3070,13 @@ fn voxelRender(ctx: *sw.Context) !void {
             const y_max: f32 = if (cg) |c| c.y_max else chunk_mod.MIN_Y + chunk_mod.CHUNK_H;
             if (!frustum_mod.keepChunk(state.frustum_strategy, live_frustum, lc_ptr.*.cx, lc_ptr.*.cz, y_min, y_max)) {
                 state.frustum_culled += 1;
+                continue;
+            }
+            // The 3×3 chunks around the camera are never culled (the same
+            // rule as keepChunk).
+            const near = @abs(lc_ptr.*.cx - live_frustum.cam_cx) <= 1 and @abs(lc_ptr.*.cz - live_frustum.cam_cz) <= 1;
+            if (cave and !near and !state.cave_visible.column(lc_ptr.*.cx, lc_ptr.*.cz)) {
+                state.cave_culled += 1;
                 continue;
             }
             state.frustum_drawn += 1;
@@ -3822,6 +3884,7 @@ fn voxelShutdown(ctx: *sw.Context) !void {
     while (it.next()) |entry| entry.value_ptr.release();
     state.chunk_gpu.deinit();
     state.quad_pool.deinit(state.allocator);
+    state.cave_visible.deinit(state.allocator);
     state.world.deinit();
 
     state.overlay.deinit();
@@ -4084,7 +4147,7 @@ fn logGpuMeshStats() void {
     // The cache of each worker thread (C12, C14).
     if (comptime !is_wasm) if (state.executor == .threads) {
         const pool = &state.executor.threads;
-        for (0..pool.workers.len) |i| {
+        for (0..pool.workerCount()) |i| {
             const info = pool.workerInfo(i);
             const st_w = info.stats;
             std.log.info("[PIPE] worker {}: jobs={} generated={} lit={} hits={} misses={} evicted={} cached={} peak_mb={}", .{
@@ -4092,8 +4155,8 @@ fn logGpuMeshStats() void {
             });
         }
     };
-    std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s})", .{
-        state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(),
+    std.log.info("[GPU MESH] chunks={} quads={} bytes={} last frame: drawn={} culled={} ({s}) cave_culled={}", .{
+        state.chunk_gpu.count(), quads, bytes, state.frustum_drawn, state.frustum_culled, state.frustum_strategy.label(), state.cave_culled,
     });
     // C5: main keeps no CPU copy of a mesh after its upload. `waiting` is
     // the meshes whose bytes wait for the upload.
@@ -4109,15 +4172,42 @@ fn logGpuMeshStats() void {
 }
 
 /// Upload the new mesh of each chunk that has one (`LoadedChunk.upload`).
+/// The most mesh uploads in one frame during gameplay (REQ-VOXEL-017). The
+/// loading screen has no limit. The chunks in view and the near chunks
+/// upload first, and the others wait for the next frame.
+const MAX_UPLOADS_PER_FRAME: usize = 24;
+
 fn uploadNewMeshes(g: *gpu_mod.GPU) void {
     var upload_us: i128 = 0;
     var upload_chunks: usize = 0;
+    var candidates: std.ArrayList(streaming.Candidate) = .empty;
+    defer candidates.deinit(state.allocator);
+    var keys: std.ArrayList(world_mod.ChunkKey) = .empty;
+    defer keys.deinit(state.allocator);
+    const pcx, const pcz = playerChunk();
+    const view = captureFrustum();
     var it = state.world.chunks.iterator();
     while (it.next()) |entry| {
         const lc = entry.value_ptr.*;
         if (lc.upload == null) continue;
+        const dx = lc.cx - pcx;
+        const dz = lc.cz - pcz;
+        candidates.append(state.allocator, .{
+            .in_view = chunkInView(&view, lc.cx, lc.cz),
+            .dist_sq = dx * dx + dz * dz,
+            .index = keys.items.len,
+        }) catch break;
+        keys.append(state.allocator, entry.key_ptr.*) catch {
+            _ = candidates.pop();
+            break;
+        };
+    }
+    const budget: ?usize = if (state.world_loading) null else MAX_UPLOADS_PER_FRAME;
+    for (streaming.pickUploads(candidates.items, budget)) |c| {
+        const key = keys.items[c.index];
+        const lc = state.world.chunks.get(key) orelse continue;
         const t0 = perfNowNs();
-        const gop = state.chunk_gpu.getOrPut(entry.key_ptr.*) catch continue;
+        const gop = state.chunk_gpu.getOrPut(key) catch continue;
         if (!gop.found_existing) gop.value_ptr.* = .{};
         uploadChunkMesh(g, lc, gop.value_ptr) catch |err| {
             // The bytes stay, and the next frame tries again.

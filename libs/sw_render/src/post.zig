@@ -36,6 +36,17 @@
 //! An effect is a fragment shader from `render.post.shader(body)`. Group 0
 //! has the frame uniforms, group 1 the input image (`sw_input`,
 //! `sw_input_sampler`), and group 2 the own bind group of the effect.
+//!
+//! An effect with `EffectDesc.depth` also reads a depth target, as
+//! `sw_depth` in group 1 (REQ-GPU-030). Its shader comes from
+//! `render.post.depthShader(body)`. The chain binds the depth view again
+//! when the target changes, for example after a resize. `addDepthFog`
+//! adds the fog of the sky as such an effect:
+//!
+//! ```zig
+//! const depth = try graph.addTarget(.{ .name = "depth", .format = .depth24plus, .usage = .{ .render_attachment = true, .texture_binding = true } });
+//! _ = try post.addDepthFog(depth);
+//! ```
 
 const std = @import("std");
 const gpu_mod = @import("sw_gpu");
@@ -86,6 +97,9 @@ pub const EffectDesc = struct {
     fragment_entry: []const u8 = "fs_main",
     params: ?Params = null,
     enabled: bool = true,
+    /// A depth target that the effect reads as `sw_depth` (REQ-GPU-030).
+    /// It needs `texture_binding` usage. Null: no depth.
+    depth: ?TargetId = null,
 };
 
 /// The handle of one effect. It does not change when the game adds more
@@ -103,6 +117,8 @@ pub const EffectId = enum(u8) {
 pub const Error = error{
     DuplicateEffectName,
     TooManyEffects,
+    /// The depth target of an effect has no `texture_binding` usage.
+    DepthNotSampled,
 };
 
 /// The most links in one chain: the effects, the tonemap and FXAA.
@@ -127,6 +143,8 @@ const Link = struct {
     bound: ?gpu_mod.BindGroup = null,
     bound_generation: u32 = 0,
     bound_input: TargetId = TargetId.fromIndex(0),
+    /// The depth target that the link reads, or null.
+    depth: ?TargetId = null,
 
     fn run(self: *Link, pass: *Pass) anyerror!void {
         const rp = pass.render.?;
@@ -135,12 +153,21 @@ const Link = struct {
         if (self.bound == null or self.bound_generation != graph.generation or self.bound_input != self.input) {
             if (self.bound) |b| b.release();
             self.bound = null;
+            // The generation changes when a target view changes, so the
+            // depth view is current too (REQ-GPU-030).
+            var entries = [_]gpu_mod.BindGroupEntry{
+                .{ .binding = 0, .texture_view = pass.view(self.input) },
+                .{ .binding = 1, .sampler = &self.sampler },
+                undefined,
+            };
+            var count: usize = 2;
+            if (self.depth) |d| {
+                entries[2] = .{ .binding = post_plan.depth_binding, .texture_view = pass.view(d) };
+                count = 3;
+            }
             self.bound = try pass.gpu.createBindGroup(.{
                 .layout = &self.input_layout,
-                .entries = &[_]gpu_mod.BindGroupEntry{
-                    .{ .binding = 0, .texture_view = pass.view(self.input) },
-                    .{ .binding = 1, .sampler = &self.sampler },
-                },
+                .entries = entries[0..count],
             });
             self.bound_generation = graph.generation;
             self.bound_input = self.input;
@@ -170,6 +197,8 @@ pub const PostChain = struct {
     slots: [4]?TargetId = @splat(null),
     sampler: gpu_mod.Sampler,
     input_layout: gpu_mod.BindGroupLayout,
+    /// The input layout of an effect that reads a depth target.
+    depth_input_layout: gpu_mod.BindGroupLayout,
     tonemap: Tonemap,
     tonemap_buffer: gpu_mod.Buffer,
     tonemap_group: ?gpu_mod.BindGroup = null,
@@ -197,6 +226,14 @@ pub const PostChain = struct {
                 .{ .binding = 1, .visibility = .{ .fragment = true }, .sampler = .{ .type = .filtering } },
             },
         });
+        const depth_input_layout = try gpu.createBindGroupLayout(.{
+            .label = "sw_post_depth_input",
+            .entries = &[_]gpu_mod.BindGroupLayoutEntry{
+                .{ .binding = 0, .visibility = .{ .fragment = true }, .texture = .{ .sample_type = .float, .view_dimension = .@"2d" } },
+                .{ .binding = 1, .visibility = .{ .fragment = true }, .sampler = .{ .type = .filtering } },
+                .{ .binding = post_plan.depth_binding, .visibility = .{ .fragment = true }, .texture = .{ .sample_type = .depth, .view_dimension = .@"2d" } },
+            },
+        });
         var tonemap_buffer = try gpu.createBuffer(.{
             .label = "sw_post_tonemap",
             .size = @sizeOf(post_plan.TonemapUniforms),
@@ -212,6 +249,7 @@ pub const PostChain = struct {
             .hdr_format = options.hdr_format,
             .sampler = sampler,
             .input_layout = input_layout,
+            .depth_input_layout = depth_input_layout,
             .tonemap = options.tonemap,
             .tonemap_buffer = tonemap_buffer,
             .tonemap_link = undefined,
@@ -239,7 +277,7 @@ pub const PostChain = struct {
             }},
         });
         self.setTonemap(options.tonemap);
-        const tonemap_pipeline = try self.makePipeline(post_plan.tonemap_shader, "sw_post_vs", "fs_main", graph.options.screen_format, &tonemap_layout);
+        const tonemap_pipeline = try self.makePipeline(post_plan.tonemap_shader, "sw_post_vs", "fs_main", graph.options.screen_format, &self.input_layout, &tonemap_layout);
         self.tonemap_link = try self.addLink("sw_post_tonemap", .tonemap, 1, tonemap_pipeline, self.tonemap_group, true);
 
         // FXAA: `setFxaa` makes the pipeline when FXAA goes on.
@@ -276,18 +314,40 @@ pub const PostChain = struct {
             .hdr => .hdr,
             .ldr => .ldr,
         };
+        if (desc.depth) |d| {
+            if (!self.graph.targets[d.index()].desc.usage.texture_binding) return error.DepthNotSampled;
+        }
         const format = if (kind == .hdr) self.hdr_format else self.graph.options.screen_format;
-        const pipeline = try self.makePipeline(desc.code, "sw_post_vs", desc.fragment_entry, format, if (desc.params) |p| p.layout else null);
+        const input_layout = if (desc.depth != null) &self.depth_input_layout else &self.input_layout;
+        const pipeline = try self.makePipeline(desc.code, "sw_post_vs", desc.fragment_entry, format, input_layout, if (desc.params) |p| p.layout else null);
         const rank: i32 = if (kind == .hdr) 0 else 2;
         const link = try self.addLink(desc.name, kind, rank, pipeline, if (desc.params) |p| p.bind_group else null, desc.enabled);
+        if (desc.depth) |d| {
+            link.depth = d;
+            link.input_layout = self.depth_input_layout;
+        }
         try self.reroute();
         return @fromBackingInt(@backingInt(link.pass));
+    }
+
+    /// Add the fog of the sky as an HDR effect that reads `depth`
+    /// (REQ-GPU-030). It gives the colour of `sw_fog` to each pixel with
+    /// geometry, from the depth and `sw_frame`. Do not also call `sw_fog`
+    /// in the scene shaders. The pass is `sw_post_fog`.
+    pub fn addDepthFog(self: *PostChain, depth: TargetId) !EffectId {
+        return self.addEffect(.{ .name = "sw_post_fog", .kind = .hdr, .code = post_plan.depth_fog_shader, .depth = depth });
     }
 
     /// Run an effect (true) or skip it (false).
     pub fn setEffectEnabled(self: *PostChain, id: EffectId, enabled: bool) !void {
         self.find(id.pass()).enabled = enabled;
         try self.reroute();
+    }
+
+    /// Give an effect a new own bind group (group 2), for example after
+    /// a texture of the effect changed. The layout must not change.
+    pub fn setEffectParams(self: *PostChain, id: EffectId, bind_group: gpu_mod.BindGroup) void {
+        self.find(id.pass()).params = bind_group;
     }
 
     /// Change the tonemap settings. The next frame uses them.
@@ -304,7 +364,7 @@ pub const PostChain = struct {
             if (self.fxaa_quality != q or self.fxaa_link.pipeline == null) {
                 var buf: [gpu_mod.fxaa.max_source_len]u8 = undefined;
                 const code = try gpu_mod.fxaa.shaderSource(&buf, q, post_plan.input_group);
-                self.fxaa_link.pipeline = try self.makePipeline(code, "vs_main", "fs_main", self.graph.options.screen_format, null);
+                self.fxaa_link.pipeline = try self.makePipeline(code, "vs_main", "fs_main", self.graph.options.screen_format, &self.input_layout, null);
             }
             self.fxaa_quality = q;
             self.fxaa_link.enabled = true;
@@ -398,10 +458,11 @@ pub const PostChain = struct {
         vertex_entry: []const u8,
         fragment_entry: []const u8,
         format: gpu_mod.TextureFormat,
+        input_layout: *gpu_mod.BindGroupLayout,
         params_layout: ?*gpu_mod.BindGroupLayout,
     ) !gpu_mod.RenderPipeline {
         const gpu = self.graph.gpu;
-        var layouts: [3]*gpu_mod.BindGroupLayout = .{ &self.graph.frame_layout, &self.input_layout, undefined };
+        var layouts: [3]*gpu_mod.BindGroupLayout = .{ &self.graph.frame_layout, input_layout, undefined };
         var count: usize = 2;
         if (params_layout) |p| {
             layouts[2] = p;

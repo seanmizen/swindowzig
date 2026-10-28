@@ -6,6 +6,7 @@
 //! checks that each current result of the World is the recomputed result.
 const std = @import("std");
 const stages = @import("sw_voxel").stages;
+const lod = @import("sw_voxel").lod;
 const protocol = @import("sw_voxel").protocol;
 const scheduler_mod = @import("sw_voxel").scheduler;
 const world_mod = @import("sw_voxel").world;
@@ -65,12 +66,17 @@ pub const Recompute = struct {
     }
 
     pub fn mesh(self: *Recompute, cx: i32, cz: i32, ao: stages.AOStrategy, lighting: stages.LightingMode) !stages.MeshResult {
+        return self.meshAt(cx, cz, 0, ao, lighting);
+    }
+
+    /// The mesh of chunk (cx, cz) at level of detail `level` (REQ-VOXEL-021).
+    pub fn meshAt(self: *Recompute, cx: i32, cz: i32, level: u8, ao: stages.AOStrategy, lighting: stages.LightingMode) !stages.MeshResult {
         var hood: stages.Neighbourhood = undefined;
         for (0..stages.SLOTS) |s| {
             const dcx, const dcz = stages.offsetOf(s);
             hood[s] = .{ .blocks = try self.blocksOf(cx + dcx, cz + dcz), .light = try self.lightOf(cx + dcx, cz + dcz) };
         }
-        return stages.meshWith(self.a, &hood, cx, cz, .{ .ao = ao, .lighting = lighting });
+        return lod.mesh(self.a, &hood, cx, cz, level, .{ .ao = ao, .lighting = lighting });
     }
 };
 
@@ -93,7 +99,7 @@ pub fn expectMatchesRecompute(a: std.mem.Allocator, sched: *const Scheduler, wor
             try std.testing.expectEqual(protocol.lightHash(try rc.lightOf(lc.cx, lc.cz)), lc.light_hash);
         }
         if (!sched.meshCurrent(world, lc)) continue;
-        var want = try rc.mesh(lc.cx, lc.cz, sched.ao, sched.lighting);
+        var want = try rc.meshAt(lc.cx, lc.cz, lc.mesh_lod, sched.ao, sched.lighting);
         defer want.deinit(a);
         // Main keeps the counts and the hash of the quads (C5).
         try std.testing.expectEqual(@as(u32, @intCast(want.quads.len)), lc.mesh.quad_count);
