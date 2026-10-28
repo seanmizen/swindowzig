@@ -205,6 +205,33 @@ The package exports `sw_core`, `sw_platform`, `sw_gpu`, `sw_audio`, `sw_math`,
 const swindowzig = b.dependency("swindowzig", .{ .platform = .native });
 ```
 
+### Build an example to wasm from a dependent package
+
+`addWebExample` in the `build.zig` of swindowzig builds one example to
+wasm32-freestanding. It gives the same artifacts as `zig build web` in this
+repo: `app.wasm`, and `chunks.wasm` for `voxel` (`chunks` is null for the
+other examples). The build runs in the build of the dependent package. It
+starts no second `zig build`.
+
+```zig
+// build.zig of the dependent package
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const optimize = b.standardOptimizeOption(.{});
+    const sw = b.dependency("swindowzig", .{});
+    const web = @import("swindowzig").addWebExample(b, sw, .{
+        .example = "voxel",
+        .optimize = optimize,
+    });
+    b.installArtifact(web.app); // zig-out/bin/app.wasm
+    if (web.chunks) |chunks| b.installArtifact(chunks); // zig-out/bin/chunks.wasm
+}
+```
+
+The sources come from the dependency, so `--fork` (below) builds the
+example from the local checkout.
+
 ### Local engine work
 
 To build a dependent repo against a local checkout of swindowzig, use `--fork`.

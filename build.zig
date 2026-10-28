@@ -74,87 +74,23 @@ pub fn build(b: *std.Build) void {
     // minecraft dockerfile has no SDL headers.
     const web_libs = if (platform == .web) exported else addLibs(b, null, false, false);
 
-    // Example app - WASM build
+    // Example app - WASM build. webExample makes app.wasm and chunks.wasm.
+    // A dependent package gets the same artifacts from addWebExample
+    // (REQ-BUILD-001).
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
     });
-
-    // Construct path to example (try src/main.zig first, then main.zig)
-    const example_path = blk: {
-        const src_path = b.fmt("examples/{s}/src/main.zig", .{example_name});
-        const root_path = b.fmt("examples/{s}/main.zig", .{example_name});
-
-        // Check if src/main.zig exists
-        b.root.access(b.graph.io, src_path, .{}) catch {
-            // Fall back to root main.zig
-            break :blk root_path;
-        };
-        break :blk src_path;
-    };
-
-    const example = b.addExecutable(.{
-        .name = "app",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path(example_path),
-            .target = wasm_target,
-            .optimize = optimize,
-        }),
-    });
-    example.root_module.addImport("sw_app", web_libs.app);
-    example.root_module.addImport("sw_math", web_libs.math);
-    example.root_module.addImport("sw_gpu", web_libs.gpu);
-    example.root_module.addImport("sw_core", web_libs.core);
-    example.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
-    example.root_module.addImport("sw_text", web_libs.text);
-    example.root_module.addImport("sw_ui", web_libs.ui);
-    example.root_module.addImport("sw_assets", web_libs.assets);
-    example.root_module.addImport("sw_render", web_libs.render);
-    // sw_platform is needed by examples that drive their own wasm entry
-    // (e.g. voxel, which constructs a WasmBackend directly in its
-    // swindowzig_init export).
-    example.root_module.addImport("sw_platform", web_libs.platform);
-    // The voxel demo: sw_voxel with the demo content (examples/voxel/content.zig).
-    const web_voxel = addVoxel(b, web_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
-    example.root_module.addImport("sw_voxel", web_voxel.voxel);
-    example.root_module.addImport("voxel_content", web_voxel.content);
-    example.rdynamic = true; // Export symbols for WASM
-    // Voxel's Chunk.init() constructs a stack-allocated struct value.
-    // At CHUNK_W=16: 16×256×16 blocks + skylight ≈ 128 KB. At CHUNK_W=48
-    // (the old size) it was ~1.17 MB. Keep 16 MB for headroom — recursive
-    // meshing + several chunk call frames can still stack up.
-    example.stack_size = 16 * 1024 * 1024;
+    const example_path = examplePath(b, example_name);
+    const web_example = webExample(b, web_libs, example_path, optimize);
+    const example = web_example.app;
+    const chunks_wasm = web_example.chunks;
+    const chunk_build = web_example.chunk_build;
+    const web_voxel = web_example.voxel;
 
     const install_example = b.addInstallArtifact(example, .{});
     b.getInstallStep().dependOn(&install_example.step);
 
-    // The build id of the voxel web pair (C9): app.wasm and chunks.wasm
-    // export it, and the worker pool starts only when the two are equal.
-    const chunk_build = b.addOptions();
-    chunk_build.addOption(u64, "id", voxelBuildId(b));
-    example.root_module.addOptions("chunk_build", chunk_build);
-
-    // chunks.wasm: the chunk worker of the Web Worker pool (C9). Its only
-    // wasm imports are the clock and the log. It has no GPU code.
-    const chunks_wasm = b.addExecutable(.{
-        .name = "chunks",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/voxel/chunks_wasm.zig"),
-            .target = wasm_target,
-            .optimize = optimize,
-            .single_threaded = true,
-            // Each Web Worker downloads it: no debug info in a release.
-            .strip = optimize != .debug,
-        }),
-    });
-    // sw_voxel takes the AO and lighting enums from sw_gpu. They are types
-    // only: chunks.wasm imports no WebGPU function.
-    chunks_wasm.root_module.addImport("sw_voxel", web_voxel.voxel);
-    chunks_wasm.root_module.addOptions("chunk_build", chunk_build);
-    chunks_wasm.entry = .disabled;
-    chunks_wasm.rdynamic = true;
-    // The light stage scratch is on the heap. The stages use a small stack.
-    chunks_wasm.stack_size = 16 * 1024 * 1024;
     const install_chunks = b.addInstallArtifact(chunks_wasm, .{});
 
     // Web build step. The voxel web build also installs chunks.wasm.
@@ -835,6 +771,133 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&chunks_wasm.step);
     const worker_wasm_step = b.step("worker-wasm", "Build zig-out/bin/chunks.wasm: the chunk worker of the Web Worker pool");
     worker_wasm_step.dependOn(&install_chunks.step);
+}
+
+/// The settings of addWebExample.
+pub const WebExampleOptions = struct {
+    /// The directory name of the example in `examples/`, for example "voxel".
+    example: []const u8,
+    optimize: std.builtin.Optimize = .debug,
+};
+
+/// The wasm artifacts of one example. Install them with
+/// `b.installArtifact`. `chunks` is the chunk worker (chunks.wasm). Only the
+/// voxel example has one: it is null for the other examples.
+pub const WebExample = struct {
+    app: *std.Build.Step.Compile,
+    chunks: ?*std.Build.Step.Compile,
+};
+
+/// Build one example to wasm32-freestanding from a package that depends on
+/// swindowzig (REQ-BUILD-001). `dep` is `b.dependency("swindowzig", .{})`.
+/// The artifacts are the same as the ones of `zig build web` in this
+/// package: app.wasm, and chunks.wasm for voxel. The sources come from the
+/// dependency, so `zig build --fork=<checkout>` builds the checkout.
+///
+///     const sw = b.dependency("swindowzig", .{});
+///     const web = @import("swindowzig").addWebExample(b, sw, .{ .example = "voxel", .optimize = optimize });
+///     b.installArtifact(web.app);
+///     if (web.chunks) |c| b.installArtifact(c);
+pub fn addWebExample(b: *std.Build, dep: *std.Build.Dependency, options: WebExampleOptions) WebExample {
+    _ = b;
+    const sw = dep.builder;
+    const libs = addLibs(sw, null, false, false);
+    const path = examplePath(sw, options.example);
+    sw.root.access(sw.graph.io, path, .{}) catch
+        std.debug.panic("swindowzig has no example '{s}' ({s} is missing)", .{ options.example, path });
+    const web = webExample(sw, libs, path, options.optimize);
+    return .{
+        .app = web.app,
+        .chunks = if (std.mem.eql(u8, options.example, "voxel")) web.chunks else null,
+    };
+}
+
+/// The root source file of an example: examples/<name>/src/main.zig if it
+/// exists, else examples/<name>/main.zig.
+fn examplePath(b: *std.Build, name: []const u8) []const u8 {
+    const src_path = b.fmt("examples/{s}/src/main.zig", .{name});
+    b.root.access(b.graph.io, src_path, .{}) catch return b.fmt("examples/{s}/main.zig", .{name});
+    return src_path;
+}
+
+const WebArtifacts = struct {
+    app: *std.Build.Step.Compile,
+    chunks: *std.Build.Step.Compile,
+    chunk_build: *std.Build.Step.Options,
+    voxel: VoxelModules,
+};
+
+/// Make the wasm artifacts of one example: app.wasm (the example at
+/// `example_path`), chunks.wasm (the voxel chunk worker), and the build id
+/// that the two share. `b` is the builder of this package: the build of
+/// this package, or `dep.builder` in addWebExample.
+fn webExample(b: *std.Build, web_libs: Libs, example_path: []const u8, optimize: std.builtin.Optimize) WebArtifacts {
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+
+    const example = b.addExecutable(.{
+        .name = "app",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(example_path),
+            .target = wasm_target,
+            .optimize = optimize,
+        }),
+    });
+    example.root_module.addImport("sw_app", web_libs.app);
+    example.root_module.addImport("sw_math", web_libs.math);
+    example.root_module.addImport("sw_gpu", web_libs.gpu);
+    example.root_module.addImport("sw_core", web_libs.core);
+    example.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
+    example.root_module.addImport("sw_text", web_libs.text);
+    example.root_module.addImport("sw_ui", web_libs.ui);
+    example.root_module.addImport("sw_assets", web_libs.assets);
+    example.root_module.addImport("sw_render", web_libs.render);
+    // sw_platform is needed by examples that drive their own wasm entry
+    // (e.g. voxel, which constructs a WasmBackend directly in its
+    // swindowzig_init export).
+    example.root_module.addImport("sw_platform", web_libs.platform);
+    // The voxel demo: sw_voxel with the demo content (examples/voxel/content.zig).
+    const web_voxel = addVoxel(b, web_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
+    example.root_module.addImport("sw_voxel", web_voxel.voxel);
+    example.root_module.addImport("voxel_content", web_voxel.content);
+    example.rdynamic = true; // Export symbols for WASM
+    // Voxel's Chunk.init() constructs a stack-allocated struct value.
+    // At CHUNK_W=16: 16×256×16 blocks + skylight ≈ 128 KB. At CHUNK_W=48
+    // (the old size) it was ~1.17 MB. Keep 16 MB for headroom — recursive
+    // meshing + several chunk call frames can still stack up.
+    example.stack_size = 16 * 1024 * 1024;
+
+    // The build id of the voxel web pair (C9): app.wasm and chunks.wasm
+    // export it, and the worker pool starts only when the two are equal.
+    const chunk_build = b.addOptions();
+    chunk_build.addOption(u64, "id", voxelBuildId(b));
+    example.root_module.addOptions("chunk_build", chunk_build);
+
+    // chunks.wasm: the chunk worker of the Web Worker pool (C9). Its only
+    // wasm imports are the clock and the log. It has no GPU code.
+    const chunks_wasm = b.addExecutable(.{
+        .name = "chunks",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/voxel/chunks_wasm.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+            .single_threaded = true,
+            // Each Web Worker downloads it: no debug info in a release.
+            .strip = optimize != .debug,
+        }),
+    });
+    // sw_voxel takes the AO and lighting enums from sw_gpu. They are types
+    // only: chunks.wasm imports no WebGPU function.
+    chunks_wasm.root_module.addImport("sw_voxel", web_voxel.voxel);
+    chunks_wasm.root_module.addOptions("chunk_build", chunk_build);
+    chunks_wasm.entry = .disabled;
+    chunks_wasm.rdynamic = true;
+    // The light stage scratch is on the heap. The stages use a small stack.
+    chunks_wasm.stack_size = 16 * 1024 * 1024;
+
+    return .{ .app = example, .chunks = chunks_wasm, .chunk_build = chunk_build, .voxel = web_voxel };
 }
 
 /// The build id of the voxel web build (C9): a hash of the path and the
