@@ -290,6 +290,9 @@ TAS scripts for regression live under `examples/voxel/`:
   the spawn disc use the same pipeline, with the same depth test. A TAS
   turns on only the 2D HUD (the debug panel and the keyboard HUD), not
   the 3D debug shapes.
+- `tests/tas_parse_fail.sh` — a TAS script that does not parse stops
+  voxel with no leak report of the debug allocator (REQ-VOXEL-033). The
+  errdefers of `voxelInit` free each allocation of init.
 
 New regression TAS scripts should go in `examples/voxel/tests/` with a comment
 block at the top documenting the purpose, usage, and baseline numbers.

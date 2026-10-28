@@ -716,3 +716,21 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   give each block face the shade of 1x1 quads (REQ-VOXEL-032)"
 - **Relations:**
   - refines REQ-VOXEL-010
+## REQ-VOXEL-033 — An init error of the demo frees each allocation of init
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** quality
+- **Priority:** P3
+- **Statement:** When the init of the voxel demo fails, for example on a
+  TAS script that does not parse, the demo shall free each allocation of
+  init before it exits.
+- **Rationale:** The debug build gives the allocations to the debug
+  allocator of sw_app, and the allocator reports each leak at exit. A
+  leak report on a bad TAS script hides a real leak in the same log. The
+  errdefers of `voxelInit` stop the chunk workers, then free the
+  scheduler, the world, the copies of the path flags and the overlay.
+- **Verification:** Test — `examples/voxel/tests/tas_parse_fail.sh` ›
+  "a TAS parse error stops voxel with no memory leak"
+- **Relations:** none

@@ -360,6 +360,10 @@ jobs:
           done
           exit $status
 
+      - name: A TAS parse error stops voxel with no leak
+        # The debug build reports each leak at exit (REQ-VOXEL-033).
+        run: ./examples/voxel/tests/tas_parse_fail.sh
+
       - name: Cave cull, section cull and occlusion cull
         # Each cull must give the same frame as the frustum cull only
         # (REQ-VOXEL-020, REQ-VOXEL-024, REQ-VOXEL-025).

@@ -120,6 +120,7 @@
 | [`REQ-VOXEL-030`](voxel.md#req-voxel-030--the-mesh-result-carries-the-translucent-quads-and-their-centres) | The mesh result carries the translucent quads and their centres | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-VOXEL-031`](voxel.md#req-voxel-031--the-demo-draws-translucent-blocks-with-sw_render-translucent) | The demo draws translucent blocks with sw_render Translucent | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-VOXEL-032`](voxel.md#req-voxel-032--a-merged-quad-has-the-shade-of-the-11-quads) | A merged quad has the shade of the 1×1 quads | active | functional | P2 | agent:SWZ-17 |
+| [`REQ-VOXEL-033`](voxel.md#req-voxel-033--an-init-error-of-the-demo-frees-each-allocation-of-init) | An init error of the demo frees each allocation of init | active | quality | P3 | agent:SWZ-112 |
 
 ## Dependency graph
 
@@ -240,6 +241,7 @@ graph TD
   REQ_VOXEL_030["REQ-VOXEL-030<br/>The mesh result carries the translucent quads and their centres"]
   REQ_VOXEL_031["REQ-VOXEL-031<br/>The demo draws translucent blocks with sw_render Translucent"]
   REQ_VOXEL_032["REQ-VOXEL-032<br/>A merged quad has the shade of the 1×1 quads"]
+  REQ_VOXEL_033["REQ-VOXEL-033<br/>An init error of the demo frees each allocation of init"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001

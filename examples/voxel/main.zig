@@ -1271,6 +1271,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.dump_frame_path = null;
     state.dump_frame_done = false;
     state.compare_golden_path = null;
+    state.profile_csv_path = null;
+    errdefer freeArgCopies(ctx.allocator());
     state.golden_max_diff_pct = 0.5;
     state.golden_max_channel_delta = 2;
 
@@ -1617,6 +1619,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // distance (deferred until here so --world= / --render-distance= work
     // regardless of flag order).
     state.world = try world_mod.World.init(ctx.allocator(), world_gen.presetConfig(state.world_preset), state.render_distance);
+    errdefer state.world.deinit();
     state.world.gen_config.seed = state.world_seed;
     state.world.gen_config.water = state.world_water;
 
@@ -1635,10 +1638,15 @@ fn voxelInit(ctx: *sw.Context) !void {
             } else |err| {
                 std.log.err("--profile-csv: failed to open '{s}': {}", .{ p, err });
                 state.profile_csv_file = null;
+                ctx.allocator().free(p);
                 state.profile_csv_path = null;
             }
         }
     }
+    errdefer if (comptime !is_wasm) {
+        if (state.profile_csv_file) |f| f.close(ctx.io.?);
+        state.profile_csv_file = null;
+    };
 
     // The chunk pipeline (C1): one scheduler and one executor. The pool
     // starts before the loading screen, and the loading screen uses it
@@ -1648,6 +1656,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.scheduler.setSmoothLight(state.smooth_light);
     state.scheduler.setLodDistance(state.lod_distance);
     try startExecutor(ctx);
+    errdefer state.executor.deinit();
     state.last_frame = .{};
 
     // TAS loading — native only. `TasScript.parseFile` calls std.fs.cwd()
@@ -1661,6 +1670,8 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.log.info("Loading TAS script: {s}", .{tas_path});
 
                 // Parse TAS script
+                // A parse error returns from init. The errdefers above free
+                // the allocations of init.
                 var tas_script = core.TasScript.parseFile(ctx.allocator(), ctx.io.?, tas_path) catch |err| {
                     std.log.err("Failed to parse TAS script: {}", .{err});
                     return err;
@@ -4272,6 +4283,17 @@ fn compareAgainstGolden(
     return if (pass) @as(u8, 0) else @as(u8, 1);
 }
 
+/// Free the copies of the path flags (--dump-frame, --compare-golden,
+/// --profile-csv) that init makes.
+fn freeArgCopies(a: std.mem.Allocator) void {
+    if (state.dump_frame_path) |p| a.free(p);
+    if (state.compare_golden_path) |p| a.free(p);
+    if (state.profile_csv_path) |p| a.free(p);
+    state.dump_frame_path = null;
+    state.compare_golden_path = null;
+    state.profile_csv_path = null;
+}
+
 fn voxelShutdown(ctx: *sw.Context) !void {
     logGpuMeshStats();
     // Stop the chunk worker threads and wait for them, before the World
@@ -4307,6 +4329,7 @@ fn voxelShutdown(ctx: *sw.Context) !void {
             std.log.info("[PROFILE] csv closed: {s}", .{p});
         }
     }
+    freeArgCopies(ctx.allocator());
 
     std.log.info("Voxel demo shutdown", .{});
 }
