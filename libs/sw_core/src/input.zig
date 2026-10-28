@@ -30,11 +30,32 @@ pub const MouseState = struct {
     }
 };
 
-/// Wheel state snapshot
+/// The wheel of this tick, in lines on all backends (REQ-INPUT-007).
+/// `delta_y > 0` scrolls up and `delta_x > 0` scrolls right. SDL gives one
+/// line for one notch. A browser gives pixels, lines or pages, and the
+/// snapshot changes pixels and pages to lines with `wheel_pixels_per_line`
+/// and `wheel_lines_per_page`. A browser notch is often more than one line.
 pub const WheelState = struct {
     delta_x: f32 = 0,
     delta_y: f32 = 0,
 };
+
+/// The pixels of one wheel line. The same value as the `sw_ui` scroll step.
+pub const wheel_pixels_per_line: f32 = 40;
+
+/// The lines of one wheel page. The snapshot does not know the height of the
+/// page, so this is a fixed value.
+pub const wheel_lines_per_page: f32 = 10;
+
+/// The number of wheel lines in a delta of the unit `mode` (REQ-INPUT-007).
+pub fn wheelLines(delta: f32, mode: event.WheelMode) f32 {
+    if (!std.math.isFinite(delta)) return 0;
+    return switch (mode) {
+        .pixel => delta / wheel_pixels_per_line,
+        .line => delta,
+        .page => delta * wheel_lines_per_page,
+    };
+}
 
 /// Keyboard state snapshot
 pub const KeyboardState = struct {
@@ -287,8 +308,8 @@ pub const InputSnapshot = struct {
                 },
 
                 .wheel => |w| {
-                    self.wheel.delta_x += w.dx;
-                    self.wheel.delta_y += w.dy;
+                    self.wheel.delta_x += wheelLines(w.dx, w.mode);
+                    self.wheel.delta_y += wheelLines(w.dy, w.mode);
                     self.mods = w.mods;
                 },
 
@@ -460,6 +481,47 @@ test "InputSnapshot mouse events" {
     try std.testing.expectEqual(@as(f32, 100), snapshot.mouse.x);
     try std.testing.expectEqual(@as(f32, 200), snapshot.mouse.y);
     try std.testing.expect(snapshot.buttonDown(.left));
+}
+
+fn wheelEvent(seq: u32, dx: f32, dy: f32, mode: event.WheelMode) Event {
+    return Event.init(0, 0, seq, .{
+        .wheel = .{ .dx = dx, .dy = dy, .mode = mode, .mods = .{} },
+    });
+}
+
+test "wheel deltas in pixels, lines and pages give lines (REQ-INPUT-007)" {
+    try std.testing.expectEqual(@as(f32, 2.5), wheelLines(100, .pixel));
+    try std.testing.expectEqual(@as(f32, -1), wheelLines(-40, .pixel));
+    try std.testing.expectEqual(@as(f32, 3), wheelLines(3, .line));
+    try std.testing.expectEqual(@as(f32, -10), wheelLines(-1, .page));
+    try std.testing.expectEqual(@as(f32, 0), wheelLines(std.math.nan(f32), .line));
+    try std.testing.expectEqual(@as(f32, 0), wheelLines(std.math.inf(f32), .pixel));
+}
+
+test "InputSnapshot wheel is in lines on all backends (REQ-INPUT-007)" {
+    var snapshot = InputSnapshot.init();
+
+    // One SDL notch up, one web notch down in pixels, and a web scroll right
+    // in lines.
+    snapshot.updateFromEvents(&[_]Event{
+        wheelEvent(0, 0, 1, .line),
+        wheelEvent(1, 0, -100, .pixel),
+        wheelEvent(2, 3, 0, .line),
+    });
+    try std.testing.expectEqual(@as(f32, -1.5), snapshot.wheel.delta_y);
+    try std.testing.expectEqual(@as(f32, 3), snapshot.wheel.delta_x);
+
+    // The wheel is per tick.
+    snapshot.updateFromEvents(&[_]Event{});
+    try std.testing.expectEqual(@as(f32, 0), snapshot.wheel.delta_y);
+    try std.testing.expectEqual(@as(f32, 0), snapshot.wheel.delta_x);
+
+    // A trackpad gives small pixel deltas.
+    snapshot.updateFromEvents(&[_]Event{
+        wheelEvent(0, 0, 4, .pixel),
+        wheelEvent(1, 0, 6, .pixel),
+    });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), snapshot.wheel.delta_y, 1e-6);
 }
 
 test "InputSnapshot text events" {

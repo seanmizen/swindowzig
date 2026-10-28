@@ -111,3 +111,27 @@ input actions that a game binds to them.
 - **Verification:** Test — `libs/sw_core/src/replay.zig` › "Replayer plays a
   version 1 recording (REQ-INPUT-006)"
 - **Relations:** none
+
+## REQ-INPUT-007 — The wheel snapshot is in lines
+
+- **Status:** active
+- **Source:** agent:SWZ-77
+- **Origin:** #77
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The `sw_core` `InputSnapshot` shall give `wheel.delta_x`
+  and `wheel.delta_y` in lines, from the `dx`, `dy` and `mode` of each wheel
+  event.
+- **Rationale:** SDL gives one line for one notch of the wheel. The browser
+  gives a `WheelEvent.deltaMode`, and most browsers give pixels. Before this
+  requirement, the snapshot added the deltas and dropped the mode, so a
+  game got pixels on the web and lines on the desktop. Then each game
+  needed a different factor for each backend. The snapshot divides pixels
+  by 40 (`wheel_pixels_per_line`, the same value as the `sw_ui` scroll
+  step) and multiplies pages by 10 (`wheel_lines_per_page`). The wheel
+  event keeps its raw deltas and its mode, so a recording does not change.
+  A browser notch is often more than one line, because the browser sets
+  the size of a notch.
+- **Verification:** Test — `libs/sw_core/src/input.zig` › "InputSnapshot
+  wheel is in lines on all backends (REQ-INPUT-007)"
+- **Relations:** none
