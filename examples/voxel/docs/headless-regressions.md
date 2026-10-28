@@ -10,10 +10,12 @@
 ## Status: the CI gate (current)
 
 The `swindowzig-check` workflow (`.github/workflows/swindowzig-check.yml`) runs
-on each PR to `main` that touches the engine, and on push to `main`. On
-an Ubuntu runner with lavapipe it runs `zig build test`, the web build, and
-`run_headless_regressions.sh`. A scene that does not match its golden fails
-the job.
+on each PR to `main` that touches the engine, and on push to `main`. Its
+jobs run at the same time on Ubuntu runners. The `goldens` job runs
+`run_headless_regressions.sh` with lavapipe. A scene that does not match its
+golden fails that job. The `headless` job runs each TAS script in
+`examples/voxel/tests/` and `tests/cave_cull.sh`. Other jobs run
+`zig build test`, the web builds and the browser tests.
 
 - The goldens are in `examples/voxel/assets/goldens/lavapipe/`. CI makes them.
   The Metal goldens went stale with no check, so this change deleted them. On macOS

@@ -1,13 +1,28 @@
 name: Check (swindowzig)
 
-# Builds swindowzig, runs its unit tests, and renders the voxel regression
-# scenes with lavapipe (Mesa software Vulkan). Each frame must match its
-# golden in examples/voxel/assets/goldens/lavapipe/. Without
-# this job the goldens went stale with nobody aware of it.
+# Builds swindowzig, runs its unit tests and its web tests, and renders the
+# voxel regression scenes with lavapipe (Mesa software Vulkan). Each frame
+# must match its golden in examples/voxel/assets/goldens/lavapipe/. Without
+# this check the goldens went stale with nobody aware of it.
+#
+# The checks do not depend on each other, so each group runs in its own job
+# at the same time as the others. Each job installs only the tools that its
+# checks use:
+#   zig       Zig, Node and SDL2: format, unit tests, terrain hash.
+#   web       Zig and Bun: the web builds and the Bun tests.
+#   browser   Zig, Bun, Node packages and Chromium: tsc and Playwright.
+#   examples  Zig, lavapipe, SDL2, wgpu-native: the --check examples.
+#   headless  Zig, lavapipe, SDL2, wgpu-native: each TAS script, cave cull.
+#   goldens   Zig, lavapipe, SDL2, wgpu-native: the golden comparison.
+#
+# Caches: setup-zig keeps the Zig cache of each job under a key with the job
+# name, so two jobs do not write the same cache. The apt packages come from
+# a cache of the .deb files (cache-apt-pkgs-action). The Playwright browser
+# comes from a cache with the Playwright version of yarn.lock in its key.
 #
 # A failed comparison is either a regression or a deliberate visual change.
-# For a deliberate change, the job uploads new goldens and prints the command
-# that puts them in the repo. Commit them on the same branch.
+# For a deliberate change, the goldens job uploads new goldens and prints
+# the command that puts them in the repo. Commit them on the same branch.
 
 on:
   pull_request:
@@ -20,39 +35,29 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    name: zig build test + web + lavapipe goldens
+  zig:
+    name: format + unit tests + terrain hash
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      # lavapipe is the only Vulkan driver on the runner. Name it anyway.
-      VK_LOADER_DRIVERS_SELECT: '*lvp*'
-      # build.zig links wgpu-native from ~/.local/lib.
-      LD_LIBRARY_PATH: /home/runner/.local/lib
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install lavapipe and SDL2
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-tools libsdl2-dev
-          vulkaninfo --summary | grep -i llvmpipe
+      - name: Install SDL2 (from the apt cache)
+        # The sw_audio API tests link SDL2 (with the dummy audio driver).
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libsdl2-dev
+          version: 1
 
       - name: Install Zig
         # No version: setup-zig reads minimum_zig_version from build.zig.zon.
         uses: mlugg/setup-zig@v2
+        with:
+          cache-key: ${{ github.job }}
 
       - name: Format
         run: zig fmt --check .
-
-      - name: Install wgpu-native
-        # The same version as the bindings in libs/sw_gpu/src/native_webgpu.zig.
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
-            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
-          mkdir -p ~/.local
-          unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Unit tests
         run: zig build test --summary all
@@ -70,13 +75,26 @@ jobs:
           diff "$RUNNER_TEMP/terrain-native.txt" "$RUNNER_TEMP/terrain-wasm.txt"
           grep -qx '0 db5d8508a4c6cd54' "$RUNNER_TEMP/terrain-native.txt"
 
-      - name: Web build
-        run: zig build web -Dexample=voxel -Doptimize=ReleaseFast
+  web:
+    name: web build + Bun tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Bun for the headless web run
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          cache-key: ${{ github.job }}
+
+      - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Web build
+        run: zig build web -Dexample=voxel -Doptimize=ReleaseFast
 
       - name: Headless run of the voxel web build in Bun
         # app.wasm runs with stub WebGPU imports. The player flies 5 chunks
@@ -113,26 +131,101 @@ jobs:
         # binary and text messages, the close codes, and the reconnect.
         run: bun test backends/wasm/websocket.test.ts
 
-      - name: Native build
-        run: zig build native -Dexample=voxel
+  browser:
+    name: tsc + browser tests in Chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Each voxel TAS script runs headless
-        # A TAS script that does not parse stops voxel with an error. Each
-        # script in examples/voxel/tests/ runs on the flatland world and
-        # must exit 0. The goldens and cave_cull.sh compare frames of some
-        # of these scripts. This step catches the other scripts.
+      - name: Install Zig
+        # The Playwright web servers build flat2d and justabox for the web.
+        uses: mlugg/setup-zig@v2
+        with:
+          cache-key: ${{ github.job }}
+
+      - name: Set up Bun
+        # The Playwright web servers run the Bun dev server.
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install the Node packages
+        run: yarn install --immutable
+
+      - name: Type check of backends/wasm
+        run: yarn typecheck:web
+
+      - name: Find the Playwright version
+        id: playwright
         run: |
-          status=0
-          for tas in examples/voxel/tests/*.tas; do
-            if timeout 200 ./zig-out/bin/voxel --headless --world=flatland --tas "$tas" > "$RUNNER_TEMP/tas.log" 2>&1; then
-              echo "PASS $tas"
-            else
-              echo "FAIL $tas (exit $?)"
-              tail -n 20 "$RUNNER_TEMP/tas.log"
-              status=1
-            fi
-          done
-          exit $status
+          version=$(sed -n '/^"playwright@npm:/,/^$/s/^  version: //p' yarn.lock)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Chromium cache
+        id: chromium-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-headless-shell
+
+      - name: Install Chromium
+        # The runner image has Google Chrome, and thus the system libraries
+        # of Chromium. This step does not use --with-deps, so a cache hit
+        # and a cache miss start the same browser on the same libraries.
+        if: steps.chromium-cache.outputs.cache-hit != 'true'
+        run: yarn playwright install --only-shell chromium
+
+      - name: Browser tests in Chromium (flat2d and canvas)
+        # Playwright opens flat2d and justabox with WebGPU. Chromium uses
+        # its own SwiftShader Vulkan driver. This job does not set
+        # VK_LOADER_DRIVERS_SELECT: the filter '*lvp*' hides SwiftShader
+        # and gives no WebGPU adapter. The tests move the focus with Tab
+        # and read the accessibility tree (REQ-A11Y-001), among others.
+        # The flat2d tests run 10 times with no retry. A flaky test then
+        # fails the step (REQ-INPUT-007).
+        run: |
+          yarn test:browser --project canvas
+          yarn test:browser --project flat2d --repeat-each=10 --retries=0
+
+  examples:
+    name: native examples (--check)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # lavapipe is the only Vulkan driver on the runner. Name it anyway.
+      VK_LOADER_DRIVERS_SELECT: '*lvp*'
+      # build.zig links wgpu-native from ~/.local/lib.
+      LD_LIBRARY_PATH: /home/runner/.local/lib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install lavapipe and SDL2 (from the apt cache)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: mesa-vulkan-drivers vulkan-tools libsdl2-dev
+          version: 1
+
+      - name: Check that lavapipe works
+        run: |
+          sudo ldconfig
+          vulkaninfo --summary | grep -i llvmpipe
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          cache-key: ${{ github.job }}
+
+      - name: Install wgpu-native
+        # The same version as the bindings in libs/sw_gpu/src/native_webgpu.zig.
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
+            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+          mkdir -p ~/.local
+          unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Web and native build of the 2D example (flat2d)
         run: |
@@ -190,39 +283,111 @@ jobs:
           zig build native -Dexample=models
           ./zig-out/bin/models --check
 
-      - name: Install the Node packages
-        run: yarn install --immutable
+  headless:
+    name: voxel TAS scripts + cave cull (lavapipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      VK_LOADER_DRIVERS_SELECT: '*lvp*'
+      LD_LIBRARY_PATH: /home/runner/.local/lib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Type check of backends/wasm
-        run: yarn typecheck:web
+      - name: Install lavapipe and SDL2 (from the apt cache)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: mesa-vulkan-drivers vulkan-tools libsdl2-dev
+          version: 1
 
-      - name: Browser tests in Chromium (flat2d and canvas)
-        # Playwright opens flat2d with WebGPU, moves the focus with Tab, and
-        # reads the accessibility tree (REQ-A11Y-001). Chromium uses its own
-        # SwiftShader Vulkan driver. VK_LOADER_DRIVERS_SELECT='*lvp*' hides
-        # that driver and gives no WebGPU adapter, so this step removes it.
-        # The flat2d tests run 10 times with no retry. A flaky test then
-        # fails the step (REQ-INPUT-007).
+      - name: Check that lavapipe works
         run: |
-          yarn playwright install --with-deps --only-shell chromium
-          env -u VK_LOADER_DRIVERS_SELECT yarn test:browser --project canvas
-          env -u VK_LOADER_DRIVERS_SELECT yarn test:browser --project flat2d --repeat-each=10 --retries=0
+          sudo ldconfig
+          vulkaninfo --summary | grep -i llvmpipe
 
-      - name: Compare with the goldens
-        # The step takes about 1.5 minutes. The script stops a run after
-        # 120 s and shows each golden before it starts. The step limit
-        # stops a hang outside the runs. On 2026-10-27 a job stopped at the
-        # 30-minute job limit 21 s into this step. The apt and Playwright
-        # installs used 25 minutes of the job. No golden run was hung.
-        id: goldens
-        timeout-minutes: 10
-        run: ./examples/voxel/scripts/run_headless_regressions.sh --out "$RUNNER_TEMP/frames"
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          cache-key: ${{ github.job }}
+
+      - name: Install wgpu-native
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
+            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+          mkdir -p ~/.local
+          unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
+
+      - name: Native build
+        run: zig build native -Dexample=voxel
+
+      - name: Each voxel TAS script runs headless
+        # A TAS script that does not parse stops voxel with an error. Each
+        # script in examples/voxel/tests/ runs on the flatland world and
+        # must exit 0. The goldens and cave_cull.sh compare frames of some
+        # of these scripts. This step catches the other scripts.
+        run: |
+          status=0
+          for tas in examples/voxel/tests/*.tas; do
+            if timeout 200 ./zig-out/bin/voxel --headless --world=flatland --tas "$tas" > "$RUNNER_TEMP/tas.log" 2>&1; then
+              echo "PASS $tas"
+            else
+              echo "FAIL $tas (exit $?)"
+              tail -n 20 "$RUNNER_TEMP/tas.log"
+              status=1
+            fi
+          done
+          exit $status
 
       - name: Cave cull, section cull and occlusion cull
         # Each cull must give the same frame as the frustum cull only
         # (REQ-VOXEL-020, REQ-VOXEL-024, REQ-VOXEL-025).
         timeout-minutes: 15
         run: ./examples/voxel/tests/cave_cull.sh --skip-build
+
+  goldens:
+    name: voxel goldens (lavapipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      VK_LOADER_DRIVERS_SELECT: '*lvp*'
+      LD_LIBRARY_PATH: /home/runner/.local/lib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install lavapipe and SDL2 (from the apt cache)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: mesa-vulkan-drivers vulkan-tools libsdl2-dev
+          version: 1
+
+      - name: Check that lavapipe works
+        run: |
+          sudo ldconfig
+          vulkaninfo --summary | grep -i llvmpipe
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          cache-key: ${{ github.job }}
+
+      - name: Install wgpu-native
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
+            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+          mkdir -p ~/.local
+          unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
+
+      - name: Native build
+        run: zig build native -Dexample=voxel
+
+      - name: Compare with the goldens
+        # The step takes about 1.5 minutes. The script stops a run after
+        # 120 s and shows each golden before it starts. The step limit
+        # stops a hang outside the runs.
+        id: goldens
+        timeout-minutes: 10
+        run: ./examples/voxel/scripts/run_headless_regressions.sh --out "$RUNNER_TEMP/frames"
 
       - name: Make new goldens
         if: failure() && steps.goldens.outcome == 'failure'
