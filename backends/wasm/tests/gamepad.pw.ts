@@ -33,12 +33,36 @@ async function setButton(page: Page, index: number, down: boolean) {
   );
 }
 
-/** Press and release a button. Each state stays for some frames. */
+/**
+ * Wait for `n` animation frames. The loader reads the gamepad one time in
+ * each animation frame.
+ */
+async function frames(page: Page, n = 3): Promise<void> {
+  await page.evaluate(
+    (count) =>
+      new Promise<void>((resolve) => {
+        let left = count;
+        const step = () => {
+          left -= 1;
+          if (left <= 0) resolve();
+          else requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      }),
+    n,
+  );
+}
+
+/**
+ * Press and release a button. Each state stays for 3 frames. SwiftShader
+ * draws a few frames each second, so a fixed delay can be shorter than one
+ * frame, and the loader then does not see the press.
+ */
 async function tap(page: Page, index: number) {
   await setButton(page, index, true);
-  await page.waitForTimeout(100);
+  await frames(page);
   await setButton(page, index, false);
-  await page.waitForTimeout(100);
+  await frames(page);
 }
 
 const DPAD_DOWN = 13;
