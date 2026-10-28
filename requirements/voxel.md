@@ -297,3 +297,181 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
 - **Verification:** Test — `libs/sw_voxel/src/region.zig` › "a damaged
   chunk fails alone (REQ-VOXEL-013)"
 - **Relations:** depends-on REQ-VOXEL-011
+
+## REQ-VOXEL-014 — A fluid surface has a height at each corner
+
+- **Status:** active
+- **Source:** agent:SWZ-34
+- **Origin:** #34
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** Where the content gives a fluid and a level for a block,
+  the `sw_voxel` fluid mesher shall give the top surface of each cell of
+  that block a height at each corner from the levels of the cells at the
+  corner.
+- **Rationale:** A fluid that flows down a slope must show the slope, and
+  two cells next to each other must meet at one height with no gap. A
+  corner height is the mean height of the 4 cells at the corner, so two
+  cells that share an edge give it the same height. A cell under the same
+  fluid is full. The greedy mesher cannot make a quad with 4 heights, so
+  fluids have their own vertex stream.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/fluid.zig` › "the corner heights go down
+    from a full cell to a low cell (REQ-VOXEL-014)"
+  - Test — `libs/sw_voxel/src/fluid.zig` › "one full fluid cell has 6
+    faces, and its top surface is at the surface height (REQ-VOXEL-014)"
+  - Test — `libs/sw_voxel/src/fluid.zig` › "the content gives a fluid
+    and a level for each fluid block (REQ-VOXEL-014)"
+- **Relations:** none
+
+## REQ-VOXEL-015 — Two cells of one fluid have no face between them
+
+- **Status:** active
+- **Source:** agent:SWZ-34
+- **Origin:** #34
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When two cells next to each other hold the same fluid,
+  the `sw_voxel` fluid mesher shall make no face between the two cells.
+- **Rationale:** A face inside a body of fluid shows as a dark plane in a
+  translucent fluid, and it costs fill rate. Two different fluids keep
+  the faces between them.
+- **Verification:** Test — `libs/sw_voxel/src/fluid.zig` › "two cells of
+  one fluid have no face between them, two fluids do (REQ-VOXEL-015)"
+- **Relations:** refines REQ-VOXEL-014
+
+## REQ-VOXEL-016 — The texture of a fluid surface follows the flow
+
+- **Status:** active
+- **Source:** agent:SWZ-34
+- **Origin:** #34
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When a fluid cell has a lower or an open side cell, the
+  `sw_voxel` fluid mesher shall turn the UVs of the top surface so that
+  the texture v axis points along the flow.
+- **Rationale:** A moving texture that follows the slope shows the
+  direction of the flow. The flow is the sum of the drops to the side
+  cells. A cell with no flow keeps the UVs of the cell and the still
+  texture.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/fluid.zig` › "the top UVs follow the flow
+    direction (REQ-VOXEL-016)"
+  - Test — `libs/sw_voxel/src/fluid.zig` › "a cell next to a lower cell
+    has a flowing top in the direction of the drop (REQ-VOXEL-016)"
+- **Relations:** refines REQ-VOXEL-014
+
+## REQ-VOXEL-017 — The mesh uploads of one frame have a limit and a priority
+
+- **Status:** active
+- **Source:** agent:SWZ-55
+- **Origin:** #55
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** During gameplay, the voxel demo shall upload at most
+  `MAX_UPLOADS_PER_FRAME` chunk meshes in one frame, the chunks in view
+  first and then the nearest chunks.
+- **Rationale:** One install of the chunk pipeline can give many new
+  meshes. Each mesh is a GPU upload, and many uploads in one frame make
+  a frame spike. The meshes that wait upload in the next frames. The
+  loading screen has no limit.
+- **Verification:** Test — `libs/sw_voxel/src/pipeline/streaming.zig` ›
+  "streaming: the upload budget keeps the chunks in view, nearest first
+  (REQ-VOXEL-017)"
+- **Relations:** none
+
+## REQ-VOXEL-018 — A fast player has no long hole near the player
+
+- **Status:** active
+- **Source:** agent:SWZ-55
+- **Origin:** #55
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** When the chunk pipeline runs fewer jobs in one frame
+  than the render distance needs, the scheduler shall give the jobs for
+  the meshes of the simulation radius the first class.
+- **Rationale:** The mesh of a chunk near the player needs the light of
+  the next ring and the blocks of the ring after it. When only the mesh
+  has the first class, a fast player gets to the chunk before its light
+  and blocks. The blocks start one ring early.
+- **Verification:** Test — `examples/voxel/scheduler_test.zig` ›
+  "scheduler: a fast camera leaves no long hole near the player
+  (REQ-VOXEL-018)"
+- **Relations:** none
+
+## REQ-VOXEL-019 — Each mesh records which faces of its sections connect
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** For each 16 × 16 × 16 section of a chunk, the mesh stage
+  shall record the pairs of section faces that one region of open cells
+  connects.
+- **Rationale:** Cave culling needs to know if the camera can see
+  through a section. The mesh stage reads the blocks of the chunk, so the
+  connectivity costs no more block reads. The result message carries it
+  to main with the mesh (protocol version 4).
+- **Verification:** Test — `libs/sw_voxel/src/visibility.zig` ›
+  "visibility: a section records the face pairs that connect
+  (REQ-VOXEL-019)"
+- **Relations:** none
+
+## REQ-VOXEL-020 — Cave culling removes only the sections that the camera can not see
+
+- **Status:** active
+- **Source:** agent:SWZ-40
+- **Origin:** #40
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** The cave cull shall keep each section that a line of
+  sight from the camera section reaches through open sections.
+- **Rationale:** In a cave, most chunks in the frustum are behind rock.
+  The cull walks from the camera section through connected faces, and the
+  demo does not draw a chunk column that the walk does not reach. A cull
+  that removes a visible section changes the image, so the cull must
+  keep each section that it can not prove hidden.
+- **Verification:** Test — `libs/sw_voxel/src/visibility.zig` ›
+  "visibility: each section on a line of sight is visible, and the walk
+  culls a closed cave (REQ-VOXEL-020)"
+- **Relations:** depends-on REQ-VOXEL-019
+
+## REQ-VOXEL-021 — Far chunks get a mesh at a lower resolution
+
+- **Status:** active
+- **Source:** agent:SWZ-39
+- **Origin:** #39
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the far terrain distance is more than 0, the
+  scheduler shall give each chunk past that distance a mesh of cells of 2,
+  4 or 8 blocks, from the distance of the chunk.
+- **Rationale:** A far chunk costs as much as a near chunk, but it covers
+  few pixels. A mesh of larger cells has fewer quads, so the render
+  distance can be larger. The mesh stays a pure stage (C2), and the quads
+  keep the PackedQuad format.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/pipeline/lod.zig` › "lod: level 0 is the
+    full mesh, and each level has fewer quads (REQ-VOXEL-021)"
+  - Test — `examples/voxel/scheduler_test.zig` › "scheduler: far chunks
+    get a mesh at their level of detail (REQ-VOXEL-021)"
+- **Relations:** none
+
+## REQ-VOXEL-022 — No gap shows at the border between two levels of detail
+
+- **Status:** active
+- **Source:** agent:SWZ-39
+- **Origin:** #39
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** At the border between two chunks at any two levels of
+  detail, the meshes shall have a face at each point where one side is a
+  full cube and the other side is open.
+- **Rationale:** A gap at a level border shows the sky or the far
+  terrain through the ground. Each coarse cell holds each full cube of
+  its blocks, and each mesh reads the real blocks across the border, so
+  one of the two meshes always draws the face.
+- **Verification:** Test — `libs/sw_voxel/src/pipeline/lod.zig` › "lod:
+  no gap at the border between two levels (REQ-VOXEL-022)"
+- **Relations:** depends-on REQ-VOXEL-021

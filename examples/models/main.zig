@@ -16,6 +16,22 @@
 // the sky (REQ-GPU-016). A point light moves near the ground in front of
 // the figures (REQ-GPU-017).
 //
+// Two translucent quads float over the ground at the left, and a third
+// is under the ground. The translucent pass draws them after the opaque
+// scene, from far to near, with the depth test on and the depth write off
+// (REQ-GPU-022, REQ-GPU-023). The ground hides the third quad.
+//
+// A spark emitter at the right throws particles up. The particle pass
+// draws them as camera-facing quads in one draw call, from far to near
+// (REQ-GPU-024). The check uses two fixed particles in place of the
+// emitter.
+//
+// A performance overlay at the top left draws a chart of the frame times
+// with sw_gfx2d (REQ-GPU-029). When the device has GPU timestamps, a pass
+// timer times each pass of the frame graph (REQ-GPU-028). T writes the
+// pass times to the log. F sets or removes a limit of 30 frames each
+// second (REQ-GPU-027).
+//
 // Keys: Space stops or starts the animation. D turns the first-person
 // depth range on or off. L turns the shadows on or off (REQ-GPU-018). P
 // turns the point light on or off. Left and Right change the time of day.
@@ -26,13 +42,19 @@
 // reference of the shader after the CPU tonemap: the figures, the ground
 // in the shadow of a figure, the same ground in light, and the ground
 // under the point light. It checks the draw calls and the instance
-// counts. It exits with 0 (pass) or 1 (fail).
+// counts. The pixel through the two translucent quads must be the CPU
+// blend of the far quad, then the near quad, over the ground. The same
+// test is done for two particles, in one draw call. The background of
+// the overlay must have its colour. When the device has GPU timestamps,
+// each render pass must have a time. It exits
+// with 0 (pass) or 1 (fail).
 const std = @import("std");
 const sw = @import("sw_app");
 const builtin = @import("builtin");
 const sw_math = @import("sw_math");
 const gpu_mod = @import("sw_gpu");
 const sw_render = @import("sw_render");
+const sw_gfx2d = @import("sw_gfx2d");
 
 const Mat4 = sw_math.Mat4;
 const Quat = sw_math.Quat;
@@ -166,6 +188,42 @@ var post: ?sw_render.PostChain = null;
 var sky: ?sw_render.Sky = null;
 var lighting: ?sw_render.Lighting = null;
 var models: ?sw_render.BoxModels = null;
+var glass: ?sw_render.Translucent = null;
+var sparks: ?sw_render.Particles = null;
+var spark_system: ?sw_render.ParticleSystem = null;
+var spark_emitter: sw_render.ParticleEmitter = .{
+    .position = .{ 4.5, 0.2, 1.5 },
+    .rate = 60,
+    .speed = .{ 2, 4 },
+    .spread = 0.4,
+    .life = .{ 0.6, 1.2 },
+    .size = 0.08,
+    .color = .{ 1.0, 0.7, 0.2, 1.0 },
+    .seed = 3,
+};
+
+/// The ground point behind the two check particles.
+const spark_ground: [3]f32 = .{ -0.4, 0, 1.0 };
+/// The check particles: red (far) and blue (near), at alpha 0.5, on the
+/// line from the eye to `spark_ground`.
+const spark_at = [2]f32{ 0.55, 0.45 };
+const spark_color = [2][4]f32{ .{ 1, 0, 0, 0.5 }, .{ 0, 0, 1, 0.5 } };
+
+fn sparkAt(t: f32) [3]f32 {
+    var c: [3]f32 = undefined;
+    for (0..3) |i| c[i] = eye[i] + t * (spark_ground[i] - eye[i]);
+    return c;
+}
+var overlay: ?sw_gfx2d.Renderer = null;
+var timer: ?sw_render.PassTimer = null;
+var frame_times: sw_render.FrameTimes = .{};
+var limiter: sw_render.FrameLimiter = .{};
+var last_frame_ns: ?u64 = null;
+const chart_options: sw_render.FrameChartOptions = .{
+    .rect = .{ .x = 8, .y = 8, .w = 128, .h = 40 },
+    .background = .{ .r = 0.1, .g = 0.1, .b = 0.4 },
+};
+
 var figure: sw_render.BoxModelId = undefined;
 var block: sw_render.BoxModelId = undefined;
 var held: sw_render.BoxModelId = undefined;
@@ -179,6 +237,29 @@ var time_of_day: f32 = check_time;
 
 const first_person_view: sw_render.BoxModelView = .{ .depth_range = .{ 0, 0.01 }, .fog = false };
 const no_range_view: sw_render.BoxModelView = .{ .depth_range = .{ 0, 1 }, .fog = false };
+
+/// The ground point behind the translucent quads. No figure shades it, and
+/// the point light does not reach it.
+const glass_ground: [3]f32 = .{ -1.0, 0, 2.5 };
+/// The quads: red at alpha 0.5 (far), blue at alpha 0.5 (near), and a
+/// green quad under the ground. Each one is on the line from the eye to
+/// `glass_ground`, at this part of the line.
+const glass_at = [3]f32{ 0.6, 0.4, 1.3 };
+const glass_color = [3][4]f32{ .{ 1, 0, 0, 0.5 }, .{ 0, 0, 1, 0.5 }, .{ 0, 1, 0, 0.8 } };
+
+/// A square quad of side 0.2 that faces +Z, at part `t` of the line from
+/// the eye to `glass_ground`.
+fn glassQuad(t: f32, color: [4]f32) sw_render.TranslucentQuad {
+    var c: [3]f32 = undefined;
+    for (0..3) |i| c[i] = eye[i] + t * (glass_ground[i] - eye[i]);
+    const h: f32 = 0.1;
+    return .{
+        .{ .pos = .{ c[0] - h, c[1] - h, c[2] }, .color = color },
+        .{ .pos = .{ c[0] + h, c[1] - h, c[2] }, .color = color },
+        .{ .pos = .{ c[0] + h, c[1] + h, c[2] }, .color = color },
+        .{ .pos = .{ c[0] - h, c[1] + h, c[2] }, .color = color },
+    };
+}
 
 fn v3(a: [3]f32) Vec3 {
     return .{ .x = a[0], .y = a[1], .z = a[2] };
@@ -295,7 +376,38 @@ const Callbacks = struct {
         block = try m.addModel(.{ .parts = &block_parts });
         held = try m.addModel(.{ .parts = &held_parts });
         try m.addFirstPersonPass(.{ .color = p.hdr, .depth = depth, .view = first_person_view });
-        std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range. L: shadows. P: point light. Left/Right: time.", .{figure_count});
+
+        // The translucent quads, near quad first, so that only the sort
+        // gives the correct blend.
+        glass = try sw_render.Translucent.init(allocator, g, .{ .color_format = p.hdr_format, .max_quads = 4 });
+        const gl = &glass.?;
+        try gl.setQuads(&.{ glassQuad(glass_at[1], glass_color[1]), glassQuad(glass_at[0], glass_color[0]), glassQuad(glass_at[2], glass_color[2]) });
+        try gl.addPass(.{ .color = p.hdr, .depth = depth });
+
+        spark_system = try sw_render.ParticleSystem.init(allocator, 256);
+        sparks = try sw_render.Particles.init(allocator, g, .{ .color_format = p.hdr_format, .capacity = 256 });
+        try sparks.?.addPass(.{ .color = p.hdr, .depth = depth });
+        if (check_mode) {
+            // The near particle first, so that only the sort gives the
+            // correct blend.
+            spark_system.?.spawn(.{ .pos = sparkAt(spark_at[1]), .size = 0.15, .color = spark_color[1], .life = 1000 });
+            spark_system.?.spawn(.{ .pos = sparkAt(spark_at[0]), .size = 0.15, .color = spark_color[0], .life = 1000 });
+        }
+        // The performance overlay draws on the screen after the post chain.
+        overlay = try sw_gfx2d.Renderer.init(allocator, gpu, .{});
+        try g.addPass(.{
+            .name = "overlay",
+            .order = 2000,
+            .attachments = .{ .colors = &.{.{ .target = .screen, .load_op = .load }} },
+            .callback = .plain(drawOverlay),
+        });
+        if (gpu.supportsTimestamps()) {
+            timer = try sw_render.PassTimer.init(allocator, gpu, .{});
+            g.setTimer(&timer.?);
+        } else {
+            std.log.info("models: the device has no GPU timestamps. The pass timer is off.", .{});
+        }
+        std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range. L: shadows. P: point light. Left/Right: time. T: pass times. F: frame limit.", .{figure_count});
     }
 
     pub fn tick(ctx: *sw.Context) !void {
@@ -311,9 +423,21 @@ const Callbacks = struct {
             if (lighting) |*l| l.setShadowsEnabled(shadows_on);
         }
         if (in.keyPressed(.P)) point_light_on = !point_light_on;
+        if (in.keyPressed(.F)) limiter.setTarget(if (limiter.target_fps == null) 30 else null);
+        if (in.keyPressed(.T)) {
+            if (timer) |*t| {
+                for (t.times()) |pt| std.log.info("models: pass {s}: {d:.3} ms", .{ pt.name, pt.ms });
+            }
+        }
         if (in.keyDown(.Left)) time_of_day -= 0.1 / 60.0;
         if (in.keyDown(.Right)) time_of_day += 0.1 / 60.0;
-        if (anim_on) anim_time += 1.0 / 60.0;
+        if (anim_on) {
+            anim_time += 1.0 / 60.0;
+            if (spark_system) |*s| {
+                _ = spark_emitter.emit(s, 1.0 / 60.0);
+                s.step(1.0 / 60.0);
+            }
+        }
     }
 
     pub fn render(ctx: *sw.Context) !void {
@@ -343,16 +467,29 @@ const Callbacks = struct {
             try l.setPointLights(&.{});
         }
         try l.update(f);
+        try glass.?.update(eye);
+        try sparks.?.update(&spark_system.?, sw_render.ParticleCamera.fromView(f.view, eye));
         if (try g.execute(f)) {
             if (comptime !builtin.cpu.arch.isWasm()) {
                 if (check_mode) try checkFrame(ctx, f);
             }
             gpu.present();
         }
+        pace(ctx);
     }
 
     pub fn shutdown(ctx: *sw.Context) !void {
-        _ = ctx;
+        if (graph) |*g| g.setTimer(null);
+        if (timer) |*t| t.deinit();
+        timer = null;
+        if (overlay) |*o| o.deinit();
+        overlay = null;
+        if (glass) |*gl| gl.deinit();
+        glass = null;
+        if (sparks) |*s| s.deinit();
+        sparks = null;
+        if (spark_system) |*s| s.deinit(ctx.allocator());
+        spark_system = null;
         if (models) |*m| m.deinit();
         models = null;
         if (lighting) |*l| l.deinit();
@@ -377,6 +514,30 @@ fn frameUniforms(w_px: u32, h_px: u32) sw_render.FrameUniforms {
         .view_proj = proj.mul(view).data,
         .camera_pos = .{ eye[0], eye[1], eye[2], 1 },
     };
+}
+
+/// Keep the frame time for the chart, and wait for the frame limit.
+/// Native only: the web build has no clock here.
+fn pace(ctx: *sw.Context) void {
+    const io = ctx.io orelse return;
+    if (check_mode) {
+        // Fixed times: the check does not depend on the speed of the
+        // machine.
+        frame_times.push(10);
+        return;
+    }
+    const now: u64 = @intCast(@max(std.Io.Timestamp.now(io, .awake).toNanoseconds(), 0));
+    if (last_frame_ns) |last| frame_times.push(@as(f32, @floatFromInt(now -| last)) / std.time.ns_per_ms);
+    const wait_ns = limiter.wait(now);
+    if (wait_ns > 0) io.sleep(.fromNanoseconds(wait_ns), .awake) catch {};
+    last_frame_ns = @intCast(@max(std.Io.Timestamp.now(io, .awake).toNanoseconds(), 0));
+}
+
+fn drawOverlay(pass: *sw_render.Pass) !void {
+    const o = &overlay.?;
+    o.beginFrame(pass.width, pass.height, 1);
+    try sw_render.drawFrameChart(o, &frame_times, chart_options);
+    try o.flush(pass.render.?);
 }
 
 fn drawScene(pass: *sw_render.Pass) !void {
@@ -567,6 +728,9 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
         ok = expectPixel(step, "block in front of the held object", pixels, w, held_xy, faceColor(frame, .{ 1, 1, 1 }, block_tint, block_face, true)) and ok;
     }
     ok = checkShadows(step, frame, pixels, w, h) and ok;
+    ok = checkGlass(step, frame, pixels, w, h) and ok;
+    ok = checkSparks(step, frame, pixels, w, h) and ok;
+    ok = checkOverlay(step, pixels, w) and ok;
     return ok;
 }
 
@@ -643,5 +807,98 @@ fn checkShadows(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, 
         std.log.err("models: {s}: the point light must make the ground brighter", .{step.name});
         ok = false;
     }
+    return ok;
+}
+
+/// The pixel through the translucent quads: the CPU blend of the far red
+/// quad, then the near blue quad, over the ground. The green quad under
+/// the ground must not show (REQ-GPU-022, REQ-GPU-023).
+fn checkGlass(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: u32, h: u32) bool {
+    var ok = true;
+    const up: [3]f32 = .{ 0, 1, 0 };
+    const lt = lighting.?;
+    const light = models.?.getLight();
+    const l = lt.lightDirection();
+    for (front_x) |x| {
+        if (sw_render.lighting.rayHitsBox(glass_ground, l, .{ x - 0.7, 0, -0.3 }, .{ x + 1.8, 2.8, 0.3 })) {
+            std.log.err("models: the glass ground point {any} is behind a figure", .{glass_ground});
+            ok = false;
+        }
+    }
+    const points = sw_render.lighting.pointLights(lt.uniforms(), glass_ground, up);
+    var ground = box_model.shadeLit(.{ 1, 1, 1 }, ground_tint, up, l, light, 1, points);
+    ground = sw_render.sky.applyFog(frame.sky, ground, distance(glass_ground, eye));
+    const red_c: [3]f32 = .{ glass_color[0][0], glass_color[0][1], glass_color[0][2] };
+    const blue_c: [3]f32 = .{ glass_color[1][0], glass_color[1][1], glass_color[1][2] };
+    const blend = sw_render.translucent.over;
+    const want = display(blend(blend(ground, red_c, glass_color[0][3]), blue_c, glass_color[1][3]));
+    const xy = project(frame.view_proj, glass_ground, w, h);
+    ok = expectPixel(step, "ground through the translucent quads", pixels, w, xy, want) and ok;
+    const got = pixelAt(pixels, w, xy);
+    // The near quad is blue: blue is over red.
+    if (got[2] <= got[0]) {
+        std.log.err("models: {s}: the translucent quads drew near to far", .{step.name});
+        ok = false;
+    }
+    if (glass.?.sort_count != 1) {
+        std.log.err("models: {s}: the quads sorted {d} times. The camera does not move, so they must sort one time", .{ step.name, glass.?.sort_count });
+        ok = false;
+    }
+    return ok;
+}
+
+/// The pixel through the two check particles: the CPU blend of the far
+/// red particle, then the near blue particle, over the ground. One draw
+/// call draws both (REQ-GPU-024).
+fn checkSparks(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: u32, h: u32) bool {
+    var ok = true;
+    const up: [3]f32 = .{ 0, 1, 0 };
+    const lt = lighting.?;
+    const l = lt.lightDirection();
+    for (front_x) |x| {
+        if (sw_render.lighting.rayHitsBox(spark_ground, l, .{ x - 0.7, 0, -0.3 }, .{ x + 1.8, 2.8, 0.3 })) {
+            std.log.err("models: the spark ground point {any} is behind a figure", .{spark_ground});
+            ok = false;
+        }
+    }
+    const points = sw_render.lighting.pointLights(lt.uniforms(), spark_ground, up);
+    var ground = box_model.shadeLit(.{ 1, 1, 1 }, ground_tint, up, l, models.?.getLight(), 1, points);
+    ground = sw_render.sky.applyFog(frame.sky, ground, distance(spark_ground, eye));
+    const blend = sw_render.translucent.over;
+    const far: [3]f32 = .{ spark_color[0][0], spark_color[0][1], spark_color[0][2] };
+    const near: [3]f32 = .{ spark_color[1][0], spark_color[1][1], spark_color[1][2] };
+    const want = display(blend(blend(ground, far, spark_color[0][3]), near, spark_color[1][3]));
+    ok = expectPixel(step, "ground through two particles", pixels, w, project(frame.view_proj, spark_ground, w, h), want) and ok;
+    if (sparks.?.draw_calls != 1) {
+        std.log.err("models: {s}: the particles used {d} draw calls, not 1", .{ step.name, sparks.?.draw_calls });
+        ok = false;
+    }
+    return ok;
+}
+
+/// The overlay background at the top left, and the pass times when the
+/// device has GPU timestamps.
+fn checkOverlay(step: Step, pixels: []const u8, w: u32) bool {
+    var ok = true;
+    const bg = chart_options.background;
+    const want: [3]u8 = .{ @intFromFloat(@round(bg.r * 255)), @intFromFloat(@round(bg.g * 255)), @intFromFloat(@round(bg.b * 255)) };
+    ok = expectPixel(step, "overlay background", pixels, w, .{ 9, 9 }, want) and ok;
+    const t = if (timer) |*pt| pt else return ok;
+    for ([_][]const u8{ "scene", "sw_translucent", "sw_particles", "overlay" }) |name| {
+        const ms = t.find(name) orelse {
+            std.log.err("models: {s}: the pass timer has no time for the pass {s}", .{ step.name, name });
+            ok = false;
+            continue;
+        };
+        if (!(ms >= 0 and ms < 10_000)) {
+            std.log.err("models: {s}: the pass {s} has the time {d} ms", .{ step.name, name, ms });
+            ok = false;
+        }
+    }
+    if (!(t.total() > 0)) {
+        std.log.err("models: {s}: the sum of the pass times is {d} ms, not more than 0", .{ step.name, t.total() });
+        ok = false;
+    }
+    std.log.info("models: {s}: {d} passes timed, {d:.3} ms on the GPU", .{ step.name, t.times().len, t.total() });
     return ok;
 }

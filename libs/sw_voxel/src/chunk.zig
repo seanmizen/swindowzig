@@ -573,7 +573,7 @@ pub const Chunk = struct {
     /// a full cube: not air and with no model (`models.isCube`). With no
     /// models in the content, the result is the same as `solidColumns`.
     pub fn cubeColumns(self: *const Chunk, out: *[CHUNK_W][CHUNK_W]Col) void {
-        if (!models.any) return self.solidColumns(out);
+        if (!models.any and !@import("fluid.zig").any) return self.solidColumns(out);
         self.columnsWhere(out, models.isCube);
     }
 

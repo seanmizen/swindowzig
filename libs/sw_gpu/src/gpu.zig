@@ -184,6 +184,14 @@ pub const GPU = struct {
     offscreen_color_texture: if (!is_wasm) ?Texture else void =
         if (!is_wasm) null else {},
 
+    /// The device has the timestamp query feature (REQ-GPU-028). Native
+    /// only: `init` asks for the feature when the adapter has it. The web
+    /// build does not ask for it, so the value stays false there.
+    timestamps: bool = false,
+    /// The surface waits for the display refresh (REQ-GPU-027). See
+    /// `setVsync`.
+    vsync: bool = true,
+
     /// Check if GPU is ready for use
     pub fn isReady(self: *const GPU) bool {
         return self.state == .ready;
@@ -458,14 +466,14 @@ pub const GPU = struct {
             // Headless-offscreen mode has no surface: its texture keeps
             // its size.
             if (!self.isReady() or self.surface == null) return;
-            const surface_config = surfaceConfiguration(self.device, width, height);
+            const surface_config = surfaceConfiguration(self.device, width, height, self.vsync);
             native.wgpuSurfaceConfigure(self.surface, &surface_config);
             self.width = width;
             self.height = height;
         }
     }
 
-    fn surfaceConfiguration(device: native.WGPUDevice, width: u32, height: u32) native.WGPUSurfaceConfiguration {
+    fn surfaceConfiguration(device: native.WGPUDevice, width: u32, height: u32, vsync: bool) native.WGPUSurfaceConfiguration {
         return .{
             .next_in_chain = null,
             .device = device,
@@ -476,8 +484,26 @@ pub const GPU = struct {
             .alpha_mode = .auto,
             .width = width,
             .height = height,
-            .present_mode = .fifo,
+            .present_mode = if (vsync) .fifo else .immediate,
         };
+    }
+
+    /// True when the device can write GPU timestamps (REQ-GPU-028).
+    pub fn supportsTimestamps(self: *const GPU) bool {
+        return self.timestamps;
+    }
+
+    /// Set vsync (REQ-GPU-027). On: the surface waits for the display
+    /// refresh (`fifo`). Off: the surface shows each frame immediately
+    /// (`immediate`), and a frame can tear. Native only: the browser
+    /// always waits for the display refresh, so the web build keeps the
+    /// value and does nothing more.
+    pub fn setVsync(self: *GPU, on: bool) void {
+        self.vsync = on;
+        if (comptime is_wasm) return;
+        if (!self.isReady() or self.surface == null) return;
+        const config = surfaceConfiguration(self.device, self.width, self.height, on);
+        native.wgpuSurfaceConfigure(self.surface, &config);
     }
 
     /// Initialize WebGPU (call once at startup)
@@ -558,7 +584,15 @@ pub const GPU = struct {
 
             // Request device (using callback)
             var device_result = DeviceRequestResult{};
-            const device_desc = std.mem.zeroes(native.WGPUDeviceDescriptor);
+            var device_desc = std.mem.zeroes(native.WGPUDeviceDescriptor);
+            // Ask for the timestamp query feature when the adapter has it
+            // (REQ-GPU-028). Without it, the device is the same.
+            const timestamp_feature = [_]native.WGPUFeatureName{.timestamp_query};
+            const timestamps = native.wgpuAdapterHasFeature(adapter_result.adapter.?, .timestamp_query) != 0;
+            if (timestamps) {
+                device_desc.required_features_count = 1;
+                device_desc.required_features = &timestamp_feature;
+            }
             native.wgpuAdapterRequestDevice(
                 adapter_result.adapter.?,
                 &device_desc,
@@ -576,7 +610,7 @@ pub const GPU = struct {
 
             if (!headless_offscreen) {
                 // Configure surface (modern API, replaces swap chain)
-                const surface_config = surfaceConfiguration(device_result.device.?, width, height);
+                const surface_config = surfaceConfiguration(device_result.device.?, width, height, self.vsync);
                 native.wgpuSurfaceConfigure(surface, &surface_config);
             }
 
@@ -588,6 +622,7 @@ pub const GPU = struct {
             self.queue = queue;
             self.width = width;
             self.height = height;
+            self.timestamps = timestamps;
             self.state = .ready;
 
             // Offscreen "swapchain" texture (headless mode only). Must happen
@@ -1417,6 +1452,48 @@ pub const GPU = struct {
         return out;
     }
 
+    /// Make a query set of `count` timestamp queries (REQ-GPU-028). It
+    /// gives `error.TimestampsNotSupported` when the device has no
+    /// timestamp feature. The web build has no timestamps.
+    pub fn createTimestampQuerySet(self: *GPU, count: u32) !QuerySet {
+        if (!self.isReady()) return error.GPUNotReady;
+        if (comptime is_wasm) return error.TimestampsNotSupported;
+        if (!self.timestamps) return error.TimestampsNotSupported;
+        const desc: native.WGPUQuerySetDescriptor = .{ .type = .timestamp, .count = count };
+        const handle = native.wgpuDeviceCreateQuerySet(self.device, &desc) orelse return error.QuerySetCreationFailed;
+        return .{ .handle = handle, .count = count };
+    }
+
+    /// Copy `out.len` bytes at `offset` of `buffer` to `out` (REQ-GPU-028).
+    /// The buffer must have `map_read` usage. The call waits for the GPU
+    /// to complete all submitted work, so use it for debug data, not each
+    /// frame of a game. Native only.
+    pub fn readBuffer(self: *GPU, buffer: Buffer, offset: u64, out: []u8) !void {
+        if (comptime is_wasm) return error.NotSupportedOnWasm;
+        if (out.len == 0) return;
+        const MapState = struct { done: bool = false, status: u32 = 0 };
+        var map_state = MapState{};
+        native.wgpuBufferMapAsync(
+            buffer.handle,
+            native.WGPUMapMode_Read,
+            @intCast(offset),
+            out.len,
+            struct {
+                fn cb(status: u32, ud: ?*anyopaque) callconv(.c) void {
+                    const st: *MapState = @ptrCast(@alignCast(ud));
+                    st.status = status;
+                    st.done = true;
+                }
+            }.cb,
+            &map_state,
+        );
+        _ = native.wgpuDevicePoll(self.device, 1, null);
+        if (!map_state.done or map_state.status != 0) return error.MapFailed;
+        defer native.wgpuBufferUnmap(buffer.handle);
+        const ptr: [*]const u8 = @ptrCast(native.wgpuBufferGetMappedRange(buffer.handle, @intCast(offset), out.len) orelse return error.MapFailed);
+        @memcpy(out, ptr[0..out.len]);
+    }
+
     /// Present the current frame to screen
     pub fn present(self: *GPU) void {
         if (!self.isReady()) return;
@@ -1805,8 +1882,47 @@ pub const PipelineLayout = struct {
     handle: if (is_wasm) web.WebGPUPipelineLayout else native.WGPUPipelineLayout,
 };
 
+/// A set of GPU timestamp queries (REQ-GPU-028). Make it with
+/// `GPU.createTimestampQuerySet`.
+pub const QuerySet = struct {
+    handle: if (is_wasm) void else native.WGPUQuerySet,
+    count: u32,
+
+    pub fn destroy(self: QuerySet) void {
+        if (comptime is_wasm) return;
+        native.wgpuQuerySetDestroy(self.handle);
+        native.wgpuQuerySetRelease(self.handle);
+    }
+};
+
+/// The timestamps that a render pass writes at its start and its end
+/// (REQ-GPU-028).
+pub const RenderPassTimestampWrites = struct {
+    query_set: QuerySet,
+    begin_index: u32,
+    end_index: u32,
+};
+
 pub const CommandEncoder = struct {
     handle: if (is_wasm) web.WebGPUCommandEncoder else native.WGPUCommandEncoder,
+
+    /// Record a copy of `count` timestamps, from query `first`, to
+    /// `destination` at `offset`, as one u64 each (REQ-GPU-028). The
+    /// buffer needs `query_resolve` usage. `offset` must be a multiple of
+    /// 256.
+    pub fn resolveQuerySet(self: CommandEncoder, query_set: QuerySet, first: u32, count: u32, destination: Buffer, offset: u64) void {
+        if (comptime is_wasm) return;
+        native.wgpuCommandEncoderResolveQuerySet(self.handle, query_set.handle, first, count, destination.handle, offset);
+    }
+
+    /// Record a copy of `size` bytes from `source` to `destination`.
+    /// `source` needs `copy_src` usage and `destination` needs `copy_dst`
+    /// usage. Native only: the web build has no binding yet and does
+    /// nothing.
+    pub fn copyBufferToBuffer(self: CommandEncoder, source: Buffer, source_offset: u64, destination: Buffer, destination_offset: u64, size: u64) void {
+        if (comptime is_wasm) return;
+        native.wgpuCommandEncoderCopyBufferToBuffer(self.handle, source.handle, source_offset, destination.handle, destination_offset, size);
+    }
 
     /// Begin a render pass for drawing
     pub fn beginRenderPass(self: CommandEncoder, desc: RenderPassDescriptor) !RenderPassEncoder {
@@ -1882,6 +1998,11 @@ pub const CommandEncoder = struct {
                 };
             }
 
+            const timestamp_writes: ?native.WGPURenderPassTimestampWrites = if (desc.timestamp_writes) |t| .{
+                .query_set = t.query_set.handle,
+                .beginning_of_pass_write_index = t.begin_index,
+                .end_of_pass_write_index = t.end_index,
+            } else null;
             const c_desc = native.WGPURenderPassDescriptor{
                 .next_in_chain = null,
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
@@ -1889,7 +2010,7 @@ pub const CommandEncoder = struct {
                 .color_attachments = &color_attachments,
                 .depth_stencil_attachment = if (depth_stencil) |*ds| ds else null,
                 .occlusion_query_set = null,
-                .timestamp_writes = null,
+                .timestamp_writes = if (timestamp_writes) |*t| t else null,
             };
 
             const handle = native.wgpuCommandEncoderBeginRenderPass(self.handle, &c_desc);
@@ -2089,6 +2210,9 @@ pub const RenderPassDescriptor = struct {
     label: ?[]const u8 = null,
     color_attachments: []const RenderPassColorAttachment,
     depth_stencil_attachment: ?RenderPassDepthStencilAttachment = null,
+    /// Write GPU timestamps at the start and the end of the pass
+    /// (REQ-GPU-028). The web build ignores it.
+    timestamp_writes: ?RenderPassTimestampWrites = null,
 };
 
 /// Render pipeline descriptor (overrides types.zig version)

@@ -348,6 +348,17 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_unit_tests.step);
     }
 
+    // sw_jobs: the native thread pool (order, cancel, shutdown) and its
+    // Transport.
+    const jobs_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_jobs/src/jobs_root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(jobs_tests).step);
+
     // sw_net: the frame codec, the handshake, the URL parser, the backoff,
     // and the native client against a local server that the test starts.
     const net_tests = b.addTest(.{
@@ -417,6 +428,31 @@ pub fn build(b: *std.Build) void {
     render_layout_tests.root_module.addImport("sw_gpu", web_libs.gpu);
     render_layout_tests.root_module.addImport("sw_text", web_libs.text);
     test_step.dependOn(&b.addRunArtifact(render_layout_tests).step);
+    // sw_render particle tests: no GPU code. The sprite rectangle comes
+    // from the atlas layout, so the tests need sw_text and libc too.
+    const render_particle_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_render/src/particle_plan.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    render_particle_tests.root_module.addImport("sw_gpu", web_libs.gpu);
+    render_particle_tests.root_module.addImport("sw_text", web_libs.text);
+    test_step.dependOn(&b.addRunArtifact(render_particle_tests).step);
+    // sw_render frame chart tests: no GPU code. The chart uses the
+    // sw_gfx2d types, and sw_gfx2d brings C code, so the tests link libc.
+    const render_overlay_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libs/sw_render/src/perf_overlay.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    render_overlay_tests.root_module.addImport("sw_gfx2d", web_libs.gfx2d);
+    test_step.dependOn(&b.addRunArtifact(render_overlay_tests).step);
 
     // sw_render frame graph tests: the plan, the uniform ring, the staged
     // uploads, the WGSL prefix, the post chain plan, the sky plan, the box
@@ -431,6 +467,10 @@ pub fn build(b: *std.Build) void {
         "libs/sw_render/src/box_model_plan.zig",
         "libs/sw_render/src/lighting_plan.zig",
         "libs/sw_render/src/weather_plan.zig",
+        "libs/sw_render/src/translucent_plan.zig",
+        "libs/sw_render/src/settings.zig",
+        "libs/sw_render/src/frame_pacing.zig",
+        "libs/sw_render/src/shafts_plan.zig",
     };
     inline for (render_graph_test_files) |file| {
         const unit_tests = b.addTest(.{
@@ -806,6 +846,7 @@ fn addVoxel(
     const content = b.createModule(content_options);
     voxel.addImport("sw_gpu", libs.gpu);
     voxel.addImport("sw_math", libs.math);
+    voxel.addImport("sw_jobs", libs.jobs);
     voxel.addImport("sw_voxel_content", content);
     content.addImport("sw_voxel", voxel);
     return .{ .voxel = voxel, .content = content };
@@ -841,6 +882,7 @@ const Libs = struct {
     ui: *std.Build.Module,
     assets: *std.Build.Module,
     net: *std.Build.Module,
+    jobs: *std.Build.Module,
     voxel: *std.Build.Module,
     render: *std.Build.Module,
     app: *std.Build.Module,
@@ -886,20 +928,24 @@ fn addLibs(b: *std.Build, sdl: ?*std.Build.Module, exported: bool) Libs {
     // sw_voxel needs a content module from the dependent package:
     // voxel.addImport("sw_voxel_content", content). See
     // libs/sw_voxel/src/content.zig.
+    // sw_jobs: worker threads and Web Workers. No other library module.
+    const jobs = libModule(b, exported, "sw_jobs", "libs/sw_jobs/src/jobs_root.zig");
     const voxel = libModule(b, exported, "sw_voxel", "libs/sw_voxel/src/sw_voxel.zig");
     voxel.addImport("sw_gpu", gpu);
+    voxel.addImport("sw_jobs", jobs);
     voxel.addImport("sw_math", math);
     const render = libModule(b, exported, "sw_render", "libs/sw_render/src/render_root.zig");
     render.addImport("sw_gpu", gpu);
     render.addImport("sw_text", text);
     render.addImport("sw_math", math);
+    render.addImport("sw_gfx2d", gfx2d);
     const app = libModule(b, exported, "sw_app", "libs/sw_app/src/app_root.zig");
     app.addImport("sw_core", core);
     app.addImport("sw_platform", platform);
     app.addImport("sw_gpu", gpu);
     app.addImport("sw_audio", audio);
     app.addImport("sw_math", math);
-    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .net = net, .text = text, .ui = ui, .voxel = voxel, .render = render, .app = app };
+    return .{ .core = core, .platform = platform, .gpu = gpu, .audio = audio, .math = math, .gfx2d = gfx2d, .assets = assets, .net = net, .jobs = jobs, .text = text, .ui = ui, .voxel = voxel, .render = render, .app = app };
 }
 
 /// Compile stb_vorbis (libs/sw_audio/c) into `module`. The file needs no C

@@ -10,19 +10,35 @@
 // camera. A height map stops it on the ground and on the boxes
 // (REQ-GPU-021). The tonemap of the post chain then writes the screen.
 //
+// The fog can also come from a post effect that reads the depth target
+// (REQ-GPU-030). Then the scene shader does not call `sw_fog`.
+//
+// Three more effects make the sky alive: cloud shadows on the ground
+// (REQ-GPU-031), soft clouds with a bright rim toward the sun
+// (REQ-GPU-032), and light shafts toward the sun (REQ-GPU-033).
+//
 // Keys: Left and Right change the time. Space stops or starts the clock.
 // C turns the cube-map skybox on or off. G turns the fog on or off. K
-// turns the clouds on or off. R changes the weather: snow, rain, none.
+// turns the clouds on or off. R changes the weather: snow, rain, none. E
+// changes the fog between the scene shader and the post effect. H turns
+// the light shafts on or off. J turns the cloud shadows on or off. O
+// changes the clouds between boxes and soft clouds.
 //
 // Native `--check`: no window. The example draws the sky at noon, at
 // sunrise, at midnight, with the cube map, with clouds, with snow and with
-// rain. It reads each frame back. It compares the right half of the screen
+// rain, and at noon and sunrise with the fog post effect in place of the
+// shader fog, with soft clouds, with cloud shadows and with light shafts.
+// It reads each frame back. It compares the right half of the screen
 // (sky, clouds and ground) with the CPU reference of `sw_render.sky` and
 // `sw_render.weather`, after the CPU tonemap. For snow and rain it checks
 // the particles one by one: a particle above the height map has the CPU
 // reference colour, and a particle under it does not draw. It exits with
 // 0 (pass) or 1 (fail). `--dump DIR` also writes each checked frame to
 // DIR as a PPM image.
+//
+// Native `--perf`: no window, 1920 by 1080. The example times the GPU
+// passes (REQ-GPU-028) with box clouds, soft clouds, cloud shadows and
+// light shafts, and writes the mean time of each pass to the log.
 const std = @import("std");
 const sw = @import("sw_app");
 const builtin = @import("builtin");
@@ -45,6 +61,7 @@ comptime {
 }
 
 var check_mode = false;
+var perf_mode = false;
 var dump_dir: ?[]const u8 = null;
 
 fn mainNative(init: std.process.Init) !void {
@@ -59,6 +76,13 @@ fn mainNative(init: std.process.Init) !void {
             c.tick_timing = .unlimited;
         }
         if (std.mem.eql(u8, arg, "--dump") and i + 1 < args.len) dump_dir = args[i + 1];
+        if (std.mem.eql(u8, arg, "--perf")) {
+            perf_mode = true;
+            c.headless = true;
+            c.headless_gpu = true;
+            c.tick_timing = .unlimited;
+            c.size = .{ .w = 1920, .h = 1080 };
+        }
     }
     try sw.run(c, Callbacks);
 }
@@ -100,6 +124,15 @@ var post: ?sw_render.PostChain = null;
 var sky: ?sw_render.Sky = null;
 var cube: ?sw_render.CubeMap = null;
 var pipeline: ?gpu_mod.RenderPipeline = null;
+/// The scene pipeline with no `sw_fog`, for the fog post effect.
+var pipeline_no_fog: ?gpu_mod.RenderPipeline = null;
+var fog_effect: sw_render.PostEffectId = undefined;
+var post_fog_on = false;
+var shadow_effect: sw_render.PostEffectId = undefined;
+var shafts: ?sw_render.LightShafts = null;
+var shafts_on = false;
+var shadows_on = false;
+var timer: ?sw_render.PassTimer = null;
 var vertex_buffer: ?gpu_mod.Buffer = null;
 var clouds: ?sw_render.Clouds = null;
 var precipitation: ?sw_render.Precipitation = null;
@@ -170,12 +203,21 @@ const shader_code = sw_render.wgsl.shader(
     \\    return out;
     \\}
     \\
-    \\@fragment fn fs_main(in: VSOut) -> @location(0) vec4f {
+    \\fn scene_color(in: VSOut) -> vec3f {
     \\    // The sky light: the zenith and horizon colours, and the sun.
     \\    let s = sw_frame.sky;
     \\    let sun = max(dot(in.normal, s.sun_dir.xyz), 0.0) * 1.5 * smoothstep(-0.05, 0.05, s.sun_dir.y);
     \\    let light = 0.6 * s.zenith.rgb + 0.6 * s.horizon.rgb + vec3f(sun + 0.02);
-    \\    return vec4f(sw_fog(in.color * light, in.world), 1.0);
+    \\    return in.color * light;
+    \\}
+    \\
+    \\@fragment fn fs_main(in: VSOut) -> @location(0) vec4f {
+    \\    return vec4f(sw_fog(scene_color(in), in.world), 1.0);
+    \\}
+    \\
+    \\// The fog post effect gives the fog.
+    \\@fragment fn fs_no_fog(in: VSOut) -> @location(0) vec4f {
+    \\    return vec4f(scene_color(in), 1.0);
     \\}
 );
 
@@ -207,7 +249,10 @@ const Callbacks = struct {
         post = try sw_render.PostChain.init(allocator, g, .{});
         const p = &post.?;
         sky = try sw_render.Sky.init(allocator, g, p.hdr, .{ .time = time_of_day, .fog = fog });
-        const depth = try g.addTarget(.{ .name = "depth", .format = .depth24plus, .usage = .{ .render_attachment = true } });
+        // The fog post effect reads the depth.
+        const depth = try g.addTarget(.{ .name = "depth", .format = .depth24plus, .usage = .{ .render_attachment = true, .texture_binding = true } });
+        fog_effect = try p.addDepthFog(depth);
+        try p.setEffectEnabled(fog_effect, false);
         try g.addPass(.{
             .name = "scene",
             .attachments = .{
@@ -231,6 +276,17 @@ const Callbacks = struct {
         try precipitation.?.setHeightMap(heightMap());
         try setWeather(weather);
 
+        // The cloud shadows and the light shafts: post effects that read
+        // the depth. Both start off.
+        shadow_effect = try clouds.?.addShadowEffect(p, depth);
+        try p.setEffectEnabled(shadow_effect, false);
+        shafts = try sw_render.LightShafts.init(p, depth, .{});
+        try shafts.?.setEnabled(false);
+        if (perf_mode) {
+            timer = try sw_render.PassTimer.init(allocator, gpu, .{});
+            g.setTimer(&timer.?);
+        }
+
         var faces: [6][cube_size * cube_size * 4]u8 = undefined;
         var face_slices: [6][]const u8 = undefined;
         for (&faces, cube_colors, 0..) |*f, c, i| {
@@ -244,10 +300,16 @@ const Callbacks = struct {
             .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{&g.frame_layout},
         });
         var shader = try gpu.createShaderModule(.{ .code = shader_code });
-        pipeline = try gpu.createRenderPipeline(.{
-            .layout = &pipeline_layout,
+        pipeline = try makePipeline(gpu, &pipeline_layout, &shader, "fs_main");
+        pipeline_no_fog = try makePipeline(gpu, &pipeline_layout, &shader, "fs_no_fog");
+        std.log.info("sky: GPU ready. Left/Right: time. Space: clock. C: cube map. G: fog. K: clouds. R: weather. E: fog post effect. H: light shafts. J: cloud shadows. O: soft clouds.", .{});
+    }
+
+    fn makePipeline(gpu: *gpu_mod.GPU, layout: *gpu_mod.PipelineLayout, shader: *gpu_mod.ShaderModule, fragment: []const u8) !gpu_mod.RenderPipeline {
+        return gpu.createRenderPipeline(.{
+            .layout = layout,
             .vertex = .{
-                .module = &shader,
+                .module = shader,
                 .entry_point = "vs_main",
                 .buffers = &[_]gpu_mod.VertexBufferLayout{.{
                     .array_stride = @sizeOf(Vertex),
@@ -259,15 +321,14 @@ const Callbacks = struct {
                 }},
             },
             .fragment = .{
-                .module = &shader,
-                .entry_point = "fs_main",
-                .targets = &[_]gpu_mod.ColorTargetState{.{ .format = p.hdr_format }},
+                .module = shader,
+                .entry_point = fragment,
+                .targets = &[_]gpu_mod.ColorTargetState{.{ .format = post.?.hdr_format }},
             },
             .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
             .depth_stencil = .{ .format = .depth24plus, .depth_write_enabled = true, .depth_compare = .less },
             .multisample = .{ .count = 1 },
         });
-        std.log.info("sky: GPU ready. Left/Right: time. Space: clock. C: cube map. G: fog. K: clouds. R: weather.", .{});
     }
 
     pub fn tick(ctx: *sw.Context) !void {
@@ -283,6 +344,10 @@ const Callbacks = struct {
             fog_on = !fog_on;
             if (sky) |*s| s.fog = if (fog_on) fog else null;
         }
+        if (in.keyPressed(.E)) try setPostFog(!post_fog_on);
+        if (in.keyPressed(.H)) try setShafts(!shafts_on);
+        if (in.keyPressed(.J)) try setCloudShadows(!shadows_on);
+        if (in.keyPressed(.O)) clouds.?.settings.soft = !clouds.?.settings.soft;
         if (in.keyPressed(.K)) {
             clouds_on = !clouds_on;
             if (clouds) |*cl| cl.setEnabled(clouds_on);
@@ -307,6 +372,7 @@ const Callbacks = struct {
         const s = &sky.?;
 
         if (check_mode) try setCheckStep();
+        if (perf_mode) try setPerfStep();
         s.setTime(time_of_day);
 
         const w: f32 = @floatFromInt(@max(gpu.getSurfaceWidth(), 1));
@@ -331,6 +397,7 @@ const Callbacks = struct {
         if (try g.execute(frame)) {
             if (comptime !builtin.cpu.arch.isWasm()) {
                 if (check_mode) try checkFrame(ctx, frame);
+                if (perf_mode) perfFrame();
             }
             gpu.present();
         }
@@ -338,6 +405,11 @@ const Callbacks = struct {
 
     pub fn shutdown(ctx: *sw.Context) !void {
         _ = ctx;
+        if (graph) |*g| g.setTimer(null);
+        if (timer) |*t| t.deinit();
+        timer = null;
+        if (shafts) |*sh| sh.deinit();
+        shafts = null;
         if (precipitation) |*pr| pr.deinit();
         precipitation = null;
         if (clouds) |*cl| cl.deinit();
@@ -440,9 +512,25 @@ fn mapHeight(_: void, c: [2]i32) f32 {
     return heights[@as(usize, @intCast(c[1])) * map_size + @as(usize, @intCast(c[0]))];
 }
 
+fn setShafts(on: bool) !void {
+    shafts_on = on;
+    try shafts.?.setEnabled(on);
+}
+
+fn setCloudShadows(on: bool) !void {
+    shadows_on = on;
+    try post.?.setEffectEnabled(shadow_effect, on);
+}
+
+/// The fog from the post effect (true) or from the scene shader (false).
+fn setPostFog(on: bool) !void {
+    post_fog_on = on;
+    try post.?.setEffectEnabled(fog_effect, on);
+}
+
 fn drawScene(pass: *sw_render.Pass) !void {
     const rp = pass.render.?;
-    rp.setPipeline(pipeline.?);
+    rp.setPipeline(if (post_fog_on) pipeline_no_fog.? else pipeline.?);
     pass.bindFrame();
     rp.setVertexBuffer(0, vertex_buffer.?, 0, @sizeOf(Vertex) * vertex_count);
     rp.draw(vertex_count, 1, 0, 0);
@@ -517,6 +605,14 @@ const Step = struct {
     clouds: bool = false,
     weather: Weather = .none,
     fog: sw_render.Fog = fog,
+    /// The fog post effect in place of the shader fog (REQ-GPU-030).
+    post_fog: bool = false,
+    /// The soft clouds (REQ-GPU-032).
+    soft: bool = false,
+    /// The cloud shadow effect (REQ-GPU-031).
+    cloud_shadows: bool = false,
+    /// The light shafts (REQ-GPU-033).
+    shafts: bool = false,
     /// The time of the wind and the fall.
     seconds: f64 = check_seconds,
 };
@@ -536,7 +632,17 @@ const steps = [_]Step{
     .{ .name = "clouds 40 seconds later", .time = 0.5, .clouds = true, .seconds = check_seconds + 40 },
     .{ .name = "snow", .time = 0.5, .weather = .snow, .fog = weather_fog },
     .{ .name = "rain", .time = 0.45, .weather = .rain, .fog = weather_fog },
+    .{ .name = "noon with the fog post effect", .time = 0.5, .post_fog = true },
+    .{ .name = "sunrise with the fog post effect", .time = 0.27, .post_fog = true },
+    .{ .name = "soft clouds at noon", .time = 0.5, .clouds = true, .soft = true },
+    .{ .name = "soft clouds at sunrise", .time = 0.27, .clouds = true, .soft = true },
+    .{ .name = "cloud shadows in the morning", .time = 0.4, .clouds = true, .cloud_shadows = true },
+    .{ .name = "light shafts at sunrise", .time = 0.27, .shafts = true },
+    .{ .name = "light shafts with the sun behind the camera", .time = 0.75, .shafts = true },
 };
+
+/// The frame of the "sunrise" step, for the light shaft step.
+var sunrise_pixels: ?[]u8 = null;
 
 var check_frame: u32 = 0;
 var check_ok = true;
@@ -551,6 +657,10 @@ fn setCheckStep() !void {
         try sky.?.setCubeMap(if (cube_on) &cube.? else null, .{ 1, 1, 1 });
     }
     sky.?.fog = step.fog;
+    if (step.post_fog != post_fog_on) try setPostFog(step.post_fog);
+    if (step.shafts != shafts_on) try setShafts(step.shafts);
+    if (step.cloud_shadows != shadows_on) try setCloudShadows(step.cloud_shadows);
+    clouds.?.settings.soft = step.soft;
     clouds_on = step.clouds;
     clouds.?.setEnabled(step.clouds);
     if (step.weather != weather) {
@@ -572,7 +682,12 @@ fn checkFrame(ctx: *sw.Context, frame: sw_render.FrameUniforms) !void {
     const w = gpu.getSurfaceWidth();
     const h = gpu.getSurfaceHeight();
     if (dump_dir) |dir| dump(ctx, dir, check_frame / 2, pixels, w, h);
-    if (!checkStep(step, frame, pixels, w, h)) check_ok = false;
+    if (std.mem.eql(u8, step.name, "sunrise")) sunrise_pixels = try allocator.dupe(u8, pixels);
+    const ok = if (std.mem.eql(u8, step.name, "light shafts at sunrise"))
+        checkShafts(step, frame, pixels, w, h)
+    else
+        checkStep(step, frame, pixels, w, h);
+    if (!ok) check_ok = false;
     if (check_frame / 2 + 1 == steps.len) {
         std.log.info("sky: check {s}", .{if (check_ok) "passed" else "FAILED"});
         std.process.exit(if (check_ok) 0 else 1);
@@ -675,6 +790,9 @@ fn sameCloud(a: ?sw_render.weather.CloudSample, b: ?sw_render.weather.CloudSampl
     if (a == null or b == null) return a == null and b == null;
     const p = a.?.hit;
     const q = b.?.hit;
+    // Soft clouds: the ray length in the cloud changes fast at the
+    // corner of a box.
+    if (@abs((p.exit - p.t) - (q.exit - q.t)) > 0.25 * @max(p.exit - p.t, 1)) return false;
     return p.cell[0] == q.cell[0] and p.cell[1] == q.cell[1] and std.mem.eql(f32, &p.normal, &q.normal);
 }
 
@@ -694,6 +812,16 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
     var cloud_pixels: u32 = 0;
     var fogged_clouds: u32 = 0;
     var cloud_edges: u32 = 0;
+    var soft_edges: u32 = 0;
+    var soft_between: u32 = 0;
+    var shadow_pixels: u32 = 0;
+    var shadow_edges: u32 = 0;
+    var shadow_darker: u32 = 0;
+    var shadow_visible: u32 = 0;
+    if (step.shafts and sw_render.shafts.sunScreen(frame.view_proj, s.sun_dir) != null) {
+        std.log.err("sky: {s}: the sun is not behind the camera", .{step.name});
+        ok = false;
+    }
     var y: u32 = 0;
     while (y < h) : (y += 1) {
         var x: u32 = w / 2 + 20;
@@ -706,6 +834,33 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
             if (t < std.math.inf(f32)) {
                 ground_pixels += 1;
                 if (sw_render.sky.fogAmount(u, t) >= 1.0) full_fog += 1;
+                if (step.cloud_shadows) {
+                    // A pixel on the edge of a shadow can differ between
+                    // the CPU and the GPU: skip it.
+                    const sh = shadowAt(cu, fx, fy, frame, w, h);
+                    var edge = false;
+                    for ([_][2]f32{ .{ -0.45, -0.45 }, .{ 0.45, -0.45 }, .{ -0.45, 0.45 }, .{ 0.45, 0.45 } }) |o| {
+                        if (shadowAt(cu, fx + o[0], fy + o[1], frame, w, h) != sh) edge = true;
+                    }
+                    if (edge) {
+                        shadow_edges += 1;
+                        continue;
+                    }
+                    if (sh > 0) {
+                        const sun_lit = display(want);
+                        want = sw_render.weather.shadowed(want, .{ u.fog_color[0], u.fog_color[1], u.fog_color[2] }, sw_render.sky.fogAmount(u, t), sh);
+                        shadow_pixels += 1;
+                        // The fog hides a far shadow: test the pixels where
+                        // the CPU reference is darker than in the sun.
+                        const lit_sum = @as(u32, sun_lit[0]) + sun_lit[1] + sun_lit[2];
+                        const ref = display(want);
+                        if (@as(u32, ref[0]) + ref[1] + ref[2] + 3 <= lit_sum) {
+                            shadow_visible += 1;
+                            const got = pixelAt(pixels, w, x, y);
+                            if (@as(u32, got[0]) + got[1] + got[2] < lit_sum) shadow_darker += 1;
+                        }
+                    }
+                }
             } else if (sw_render.sky.stars(pass_uniforms, dir) * pass_uniforms.stars[3] > 0.05 and dir[1] > 0.1) {
                 star_pixels += 1;
             }
@@ -724,7 +879,19 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
                     continue;
                 }
                 if (c) |cs| {
+                    const sky_color = display(want);
                     want = mix3(want, cs.color, cs.alpha);
+                    if (step.soft and cs.alpha > 0.1 and cs.alpha < 0.5) {
+                        // A soft edge: between the cloud and the sky.
+                        soft_edges += 1;
+                        const got = pixelAt(pixels, w, x, y);
+                        const cloud = display(cs.color);
+                        var between = true;
+                        for (0..3) |i| {
+                            if (@as(u32, got[i]) + 2 < @min(sky_color[i], cloud[i]) or got[i] > @as(u32, @max(sky_color[i], cloud[i])) + 2) between = false;
+                        }
+                        if (between) soft_between += 1;
+                    }
                     if (cs.alpha > 0.3) cloud_pixels += 1;
                     const f = sw_render.sky.fogAmount(u, cs.hit.t);
                     if (f > 0.1 and f < 0.9) fogged_clouds += 1;
@@ -754,11 +921,27 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
     }
     // The cloud steps must test many cloud pixels, some of them in fog, and
     // only a few edges.
-    if (step.clouds and (cloud_pixels < 2000 or fogged_clouds < 500 or cloud_edges > compared / 20)) {
+    // A soft cloud has more edges: the ray length in the cloud also
+    // changes at the corners of the boxes.
+    if (step.clouds and (cloud_pixels < 2000 or fogged_clouds < 500 or cloud_edges > compared / @as(u32, if (step.soft) 10 else 20))) {
         std.log.err("sky: {s}: {d} cloud pixels, {d} in part fog, {d} edges", .{ step.name, cloud_pixels, fogged_clouds, cloud_edges });
         ok = false;
     }
-    if (step.clouds and step.seconds == check_seconds) {
+    if (step.soft) {
+        std.log.info("sky: {s}: {d} soft edge pixels, {d} between the cloud and the sky colour", .{ step.name, soft_edges, soft_between });
+        if (soft_edges < 200 or soft_between != soft_edges) {
+            std.log.err("sky: {s}: the soft edges are not between the cloud and the sky colour", .{step.name});
+            ok = false;
+        }
+    }
+    if (step.cloud_shadows) {
+        std.log.info("sky: {s}: {d} ground pixels in a cloud shadow ({d} edges skipped), {d} of {d} visible shadow pixels darker than in the sun", .{ step.name, shadow_pixels, shadow_edges, shadow_darker, shadow_visible });
+        if (shadow_visible < 300 or shadow_darker != shadow_visible) {
+            std.log.err("sky: {s}: the cloud shadows are not darker than the sunlit ground", .{step.name});
+            ok = false;
+        }
+    }
+    if (step.clouds and step.seconds == check_seconds and !step.soft and !step.cloud_shadows) {
         // One cloud pixel, in the log: a box face on the right of the
         // screen. 40 seconds later the wind moved the box away.
         const px = w / 2 + 120;
@@ -794,6 +977,110 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
         }
     }
     return ok;
+}
+
+/// The cloud shadow of the ground point at the pixel (x, y), or 0 for the
+/// sky.
+fn shadowAt(cu: sw_render.weather.CloudUniforms, x: f32, y: f32, frame: sw_render.FrameUniforms, w: u32, h: u32) f32 {
+    const dir = rayAt(frame, x, y, w, h);
+    const t = groundDistance(dir);
+    if (t == std.math.inf(f32)) return 0;
+    return sw_render.weather.cloudShadow(cu, eye, add3(eye, scale3(dir, t)), {}, shapeFilled);
+}
+
+/// The light shafts at sunrise: the pixels under the sun are brighter
+/// than in the frame of the "sunrise" step, with no shafts.
+fn checkShafts(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: u32, h: u32) bool {
+    const before = sunrise_pixels orelse {
+        std.log.err("sky: {s}: no frame of the sunrise step", .{step.name});
+        return false;
+    };
+    const sun = sw_render.shafts.sunScreen(frame.view_proj, sky.?.state().sun_dir) orelse {
+        std.log.err("sky: {s}: the sun is behind the camera", .{step.name});
+        return false;
+    };
+    const sx: u32 = @intFromFloat(sun[0] * @as(f32, @floatFromInt(w)));
+    const sy: u32 = @intFromFloat(sun[1] * @as(f32, @floatFromInt(h)));
+    var brighter: u32 = 0;
+    var tested: u32 = 0;
+    var largest: i32 = 0;
+    var dy: u32 = 20;
+    while (dy <= 200 and sy + dy < h) : (dy += 10) {
+        const a = pixelAt(before, w, sx, sy + dy);
+        const b = pixelAt(pixels, w, sx, sy + dy);
+        const gain = @as(i32, b[0]) + b[1] + b[2] - (@as(i32, a[0]) + a[1] + a[2]);
+        largest = @max(largest, gain);
+        tested += 1;
+        if (gain >= 3) brighter += 1;
+    }
+    std.log.info("sky: {s}: the sun is at ({d}, {d}). {d} of {d} pixels under it are brighter than with no shafts, largest gain {d}", .{ step.name, sx, sy, brighter, tested, largest });
+    if (tested == 0 or brighter * 2 < tested) {
+        std.log.err("sky: {s}: the light shafts do not make the pixels under the sun brighter", .{step.name});
+        return false;
+    }
+    return true;
+}
+
+// =============================================================================
+// Native perf: the GPU time of each effect at 1920 by 1080
+// =============================================================================
+
+const PerfStep = struct {
+    name: []const u8,
+    time: f32,
+    soft: bool = false,
+    cloud_shadows: bool = false,
+    shafts: bool = false,
+};
+
+const perf_steps = [_]PerfStep{
+    .{ .name = "box clouds", .time = 0.5 },
+    .{ .name = "soft clouds", .time = 0.5, .soft = true },
+    .{ .name = "cloud shadows", .time = 0.5, .cloud_shadows = true },
+    .{ .name = "light shafts", .time = 0.27, .shafts = true },
+};
+const perf_warmup = 5;
+const perf_frames = 30;
+const perf_passes = [_][]const u8{ "sw_clouds", "sw_cloud_shadows", "sw_light_shafts", "scene", "sw_post_tonemap" };
+var perf_frame: u32 = 0;
+var perf_sums: [perf_passes.len]f64 = @splat(0);
+var perf_total: f64 = 0;
+
+fn setPerfStep() !void {
+    const step = perf_steps[perf_frame / (perf_warmup + perf_frames)];
+    time_of_day = step.time;
+    seconds = check_seconds;
+    sky.?.fog = fog;
+    clouds_on = true;
+    clouds.?.setEnabled(true);
+    clouds.?.settings.soft = step.soft;
+    if (weather != .none) try setWeather(.none);
+    if (step.shafts != shafts_on) try setShafts(step.shafts);
+    if (step.cloud_shadows != shadows_on) try setCloudShadows(step.cloud_shadows);
+}
+
+fn perfFrame() void {
+    defer perf_frame += 1;
+    const per = perf_warmup + perf_frames;
+    const step = perf_steps[perf_frame / per];
+    const t = &(timer orelse {
+        std.log.err("sky: --perf needs GPU timestamps", .{});
+        std.process.exit(1);
+    });
+    if (perf_frame % per >= perf_warmup) {
+        for (perf_passes, 0..) |name, i| perf_sums[i] += t.find(name) orelse 0;
+        perf_total += t.total();
+    }
+    if (perf_frame % per + 1 < per) return;
+    const n: f64 = perf_frames;
+    std.log.info("sky: perf {s}: all passes {d:.3} ms. clouds {d:.3} ms, cloud shadows {d:.3} ms, light shafts {d:.3} ms, scene {d:.3} ms, tonemap {d:.3} ms", .{
+        step.name,        perf_total / n,   perf_sums[0] / n,
+        perf_sums[1] / n, perf_sums[2] / n, perf_sums[3] / n,
+        perf_sums[4] / n,
+    });
+    perf_sums = @splat(0);
+    perf_total = 0;
+    if (perf_frame / per + 1 == perf_steps.len) std.process.exit(0);
 }
 
 /// A particle on the screen: the centre pixel and a radius that holds all

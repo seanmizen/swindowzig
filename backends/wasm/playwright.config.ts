@@ -45,16 +45,16 @@ export default defineConfig({
   reporter: process.env.CI ? 'list' : 'line',
   use: { browserName: 'chromium' },
   projects: [
-    // Each test that does not name an example opens flat2d. These tests
-    // read the DOM, not the pixels. They do not get canvasArgs: on the CPU
-    // of CI, flat2d then draws a few frames each second, and the key
-    // presses of the tests arrive late.
+    // Each test that does not name an example opens flat2d, with a working
+    // canvas. On the CPU of CI, flat2d draws a few frames each second, so
+    // a key press can be shorter than one frame. The input snapshot keeps
+    // such a press and its modifiers (REQ-INPUT-007).
     {
       name: 'flat2d',
       testIgnore: 'canvas.pw.ts',
       use: {
         baseURL: `http://localhost:${flat2dPort}`,
-        launchOptions: { args: webgpuArgs },
+        launchOptions: { args: canvasArgs },
       },
     },
     // A small window, so SwiftShader draws more frames each second.

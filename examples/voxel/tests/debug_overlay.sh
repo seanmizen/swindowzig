@@ -4,9 +4,10 @@
 #
 # Strategy: run the same TAS twice — once with --debug=off (default) and
 # once with --debug=on. Compare the top-left 320×320 corner of the resulting
-# PPM dumps. If the panel rendered, the corner brightness must change
-# noticeably: white text (0.95, 0.95, 0.95) dominates the translucent black
-# background, so panel-on is BRIGHTER than baseline by ~5–10/255.
+# PPM dumps. If the panel rendered, the corner brightness must change by at
+# least 2/255. The panel has a dark background behind light text, so the
+# corner is usually darker than the baseline. The check accepts a change in
+# either direction.
 #
 # The keyboard HUD also paints in --debug=on, but it lives in the bottom
 # half of the screen, so it does not affect the top-left sample region.
@@ -80,10 +81,10 @@ baseline = sys.argv[1]
 panel = sys.argv[2]
 a = avg_corner(baseline, 320, 320)
 b = avg_corner(panel, 320, 320)
-delta = b - a  # panel run should be BRIGHTER than baseline (white text wins)
+delta = b - a  # The panel can make the corner darker or brighter.
 print(f"top-left avg  baseline={a:.2f}  panel={b:.2f}  delta={delta:+.2f}")
-if delta < 2.0:
-    print("FAIL: top-left brightness delta < 2.0 — F3 panel did not render")
+if abs(delta) < 2.0:
+    print("FAIL: top-left brightness change < 2.0 — F3 panel did not render")
     sys.exit(1)
 print("PASS: F3 debug info panel rendered as expected")
 PY

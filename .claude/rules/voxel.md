@@ -47,6 +47,13 @@ In this file, a `pipeline/...` path is in `libs/sw_voxel/src/`.
   face) i8` for the faces of full cubes (comptime). A model quad takes
   its tint index from its `BakedQuad`. The demo tints grass tops and
   leaves, and voxel.wgsl draws them white times the tint.
+- The content can give fluids (REQ-VOXEL-014): `fluid(block)` returns a
+  `sw_voxel.fluid.Level` (the fluid 1 to 255, the level 1 to 8) or null.
+  A fluid block is not a full cube: the greedy mesher skips it, and it
+  does not darken AO. `fluid.generate(chunk, &fluid_mesh, ox, oz,
+  getter)` makes its quads (`fluid.Vertex`, 4 for each quad) with corner
+  heights and flow UVs. The chunk pipeline and the demo do not use it
+  yet.
 - `build.zig` wires it with `addVoxel`. The demo gives
   `examples/voxel/content.zig`. The unit tests of the library give
   `libs/sw_voxel/testing/content.zig`, with numbered blocks.
@@ -159,12 +166,14 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (per-vertex Mojang face-plane AO), `moore` (**default** — extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
 | `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation. Caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block updates the light incrementally (`light.update`), then meshes the chunk again. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
 | `--smooth-light=<on\|off>` | Smooth light of the mesher. `on` (default): each corner gets the mean light of the 4 cells at the corner. `off`: flat light, each face gets the light of the cell in front of it (REQ-VOXEL-008). Goes through `Scheduler.setSmoothLight`. |
-| `--place-block=<type>` | Block type emitted by right-click placement. Accepted: `stone` (default) and `glowstone`. Added with phase-3 block light so `tests/glowstone_cave.tas` can place an emitter from a TAS without needing an in-game block picker UI. |
+| `--place-block=<name>` | Puts the named block in hotbar slot 1, the slot that is selected at the start. Right-click then places it. Accepted: a block name of `content.zig`, for example `stone` or `glowstone`. With no flag, slot 1 is stone. `tests/glowstone_cave.sh` uses it to place an emitter from a TAS with no key presses. The script opens a window: run it under `xvfb-run` on Linux with no display. |
 | `--dump-frame=<path>` | Capture one rendered frame to a PPM file, then exit. Waits for world loading to complete. If a TAS is running, waits for the TAS to finish. Then waits for the chunk scheduler to be idle (`Scheduler.isIdle`), so the captured state does not depend on timing. |
 | `--debug-page=<general\|pipeline>` | The first page of the debug overlay. `pipeline` shows the chunk pipeline counters (C12). Cmd+P (Ctrl+P) changes the page at runtime. |
 | `--chunk-workers=N` | Native only. The chunk worker threads of the ThreadPool executor, 0 to 4. **Default: min(CPU count - 1, 4).** 0 runs the chunk jobs on the main thread (the Inline executor). Each worker has its own world copy and a 64 MB cache (C4, C14). The web build uses min(`navigator.hardwareConcurrency` - 1, 4) Web Workers. See `examples/voxel/docs/chunk-pipeline.md`. |
 | `--frustum=<mode>` | Per-chunk cull strategy. Accepted: `none`, `sphere`, `cone` and `frustum`. `frustum` is the default: it tests each chunk's box (the y range of its mesh) against the planes of the view-projection matrix. `none` draws every loaded chunk. `sphere` is a cheap radial cutoff at render_distance plus slack. `cone` tests each sphere against a cone along the camera's forward vector, with the FOV set by `--frustum-fov-deg`. No strategy ever culls the camera's own chunk or its 8 horizontal neighbours. `libs/sw_voxel/src/frustum.zig` has the math notes and edge-case tests. Cmd+F (Ctrl+F on Win/Linux) freezes the live frustum at its current transform so you can fly around and see what got culled. Settings menu has a live picker for the strategy. |
 | `--frustum-fov-deg=<degrees>` | Total fov of the cone strategy in degrees. With no flag, each frame uses the screen-diagonal fov of the camera (about 100° at 60° vertical and 16:9). The test uses each chunk's full-height bounding sphere, so this cone keeps every chunk on screen. Range [0, 360]. Half-angle ≥ 90° always returns true. |
+| `--cave-cull=<on\|off>` | Cave culling (REQ-VOXEL-020). `on` is the default: each frame walks from the camera section through the connected section faces, and does not draw a chunk column that the walk does not reach. The `[GPU MESH]` log shows `cave_culled=`. `examples/voxel/tests/cave_cull.sh` checks that the frame does not change. |
+| `--lod-distance=<0..32>` | Far terrain (REQ-VOXEL-021). `0` is the default (off). Past N chunks a chunk gets a mesh of 2-block cells, past 2N of 4-block cells, past 4N of 8-block cells. `libs/sw_voxel/src/pipeline/lod.zig` has the border proof. |
 
 ---
 
@@ -482,6 +491,7 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `models.zig` | The models of the content as comptime tables: `isCube`, `hasModel`, `quads`, `gpu_table` |
 | `region.zig` | Region files: 16 × 16 chunks, each compressed (zlib), with an offset table and a format version. `Store(sw_assets.cache)` saves and loads them. The file has no light (REQ-VOXEL-011 to 013) |
 | `frustum.zig` | Chunk cull strategies: none, sphere, cone, frustum |
+| `fluid.zig` | The fluid surface mesher: corner heights, no face between cells of one fluid, flow UVs (REQ-VOXEL-014 to 016) |
 | `clock.zig` | Monotonic clock for the perf logs. main sets `clock.io` |
 | `pipeline/stages.zig` | The pure chunk stages: generate, light, mesh (C2), and versions (C3) |
 | `pipeline/scheduler.zig` | The chunk scheduler: desired state, priority, version checks, eviction, edits (C8) |

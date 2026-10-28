@@ -24,6 +24,8 @@ pub const mesher = @import("mesher.zig");
 pub const model = @import("model.zig");
 /// The models of the content as tables, and the GPU table of model quads.
 pub const models = @import("models.zig");
+/// The fluid surface mesher: corner heights and flow UVs (REQ-VOXEL-014).
+pub const fluid = @import("fluid.zig");
 /// The chunks of main, with versions and cross-chunk light.
 pub const world = @import("world.zig");
 /// Region files: the compressed blocks of a square of chunks, for save
@@ -39,6 +41,8 @@ pub const clock = @import("clock.zig");
 
 /// The pure chunk stages: generate, light and mesh (C2, C3).
 pub const stages = @import("pipeline/stages.zig");
+/// The far terrain mesh at a lower resolution (REQ-VOXEL-021).
+pub const lod = @import("pipeline/lod.zig");
 /// The chunk scheduler: desired state, priority, versions, eviction (C8).
 pub const scheduler = @import("pipeline/scheduler.zig");
 /// The bytes of the chunk messages (P6).
@@ -53,6 +57,11 @@ pub const exec_inline = @import("pipeline/exec_inline.zig");
 pub const exec_threads = if (builtin.cpu.arch == .wasm32) struct {} else @import("pipeline/exec_threads.zig");
 /// The WorkerPool executor: the main side of the Web Worker pool (C9).
 pub const exec_web = @import("pipeline/exec_web.zig");
+/// The upload budget of the chunk meshes (REQ-VOXEL-017).
+pub const streaming = @import("pipeline/streaming.zig");
+/// Cave culling: the face connections of each section, the walk from the
+/// camera, and the box cull (REQ-VOXEL-019, REQ-VOXEL-020).
+pub const visibility = @import("visibility.zig");
 /// The exports of chunks.wasm, the chunk worker of the web build (C9).
 pub const chunk_worker = @import("pipeline/chunk_worker_main.zig");
 
@@ -64,11 +73,13 @@ test {
     _ = mesher;
     _ = model;
     _ = models;
+    _ = fluid;
     _ = world;
     _ = region;
     _ = frustum;
     _ = collision;
     _ = stages;
+    _ = lod;
     _ = scheduler;
     _ = protocol;
     _ = mesh_bytes;
@@ -76,4 +87,6 @@ test {
     _ = exec_inline;
     _ = exec_threads;
     _ = exec_web;
+    _ = streaming;
+    _ = visibility;
 }
