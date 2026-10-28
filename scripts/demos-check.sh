@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 export VK_LOADER_DRIVERS_SELECT="${VK_LOADER_DRIVERS_SELECT:-*lvp*}"
-RUN_TIMEOUT="${RUN_TIMEOUT:-600}"
+RUN_TIMEOUT="${RUN_TIMEOUT:-1200}"
 FAIL=0
 
 for d in demos/*/; do

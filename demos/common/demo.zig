@@ -38,8 +38,9 @@
 //! - `--capture <dir>`: no window, one frame for each tick. The frames go
 //!   to `<dir>/frames.bgra` (BGRA, 4 bytes each pixel). The run stops at
 //!   the end of the script.
-//! - `--check`: no window. The frame of each `checkpoint` is hashed and
-//!   compared with `demos/<name>/hashes/lavapipe-<preset>.txt`.
+//! - `--check`: no window. The ticks run with no frame between the
+//!   checkpoints. The frame of each `checkpoint` is hashed and compared
+//!   with `demos/<name>/hashes/lavapipe-<preset>.txt`.
 //!
 //! In capture and check runs the frames must not depend on the wall
 //! clock, so the overlay shows the fixed tick time in place of the
@@ -251,6 +252,10 @@ pub fn Demo(comptime App: type) type {
 
             pub fn render(ctx: *sw.Context) !void {
                 if (!ready) return;
+                // A check run draws only the checkpoint frames. Each frame
+                // comes from the tick count and the script only, so the
+                // frames between them change no hash (REQ-DEMO-004).
+                if (options.check and pending_checkpoint == null and !ending) return;
                 const gpu = ctx.gpu();
                 const w = gpu.getSurfaceWidth();
                 const h = gpu.getSurfaceHeight();
