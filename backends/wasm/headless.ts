@@ -14,6 +14,8 @@
 //   5. Check the mesh uploads (checkMeshUploads, C5). With the pool, JS
 //      writes no mesh byte into the main wasm memory: each mesh goes to the
 //      GPU from the ArrayBuffer of its worker.
+//   6. Fail if a canvas view of a frame is live after the frame
+//      (REQ-GPU-012).
 //
 // The test finds bugs in the wasm-only code of main.zig. Example: chunks
 // that do not load past the spawn ring.
@@ -289,6 +291,15 @@ async function main() {
   );
   for (const f of up.failures) console.error(`  ${f}`);
   if (up.failures.length > 0) fail('The mesh uploads are not correct (C5)');
+
+  // 8. Each frame releases its canvas view (REQ-GPU-012). After the
+  // frames, no view is live, so the handle count stays the same.
+  const views = app.gpu.liveViews.size;
+  console.log(
+    `Canvas views: ${app.gpu.viewsMade} made, ${views} live after the last frame`,
+  );
+  if (app.gpu.viewsMade === 0) fail('No frame got a canvas view');
+  if (views > 0) fail(`${views} canvas views are live after the last frame`);
 
   if (opts.measure) {
     console.log(`Start (pool and app.wasm): ${startMs.toFixed(0)} ms`);

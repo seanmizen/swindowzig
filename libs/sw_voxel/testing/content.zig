@@ -40,7 +40,24 @@ pub const Block = enum(u8) {
     b18 = 18,
     b19 = 19,
     b20 = 20,
+    // Fluids (REQ-VOXEL-014): b21 to b23 are fluid 1 at the levels 8, 4
+    // and 1. b24 is fluid 2, full.
+    b21 = 21,
+    b22 = 22,
+    b23 = 23,
+    b24 = 24,
 };
+
+/// The fluids b21 to b24. The generator does not place them.
+pub fn fluid(block: Block) ?sw_voxel.fluid.Level {
+    return switch (block) {
+        .b21 => .{ .fluid = 1, .level = 8 },
+        .b22 => .{ .fluid = 1, .level = 4 },
+        .b23 => .{ .fluid = 1, .level = 1 },
+        .b24 => .{ .fluid = 2, .level = 8 },
+        else => null,
+    };
+}
 
 const model_mod = sw_voxel.model;
 
@@ -84,7 +101,7 @@ pub fn collision(block: Block) ?[]const CellBox {
         .b16 => &stair_boxes,
         .b18 => &post_boxes,
         .b19 => &half_boxes,
-        .b20 => &.{},
+        .b20, .b21, .b22, .b23, .b24 => &.{},
         else => null,
     };
 }
@@ -128,6 +145,7 @@ pub fn emission(block: Block) u8 {
 pub fn opacity(block: Block) u8 {
     return switch (block) {
         .air, .b18, .b19, .b20 => 0,
+        .b21, .b22, .b23, .b24 => 2,
         .b17 => 3,
         else => 15,
     };

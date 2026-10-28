@@ -48,7 +48,12 @@
 //!    re-snapshot until they press the toggle again.
 
 const std = @import("std");
+const math = @import("sw_math");
 const chunk_mod = @import("chunk.zig");
+
+const Plane = math.Plane;
+const Aabb = math.Aabb;
+const Vec3 = math.Vec3;
 
 const CHUNK_W = chunk_mod.CHUNK_W;
 const CHUNK_H = chunk_mod.CHUNK_H;
@@ -105,11 +110,12 @@ pub const Frustum = struct {
     /// is exempt from culling regardless of strategy.
     cam_cx: i32,
     cam_cz: i32,
-    /// Frustum strategy: left, right, bottom, top and near planes (a, b, c,
-    /// d), with a·x + b·y + c·z + d >= 0 inside. From the rows of the
+    /// Frustum strategy: left, right, bottom, top and near planes. The
+    /// normal of each plane points into the frustum. From the rows of the
     /// view-projection matrix, for WebGPU clip space (0 <= z <= w). There is
     /// no far plane: the world loads only chunks inside the render distance.
-    planes: [5][4]f32 = @splat(.{ 0, 0, 0, 1 }),
+    /// The default planes have a zero normal and d = 1, so they keep all.
+    planes: [5]Plane = @splat(Plane.init(Vec3.zero(), 1)),
 
     /// Build a frustum from the live camera state.
     ///
@@ -175,26 +181,41 @@ pub const Frustum = struct {
                 return .{ a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3] };
             }
         }.f;
-        self.planes = .{
+        const coefficients = [5][4]f32{
             add(r3, r0, 1), // left:   w + x >= 0
             add(r3, r0, -1), // right:  w - x >= 0
             add(r3, r1, 1), // bottom: w + y >= 0
             add(r3, r1, -1), // top:    w - y >= 0
             r2, // near: z >= 0
         };
+        for (coefficients, &self.planes) |c, *plane| {
+            plane.* = Plane.fromCoefficients(c[0], c[1], c[2], c[3]);
+        }
     }
 };
 
-/// True when the box [lo, hi] is fully outside one of the frustum planes.
-fn boxOutside(planes: [5][4]f32, lo: [3]f32, hi: [3]f32) bool {
+/// True when the box is fully behind one of the frustum planes.
+fn boxOutside(planes: [5]Plane, box: Aabb) bool {
     for (planes) |p| {
-        // The corner furthest along the plane normal.
-        const x = if (p[0] >= 0) hi[0] else lo[0];
-        const y = if (p[1] >= 0) hi[1] else lo[1];
-        const z = if (p[2] >= 0) hi[2] else lo[2];
-        if (p[0] * x + p[1] * y + p[2] * z + p[3] < 0) return true;
+        if (p.classifyAabb(box) == .back) return true;
     }
     return false;
+}
+
+/// True when `box` is out of the frustum planes of `frustum`
+/// (REQ-VOXEL-020).
+pub fn aabbOutside(frustum: Frustum, box: Aabb) bool {
+    return boxOutside(frustum.planes, box);
+}
+
+/// True when section `sy` (0 at MIN_Y) of chunk (cx, cz) is out of the
+/// frustum planes (REQ-VOXEL-020).
+pub fn sectionOutside(frustum: Frustum, cx: i32, sy: i32, cz: i32) bool {
+    const x0: f32 = @floatFromInt(cx * CHUNK_W);
+    const y0: f32 = @floatFromInt(chunk_mod.MIN_Y + sy * CHUNK_W);
+    const z0: f32 = @floatFromInt(cz * CHUNK_W);
+    const w: f32 = @floatFromInt(CHUNK_W);
+    return boxOutside(frustum.planes, Aabb.init(Vec3.init(x0, y0, z0), Vec3.init(x0 + w, y0 + w, z0 + w)));
 }
 
 /// Returns true if the chunk at chunk-grid coordinates (cx, cz) should be
@@ -215,7 +236,8 @@ pub fn keepChunk(strategy: Strategy, frustum: Frustum, cx: i32, cz: i32, y_min: 
         const x0: f32 = @floatFromInt(cx * CHUNK_W);
         const z0: f32 = @floatFromInt(cz * CHUNK_W);
         const w: f32 = @floatFromInt(CHUNK_W);
-        return !boxOutside(frustum.planes, .{ x0, y_min, z0 }, .{ x0 + w, y_max, z0 + w });
+        const box = Aabb.init(Vec3.init(x0, y_min, z0), Vec3.init(x0 + w, y_max, z0 + w));
+        return !boxOutside(frustum.planes, box);
     }
 
     // World-space chunk centre. Y is fixed at the middle of the column.
@@ -337,7 +359,8 @@ test "none strategy never culls" {
 
 /// Rows of a view-projection matrix for the tests: perspective (60° vertical
 /// fov, 16:9, WebGPU depth 0..1, near 0.1) times a view from `eye` along
-/// -z or +x. Built by hand so the test does not depend on sw_math.
+/// -z or +x. Built by hand, so the test does not depend on the sw_math
+/// matrix code.
 fn testRows(eye: [3]f32, look_x: bool) [4][4]f32 {
     const f: f32 = 1.0 / @tan(@as(f32, std.math.pi) / 6.0);
     const aspect: f32 = 16.0 / 9.0;

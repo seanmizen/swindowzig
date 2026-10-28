@@ -105,10 +105,11 @@ swindowzig/
 │   ├── sw_gfx2d/       # 2D renderer: rects, outlines, textured quads, batching
 │   ├── sw_assets/      # loadBytes, PNG decode, zip reader, player files, OPFS/folder cache
 │   ├── sw_text/        # Text: TTF and bitmap font chain, bidi, atlas, measure, wrap, draw
-│   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix, post chain, sky, box models, shadows, point lights, clouds, rain and snow
+│   ├── sw_render/      # Texture atlas, frame graph, uniform ring, staged uploads, WGSL prefix, post chain, sky, box models, shadows, point lights, clouds, rain and snow, translucency, particles, graphics settings, frame pacing, GPU pass timer, frame-time chart
 │   ├── sw_net/         # WebSocket client: browser WebSocket (web), RFC 6455 on std.Io with TLS (native)
+│   ├── sw_jobs/        # Worker pools: native threads and Web Workers, one Transport API
 │   ├── sw_ui/          # UI tree: layout, focus, widgets, screen stack, on-screen keyboard, semantic tree, drawing
-│   └── sw_voxel/       # Voxel chunks: storage, light, greedy and model mesher, chunk pipeline, collision, region files
+│   └── sw_voxel/       # Voxel chunks: storage, light, greedy and model mesher, chunk pipeline, far terrain LOD, cave culling, collision, region files
 │       ├── src/                 # Library. content.zig gives the content contract
 │       └── testing/content.zig  # Test content: numbered blocks, no game names
 ├── examples/

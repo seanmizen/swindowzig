@@ -37,12 +37,27 @@
 | [`REQ-GPU-018`](gpu.md#req-gpu-018--a-setting-turns-the-shadows-off) | A setting turns the shadows off | active | functional | P2 | agent:SWZ-38 |
 | [`REQ-GPU-020`](gpu.md#req-gpu-020--the-cloud-layer-moves-with-the-wind-and-takes-its-shape-from-the-game) | The cloud layer moves with the wind and takes its shape from the game | active | functional | P3 | agent:SWZ-37 |
 | [`REQ-GPU-021`](gpu.md#req-gpu-021--rain-and-snow-fall-around-the-camera-and-stop-at-the-height-map) | Rain and snow fall around the camera and stop at the height map | active | functional | P3 | agent:SWZ-37 |
+| [`REQ-GPU-022`](gpu.md#req-gpu-022--translucent-quads-draw-after-the-opaque-scene-with-no-depth-write) | Translucent quads draw after the opaque scene with no depth write | active | functional | P2 | agent:SWZ-35 |
+| [`REQ-GPU-023`](gpu.md#req-gpu-023--the-translucent-pass-sorts-its-quads-from-far-to-near) | The translucent pass sorts its quads from far to near | active | functional | P2 | agent:SWZ-35 |
+| [`REQ-GPU-024`](gpu.md#req-gpu-024--particles-draw-as-camera-facing-quads-in-one-draw-call-far-to-near) | Particles draw as camera-facing quads in one draw call, far to near | active | functional | P3 | agent:SWZ-42 |
+| [`REQ-GPU-025`](gpu.md#req-gpu-025--a-full-particle-system-drops-its-oldest-particle) | A full particle system drops its oldest particle | active | functional | P3 | agent:SWZ-42 |
+| [`REQ-GPU-026`](gpu.md#req-gpu-026--a-preset-sets-each-graphics-setting) | A preset sets each graphics setting | active | functional | P3 | agent:SWZ-44 |
+| [`REQ-GPU-027`](gpu.md#req-gpu-027--the-frame-limiter-holds-a-target-frame-rate) | The frame limiter holds a target frame rate | active | functional | P3 | agent:SWZ-44 |
+| [`REQ-GPU-028`](gpu.md#req-gpu-028--gpu-timestamps-time-each-render-pass) | GPU timestamps time each render pass | active | functional | P3 | agent:SWZ-44 |
+| [`REQ-GPU-029`](gpu.md#req-gpu-029--the-overlay-draws-a-frame-time-chart-with-sw_gfx2d) | The overlay draws a frame-time chart with sw_gfx2d | active | functional | P3 | agent:SWZ-44 |
+| [`REQ-GPU-030`](gpu.md#req-gpu-030--a-post-effect-reads-the-depth-target-and-gives-the-fog) | A post effect reads the depth target and gives the fog | active | functional | P3 | agent:SWZ-81 |
+| [`REQ-GPU-031`](gpu.md#req-gpu-031--a-cloud-puts-a-moving-shadow-on-the-ground-under-it) | A cloud puts a moving shadow on the ground under it | active | functional | P2 | agent:SWZ-101 |
+| [`REQ-GPU-032`](gpu.md#req-gpu-032--soft-clouds-have-semi-transparent-edges-and-a-rim-toward-the-sun) | Soft clouds have semi-transparent edges and a rim toward the sun | active | functional | P2 | agent:SWZ-101 |
+| [`REQ-GPU-033`](gpu.md#req-gpu-033--light-shafts-go-toward-the-sun-on-the-screen) | Light shafts go toward the sun on the screen | active | functional | P2 | agent:SWZ-101 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
 | [`REQ-INPUT-004`](input.md#req-input-004--saved-input-settings-load-in-a-newer-version) | Saved input settings load in a newer version | active | functional | P2 | agent:SWZ-49 |
 | [`REQ-INPUT-005`](input.md#req-input-005--gamepads-are-recorded-input-that-binds-to-actions) | Gamepads are recorded input that binds to actions | active | functional | P2 | agent:SWZ-50 |
 | [`REQ-INPUT-006`](input.md#req-input-006--old-recordings-still-play) | Old recordings still play | active | constraint | P1 | agent:SWZ-50 |
+| [`REQ-INPUT-007`](input.md#req-input-007--a-key-press-shorter-than-one-tick-is-not-lost) | A key press shorter than one tick is not lost | active | functional | P2 | agent:SWZ-92 |
+| [`REQ-JOBS-001`](jobs.md#req-jobs-001--a-native-worker-runs-its-messages-in-order-and-can-stop) | A native worker runs its messages in order, and can stop | active | functional | P2 | agent:SWZ-26 |
+| [`REQ-JOBS-002`](jobs.md#req-jobs-002--native-threads-and-web-workers-have-one-transport-api) | Native threads and Web Workers have one Transport API | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-NET-001`](net.md#req-net-001--the-game-polls-network-events) | The game polls network events | active | constraint | P1 | agent:SWZ-53 |
 | [`REQ-NET-002`](net.md#req-net-002--the-native-client-masks-each-frame) | The native client masks each frame | active | functional | P1 | agent:SWZ-53 |
 | [`REQ-NET-003`](net.md#req-net-003--the-reconnect-delay-doubles-to-a-limit) | The reconnect delay doubles to a limit | active | functional | P2 | agent:SWZ-53 |
@@ -69,6 +84,15 @@
 | [`REQ-VOXEL-011`](voxel.md#req-voxel-011--a-saved-region-gives-the-same-blocks-when-it-loads) | A saved region gives the same blocks when it loads | active | functional | P2 | agent:SWZ-52 |
 | [`REQ-VOXEL-012`](voxel.md#req-voxel-012--a-later-format-reads-the-region-files-of-version-1) | A later format reads the region files of version 1 | active | constraint | P2 | agent:SWZ-52 |
 | [`REQ-VOXEL-013`](voxel.md#req-voxel-013--a-damaged-chunk-in-a-region-file-fails-alone) | A damaged chunk in a region file fails alone | active | functional | P2 | agent:SWZ-52 |
+| [`REQ-VOXEL-014`](voxel.md#req-voxel-014--a-fluid-surface-has-a-height-at-each-corner) | A fluid surface has a height at each corner | active | functional | P2 | agent:SWZ-34 |
+| [`REQ-VOXEL-015`](voxel.md#req-voxel-015--two-cells-of-one-fluid-have-no-face-between-them) | Two cells of one fluid have no face between them | active | functional | P2 | agent:SWZ-34 |
+| [`REQ-VOXEL-016`](voxel.md#req-voxel-016--the-texture-of-a-fluid-surface-follows-the-flow) | The texture of a fluid surface follows the flow | active | functional | P3 | agent:SWZ-34 |
+| [`REQ-VOXEL-017`](voxel.md#req-voxel-017--the-mesh-uploads-of-one-frame-have-a-limit-and-a-priority) | The mesh uploads of one frame have a limit and a priority | active | quality | P2 | agent:SWZ-55 |
+| [`REQ-VOXEL-018`](voxel.md#req-voxel-018--a-fast-player-has-no-long-hole-near-the-player) | A fast player has no long hole near the player | active | quality | P2 | agent:SWZ-55 |
+| [`REQ-VOXEL-019`](voxel.md#req-voxel-019--each-mesh-records-which-faces-of-its-sections-connect) | Each mesh records which faces of its sections connect | active | functional | P2 | agent:SWZ-40 |
+| [`REQ-VOXEL-020`](voxel.md#req-voxel-020--cave-culling-removes-only-the-sections-that-the-camera-can-not-see) | Cave culling removes only the sections that the camera can not see | active | quality | P2 | agent:SWZ-40 |
+| [`REQ-VOXEL-021`](voxel.md#req-voxel-021--far-chunks-get-a-mesh-at-a-lower-resolution) | Far chunks get a mesh at a lower resolution | active | functional | P2 | agent:SWZ-39 |
+| [`REQ-VOXEL-022`](voxel.md#req-voxel-022--no-gap-shows-at-the-border-between-two-levels-of-detail) | No gap shows at the border between two levels of detail | active | quality | P2 | agent:SWZ-39 |
 
 ## Dependency graph
 
@@ -106,12 +130,27 @@ graph TD
   REQ_GPU_018["REQ-GPU-018<br/>A setting turns the shadows off"]
   REQ_GPU_020["REQ-GPU-020<br/>The cloud layer moves with the wind and takes its shape from the game"]
   REQ_GPU_021["REQ-GPU-021<br/>Rain and snow fall around the camera and stop at the height map"]
+  REQ_GPU_022["REQ-GPU-022<br/>Translucent quads draw after the opaque scene with no depth write"]
+  REQ_GPU_023["REQ-GPU-023<br/>The translucent pass sorts its quads from far to near"]
+  REQ_GPU_024["REQ-GPU-024<br/>Particles draw as camera-facing quads in one draw call, far to near"]
+  REQ_GPU_025["REQ-GPU-025<br/>A full particle system drops its oldest particle"]
+  REQ_GPU_026["REQ-GPU-026<br/>A preset sets each graphics setting"]
+  REQ_GPU_027["REQ-GPU-027<br/>The frame limiter holds a target frame rate"]
+  REQ_GPU_028["REQ-GPU-028<br/>GPU timestamps time each render pass"]
+  REQ_GPU_029["REQ-GPU-029<br/>The overlay draws a frame-time chart with sw_gfx2d"]
+  REQ_GPU_030["REQ-GPU-030<br/>A post effect reads the depth target and gives the fog"]
+  REQ_GPU_031["REQ-GPU-031<br/>A cloud puts a moving shadow on the ground under it"]
+  REQ_GPU_032["REQ-GPU-032<br/>Soft clouds have semi-transparent edges and a rim toward the sun"]
+  REQ_GPU_033["REQ-GPU-033<br/>Light shafts go toward the sun on the screen"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
   REQ_INPUT_004["REQ-INPUT-004<br/>Saved input settings load in a newer version"]
   REQ_INPUT_005["REQ-INPUT-005<br/>Gamepads are recorded input that binds to actions"]
   REQ_INPUT_006["REQ-INPUT-006<br/>Old recordings still play"]
+  REQ_INPUT_007["REQ-INPUT-007<br/>A key press shorter than one tick is not lost"]
+  REQ_JOBS_001["REQ-JOBS-001<br/>A native worker runs its messages in order, and can stop"]
+  REQ_JOBS_002["REQ-JOBS-002<br/>Native threads and Web Workers have one Transport API"]
   REQ_NET_001["REQ-NET-001<br/>The game polls network events"]
   REQ_NET_002["REQ-NET-002<br/>The native client masks each frame"]
   REQ_NET_003["REQ-NET-003<br/>The reconnect delay doubles to a limit"]
@@ -138,6 +177,15 @@ graph TD
   REQ_VOXEL_011["REQ-VOXEL-011<br/>A saved region gives the same blocks when it loads"]
   REQ_VOXEL_012["REQ-VOXEL-012<br/>A later format reads the region files of version 1"]
   REQ_VOXEL_013["REQ-VOXEL-013<br/>A damaged chunk in a region file fails alone"]
+  REQ_VOXEL_014["REQ-VOXEL-014<br/>A fluid surface has a height at each corner"]
+  REQ_VOXEL_015["REQ-VOXEL-015<br/>Two cells of one fluid have no face between them"]
+  REQ_VOXEL_016["REQ-VOXEL-016<br/>The texture of a fluid surface follows the flow"]
+  REQ_VOXEL_017["REQ-VOXEL-017<br/>The mesh uploads of one frame have a limit and a priority"]
+  REQ_VOXEL_018["REQ-VOXEL-018<br/>A fast player has no long hole near the player"]
+  REQ_VOXEL_019["REQ-VOXEL-019<br/>Each mesh records which faces of its sections connect"]
+  REQ_VOXEL_020["REQ-VOXEL-020<br/>Cave culling removes only the sections that the camera can not see"]
+  REQ_VOXEL_021["REQ-VOXEL-021<br/>Far chunks get a mesh at a lower resolution"]
+  REQ_VOXEL_022["REQ-VOXEL-022<br/>No gap shows at the border between two levels of detail"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -159,6 +207,13 @@ graph TD
   REQ_GPU_018 -->|refines| REQ_GPU_016
   REQ_GPU_020 -->|refines| REQ_GPU_011
   REQ_GPU_021 -->|refines| REQ_GPU_011
+  REQ_GPU_023 -->|depends-on| REQ_GPU_022
+  REQ_GPU_024 -->|depends-on| REQ_GPU_022
+  REQ_GPU_030 -->|depends-on| REQ_GPU_011
+  REQ_GPU_031 -->|depends-on| REQ_GPU_020
+  REQ_GPU_031 -->|depends-on| REQ_GPU_030
+  REQ_GPU_032 -->|depends-on| REQ_GPU_020
+  REQ_GPU_033 -->|depends-on| REQ_GPU_030
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
   REQ_TEXT_004 -->|refines| REQ_TEXT_001
@@ -174,6 +229,10 @@ graph TD
   REQ_VOXEL_010 -->|refines| REQ_VOXEL_009
   REQ_VOXEL_012 -->|depends-on| REQ_VOXEL_011
   REQ_VOXEL_013 -->|depends-on| REQ_VOXEL_011
+  REQ_VOXEL_015 -->|refines| REQ_VOXEL_014
+  REQ_VOXEL_016 -->|refines| REQ_VOXEL_014
+  REQ_VOXEL_020 -->|depends-on| REQ_VOXEL_019
+  REQ_VOXEL_022 -->|depends-on| REQ_VOXEL_021
 ```
 
 ## Derived reverse links
@@ -185,9 +244,12 @@ graph TD
 - `REQ-GPU-006` — refined-by REQ-GPU-014, refined-by REQ-GPU-017
 - `REQ-GPU-008` — refined-by REQ-GPU-010
 - `REQ-GPU-010` — refined-by REQ-GPU-011
-- `REQ-GPU-011` — refined-by REQ-GPU-020, refined-by REQ-GPU-021
+- `REQ-GPU-011` — refined-by REQ-GPU-020, refined-by REQ-GPU-021, required-by REQ-GPU-030
 - `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
 - `REQ-GPU-016` — refined-by REQ-GPU-018
+- `REQ-GPU-020` — required-by REQ-GPU-031, required-by REQ-GPU-032
+- `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024
+- `REQ-GPU-030` — required-by REQ-GPU-031, required-by REQ-GPU-033
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
 - `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-009
@@ -196,3 +258,6 @@ graph TD
 - `REQ-VOXEL-008` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-009` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
+- `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016
+- `REQ-VOXEL-019` — required-by REQ-VOXEL-020
+- `REQ-VOXEL-021` — required-by REQ-VOXEL-022

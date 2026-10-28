@@ -34,6 +34,7 @@ const chunk_mod = @import("../chunk.zig");
 const mesher_mod = @import("../mesher.zig");
 const content = @import("../content.zig");
 const stages = @import("stages.zig");
+const lod = @import("lod.zig");
 
 const BlockType = chunk_mod.BlockType;
 const PalettedBlocks = chunk_mod.PalettedBlocks;
@@ -46,13 +47,17 @@ pub const SLOTS = stages.SLOTS;
 /// "VXCP" as little-endian bytes.
 pub const MAGIC: u32 = 0x50435856;
 /// Increment this value for each change of the layout.
-pub const VERSION: u16 = 3;
+pub const VERSION: u16 = 5;
 
 pub const HEADER_LEN = 16;
 pub const HELLO_LEN = 24 + content.GEN_CONFIG_LEN;
 pub const EDIT_LEN = 16;
 pub const JOB_LEN = 88;
-pub const RESULT_HEAD_LEN = 48;
+/// The length of the section connections of a mesh Result (REQ-VOXEL-019):
+/// one u16 for each section, to a multiple of 16 bytes.
+pub const SECTION_COUNT = chunk_mod.SECTION_COUNT;
+pub const SECTIONS_LEN = std.mem.alignForward(usize, chunk_mod.SECTION_COUNT * 2, 16);
+pub const RESULT_HEAD_LEN = 48 + SECTIONS_LEN;
 pub const ERROR_HEAD_LEN = 16;
 /// The offset of a Result payload in the message.
 pub const PAYLOAD_OFFSET = HEADER_LEN + RESULT_HEAD_LEN;
@@ -141,7 +146,9 @@ pub const Edit = struct {
 ///              bit 1 = flat light, smooth light off (mesh)
 ///   4  i32     cx
 ///   8  i32     cz
-///   12 u32     reserved, 0
+///   12 u8      level of detail, 0 to lod.MAX_LEVEL (mesh, REQ-VOXEL-021)
+///   13 u8      reserved, 0
+///   14 u16     reserved, 0
 ///   16 u32×9   block versions
 ///   52 u32×9   light versions
 pub const Job = struct {
@@ -155,13 +162,15 @@ pub const Job = struct {
     want_blocks: bool = false,
     /// Mesh: false gives flat light (REQ-VOXEL-008).
     smooth_light: bool = true,
+    /// Mesh: the level of detail, 0 to `lod.MAX_LEVEL` (REQ-VOXEL-021).
+    lod: u8 = 0,
     blocks: [SLOTS]Version = @splat(0),
     light: [SLOTS]Version = @splat(0),
 };
 
 /// The fixed part of a Result.
 ///
-/// Body (48 bytes, then the payload):
+/// Body (RESULT_HEAD_LEN bytes, then the payload):
 ///
 ///   0  u8   stage
 ///   1  u8   flags: bit 0 = the payload holds blocks
@@ -174,7 +183,11 @@ pub const Job = struct {
 ///   28 u32  job time in µs, or 0
 ///   32 u64  mesh: meshHash of the payload. generate and light: 0
 ///   40 u64  reserved, 0
-///   48 ...  payload: mesh: PackedQuad × count. generate: the blocks
+///   48 u16  mesh: the face connections of each section (visibility.zig),
+///           SECTION_COUNT values, then 0 to a multiple of 16 bytes
+///           (SECTIONS_LEN). generate and light: 0
+///   48 + SECTIONS_LEN ...  payload: mesh: PackedQuad × count.
+///           generate: the blocks
 pub const ResultHead = struct {
     stage: Stage,
     cx: i32,
@@ -186,6 +199,8 @@ pub const ResultHead = struct {
     job_us: u32 = 0,
     /// Mesh: meshHash of the quad bytes. The encoder calculates it.
     mesh_hash: u64 = 0,
+    /// Mesh: the face connections of each section (REQ-VOXEL-019).
+    sections: [chunk_mod.SECTION_COUNT]u16 = @splat(0x7FFF),
 };
 
 /// The hash of the quad bytes of a mesh. The worker calculates it, so main
@@ -363,7 +378,9 @@ pub fn encodeJob(allocator: std.mem.Allocator, id: u32, job: Job) ![]u8 {
     o.int(u8, @as(u8, @intFromBool(job.want_blocks)) | (@as(u8, @intFromBool(!job.smooth_light)) << 1));
     o.int(i32, job.cx);
     o.int(i32, job.cz);
-    o.int(u32, 0);
+    o.int(u8, job.lod);
+    o.int(u8, 0);
+    o.int(u16, 0);
     for (job.blocks) |v| o.int(u32, v);
     for (job.light) |v| o.int(u32, v);
     return finish(o);
@@ -425,6 +442,8 @@ pub fn encodeResult(allocator: std.mem.Allocator, id: u32, head: ResultHead, pay
     // payload bytes.
     o.int(u64, 0);
     o.int(u64, 0);
+    for (head.sections) |c| o.int(u16, if (head.stage == .mesh) c else 0);
+    o.zeros(SECTIONS_LEN - chunk_mod.SECTION_COUNT * 2);
     switch (payload) {
         .none => {},
         .quads => |q| {
@@ -567,7 +586,9 @@ pub fn decode(bytes: []const u8) DecodeError!Decoded {
             j.smooth_light = flags & 2 == 0;
             j.cx = b.int(i32);
             j.cz = b.int(i32);
-            if (b.int(u32) != 0) return error.BadField;
+            j.lod = b.int(u8);
+            if (j.lod > lod.MAX_LEVEL) return error.BadField;
+            if (b.int(u8) != 0 or b.int(u16) != 0) return error.BadField;
             for (&j.blocks) |*v| v.* = b.int(u32);
             for (&j.light) |*v| v.* = b.int(u32);
             break :blk .{ .job = j };
@@ -644,6 +665,14 @@ fn resultInfo(bytes: []const u8, kind: Kind, body_len: u32, id: u32) DecodeError
     r.job_us = b.int(u32);
     r.mesh_hash = b.int(u64);
     if (b.int(u64) != 0) return error.BadField;
+    for (&r.sections) |*c| {
+        c.* = b.int(u16);
+        if (c.* > 0x7FFF or (r.stage != .mesh and c.* != 0)) return error.BadField;
+    }
+    if (r.stage != .mesh) r.sections = @splat(0x7FFF);
+    for (0..SECTIONS_LEN - chunk_mod.SECTION_COUNT * 2) |_| {
+        if (b.int(u8) != 0) return error.BadField;
+    }
     const payload_len: usize = body_len - RESULT_HEAD_LEN;
     switch (r.stage) {
         .mesh => {

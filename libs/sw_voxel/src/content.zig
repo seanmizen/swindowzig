@@ -88,6 +88,19 @@
 //!       the result must be comptime-known. With no declaration, no full
 //!       cube has a tint. It needs `tint`.
 //!
+//! The content module can declare fluids (REQ-VOXEL-014). With no
+//! declaration, no block is a fluid:
+//!
+//!   pub fn fluid(block: Block) ?sw_voxel.fluid.Level
+//!       The fluid and the level of `block`, or null for a block that is
+//!       not a fluid. Give one block ID for each level of a fluid. The
+//!       level is 1 to 8, and 8 is a full cell. sw_voxel calls it at
+//!       comptime for each block type, so the result must be
+//!       comptime-known. The greedy mesher does not mesh a fluid block.
+//!       `fluid.generate` meshes it. A fluid block must not have a model.
+//!       Give it an `opacity` and a `collision` too: the defaults are
+//!       the values of a full cube.
+//!
 //! The content module can declare the height of the world. With no
 //! declaration, the world is y 0 to 255:
 //!
@@ -100,6 +113,7 @@ const std = @import("std");
 const c = @import("sw_voxel_content");
 const model_mod = @import("model.zig");
 const collision_mod = @import("collision.zig");
+const fluid_mod = @import("fluid.zig");
 
 pub const Block = c.Block;
 pub const GenConfig = c.GenConfig;
@@ -135,6 +149,12 @@ pub fn model(comptime block: Block) ?*const model_mod.BakedModel {
 /// Comptime only: `collision.zig` makes a table.
 pub fn collision(comptime block: Block) ?[]const collision_mod.CellBox {
     return if (@hasDecl(c, "collision")) c.collision(block) else null;
+}
+
+/// The fluid and the level of `block`, or null (REQ-VOXEL-014). Comptime
+/// only: `fluid.zig` makes a table.
+pub fn fluid(comptime block: Block) ?fluid_mod.Level {
+    return if (@hasDecl(c, "fluid")) c.fluid(block) else null;
 }
 
 /// True when the content gives tint colours (REQ-VOXEL-009).

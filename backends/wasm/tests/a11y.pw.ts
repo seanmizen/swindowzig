@@ -29,10 +29,33 @@ async function focusedNode(cdp: CDPSession): Promise<string | null> {
   return `${focused.role?.value}: ${focused.name?.value ?? ''}`;
 }
 
+/**
+ * Wait for `n` animation frames. The loader runs one game frame in each
+ * animation frame, so the game gets the events from before the wait.
+ */
+async function frames(page: Page, n = 3): Promise<void> {
+  await page.evaluate(
+    (count) =>
+      new Promise<void>((resolve) => {
+        let left = count;
+        const step = () => {
+          left -= 1;
+          if (left <= 0) resolve();
+          else requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      }),
+    n,
+  );
+}
+
 async function press(page: Page, key: string): Promise<void> {
-  // A delay between the key down and the key up, so that the game sees the
-  // key in a tick.
-  await page.keyboard.press(key, { delay: 50 });
+  // The game keeps a press that is shorter than one tick (REQ-INPUT-007).
+  // Two presses of one key in one tick are one press, so the test waits
+  // for game frames after each press. SwiftShader draws a few frames each
+  // second, and a fixed delay is not sufficient.
+  await page.keyboard.press(key);
+  await frames(page);
 }
 
 test('the semantic tree of flat2d is in the accessibility tree', async ({

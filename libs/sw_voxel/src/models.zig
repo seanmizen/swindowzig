@@ -8,6 +8,7 @@
 const std = @import("std");
 const content = @import("content.zig");
 const model = @import("model.zig");
+const fluid = @import("fluid.zig");
 
 const Block = content.Block;
 const block_values = @typeInfo(Block).@"enum".field_values;
@@ -31,6 +32,7 @@ const tables: Tables = blk: {
         const block: Block = @fromBackingInt(v);
         if (content.model(block)) |m| {
             if (block == .air) @compileError("sw_voxel_content.model(.air) must be null");
+            if (content.fluid(block) != null) @compileError("sw_voxel_content: a fluid block must not have a model");
             if (t.quad_count + m.quads.len > std.math.maxInt(u16))
                 @compileError("sw_voxel_content: the models have more than 65535 quads");
             t.has_model[v] = true;
@@ -84,10 +86,11 @@ pub fn hasModel(block: Block) bool {
     return tables.has_model[@backingInt(block)];
 }
 
-/// True when `block` is a full cube: not air and no model. A full cube
-/// hides the face of its neighbour, and the greedy mesher meshes it.
+/// True when `block` is a full cube: not air, no model and not a fluid. A
+/// full cube hides the face of its neighbour, and the greedy mesher
+/// meshes it.
 pub fn isCube(block: Block) bool {
-    return block != .air and !hasModel(block);
+    return block != .air and !hasModel(block) and !fluid.isFluid(block);
 }
 
 /// The quads of `block` in `quads`.

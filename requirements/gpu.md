@@ -259,8 +259,11 @@ Textures, samplers and other resources of `sw_gpu`.
   releases these objects at the same points. Before this requirement, the
   bridge kept about six handles for each frame, with the canvas texture of
   each frame. The memory of the page increased while the game ran.
-- **Verification:** Test — `backends/wasm/tests/canvas.pw.ts` › "justabox
-  draws the spinning box on the canvas"
+- **Verification:**
+  - Test — `backends/wasm/tests/canvas.pw.ts` › "justabox draws the
+    spinning box on the canvas"
+  - Test — `backends/wasm/headless.ts` › step 8: no canvas view is live
+    after the last frame
 - **Relations:** refines REQ-GPU-005
 
 ## REQ-GPU-013 — The web canvas has the screen format of the Zig side
@@ -493,3 +496,295 @@ Textures, samplers and other resources of `sw_gpu`.
     covers has the CPU reference colour, and each particle under the height
     map leaves the background.
 - **Relations:** refines REQ-GPU-011
+
+## REQ-GPU-022 — Translucent quads draw after the opaque scene with no depth write
+
+- **Status:** active
+- **Source:** agent:SWZ-35
+- **Origin:** #35
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While a `Translucent` of `sw_render` is in a frame graph,
+  the translucent pass shall draw its quads after the opaque pass with the
+  depth test on and the depth write off.
+- **Rationale:** An opaque surface in front of a translucent quad must hide
+  it, so the depth test stays on. A translucent quad must not hide a
+  translucent quad behind it, so the pass writes no depth. The blend puts
+  each quad over the colour of the scene.
+- **Verification:**
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: the
+    depth test is on and the depth write is off (REQ-GPU-022)"
+  - Demonstration — `models --check` (native, in CI) draws a translucent
+    quad under the ground. The pixel through the quads has the CPU blend
+    with no colour of that quad.
+- **Relations:** none
+
+## REQ-GPU-023 — The translucent pass sorts its quads from far to near
+
+- **Status:** active
+- **Source:** agent:SWZ-35
+- **Origin:** #35
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the camera moves the resort distance or more from
+  the position of the last sort, the translucent pass of `sw_render` shall
+  sort its quads from far to near.
+- **Rationale:** A blend gives the correct colour only when the nearer
+  quad draws over the further quads. A sort for each frame costs time
+  with no gain while the camera stays near the same position, so the pass
+  sorts only after a set distance. The sort changes only the index list,
+  so the vertices stay on the GPU.
+- **Verification:**
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: the
+    sort puts the furthest quad first, and ties keep their order
+    (REQ-GPU-023)"
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: a
+    camera on the other side reverses the order (REQ-GPU-023)"
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: the
+    sort runs again only after the camera moves the resort distance
+    (REQ-GPU-023)"
+  - Demonstration — `models --check` (native, in CI) gives the quads near
+    quad first. The pixel through the two quads has the CPU blend of the
+    far quad, then the near quad.
+- **Relations:** depends-on REQ-GPU-022
+
+## REQ-GPU-024 — Particles draw as camera-facing quads in one draw call, far to near
+
+- **Status:** active
+- **Source:** agent:SWZ-42
+- **Origin:** #42
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** While a `Particles` of `sw_render` is in a frame graph,
+  the particle pass shall draw each particle of the system as one quad
+  that faces the camera, in one draw call, from the furthest particle to
+  the nearest.
+- **Rationale:** A game can have thousands of particles, so one draw call
+  draws them all. Each particle has straight alpha, so the blend is
+  correct only from far to near. The step (speed, gravity, drag, life)
+  is a pure function, and an emitter takes its random values from its own
+  seed, so a replay gives the same particles.
+- **Verification:**
+  - Test — `libs/sw_render/src/particle_plan.zig` › "particles: gravity,
+    drag and life move a particle (REQ-GPU-024)"
+  - Test — `libs/sw_render/src/particle_plan.zig` › "particles: an emitter
+    makes particles at its rate, in its ranges (REQ-GPU-024)"
+  - Test — `libs/sw_render/src/particle_plan.zig` › "particles: the quads
+    face the camera and go from far to near (REQ-GPU-024)"
+  - Demonstration — `models --check` (native, in CI) gives two particles,
+    near particle first. The pixel through them has the CPU blend of the
+    far particle, then the near particle, and the pass uses one draw call.
+- **Relations:** depends-on REQ-GPU-022
+
+## REQ-GPU-025 — A full particle system drops its oldest particle
+
+- **Status:** active
+- **Source:** agent:SWZ-42
+- **Origin:** #42
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** If a particle system is full when a new particle starts,
+  then the `sw_render` particle system shall put the new particle in the
+  place of its oldest particle.
+- **Rationale:** The system has a fixed size, so it makes no allocation
+  while the game runs. A new particle is more important than an old
+  particle that is near the end of its life.
+- **Verification:** Test — `libs/sw_render/src/particle_plan.zig` ›
+  "particles: the cap drops the oldest particle (REQ-GPU-025)"
+- **Relations:** none
+
+## REQ-GPU-026 — A preset sets each graphics setting
+
+- **Status:** active
+- **Source:** agent:SWZ-44
+- **Origin:** #44
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When the game selects a quality preset, `sw_render`
+  shall give a `GraphicsSettings` with the render distance, the
+  anti-aliasing, the mip levels, the shadows and vsync of that preset.
+- **Rationale:** A settings menu changes one struct, and a preset is a
+  fast start for a slow or a fast machine. The game gives each value to
+  the part that uses it, for example the anti-aliasing to
+  `GPU.configureMSAA` and vsync to `GPU.setVsync`.
+- **Verification:**
+  - Test — `libs/sw_render/src/settings.zig` › "settings: each preset is
+    better than or equal to the preset below it (REQ-GPU-026)"
+  - Test — `libs/sw_render/src/settings.zig` › "settings: a preset
+    matches itself, and a changed value matches no preset (REQ-GPU-026)"
+  - Test — `libs/sw_render/src/settings.zig` › "settings: the
+    anti-aliasing gives the sw_gpu configuration (REQ-GPU-026)"
+- **Relations:** none
+
+## REQ-GPU-027 — The frame limiter holds a target frame rate
+
+- **Status:** active
+- **Source:** agent:SWZ-44
+- **Origin:** #44
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** While a frame limiter has a target frame rate, the
+  `sw_render` frame limiter shall give a wait that starts each frame one
+  interval after the start of the previous frame.
+- **Rationale:** A frame rate limit saves power and gives an even frame
+  time. The frames start at equal intervals, so a short wait after a slow
+  frame keeps the mean rate at the target. After a frame that is late by
+  more than one interval, the limiter starts again and does not try to
+  catch up.
+- **Verification:**
+  - Test — `libs/sw_render/src/frame_pacing.zig` › "frame pacing: the
+    limiter waits until the next frame start (REQ-GPU-027)"
+  - Test — `libs/sw_render/src/frame_pacing.zig` › "frame pacing: a
+    frame late by more than one interval starts again from now
+    (REQ-GPU-027)"
+- **Relations:** none
+
+## REQ-GPU-028 — GPU timestamps time each render pass
+
+- **Status:** active
+- **Source:** agent:SWZ-44
+- **Origin:** #44
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** Where the device has the timestamp query feature, while
+  a frame graph has a `PassTimer`, the frame graph shall give the GPU
+  time of each render pass of the frame.
+- **Rationale:** The CPU time of a frame does not show which pass is
+  slow on the GPU. The timer waits for the GPU to read the times, so it
+  is for a debug overlay. The web build has no timestamps yet.
+- **Verification:**
+  - Test — `libs/sw_render/src/frame_pacing.zig` › "frame pacing: GPU
+    timestamps to milliseconds (REQ-GPU-028)"
+  - Demonstration — `models --check` (native, in CI) sets a pass timer
+    when the device has timestamps. The scene, translucent, particle and
+    overlay passes must each have a time.
+- **Relations:** none
+
+## REQ-GPU-029 — The overlay draws a frame-time chart with sw_gfx2d
+
+- **Status:** active
+- **Source:** agent:SWZ-44
+- **Origin:** #44
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When the game draws the frame-time chart, `sw_render`
+  shall draw one bar for each frame time, with a height that is the frame
+  time over the chart maximum, and a line at the target frame time.
+- **Rationale:** A chart shows a frame spike that a mean value hides. A
+  bar above the target has a different colour. The chart uses the
+  sw_gfx2d renderer, so it draws in the same pass as the other 2D
+  shapes of the game.
+- **Verification:**
+  - Test — `libs/sw_render/src/perf_overlay.zig` › "perf overlay: the
+    chart draws the background, one bar for each frame and the line
+    (REQ-GPU-029)"
+  - Test — `libs/sw_render/src/perf_overlay.zig` › "perf overlay: the bar
+    height is the frame time over the chart maximum (REQ-GPU-029)"
+- **Relations:** none
+
+## REQ-GPU-030 — A post effect reads the depth target and gives the fog
+
+- **Status:** active
+- **Source:** agent:SWZ-81
+- **Origin:** #81
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** Where a post chain has the depth fog effect, the post
+  chain shall give each pixel with a depth below 1 the colour of
+  `sw_fog` at the camera distance from the depth target.
+- **Rationale:** Some games cannot change each scene shader to call
+  `sw_fog`. The effect gets the distance from the depth and the
+  projection in `sw_frame`, so it needs no world position. The chain
+  binds the depth view again at each new target generation, so a resize
+  does not break the effect.
+- **Verification:**
+  - Test — `libs/sw_render/src/sky_plan.zig` › "sky: the depth gives the
+    camera distance, and the fog post effect gives the sw_fog colour
+    (REQ-GPU-030)"
+  - Test — `libs/sw_render/src/post_plan.zig` › "post: the fog effect has
+    the depth prefix after the input prefix (REQ-GPU-030)"
+  - Demonstration — `sky --check` (native, in CI) draws the scene at noon
+    and at sunrise with no shader fog and the fog effect on. Each pixel of
+    the right half must match the CPU reference of the shader fog.
+- **Relations:** depends-on REQ-GPU-011
+
+## REQ-GPU-031 — A cloud puts a moving shadow on the ground under it
+
+- **Status:** active
+- **Source:** agent:SWZ-101
+- **Origin:** #101
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** Where a post chain has the cloud shadow effect of a cloud
+  layer, the post chain shall darken each pixel with geometry whose line
+  to the sun crosses a cloud cell of that layer, with the shape, the wind
+  and the height of the layer.
+- **Rationale:** Moving shadows on the ground make the sky look alive. The
+  effect reads the depth target, so the scene shaders do not change. The
+  shadow darkens the colour under the fog and not the fog. A shadow of 0
+  or the off switch of the effect turns it off.
+- **Verification:**
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: a cloud puts
+    a shadow on the ground under it, and the wind moves it (REQ-GPU-031)"
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: the cloud
+    shadow effect has the depth prefix and the cloud uniforms at group 2
+    (REQ-GPU-031)"
+  - Demonstration — `sky --check` (native, in CI) compares each ground
+    pixel of the right half with the CPU reference of the shadow, and
+    each visible shadow pixel must be darker than the same ground in the
+    sun.
+- **Relations:**
+  - depends-on REQ-GPU-020
+  - depends-on REQ-GPU-030
+
+## REQ-GPU-032 — Soft clouds have semi-transparent edges and a rim toward the sun
+
+- **Status:** active
+- **Source:** agent:SWZ-101
+- **Origin:** #101
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While the soft option of a cloud layer is on, the cloud
+  pass shall give each cloud pixel an alpha from the length of the view
+  ray in the cloud, and a colour with the forward scattering of the sun.
+- **Rationale:** A short path at the edge of a cloud gives a partial
+  alpha, so the edges are soft. The forward scattering makes a cloud
+  between the camera and the sun glow at its thin parts. The box clouds
+  stay the default.
+- **Verification:**
+  - Test — `libs/sw_render/src/weather_plan.zig` › "weather: a soft cloud
+    has the alpha of the ray length in it, and a rim toward the sun
+    (REQ-GPU-032)"
+  - Demonstration — `sky --check` (native, in CI) compares each cloud
+    pixel of the right half with the CPU reference of the soft clouds, at
+    noon and at sunrise. Each soft edge pixel must be between the cloud
+    and the sky colour.
+- **Relations:** depends-on REQ-GPU-020
+
+## REQ-GPU-033 — Light shafts go toward the sun on the screen
+
+- **Status:** active
+- **Source:** agent:SWZ-101
+- **Origin:** #101
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While the light shaft effect is on and the sun is in
+  front of the camera, the post chain shall add to each pixel the bright
+  sky colour on the line from the pixel to the sun on the screen.
+- **Rationale:** Rays of sunlight through the gaps between clouds and
+  objects make the sky look alive. The effect is a radial blur that uses
+  the depth target, so the geometry makes the gaps. It has a strength, a
+  sample count and an off switch. When the sun is behind the camera, the
+  effect does nothing.
+- **Verification:**
+  - Test — `libs/sw_render/src/shafts_plan.zig` › "shafts: the sun on the
+    screen, and no sun behind the camera (REQ-GPU-033)"
+  - Test — `libs/sw_render/src/shafts_plan.zig` › "shafts: a pixel under
+    the sun gets brighter, and the geometry makes a gap (REQ-GPU-033)"
+  - Test — `libs/sw_render/src/shafts_plan.zig` › "shafts: more strength
+    gives more light, and the sample count has a limit (REQ-GPU-033)"
+  - Demonstration — `sky --check` (native, in CI) compares the pixels
+    under the sun at sunrise with the frame with no shafts: they must be
+    brighter. With the sun behind the camera, each pixel must match the
+    CPU reference with no shafts.
+- **Relations:** depends-on REQ-GPU-030

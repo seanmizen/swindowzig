@@ -138,9 +138,11 @@ test "scheduler: jobs run in priority order" {
         try std.testing.expect(@backingInt(j.class) >= @backingInt(prev.class));
         if (j.class == prev.class) try std.testing.expect(j.dist_sq >= prev.dist_sq);
     }
-    // 3 before 4: a chunk in view comes before a nearer chunk out of view.
-    const in_view = indexOf(q, .generate, 4, 0).?;
-    const out_of_view = indexOf(q, .generate, -3, 0).?;
+    // 3 before 4: a chunk in view comes before a chunk out of view at the
+    // same distance. The blocks to 4 chunks from the player feed the
+    // simulation radius, so these chunks are 5 chunks away.
+    const in_view = indexOf(q, .generate, 5, 0).?;
+    const out_of_view = indexOf(q, .generate, -5, 0).?;
     try std.testing.expectEqual(scheduler_mod.Class.view, q[in_view].class);
     try std.testing.expectEqual(scheduler_mod.Class.other, q[out_of_view].class);
     try std.testing.expect(in_view < out_of_view);
@@ -152,14 +154,15 @@ test "scheduler: jobs run in priority order" {
     f.sched.setRenderDistance(&f.world, 4);
     try f.sched.plan(&f.world);
     const q2 = f.sched.queue.items;
-    // The light of the 3×3 around (2, 0) is stale. The chunks with cx = 1
-    // are in the simulation radius (class 1). The others are class 2.
+    // The light of the 3×3 around (2, 0) is stale. The chunks with cx <= 2
+    // give light to the meshes of the simulation radius (class 1). The
+    // others are class 2.
     var stale: usize = 0;
     for (q2, 0..) |j, i| {
         if (j.class != .sim and j.class != .edit) continue;
         try std.testing.expectEqual(scheduler_mod.Stage.light, j.stage);
         try std.testing.expect(@abs(j.cx - 2) <= 1 and @abs(j.cz) <= 1);
-        try std.testing.expectEqual(if (j.cx == 1) scheduler_mod.Class.sim else scheduler_mod.Class.edit, j.class);
+        try std.testing.expectEqual(if (j.cx <= 2) scheduler_mod.Class.sim else scheduler_mod.Class.edit, j.class);
         try std.testing.expectEqual(stale, i);
         stale += 1;
     }
@@ -314,4 +317,120 @@ test "scheduler: the ready check and the simulation radius" {
     defer want.deinit(a);
     const have = &f.world.get(5, -3).?.chunk.blocks;
     for (0..chunk_mod.BLOCKS_PER_CHUNK) |i| try std.testing.expectEqual(want.get(i), have.get(i));
+}
+
+/// A clock that moves one tick at each read. The Inline executor reads it
+/// four times for each job, so a budget of 4 * n ticks runs about n jobs.
+var ticks: u64 = 0;
+fn countingClock() u64 {
+    ticks += 1;
+    return ticks;
+}
+
+test "scheduler: a fast camera leaves no long hole near the player (REQ-VOXEL-018)" {
+    const a = std.testing.allocator;
+    const r = 4;
+    const f = try Fixture.init(a, r);
+    defer f.deinit(a);
+    try f.idle();
+    // The camera moves one chunk east every 2 frames, and each frame runs
+    // about 12 jobs: less than all the work of the render distance, so the
+    // far chunks fall behind. A hole is a chunk in the 3 by 3 square around
+    // the player with no current mesh. The light and the blocks ahead of
+    // the square have the class of the simulation, so a hole stays short.
+    // With fewer than 10 jobs each frame, the holes get longer.
+    const jobs_per_frame = 12;
+    const max_hole_frames = 2;
+    var hole: [3][3]u32 = @splat(@splat(0));
+    var worst: u32 = 0;
+    var frame: i32 = 0;
+    while (frame < 60) : (frame += 1) {
+        const cx = @divTrunc(frame, 2);
+        f.sched.setCenter(cx, 0);
+        _ = try f.exec.runFrame(&f.sched, &f.world, countingClock, ticks + 4 * jobs_per_frame);
+        for (0..3) |i| for (0..3) |j| {
+            const x = cx + @as(i32, @intCast(i)) - 1;
+            const z = @as(i32, @intCast(j)) - 1;
+            const meshed = if (f.world.get(x, z)) |lc| f.sched.meshCurrent(&f.world, lc) else false;
+            hole[i][j] = if (meshed) 0 else hole[i][j] + 1;
+            worst = @max(worst, hole[i][j]);
+        };
+    }
+    try std.testing.expect(worst <= max_hole_frames);
+    try f.idle();
+    try f.expectDesiredMeshes();
+}
+
+test "scheduler: far chunks get a mesh at their level of detail (REQ-VOXEL-021)" {
+    const a = std.testing.allocator;
+    const r = 9;
+    const f = try Fixture.init(a, r);
+    defer f.deinit(a);
+    try f.idle();
+    // The quads of the full mesh of each chunk.
+    var full: std.AutoHashMapUnmanaged([2]i32, u32) = .empty;
+    defer full.deinit(a);
+    var it = f.world.chunks.valueIterator();
+    while (it.next()) |lc| {
+        if (lc.*.hasMesh()) try full.put(a, .{ lc.*.cx, lc.*.cz }, lc.*.mesh.quad_count);
+    }
+
+    // Level 1 past 2 chunks, level 2 past 4, level 3 past 8.
+    f.sched.setLodDistance(2);
+    try std.testing.expectEqual(@as(u8, 0), f.sched.lodLevel(2, 0));
+    try std.testing.expectEqual(@as(u8, 1), f.sched.lodLevel(3, 0));
+    try std.testing.expectEqual(@as(u8, 2), f.sched.lodLevel(3, 3));
+    try std.testing.expectEqual(@as(u8, 3), f.sched.lodLevel(9, 0));
+    try f.idle();
+    try f.expectDesiredMeshes();
+    // The quads of each level, and the quads of the full meshes of the
+    // same chunks.
+    var levels: [4]usize = @splat(0);
+    var lod_quads: [4]u64 = @splat(0);
+    var full_quads: [4]u64 = @splat(0);
+    it = f.world.chunks.valueIterator();
+    while (it.next()) |lc| {
+        if (!lc.*.hasMesh()) continue;
+        const l = lc.*.mesh_lod;
+        levels[l] += 1;
+        lod_quads[l] += lc.*.mesh.quad_count;
+        full_quads[l] += full.get(.{ lc.*.cx, lc.*.cz }).?;
+        // A full mesh near a level border can stay (the hysteresis).
+        const want = f.sched.lodLevel(lc.*.cx, lc.*.cz);
+        try std.testing.expect(lc.*.mesh_lod <= want and lc.*.mesh_lod + 1 >= want);
+    }
+    for (levels) |n| try std.testing.expect(n > 0);
+    try std.testing.expectEqual(full_quads[0], lod_quads[0]);
+    // Measured on the hilly preset: 2.2, 4.4 and 8.7 times fewer quads.
+    for (1..4) |l| try std.testing.expect(lod_quads[l] * (l + 1) < full_quads[l]);
+    // Each mesh is the mesh of a recompute at its level.
+    try expectMatchesRecompute(a, f);
+
+    // One chunk of movement: the hysteresis keeps the levels, so no mesh
+    // job runs.
+    const meshed = f.sched.stats.installed[@backingInt(scheduler_mod.Stage.mesh)];
+    try f.move(1, 0);
+    try f.move(0, 0);
+    try f.move(1, 0);
+    const after_small = f.sched.stats.installed[@backingInt(scheduler_mod.Stage.mesh)];
+    // The chunks that come into the render distance get meshes, and no
+    // other chunk remeshes.
+    try std.testing.expect(after_small - meshed < 2 * (2 * r + 1));
+
+    // A long move: the levels follow the player.
+    try f.move(6, 0);
+    try f.expectDesiredMeshes();
+    try std.testing.expectEqual(@as(u8, 0), f.world.get(6, 0).?.mesh_lod);
+    try expectMatchesRecompute(a, f);
+
+    // Off: each chunk in the render distance gets the full mesh again.
+    // The meshes in the band of the hysteresis stay until they go.
+    f.sched.setLodDistance(0);
+    try f.idle();
+    try f.expectDesiredMeshes();
+    it = f.world.chunks.valueIterator();
+    while (it.next()) |lc| {
+        if (lc.*.hasMesh() and Region.mesh(lc.*.cx - 6, lc.*.cz, r)) try std.testing.expectEqual(@as(u8, 0), lc.*.mesh_lod);
+    }
+    try expectMatchesRecompute(a, f);
 }

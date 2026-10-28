@@ -111,3 +111,25 @@ input actions that a game binds to them.
 - **Verification:** Test — `libs/sw_core/src/replay.zig` › "Replayer plays a
   version 1 recording (REQ-INPUT-006)"
 - **Relations:** none
+
+## REQ-INPUT-007 — A key press shorter than one tick is not lost
+
+- **Status:** active
+- **Source:** agent:SWZ-92
+- **Origin:** #92
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a key goes down and up in the same tick, the `sw_core`
+  `InputSnapshot` shall give the key as down and pressed in that tick, with
+  the modifiers of the key press.
+- **Rationale:** A slow frame puts all the events of the frame in one tick.
+  A short Shift+Tab then has the Shift up after the Tab, and a game that
+  reads the modifiers at the end of the tick sees no Shift. The browser
+  tests on SwiftShader draw a few frames each second, and lost key presses
+  in this way. Two presses of one key in one tick are still one press.
+- **Verification:**
+  - Test — `libs/sw_core/src/input.zig` › "InputSnapshot keeps a key press
+    shorter than one tick (REQ-INPUT-007)"
+  - Test — `backends/wasm/tests/platform.pw.ts` › "a game goes to full
+    screen and back"
+- **Relations:** none

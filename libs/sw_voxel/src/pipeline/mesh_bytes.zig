@@ -18,20 +18,9 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 
-/// Bytes that the host (JS) holds for main, by handle. The vtable is the
-/// side of the host: exec_web.zig gives it.
-pub const Store = struct {
-    ptr: *anyopaque,
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        /// Copy `out.len` bytes of the held message `handle`, from `offset`,
-        /// into `out`.
-        read: *const fn (ptr: *anyopaque, handle: u32, offset: usize, out: []u8) void,
-        /// Free the held message `handle`. The handle is then not valid.
-        release: *const fn (ptr: *anyopaque, handle: u32) void,
-    };
-};
+/// Bytes that the host (JS) holds for main, by handle: the held results
+/// of a sw_jobs Transport. exec_web.zig gives it.
+pub const Store = @import("sw_jobs").Held;
 
 /// The offset of the quads in a Result message.
 pub const QUADS_OFFSET = protocol.PAYLOAD_OFFSET;

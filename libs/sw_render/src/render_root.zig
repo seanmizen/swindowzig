@@ -51,6 +51,16 @@
 //! precipitation pass draws rain or snow in a column around the camera,
 //! and a height map from the game stops it at the ground (REQ-GPU-021).
 //! Both use the sky light and the fog. See `weather.zig`.
+//!
+//! The translucent pass draws quads after the opaque pass, with the depth
+//! test on and the depth write off (REQ-GPU-022). It sorts the quads from
+//! far to near when the camera moves a set distance (REQ-GPU-023). See
+//! `translucent.zig`.
+//!
+//! Particles: an emitter makes particles with a speed, gravity, drag, a
+//! life and a sprite. A cap drops the oldest particle. The particle pass
+//! draws them as camera-facing quads in one draw call, sorted from far to
+//! near (REQ-GPU-024, REQ-GPU-025). See `particles.zig`.
 
 const atlas_mod = @import("atlas.zig");
 const box_models_mod = @import("box_models.zig");
@@ -59,6 +69,8 @@ const lighting_mod = @import("lighting.zig");
 const post_mod = @import("post.zig");
 const ring_mod = @import("ring.zig");
 const sky_mod = @import("sky.zig");
+const translucent_mod = @import("translucent.zig");
+const particles_mod = @import("particles.zig");
 const upload_mod = @import("upload.zig");
 const weather_mod = @import("weather.zig");
 
@@ -87,6 +99,12 @@ pub const lighting = @import("lighting_plan.zig");
 /// Clouds and precipitation with no GPU code: the settings, the sky light,
 /// the WGSL and the CPU reference of the shaders.
 pub const weather = @import("weather_plan.zig");
+/// The translucent pass with no GPU code: the sort, the states and the
+/// CPU reference of the blend.
+pub const translucent = @import("translucent_plan.zig");
+/// Particles with no GPU code: the state, the emitter, the step and the
+/// quads.
+pub const particle = @import("particle_plan.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasBuilder = atlas_mod.AtlasBuilder;
@@ -162,3 +180,34 @@ pub const PrecipitationKind = weather.PrecipitationKind;
 pub const HeightMap = weather.HeightMap;
 pub const WeatherInput = weather.FrameInput;
 pub const WeatherLight = weather.Light;
+pub const Translucent = translucent_mod.Translucent;
+pub const TranslucentOptions = translucent_mod.Options;
+pub const TranslucentPassOptions = translucent_mod.PassOptions;
+pub const TranslucentVertex = translucent.Vertex;
+pub const TranslucentQuad = translucent.Quad;
+pub const Particles = particles_mod.Particles;
+pub const ParticleOptions = particles_mod.Options;
+pub const ParticlePassOptions = particles_mod.PassOptions;
+pub const Particle = particle.Particle;
+pub const ParticleSystem = particle.System;
+pub const ParticleEmitter = particle.Emitter;
+pub const ParticleCamera = particle.Camera;
+
+pub const settings = @import("settings.zig");
+pub const frame_pacing = @import("frame_pacing.zig");
+pub const perf_overlay = @import("perf_overlay.zig");
+pub const gpu_timing = @import("gpu_timing.zig");
+pub const GraphicsSettings = settings.GraphicsSettings;
+pub const GraphicsPreset = settings.Preset;
+pub const AntiAliasing = settings.AntiAliasing;
+pub const FrameLimiter = frame_pacing.FrameLimiter;
+pub const FrameTimes = frame_pacing.FrameTimes;
+pub const PassTimer = gpu_timing.PassTimer;
+pub const PassTimerOptions = gpu_timing.Options;
+pub const PassTime = gpu_timing.PassTime;
+pub const FrameChartOptions = perf_overlay.ChartOptions;
+pub const drawFrameChart = perf_overlay.drawFrameChart;
+pub const shafts = @import("shafts_plan.zig");
+pub const LightShafts = shafts_mod.LightShafts;
+pub const ShaftSettings = shafts.ShaftSettings;
+const shafts_mod = @import("shafts.zig");
