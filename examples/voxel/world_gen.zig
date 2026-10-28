@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// World generation presets. The active preset is selected by ACTIVE_PRESET.
 /// Runtime/file-based selection (ZON config) will be added later.
@@ -125,6 +126,32 @@ fn hash2D(ix: i32, iz: i32, key: SeedKey) f32 {
     return @as(f32, @floatFromInt(h)) / @as(f32, @floatFromInt(std.math.maxInt(u32)));
 }
 
+/// True when the target has a fused multiply-add instruction for f32.
+const has_hw_fma = switch (builtin.cpu.arch) {
+    .x86_64, .x86 => std.Target.x86.featureSetHas(builtin.cpu.features, .fma),
+    .aarch64, .aarch64_be => true,
+    else => false,
+};
+
+/// Linear interpolation from `a` to `b`: a + (b - a) * t.
+///
+/// `std.math.lerp` is `@mulAdd`. wasm has no fused multiply-add
+/// instruction, so there each `@mulAdd` is a call to the software `fmaf` of
+/// compiler_rt. That `fmaf` returns `@floatCast(@as(f64, x) * y + z)`.
+/// So a target with a hardware FMA uses `@mulAdd` (one instruction), and
+/// each other target uses `lerpF64`, the same expression as `fmaf`, inline.
+/// Each target gives the bits that `std.math.lerp` gave, so the terrain
+/// hashes do not change.
+inline fn lerp(a: f32, b: f32, t: f32) f32 {
+    if (comptime has_hw_fma) return @mulAdd(f32, b - a, t, a);
+    return lerpF64(a, b, t);
+}
+
+/// The expression of compiler_rt `fmaf` for a + (b - a) * t, with no call.
+inline fn lerpF64(a: f32, b: f32, t: f32) f32 {
+    return @floatCast(@as(f64, b - a) * t + a);
+}
+
 /// Bilinear value noise in [0, 1]. Smoothstep interpolation between grid corners.
 fn valueNoise2D(x: f32, z: f32, key: SeedKey) f32 {
     const ix: i32 = @intFromFloat(@floor(x));
@@ -141,9 +168,9 @@ fn valueNoise2D(x: f32, z: f32, key: SeedKey) f32 {
     const v01 = hash2D(ix, iz + 1, key);
     const v11 = hash2D(ix + 1, iz + 1, key);
 
-    return std.math.lerp(
-        std.math.lerp(v00, v10, ux),
-        std.math.lerp(v01, v11, ux),
+    return lerp(
+        lerp(v00, v10, ux),
+        lerp(v01, v11, ux),
         uz,
     );
 }
@@ -180,15 +207,15 @@ fn valueNoise3D(x: f32, y: f32, z: f32, key: SeedKey) f32 {
     const v011 = hash3D(ix, iy + 1, iz + 1, key);
     const v111 = hash3D(ix + 1, iy + 1, iz + 1, key);
 
-    const x00 = std.math.lerp(v000, v100, ux);
-    const x10 = std.math.lerp(v010, v110, ux);
-    const x01 = std.math.lerp(v001, v101, ux);
-    const x11 = std.math.lerp(v011, v111, ux);
+    const x00 = lerp(v000, v100, ux);
+    const x10 = lerp(v010, v110, ux);
+    const x01 = lerp(v001, v101, ux);
+    const x11 = lerp(v011, v111, ux);
 
-    const y0 = std.math.lerp(x00, x10, uy);
-    const y1 = std.math.lerp(x01, x11, uy);
+    const y0 = lerp(x00, x10, uy);
+    const y1 = lerp(x01, x11, uy);
 
-    return std.math.lerp(y0, y1, uz);
+    return lerp(y0, y1, uz);
 }
 
 // ---------------------------------------------------------------------------
@@ -537,4 +564,21 @@ fn dominantFromWeights(weights: [4]f32) Biome {
         }
     }
     return @fromBackingInt(@intCast(best_idx));
+}
+
+test "lerpF64 gives the bits of @mulAdd on the noise inputs" {
+    // valueNoise2D and valueNoise3D interpolate values in [0, 1] with a
+    // smoothstep weight in [0, 1]. On a target with a hardware FMA,
+    // `@mulAdd` is the fused instruction. On wasm, it is the compiler_rt
+    // `fmaf`. Both must agree with lerpF64 on these inputs, so that the
+    // native terrain and the wasm terrain are the same.
+    var rng = std.Random.DefaultPrng.init(0x5eed);
+    const r = rng.random();
+    for (0..100_000) |_| {
+        const a = r.float(f32);
+        const b = r.float(f32);
+        const f = r.float(f32);
+        const t = f * f * (3.0 - 2.0 * f);
+        try std.testing.expectEqual(@mulAdd(f32, b - a, t, a), lerpF64(a, b, t));
+    }
 }
