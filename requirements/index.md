@@ -49,6 +49,7 @@
 | [`REQ-GPU-031`](gpu.md#req-gpu-031--a-cloud-puts-a-moving-shadow-on-the-ground-under-it) | A cloud puts a moving shadow on the ground under it | active | functional | P2 | agent:SWZ-101 |
 | [`REQ-GPU-032`](gpu.md#req-gpu-032--soft-clouds-have-semi-transparent-edges-and-a-rim-toward-the-sun) | Soft clouds have semi-transparent edges and a rim toward the sun | active | functional | P2 | agent:SWZ-101 |
 | [`REQ-GPU-033`](gpu.md#req-gpu-033--light-shafts-go-toward-the-sun-on-the-screen) | Light shafts go toward the sun on the screen | active | functional | P2 | agent:SWZ-101 |
+| [`REQ-GPU-034`](gpu.md#req-gpu-034--a-texture-view-gets-the-dimension-that-the-game-gives) | A texture view gets the dimension that the game gives | active | functional | P3 | agent:SWZ-4 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -143,6 +144,7 @@ graph TD
   REQ_GPU_031["REQ-GPU-031<br/>A cloud puts a moving shadow on the ground under it"]
   REQ_GPU_032["REQ-GPU-032<br/>Soft clouds have semi-transparent edges and a rim toward the sun"]
   REQ_GPU_033["REQ-GPU-033<br/>Light shafts go toward the sun on the screen"]
+  REQ_GPU_034["REQ-GPU-034<br/>A texture view gets the dimension that the game gives"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]

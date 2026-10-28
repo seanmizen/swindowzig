@@ -788,3 +788,25 @@ Textures, samplers and other resources of `sw_gpu`.
     brighter. With the sun behind the camera, each pixel must match the
     CPU reference with no shafts.
 - **Relations:** depends-on REQ-GPU-030
+
+## REQ-GPU-034 — A texture view gets the dimension that the game gives
+
+- **Status:** active
+- **Source:** agent:SWZ-4
+- **Origin:** #4
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When a game gives an explicit dimension to
+  `Texture.createView`, `sw_gpu` shall make a view of that dimension, on
+  native and on the web.
+- **Rationale:** `TextureViewDimension` starts at `1d` = 0. The native enum
+  and the web bridge start at "no dimension" = 0, then `1d` = 1. A raw enum
+  number gives the dimension before the correct one, so a `2d` view becomes
+  a `1d` view. `types.viewDimensionCode` is the one map that both paths use.
+- **Verification:**
+  - Test — `libs/sw_gpu/src/types.zig` › "texture view: each explicit
+    dimension has its webgpu.h number (REQ-GPU-034)"
+  - Demonstration — `mipmaps --check` (native) draws one layer of the atlas
+    through a `2d-array` view and through a `2d` view. Each result has the
+    texels of level 0.
+- **Relations:** none

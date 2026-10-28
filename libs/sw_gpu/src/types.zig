@@ -254,6 +254,24 @@ pub const TextureViewDimension = enum(u32) {
     @"3d",
 };
 
+/// The view dimension number that `Texture.createView` sends on both paths:
+/// `WGPUTextureViewDimension` in `webgpu.h` (native), and the dimension map
+/// of `webgpuCreateTextureView` in `backends/wasm/webgpu.ts` (web). The two
+/// use the same numbers. 0 is "the dimension of the texture", then `1d` is
+/// 1 up to `3d` is 6. `TextureViewDimension` starts at `1d` = 0, so a raw
+/// `@backingInt` gives the dimension before the correct one (REQ-GPU-034).
+pub fn viewDimensionCode(dimension: ?TextureViewDimension) u32 {
+    const d = dimension orelse return 0;
+    return switch (d) {
+        .@"1d" => 1,
+        .@"2d" => 2,
+        .@"2d-array" => 3,
+        .cube => 4,
+        .cube_array => 5,
+        .@"3d" => 6,
+    };
+}
+
 /// Texture aspect
 pub const TextureAspect = enum(u32) {
     all,
@@ -752,6 +770,22 @@ test "texture format: the native numbers are the webgpu.h numbers" {
     }
     // The web bridge keeps the `TextureFormat` numbers.
     try std.testing.expectEqual(@as(u32, 0x1F), @backingInt(TextureFormat.rgba16float));
+}
+
+test "texture view: each explicit dimension has its webgpu.h number (REQ-GPU-034)" {
+    // `WGPUTextureViewDimension` in webgpu.h. webgpu.ts uses the same numbers.
+    try std.testing.expectEqual(@as(u32, 0), viewDimensionCode(null));
+    try std.testing.expectEqual(@as(u32, 1), viewDimensionCode(.@"1d"));
+    try std.testing.expectEqual(@as(u32, 2), viewDimensionCode(.@"2d"));
+    try std.testing.expectEqual(@as(u32, 3), viewDimensionCode(.@"2d-array"));
+    try std.testing.expectEqual(@as(u32, 4), viewDimensionCode(.cube));
+    try std.testing.expectEqual(@as(u32, 5), viewDimensionCode(.cube_array));
+    try std.testing.expectEqual(@as(u32, 6), viewDimensionCode(.@"3d"));
+    // A raw enum number is not the code: `.@"2d"` is 1, and 1 is `1d`.
+    inline for (@typeInfo(TextureViewDimension).@"enum".field_names) |name| {
+        const d = @field(TextureViewDimension, name);
+        try std.testing.expect(viewDimensionCode(d) != @backingInt(d));
+    }
 }
 
 test "sampler: the defaults are valid" {

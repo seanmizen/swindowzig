@@ -94,22 +94,6 @@ fn toNativeFilterMode(mode: types.FilterMode) native.WGPUFilterMode {
     };
 }
 
-/// The view dimension number of WGPUTextureViewDimension and of webgpu.ts
-/// (createTextureView): 0 is "the default of the texture", then 1d=1 up to
-/// 3d=6. types.TextureViewDimension starts at 1d=0, so a raw @backingInt
-/// gives the wrong dimension.
-fn viewDimensionCode(dimension: ?types.TextureViewDimension) u32 {
-    const d = dimension orelse return 0;
-    return switch (d) {
-        .@"1d" => 1,
-        .@"2d" => 2,
-        .@"2d-array" => 3,
-        .cube => 4,
-        .cube_array => 5,
-        .@"3d" => 6,
-    };
-}
-
 fn adapterRequestCallback(
     status: native.WGPURequestAdapterStatus,
     adapter: native.WGPUAdapter,
@@ -1810,7 +1794,7 @@ pub const Texture = struct {
             const handle = web.webgpuCreateTextureView(
                 self.handle,
                 if (desc.format) |f| @backingInt(f) else 0,
-                viewDimensionCode(desc.dimension),
+                types.viewDimensionCode(desc.dimension),
                 @backingInt(desc.aspect),
                 desc.base_mip_level,
                 desc.mip_level_count orelse 0xFFFFFFFF,
@@ -1823,7 +1807,7 @@ pub const Texture = struct {
                 .next_in_chain = null,
                 .label = if (desc.label) |l| @as(?[*:0]const u8, @ptrCast(l.ptr)) else null,
                 .format = if (desc.format) |f| toNativeTextureFormat(f) else .undefined,
-                .dimension = @fromBackingInt(viewDimensionCode(desc.dimension)),
+                .dimension = @fromBackingInt(types.viewDimensionCode(desc.dimension)),
                 .base_mip_level = desc.base_mip_level,
                 .mip_level_count = desc.mip_level_count orelse 0xFFFFFFFF,
                 .base_array_layer = desc.base_array_layer,
