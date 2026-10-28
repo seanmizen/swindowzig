@@ -542,3 +542,33 @@ ticket of #102, in the order of the batch.
 - Risks: `keyDown` changes for a press shorter than one tick. Before, the
   game saw no key down. Now it sees the key down for one tick. A replay of
   an old recording with such a press can play differently.
+
+## Mac verification
+
+Sean's Mac (Apple GPU, Metal) ran these checks on the branch.
+
+- Passed:
+  - `yarn check`, `zig build test`, `zig build web` and the voxel gate:
+    the headless TAS exits 0, and the smoke test shows no errors.
+  - `--check` of `models`, `sky`, `mipmaps` and `atlas`. The pass timer
+    timed 7 render passes in 0.8 ms. Thus a period of 1 is right for the
+    Apple GPU.
+  - `cave_cull.sh`, `glowstone_cave.sh`, `chunk_ao_teleport.sh`,
+    `aa_regression.sh` and `debug_overlay.sh`.
+  - `yarn test:browser`: 8 of 8 passed. With
+    `--project flat2d --repeat-each=10`: 70 of 70 passed.
+  - The voxel page in Chromium with the `jobs` imports: 4 workers start,
+    the terrain shows, and the console has no WebGPU error.
+- Fixed: `debug_overlay.sh` failed on `main` too. The panel has a dark
+  background, so the corner becomes darker. The check now accepts a change
+  in each direction.
+- Not run: the lavapipe goldens (CI runs them, and macOS has no goldens).
+- Not run: the checks that need a person at a window. These are the vsync
+  change, the F and T keys of `models`, the H, J and O keys of `sky`, and
+  a play test of the upload limit for streaming.
+- Decisions of Sean:
+  - #26: the web pool transfers each ArrayBuffer. It has no
+    SharedArrayBuffer mode.
+  - #40: the PR refers to #40 and does not close it. #40 stays open for
+    the occlusion queries, the draw ranges for each section and the
+    culling of entities.
