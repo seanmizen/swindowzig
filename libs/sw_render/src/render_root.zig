@@ -196,6 +196,11 @@ pub const Particle = particle.Particle;
 pub const ParticleSystem = particle.System;
 pub const ParticleEmitter = particle.Emitter;
 pub const ParticleCamera = particle.Camera;
+/// Translucent quads and particles in one far-to-near order (REQ-GPU-041).
+pub const SortedBlend = blend_mod.SortedBlend;
+pub const SortedBlendPassOptions = blend_mod.PassOptions;
+pub const blend = @import("blend_plan.zig");
+const blend_mod = @import("blend.zig");
 
 pub const settings = @import("settings.zig");
 pub const frame_pacing = @import("frame_pacing.zig");

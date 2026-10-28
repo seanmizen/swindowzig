@@ -469,6 +469,7 @@ pub fn build(b: *std.Build) void {
         "libs/sw_render/src/lighting_plan.zig",
         "libs/sw_render/src/weather_plan.zig",
         "libs/sw_render/src/translucent_plan.zig",
+        "libs/sw_render/src/blend_plan.zig",
         "libs/sw_render/src/settings.zig",
         "libs/sw_render/src/frame_pacing.zig",
         "libs/sw_render/src/shafts_plan.zig",

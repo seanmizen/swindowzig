@@ -56,6 +56,7 @@
 | [`REQ-GPU-038`](gpu.md#req-gpu-038--a-buffer-read-does-not-wait-for-the-gpu) | A buffer read does not wait for the GPU | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-039`](gpu.md#req-gpu-039--occlusion-queries-of-boxes-come-back-with-the-tag-of-their-frame) | Occlusion queries of boxes come back with the tag of their frame | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-040`](gpu.md#req-gpu-040--translucent-quads-draw-in-a-render-pass-of-the-game-with-no-frame-graph) | Translucent quads draw in a render pass of the game with no frame graph | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-GPU-041`](gpu.md#req-gpu-041--particles-and-translucent-quads-draw-in-one-far-to-near-order) | Particles and translucent quads draw in one far-to-near order | active | functional | P3 | agent:SWZ-112 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -169,6 +170,7 @@ graph TD
   REQ_GPU_038["REQ-GPU-038<br/>A buffer read does not wait for the GPU"]
   REQ_GPU_039["REQ-GPU-039<br/>Occlusion queries of boxes come back with the tag of their frame"]
   REQ_GPU_040["REQ-GPU-040<br/>Translucent quads draw in a render pass of the game with no frame graph"]
+  REQ_GPU_041["REQ-GPU-041<br/>Particles and translucent quads draw in one far-to-near order"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -258,6 +260,8 @@ graph TD
   REQ_GPU_039 -->|depends-on| REQ_GPU_036
   REQ_GPU_039 -->|depends-on| REQ_GPU_038
   REQ_GPU_040 -->|refines| REQ_GPU_022
+  REQ_GPU_041 -->|refines| REQ_GPU_023
+  REQ_GPU_041 -->|refines| REQ_GPU_024
   REQ_INPUT_009 -->|refines| REQ_INPUT_007
   REQ_JOBS_003 -->|depends-on| REQ_JOBS_002
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
@@ -306,7 +310,8 @@ graph TD
 - `REQ-GPU-016` — refined-by REQ-GPU-018
 - `REQ-GPU-020` — required-by REQ-GPU-031, required-by REQ-GPU-032
 - `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024, refined-by REQ-GPU-040
-- `REQ-GPU-023` — required-by REQ-VOXEL-031
+- `REQ-GPU-023` — refined-by REQ-GPU-041, required-by REQ-VOXEL-031
+- `REQ-GPU-024` — refined-by REQ-GPU-041
 - `REQ-GPU-030` — required-by REQ-GPU-031, required-by REQ-GPU-033
 - `REQ-GPU-035` — required-by REQ-GPU-036
 - `REQ-GPU-036` — required-by REQ-GPU-039
