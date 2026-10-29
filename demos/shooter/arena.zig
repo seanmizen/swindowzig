@@ -211,14 +211,15 @@ fn buildCoverPoints() void {
     cover_count = 0;
     for (boxes[0..box_count], 0..) |b, i| {
         if (!b.tall) continue;
-        const c = (b.min + b.max) * vec.s(0.5);
-        const hs = (b.max - b.min) * vec.s(0.5);
+        const c: [3]f32 = (b.min + b.max) * vec.s(0.5);
+        const hs: [3]f32 = (b.max - b.min) * vec.s(0.5);
         // The four sides: the normal axis and the sign.
         for ([_]struct { usize, f32 }{ .{ 0, -1 }, .{ 0, 1 }, .{ 2, -1 }, .{ 2, 1 } }) |side| {
             const ax = side[0];
             const along: usize = if (ax == 0) 2 else 0;
-            var out = v3(0, 0, 0);
-            out[ax] = side[1];
+            var out_a: [3]f32 = .{ 0, 0, 0 };
+            out_a[ax] = side[1];
+            const out: V3 = out_a;
             const n_along: usize = if (hs[along] > 1.0) 3 else 1;
             for (0..n_along + 2) |k| {
                 // k 0 and k n+1: past the ends of the side.

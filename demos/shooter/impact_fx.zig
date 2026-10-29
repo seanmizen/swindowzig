@@ -1,60 +1,28 @@
-// Where: apps/action/game/src/impact_fx.zig
-// When: each bullet that hits the map (main.zig fire, the shots of other
-// players, and the NPC shooter of the range), and each muzzle flash of the
-// NPC.
-// Why: a simple impact effect for each surface material, cheap enough for
-// automatic fire. It uses the method of the grenade blast (grenade.zig):
-// translucent billboards in the translucent pass, with no new pipeline and
-// no texture.
+// The impact effects of the shooter demo, from the action game (seanorepo
+// apps/action): one recipe for each surface material, cheap enough for
+// automatic fire (REQ-DEMO-023). The effects are `sw_render` particles:
+// camera-facing quads in one sorted draw.
 //
-// - A puff is a soft camera-facing quad: dust, a powder or a mist. It grows,
-//   slows, and fades out.
-// - A bit is a thin quad along its velocity: a chip, a splinter, a shard, a
-//   stone or a spark. It flies under gravity and drag. A spark glows (it
-//   has an emission), so the shader skips the lights for it. The other bits
-//   take the light of the scene.
-// - Each material has a recipe (`recipe`): dust for concrete, red dust for
-//   brick, sparks for metal, splinters for wood, a puff and stones for
-//   ballast, and more.
-// - An effect can wait (`delay`): it starts when the bullet arrives.
-// - The pools are rings. A new effect takes the place of the oldest one, so
-//   the cost has a fixed limit: 160 puffs and 480 bits, 6 vertices each.
+// - A puff is a soft quad: dust, a powder, a mist or snow. It slows and
+//   fades out.
+// - A bit is a small quad that flies under gravity and drag: a chip, a
+//   splinter, a shard, a stone or a spark. A spark glows: its colour is
+//   over 1 in the HDR target.
+// - Each material has a recipe (`recipe`): dust for concrete, sparks for
+//   metal, splinters for wood, and more. Snow has its own recipe.
+// - `flash` is the glow of a muzzle flash, and `snowStep` the snow that a
+//   running bot kicks up.
 //
-// Translucent vertex encoding (scene.wgsl fs_trans), as in grenade.zig:
-// nrm.xy the quad UV in [-1, 1], nrm.z the emission, mat = -alpha.
+// The random numbers come from a seeded generator that the caller owns,
+// so a replay gives the same particles (REQ-DEMO-021).
 const std = @import("std");
+const sw_render = @import("sw_render");
 const vec = @import("vec.zig");
-const mesh = @import("mesh.zig");
 const Surface = @import("audio/impact.zig").Material;
 const V3 = vec.V3;
 const v3 = vec.v3;
 
-const Puff = struct {
-    p: V3,
-    v: V3,
-    /// Less than 0 while the effect waits.
-    age: f32,
-    life: f32,
-    size0: f32,
-    size1: f32,
-    alpha: f32,
-    col: V3,
-    emit: f32,
-};
-
-const Bit = struct {
-    p: V3,
-    v: V3,
-    age: f32,
-    life: f32,
-    /// The half width, and the length as the distance of `len` s of flight.
-    width: f32,
-    len: f32,
-    col: V3,
-    emit: f32,
-    gravity: f32,
-    drag: f32,
-};
+pub const System = sw_render.ParticleSystem;
 
 /// The bits of one material.
 const Bits = struct {
@@ -150,168 +118,96 @@ fn recipe(s: Surface) Recipe {
     };
 }
 
-var puffs: [160]Puff = undefined;
-var puff_n: usize = 0;
-var bits: [480]Bit = undefined;
-var bit_n: usize = 0;
-var rng: std.Random.DefaultPrng = .init(818);
+/// Snow: a white burst and lumps of snow.
+const snow_recipe: Recipe = .{
+    .puffs = .{ .n = 4, .col = v3(0.95, 0.97, 1.0), .alpha = 0.7, .size = .{ 0.1, 0.55 }, .life = 1.0, .speed = 1.6 },
+    .bits = .{ .n = 8, .col = v3(0.92, 0.95, 1.0), .speed = .{ 2, 5 }, .life = .{ 0.4, 0.8 }, .width = 0.025, .len = 0.01, .focus = 1.2 },
+};
 
-fn rand() f32 {
-    return rng.random().float(f32);
-}
+const Rng = std.Random;
 
-fn between(r: [2]f32) f32 {
-    return r[0] + (r[1] - r[0]) * rand();
+fn between(r: Rng, x: [2]f32) f32 {
+    return x[0] + (x[1] - x[0]) * r.float(f32);
 }
 
 /// A random unit vector, with the same chance for each direction.
-fn randDir() V3 {
+fn randDir(r: Rng) V3 {
     while (true) {
-        const r = v3(rand() * 2 - 1, rand() * 2 - 1, rand() * 2 - 1);
-        const l2 = vec.dot(r, r);
-        if (l2 > 0.01 and l2 <= 1) return r / vec.s(@sqrt(l2));
+        const d = v3(r.float(f32) * 2 - 1, r.float(f32) * 2 - 1, r.float(f32) * 2 - 1);
+        const l2 = vec.dot(d, d);
+        if (l2 > 0.01 and l2 <= 1) return d / vec.s(@sqrt(l2));
     }
 }
 
 /// A direction out over the open side of a surface with normal n.
-fn outward(n: V3, focus: f32) V3 {
-    var r = randDir();
-    const into = vec.dot(r, n);
-    if (into < 0) r -= n * vec.s(2 * into);
-    return vec.norm(r + n * vec.s(focus));
+fn outward(r: Rng, n: V3, focus: f32) V3 {
+    var d = randDir(r);
+    const into = vec.dot(d, n);
+    if (into < 0) d -= n * vec.s(2 * into);
+    return vec.norm(d + n * vec.s(focus));
 }
 
-fn addPuff(p: Puff) void {
-    puffs[puff_n % puffs.len] = p;
-    puff_n += 1;
+fn arr(x: V3) [3]f32 {
+    return .{ x[0], x[1], x[2] };
 }
 
-fn addBit(b: Bit) void {
-    bits[bit_n % bits.len] = b;
-    bit_n += 1;
-}
-
-/// Remove every effect (a mode or a map change).
-pub fn reset() void {
-    puff_n = 0;
-    bit_n = 0;
-}
-
-/// The effect of a bullet on surface `s` at p, with the surface normal n.
-/// `size` scales the number of bits, and of puffs up to 1 (0.5 for one
-/// pellet of buckshot).
-/// `delay`: the effect starts after this many seconds (the flight of the
-/// bullet).
-pub fn spawn(p: V3, n: V3, s: Surface, size: f32, delay: f32) void {
-    const rc = recipe(s);
-    const age = -@max(0, delay);
-    const pf = rc.puffs;
+/// The effect of a bullet at p, with the surface normal n: the recipe of
+/// `s`, or of snow. `size` scales the number of bits (0.5 for one pellet
+/// of buckshot). `light` is the light of the scene on the dust (a spark
+/// glows on its own).
+pub fn spawn(sys: *System, r: Rng, p: V3, n: V3, s: Surface, snow: bool, size: f32, light: V3) void {
+    const rc = if (snow) snow_recipe else recipe(s);
     const k = std.math.clamp(size, 0.1, 2);
+    const pf = rc.puffs;
     const n_puffs: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(pf.n)) * @min(k, 1)));
     for (0..n_puffs) |_| {
-        const r = v3(rand() - 0.5, rand() - 0.5, rand() - 0.5);
-        addPuff(.{
-            .p = p + n * vec.s(0.04 + 0.06 * rand()),
-            .v = (n * vec.s(pf.speed) + r * vec.s(pf.speed * 0.8)) * vec.s(0.5 + rand()),
-            .age = age,
-            .life = pf.life * (0.8 + 0.4 * rand()),
-            .size0 = pf.size[0],
-            .size1 = pf.size[1] * (0.8 + 0.4 * rand()),
-            .alpha = pf.alpha,
-            .col = pf.col * vec.s(0.9 + 0.2 * rand()),
-            .emit = pf.emit,
+        const j = v3(r.float(f32) - 0.5, r.float(f32) - 0.5, r.float(f32) - 0.5);
+        const v = (n * vec.s(pf.speed) + j * vec.s(pf.speed * 0.8)) * vec.s(0.5 + r.float(f32));
+        const col = if (pf.emit > 0) pf.col * vec.s(pf.emit) else pf.col * light;
+        sys.spawn(.{
+            .pos = arr(p + n * vec.s(0.04 + 0.06 * r.float(f32))),
+            .vel = arr(v),
+            .life = pf.life * (0.8 + 0.4 * r.float(f32)),
+            .size = (pf.size[0] + pf.size[1]) * (0.5 + 0.3 * r.float(f32)),
+            .color = .{ col[0], col[1], col[2], pf.alpha },
+            .fade = true,
+            .gravity = -0.15,
+            .drag = 3,
         });
     }
     const bt = rc.bits;
     const n_bits: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(bt.n)) * k));
     for (0..n_bits) |_| {
-        addBit(.{
-            .p = p + n * vec.s(0.01),
-            .v = outward(n, bt.focus) * vec.s(between(bt.speed)),
-            .age = age,
-            .life = between(bt.life),
-            .width = bt.width * (0.7 + 0.6 * rand()),
-            .len = bt.len,
-            .col = bt.col * vec.s(0.85 + 0.3 * rand()),
-            .emit = bt.emit,
+        const col = if (bt.emit > 0) bt.col * vec.s(bt.emit) else bt.col * light;
+        sys.spawn(.{
+            .pos = arr(p + n * vec.s(0.01)),
+            .vel = arr(outward(r, n, bt.focus) * vec.s(between(r, bt.speed))),
+            .life = between(r, bt.life),
+            .size = @max(bt.width * 2.5, 0.02) * (0.7 + 0.6 * r.float(f32)),
+            .color = .{ col[0], col[1], col[2], 1 },
+            .fade = bt.emit > 2,
             .gravity = bt.gravity,
             .drag = bt.drag,
         });
     }
 }
 
-/// The glow of a muzzle flash at p: a hot billboard for 0.05 s. It reads
-/// at a distance, where the flash star of the gun is a pixel or less.
-pub fn flash(p: V3) void {
-    addPuff(.{ .p = p, .v = v3(0, 0, 0), .age = 0, .life = 0.05, .size0 = 0.18, .size1 = 0.3, .alpha = 1, .col = v3(1.0, 0.72, 0.35), .emit = 9 });
-}
-
-pub fn step(dt: f32) void {
-    for (puffs[0..@min(puff_n, puffs.len)]) |*p| {
-        if (p.age >= p.life) continue;
-        p.age += dt;
-        if (p.age < 0) continue;
-        p.p += p.v * vec.s(dt);
-        // The dust slows fast and rises a little.
-        p.v = p.v * vec.s(@max(0, 1 - 3 * dt)) + v3(0, 0.15 * dt, 0);
-    }
-    for (bits[0..@min(bit_n, bits.len)]) |*b| {
-        if (b.age >= b.life) continue;
-        b.age += dt;
-        if (b.age < 0) continue;
-        b.v = b.v * vec.s(@max(0, 1 - b.drag * dt)) - v3(0, b.gravity * dt, 0);
-        b.p += b.v * vec.s(dt);
+/// The glow of a muzzle flash at p: a hot quad for 0.05 s, and a few
+/// sparks forward along `dir`.
+pub fn flash(sys: *System, r: Rng, p: V3, dir: V3) void {
+    sys.spawn(.{ .pos = arr(p), .life = 0.05, .size = 0.42, .color = .{ 9, 6.5, 3.2, 1 }, .fade = true });
+    sys.spawn(.{ .pos = arr(p + dir * vec.s(0.12)), .life = 0.04, .size = 0.25, .color = .{ 8, 5, 2.2, 1 }, .fade = true });
+    for (0..3) |_| {
+        const d = vec.norm(dir + randDir(r) * vec.s(0.35));
+        sys.spawn(.{ .pos = arr(p), .vel = arr(d * vec.s(between(r, .{ 8, 16 }))), .life = between(r, .{ 0.05, 0.12 }), .size = 0.025, .color = .{ 7, 4.5, 1.8, 1 }, .fade = true, .gravity = 3, .drag = 4 });
     }
 }
 
-/// The number of live puffs and bits, the waiting ones too.
-pub fn count() usize {
-    var n: usize = 0;
-    for (puffs[0..@min(puff_n, puffs.len)]) |p| {
-        if (p.age < p.life) n += 1;
-    }
-    for (bits[0..@min(bit_n, bits.len)]) |b| {
-        if (b.age < b.life) n += 1;
-    }
-    return n;
-}
-
-/// The puffs as camera-facing quads, and the bits as thin quads along their
-/// velocity that turn about their own axis to face the camera.
-pub fn buildTranslucent(trans: *mesh.Mesh, right: V3, up: V3) void {
-    const uv = [4][2]f32{ .{ -1, -1 }, .{ 1, -1 }, .{ 1, 1 }, .{ -1, 1 } };
-    const tris = [6]usize{ 0, 1, 2, 0, 2, 3 };
-    for (puffs[0..@min(puff_n, puffs.len)]) |p| {
-        if (p.age < 0 or p.age >= p.life) continue;
-        const k = p.age / p.life;
-        const size = p.size0 + (p.size1 - p.size0) * (1 - (1 - k) * (1 - k));
-        const a = p.alpha * vec.smooth(k * 12) * std.math.pow(f32, 1 - k, 1.4);
-        if (a < 0.005) continue;
-        const r = right * vec.s(size);
-        const u = up * vec.s(size);
-        const corners = [4]V3{ p.p - r - u, p.p + r - u, p.p + r + u, p.p - r + u };
-        for (tris) |ci| trans.push(corners[ci], v3(uv[ci][0], uv[ci][1], p.emit), p.col, -a);
-    }
-    const fwd = vec.cross(up, right);
-    for (bits[0..@min(bit_n, bits.len)]) |b| {
-        if (b.age < 0 or b.age >= b.life) continue;
-        const k = b.age / b.life;
-        const speed = vec.len(b.v);
-        const along = if (speed > 1e-3) b.v / vec.s(speed) else up;
-        const l = @max(b.width * 2, speed * b.len);
-        var side = vec.cross(along, fwd);
-        const sl = vec.len(side);
-        side = if (sl > 0.05) side / vec.s(sl) else right;
-        const s = side * vec.s(b.width);
-        const head = b.p + along * vec.s(b.width);
-        const tail = b.p - along * vec.s(l);
-        const corners = [4]V3{ tail - s, head - s, head + s, tail + s };
-        // A spark cools and fades. The other bits fade at the end only.
-        const fade = if (b.emit > 2) std.math.pow(f32, 1 - k, 1.2) else 1 - vec.smooth((k - 0.75) * 4);
-        const emit = b.emit * (1 - 0.5 * k);
-        for (tris) |ci| {
-            const at_head = ci == 1 or ci == 2;
-            trans.push(corners[ci], v3(if (at_head) -0.3 else 1, uv[ci][1], emit), b.col, -(if (at_head) fade else 0.6 * fade));
-        }
+/// The snow that a running foot kicks up at p.
+pub fn snowStep(sys: *System, r: Rng, p: V3, light: V3) void {
+    for (0..2) |_| {
+        const v = v3(r.float(f32) - 0.5, 0.6 + 0.6 * r.float(f32), r.float(f32) - 0.5);
+        const col = v3(0.95, 0.97, 1.0) * light;
+        sys.spawn(.{ .pos = arr(p + v3(0, 0.08, 0)), .vel = arr(v), .life = 0.6 + 0.3 * r.float(f32), .size = 0.22 + 0.12 * r.float(f32), .color = .{ col[0], col[1], col[2], 0.45 }, .fade = true, .gravity = 1.2, .drag = 2.5 });
     }
 }
