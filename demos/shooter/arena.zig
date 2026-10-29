@@ -81,7 +81,7 @@ pub fn build() void {
     add(v3(half, 0, -half), v3(half + t, wall_h, half), wc, .concrete, .wall);
     // The cover near the player.
     put(0, 14, 3.0, 1.05, 0.5, .barrier);
-    put(-6.5, 15, 1.2, 1.2, 1.2, .crate);
+    put(-6.5, 15, 1.2, 2.4, 1.2, .crate);
     put(-5.3, 15.2, 1.2, 1.2, 1.2, .crate);
     put(6, 13, 1.2, 2.4, 1.2, .crate);
     // The middle.
@@ -143,8 +143,9 @@ pub fn overlaps(min: V3, max: V3) bool {
     const q = aabb(min, max);
     for (boxes[0..box_count]) |b| {
         if (!b.solid) continue;
-        // Touching faces do not overlap.
-        if (min[0] < b.max[0] and max[0] > b.min[0] and min[1] < b.max[1] and max[1] > b.min[1] and min[2] < b.max[2] and max[2] > b.min[2]) {
+        // Faces that touch, or overlap by less than `eps`, do not overlap.
+        const eps: f32 = 1e-4;
+        if (min[0] < b.max[0] - eps and max[0] > b.min[0] + eps and min[1] < b.max[1] - eps and max[1] > b.min[1] + eps and min[2] < b.max[2] - eps and max[2] > b.min[2] + eps) {
             if (q.intersects(aabb(b.min, b.max))) return true;
         }
     }
@@ -193,7 +194,7 @@ pub const max_cover = 160;
 pub var cover_points: [max_cover]CoverPoint = undefined;
 pub var cover_count: usize = 0;
 /// The gap from a box face to a cover point.
-const cover_gap: f32 = 0.55;
+const cover_gap: f32 = 0.7;
 
 fn addCover(p: V3, box: usize, out: V3) void {
     if (cover_count >= max_cover) return;
@@ -223,7 +224,7 @@ fn buildCoverPoints() void {
             const n_along: usize = if (hs[along] > 1.0) 3 else 1;
             for (0..n_along + 2) |k| {
                 // k 0 and k n+1: past the ends of the side.
-                const f: f32 = if (k == 0) -1.0 - 0.9 / hs[along] else if (k == n_along + 1) 1.0 + 0.9 / hs[along] else if (n_along == 1) 0 else -0.6 + 1.2 * @as(f32, @floatFromInt(k - 1)) / @as(f32, @floatFromInt(n_along - 1));
+                const f: f32 = if (k == 0) -1.0 - 1.1 / hs[along] else if (k == n_along + 1) 1.0 + 1.1 / hs[along] else if (n_along == 1) 0 else -0.6 + 1.2 * @as(f32, @floatFromInt(k - 1)) / @as(f32, @floatFromInt(n_along - 1));
                 var p = c;
                 p[1] = 0;
                 p[ax] += side[1] * (hs[ax] + cover_gap);

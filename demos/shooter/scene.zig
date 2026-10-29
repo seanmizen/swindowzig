@@ -47,7 +47,7 @@ pub const Settings = struct {
     clouds: bool = true,
     fog: bool = true,
     shadows: bool = true,
-    exposure: f32 = 1.0,
+    exposure: f32 = 0.8,
 };
 
 pub const Options = struct {
@@ -56,7 +56,7 @@ pub const Options = struct {
     fxaa_quality: gpu_mod.FxaaQuality = .medium,
 };
 
-const fog: sw_render.Fog = .{ .start = 14, .end = 95, .max = 0.8 };
+const fog: sw_render.Fog = .{ .start = 6, .end = 70, .max = 0.85 };
 const fov_y: f32 = 70.0 * std.math.pi / 180.0;
 const view_fov_y: f32 = 54.0 * std.math.pi / 180.0;
 const max_dyn_vertices = 96 * 1024;
@@ -140,6 +140,8 @@ pub const Camera = struct {
     yaw: f32,
     pitch: f32,
     roll: f32 = 0,
+    /// The camera follows a bot: no gun in the hands.
+    follow: bool = false,
 };
 
 pub const Stats = struct {
@@ -239,8 +241,8 @@ const State = struct {
         const sun = [3]f32{ 1.0, 0.9 - 0.3 * tw, 0.8 - 0.5 * tw };
         const moon = [3]f32{ 0.10, 0.12, 0.20 };
         for (0..3) |i| {
-            self.light[i] = sun[i] * (2.2 * day) + moon[i] * (1 - day);
-            self.ambient[i] = 0.32 * s.zenith[i] + 0.28 * s.horizon[i] + 0.03;
+            self.light[i] = sun[i] * (3.0 * day) + moon[i] * (1 - day);
+            self.ambient[i] = 0.2 * s.zenith[i] + 0.16 * s.horizon[i] + 0.03;
         }
         self.models.setLight(.{ .color = self.light, .ambient = self.ambient });
     }
@@ -573,7 +575,7 @@ pub const Scene = struct {
         s.dyn_world = @intCast(s.dyn.verts.items.len);
 
         // The gun in the hands, in the world space of the camera.
-        if (g.alive()) {
+        if (g.alive() and !cam.follow) {
             const cam_world: Mat4 = .{ .data = .{
                 right[0], right[1], right[2], 0,
                 up[0],    up[1],    up[2],    0,
@@ -611,6 +613,10 @@ pub const Scene = struct {
 
     pub fn stats(self: *const Scene) Stats {
         return self.state.stats;
+    }
+
+    pub fn modelStats(self: *const Scene) sw_render.BoxModelStats {
+        return self.state.models.stats();
     }
 
     /// Project a world point to the screen, in pixels, or null behind the

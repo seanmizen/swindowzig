@@ -49,15 +49,22 @@ pub const Input = struct {
 /// The settings that a script can change (`set <name> <value>`).
 pub const Settings = struct {
     /// The damage of a bot round, as a part of the gun damage.
-    bot_damage: f32 = 0.35,
+    bot_damage: f32 = 0.2,
     /// The aim error of the bots, radians.
-    bot_error: f32 = 0.045,
+    bot_error: f32 = 0.06,
     /// The bots do not fire.
     bots_hold: bool = false,
     /// The player takes no damage.
     god: bool = false,
     /// The number of bots in each wave, 1 to `max_bots`.
     bots: u32 = 3,
+    /// The camera follows bot n from behind and above, or the player
+    /// (-1). A script uses it to show the bots take cover.
+    follow: i32 = -1,
+    /// Write the state of the fight to the log every 15 ticks: the place
+    /// and the look of the player, and the place, the state and the aim
+    /// angles of each bot. It helps to write a script.
+    trace: bool = false,
 };
 
 pub const max_bots = 3;
@@ -98,6 +105,8 @@ pub const Bot = struct {
     rag: ragdoll.Body = .{},
     /// The last place where the stride gave a snow puff.
     puff_stride: f32 = 0,
+    /// The time that a seeking bot has not moved: a box is in its way.
+    stuck: f32 = 0,
     rng: std.Random.DefaultPrng = .init(0),
 
     pub fn alive(self: *const Bot) bool {
@@ -275,9 +284,22 @@ pub const Game = struct {
         self.stepNumbers(dt);
         self.stepPlayer(dt, in);
         for (self.bots[0..self.bot_n], 0..) |*b, i| self.stepBot(b, i, dt);
+        if (self.settings.trace and self.ticks % 15 == 0) self.traceLog();
         if (self.liveBots() == 0) {
             self.wave_t += dt;
             if (self.wave_t > wave_gap) self.newWave();
+        }
+    }
+
+    fn traceLog(self: *const Game) void {
+        const p = self.you;
+        std.log.info("trace t={d} you=({d:.2},{d:.2}) yaw={d:.3} pitch={d:.3} hp={d:.0} ammo={d} kills={d}", .{ self.ticks, p.pos[0], p.pos[2], p.yaw, p.pitch, self.hp, self.item.ammo, self.kills });
+        for (self.bots[0..self.bot_n], 0..) |*b, i| {
+            const c = b.body.pos + v3(0, chest_h, 0);
+            const d = c - self.eye();
+            const yaw = std.math.atan2(-d[0], -d[2]);
+            const pitch = std.math.atan2(d[1], @sqrt(d[0] * d[0] + d[2] * d[2]));
+            std.log.info("trace   bot{d} ({d:.2},{d:.2}) {s} hp={d:.0} seen={} aim_yaw={d:.3} aim_pitch={d:.3}", .{ i, b.body.pos[0], b.body.pos[2], @tagName(b.state), b.hp, arena.clear(self.eye(), c), yaw, pitch });
         }
     }
 
@@ -452,7 +474,7 @@ pub const Game = struct {
             const to_me = vec.len(p - b.body.pos);
             const to_you = vec.len(p - self.you.pos);
             // A fight at 9 to 18 m, near the bot.
-            const range_cost = if (to_you < 9) (9 - to_you) * 2 else if (to_you > 18) (to_you - 18) * 0.6 else 0;
+            const range_cost = if (to_you < 9) (9 - to_you) * 2 else if (to_you > 18) (to_you - 18) * 2 else 0;
             const cost = to_me + range_cost + 3 * b.rng.random().float(f32);
             if (cost < best_cost) {
                 best_cost = cost;
@@ -481,17 +503,46 @@ pub const Game = struct {
         return best;
     }
 
-    /// Walk the body toward `to`. Returns true on arrival.
-    fn moveTo(b: *Bot, to: V3, dt: f32, face: bool) bool {
-        var d = to - b.body.pos;
-        d[1] = 0;
+    /// The next place on the way from `from` to `to`: `to`, or a corner of
+    /// the box in the way. The corners are outside the box by the body
+    /// radius and a margin.
+    fn waypoint(from: V3, to: V3) V3 {
+        const knee = v3(0, 0.5, 0);
+        const d = to - from;
         const l = vec.len(d);
-        if (l < 0.25) {
+        if (l < 1e-3) return to;
+        const h = arena.raycast(from + knee, d / vec.s(l), l) orelse return to;
+        const bx = arena.boxes[h.box];
+        const m: f32 = 0.6;
+        var best = to;
+        var best_cost: f32 = 1e9;
+        for ([_][2]f32{ .{ bx.min[0] - m, bx.min[2] - m }, .{ bx.max[0] + m, bx.min[2] - m }, .{ bx.min[0] - m, bx.max[2] + m }, .{ bx.max[0] + m, bx.max[2] + m } }) |c| {
+            const p = v3(c[0], 0, c[1]);
+            if (vec.len(p - from) < 0.3) continue;
+            if (!arena.clear(from + knee, p + knee)) continue;
+            const cost = vec.len(p - from) + vec.len(to - p);
+            if (cost < best_cost) {
+                best_cost = cost;
+                best = p;
+            }
+        }
+        return best;
+    }
+
+    /// Walk the body toward `to`, round a box in the way. Returns true on
+    /// arrival.
+    fn moveTo(b: *Bot, to_final: V3, dt: f32, face: bool) bool {
+        const to = waypoint(b.body.pos, to_final);
+        if (vec.len(to_final - b.body.pos) < 0.25) {
             b.body.step(dt, v3(0, 0, 0), false, bot_speed);
             return true;
         }
+        var d = to - b.body.pos;
+        d[1] = 0;
+        const l = @max(vec.len(d), 1e-3);
         const wish = d / vec.s(l);
-        b.body.step(dt, wish * vec.s(@min(1, l / 0.6)), false, bot_speed);
+        const last = @reduce(.And, to == to_final);
+        b.body.step(dt, wish * vec.s(if (last) @min(1, l / 0.6) else 1), false, bot_speed);
         if (face) turnTo(b, std.math.atan2(-wish[0], -wish[2]), dt);
         return false;
     }
@@ -537,7 +588,15 @@ pub const Game = struct {
             .seek => {
                 if (b.cover == null or b.patience < 0) self.pickCover(b, i);
                 if (b.cover) |c| {
-                    if (moveTo(b, arena.cover_points[c].pos, dt, true)) {
+                    const before = b.body.pos;
+                    const arrived = moveTo(b, arena.cover_points[c].pos, dt, true);
+                    const moved = vec.len(b.body.pos - before) / dt;
+                    b.stuck = if (moved < 0.5 and !arrived) b.stuck + dt else 0;
+                    if (b.stuck > 0.6) {
+                        // A box is in the way: find other cover.
+                        b.stuck = 0;
+                        self.pickCover(b, i);
+                    } else if (arrived) {
                         b.state = .hide;
                         b.timer = 0.7 + 1.1 * b.rng.random().float(f32);
                     }
@@ -599,6 +658,8 @@ pub const Game = struct {
                 }
             },
             .back => {
+                // A bot that cannot get back to its cover finds new cover.
+                if (b.patience < -4) self.pickCover(b, i);
                 if (b.cover) |c| {
                     if (moveTo(b, arena.cover_points[c].pos, dt, false)) {
                         b.state = .hide;
@@ -621,7 +682,10 @@ pub const Game = struct {
 
     fn botShot(self: *Game, b: *Bot, i: usize, st: *const weapon.Stats) void {
         const sk = b.skeleton();
-        const o = b.muzzle(sk);
+        // The round flies from the eye line: a long gun can reach into the
+        // cover at the side. The flash and the sound are at the muzzle.
+        const muzzle = b.muzzle(sk);
+        const o = b.eye() - v3(0, 0.1, 0);
         const target = self.you.pos + v3(0, chest_h, 0);
         const to = target - o;
         const dist = vec.len(to);
@@ -636,7 +700,7 @@ pub const Game = struct {
         const d = vec.norm(f + right * vec.s(@cos(a) * r) + up * vec.s(@sin(a) * r));
         b.ammo -= 1;
         b.flash = 0.05;
-        var shot: Shot = .{ .o = o, .e = o + d * vec.s(st.range), .normal = -d, .surface = null, .bot = i, .model = b.gun };
+        var shot: Shot = .{ .o = muzzle, .e = o + d * vec.s(st.range), .normal = -d, .surface = null, .bot = i, .model = b.gun };
         var t_best = st.range;
         if (arena.raycast(o, d, st.range)) |h| {
             t_best = h.t;
@@ -658,6 +722,7 @@ pub const Game = struct {
                 _ = k;
             }
         }
+        if (self.settings.trace) std.log.info("trace   shot bot{d} o=({d:.2},{d:.2},{d:.2}) e=({d:.2},{d:.2},{d:.2}) player={}", .{ i, o[0], o[1], o[2], shot.e[0], shot.e[1], shot.e[2], shot.hit_player });
         if (shot.hit_player) {
             self.hurt = 0;
             self.hurt_dir = -d;

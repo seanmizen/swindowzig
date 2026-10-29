@@ -193,10 +193,10 @@ pub fn spawn(sys: *System, r: Rng, p: V3, n: V3, s: Surface, snow: bool, size: f
 }
 
 /// The glow of a muzzle flash at p: a hot quad for 0.05 s, and a few
-/// sparks forward along `dir`.
-pub fn flash(sys: *System, r: Rng, p: V3, dir: V3) void {
-    sys.spawn(.{ .pos = arr(p), .life = 0.05, .size = 0.42, .color = .{ 9, 6.5, 3.2, 1 }, .fade = true });
-    sys.spawn(.{ .pos = arr(p + dir * vec.s(0.12)), .life = 0.04, .size = 0.25, .color = .{ 8, 5, 2.2, 1 }, .fade = true });
+/// sparks forward along `dir`. `scale` sets the size of the glow.
+pub fn flash(sys: *System, r: Rng, p: V3, dir: V3, scale: f32) void {
+    sys.spawn(.{ .pos = arr(p), .life = 0.05, .size = 0.42 * scale, .color = .{ 9, 6.5, 3.2, 1 }, .fade = true });
+    sys.spawn(.{ .pos = arr(p + dir * vec.s(0.12 * scale)), .life = 0.04, .size = 0.25 * scale, .color = .{ 8, 5, 2.2, 1 }, .fade = true });
     for (0..3) |_| {
         const d = vec.norm(dir + randDir(r) * vec.s(0.35));
         sys.spawn(.{ .pos = arr(p), .vel = arr(d * vec.s(between(r, .{ 8, 16 }))), .life = between(r, .{ 0.05, 0.12 }), .size = 0.025, .color = .{ 7, 4.5, 1.8, 1 }, .fade = true, .gravity = 3, .drag = 4 });

@@ -49,6 +49,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const sw = @import("sw_app");
+const sw_core = @import("sw_core");
 const sw_gpu = @import("sw_gpu");
 const sw_render = @import("sw_render");
 
@@ -110,6 +111,10 @@ pub const Host = struct {
     /// The tick of the script, from 0. It starts again at 0 for each loop.
     script_tick: u64 = 0,
     caption: []const u8 = "",
+    /// The input of the script commands `key`, `mouse` and `button`, for
+    /// this tick (REQ-DEMO-025). A demo that a player can drive reads it in
+    /// place of `ctx.input()` while the script plays.
+    script_input: sw_core.InputSnapshot = .{},
 
     /// True in a capture or check run (REQ-DEMO-004).
     pub fn deterministic(self: *const Host) bool {
@@ -196,6 +201,10 @@ pub fn Demo(comptime App: type) type {
                     fail("{s}: script line {d}: {s}", .{ App.name, diag.line, @errorName(err) });
                     return;
                 };
+                if (badKey(&parsed)) |line| {
+                    fail("{s}: script line {d}: no key of this name", .{ App.name, line });
+                    return;
+                }
                 player = .{ .script = &parsed };
 
                 host = .{
@@ -228,6 +237,8 @@ pub fn Demo(comptime App: type) type {
                 _ = ctx;
                 if (!ready or ending) return;
                 const t = host.script_tick;
+                var input_events: [32]sw_core.Event = undefined;
+                var input_n: usize = 0;
                 while (player.next(t)) |e| {
                     switch (e.command) {
                         .caption => |text| host.caption = text,
@@ -236,8 +247,13 @@ pub fn Demo(comptime App: type) type {
                         },
                         .checkpoint => |n| pending_checkpoint = n,
                         .end => ending = true,
+                        .key, .mouse, .button => if (input_n < input_events.len) {
+                            input_events[input_n] = inputEvent(e.command, t, input_n);
+                            input_n += 1;
+                        },
                     }
                 }
+                host.script_input.updateFromEvents(input_events[0..input_n]);
                 if (player.finished() and t >= parsed.lastTick()) ending = true;
                 try App.tick(&host);
                 host.script_tick += 1;
@@ -245,6 +261,7 @@ pub fn Demo(comptime App: type) type {
                     // Interactive: play the script again.
                     ending = false;
                     player.restart();
+                    host.script_input = .{};
                     host.script_tick = 0;
                     if (@hasDecl(App, "reset")) try App.reset(&host);
                 }
@@ -281,6 +298,28 @@ pub fn Demo(comptime App: type) type {
                 ready = false;
             }
         };
+
+        /// The line of the first `key` command with no KeyCode of its name.
+        fn badKey(sc: *const script.Script) ?u32 {
+            for (sc.entries) |e| {
+                if (e.command == .key and std.meta.stringToEnum(sw_core.KeyCode, e.command.key.name) == null) return e.line;
+            }
+            return null;
+        }
+
+        /// The sw_core event of a script input command.
+        fn inputEvent(c: script.Command, tick: u64, seq: usize) sw_core.Event {
+            const payload: sw_core.EventPayload = switch (c) {
+                .key => |k| .{ .key = .{ .keycode = std.meta.stringToEnum(sw_core.KeyCode, k.name).?, .scancode = 0, .down = k.down, .repeat = false, .mods = .{} } },
+                .mouse => |m| .{ .pointer_move = .{ .x = host.script_input.mouse.x + m.dx, .y = host.script_input.mouse.y + m.dy, .dx = m.dx, .dy = m.dy, .device_id = 0, .mods = .{} } },
+                .button => |b| .{ .pointer_button = .{ .button = switch (b.button) {
+                    .left => .left,
+                    .right => .right,
+                }, .down = b.down, .mods = .{} } },
+                else => unreachable,
+            };
+            return sw_core.Event.init(tick, 0, @intCast(seq), payload);
+        }
 
         fn drawOverlay(pass: *sw_render.Pass) !void {
             const o = &host.overlay;
