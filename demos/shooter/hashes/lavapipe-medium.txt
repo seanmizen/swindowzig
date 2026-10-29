@@ -1,0 +1,12 @@
+# shooter: frame hashes at the checkpoints of the script, preset medium, lavapipe (REQ-DEMO-003)
+snow_clouds 581fa28980799ac6
+fog_sky 023a3ee269fa9845
+shadows 3e39edb5498a11b8
+bots_cover de373b710aa99cae
+fire_back 8805714463c00c6b
+first_kill 962dc265f5790076
+second_kill 68d418a235604c04
+third_kill 8532c2e902f2acbb
+reload 88fd78c8a5523f7c
+ragdoll ceb943a93cd9402b
+next_wave 43996dcf75fb0180
