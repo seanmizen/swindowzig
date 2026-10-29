@@ -293,7 +293,7 @@ fn part(sk: Skeleton, pt: Part) Mat4 {
 }
 
 /// The colours of an outfit. The default is the full black of the street.
-/// A player on a moped (moped_ride.zig) wears the colour of the player.
+/// A player on a moped wears the colour of the player.
 pub const Outfit = struct {
     jacket: V3 = jacket,
     quilt: V3 = quilt,
@@ -420,7 +420,7 @@ pub fn handTip(sk: Skeleton) V3 {
 
 /// The frame of the fist of the right hand (right = true) or of the left
 /// hand: its origin in the glove, -Z along the fingers. A gun in the hand
-/// hangs from it (moped.zig).
+/// hangs from it.
 pub fn handFrame(sk: Skeleton, right: bool) Mat4 {
     const fore = part(sk, if (right) .fore_arm_r else .fore_arm_l);
     return fore.mul(vec.translate(v3(0, -0.31, -0.02)).mul(Mat4.rotationX(-std.math.pi / 2.0)));

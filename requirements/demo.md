@@ -189,3 +189,101 @@ scripts, the frame hashes and the recordings.
 - **Verification:** Inspection — `demos/common/demo.zig` › `playerActed`
   and `Host.input`.
 - **Relations:** depends-on REQ-DEMO-008
+
+## REQ-DEMO-020 — The shooter demo is a fight in a snowy arena, offline
+
+- **Status:** active
+- **Source:** agent:SWZ-79
+- **Origin:** #79
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The shooter demo shall show a first-person fight against
+  bots in a snowy arena that code builds, with no network code.
+- **Rationale:** The demo shows the engine features in a game: falling
+  snow, a cloud layer, the fog, the sky, the shadows, the particles, 3D
+  sound, box models, collision, the camera and the input actions. The
+  fight code comes from the offline part of the action game, so the demo
+  has no server.
+- **Verification:**
+  - Test — `demos/shooter/arena.zig` › "arena: the spawns are free, and
+    each cover point is beside a tall box (REQ-DEMO-020)"
+  - Test — `scripts/demos-check.sh` › the checkpoints of
+    `demos/shooter/shooter.tas` (for example `snow_clouds`, `fog_sky`,
+    `shadows`, `first_kill`).
+- **Relations:** depends-on REQ-DEMO-001
+
+## REQ-DEMO-021 — The bots of the shooter give the same fight on each run
+
+- **Status:** active
+- **Source:** agent:SWZ-79
+- **Origin:** #79
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The bots of the shooter demo shall take each random choice
+  from a seeded random number generator on the fixed timestep, so one
+  script of input gives the same fight on each run.
+- **Rationale:** The bots move, take cover and fire back. A clock or an
+  unseeded choice gives another fight on each run, and then the frame
+  hashes of the script change.
+- **Verification:**
+  - Test — `demos/shooter/game.zig` › "game: the same seed and input give
+    the same fight (REQ-DEMO-021)"
+  - Test — `demos/shooter/game.zig` › "game: the bots take cover and fire
+    back (REQ-DEMO-021)"
+  - Test — `scripts/demos-check.sh` › `--twice` gives the same hashes for
+    the shooter.
+- **Relations:** depends-on REQ-DEMO-004
+
+## REQ-DEMO-022 — One box model draws the bodies of all the bots
+
+- **Status:** active
+- **Source:** agent:SWZ-79
+- **Origin:** #79
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** The shooter demo shall draw the bodies of the bots as
+  instances of one `sw_render` box model, in the pose of the skeleton of
+  each bot.
+- **Rationale:** The body model of the action game gives a world frame for
+  each part. The box model gives one draw call for all bodies, and the
+  bodies cast shadows. The posed parts must stay on the skeleton, or the
+  gun leaves the hand and the hit boxes leave the body.
+- **Verification:** Test — `demos/shooter/body_model.zig` › "body model:
+  the posed boxes follow the skeleton of npc.zig (REQ-DEMO-022)"
+- **Relations:** none
+
+## REQ-DEMO-023 — Each hit throws the particles of its material
+
+- **Status:** active
+- **Source:** agent:SWZ-79
+- **Origin:** #79
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When a round of the shooter demo hits a surface, the demo
+  shall throw the particles of the material of the surface, or of snow.
+- **Rationale:** Sparks for steel, splinters for wood and a white burst
+  for snow show the particle system of `sw_render`. The random numbers
+  come from a seeded generator, so a replay gives the same particles.
+- **Verification:** Test — `demos/shooter/impact_fx.zig` › "impact fx:
+  one seed gives the same particles, and snow has its own recipe
+  (REQ-DEMO-023)"
+- **Relations:** depends-on REQ-DEMO-021
+
+## REQ-DEMO-024 — The shots of the shooter play as 3D sound
+
+- **Status:** active
+- **Source:** agent:SWZ-79
+- **Origin:** #79
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When a gun of the shooter demo fires in a window, the demo
+  shall play the muzzle report at the gun, the crack of a near miss and
+  the impact as `sw_audio` voices at their places in the world.
+- **Rationale:** The mixer of `sw_audio` gives each voice its pan and its
+  distance loss. A delay of distance divided by the speed of sound puts
+  the report of a far gun after its flash. The sounds are procedural
+  (the bullet sound models of the action game), so the demo has no audio
+  file.
+- **Verification:** Inspection — `demos/shooter/sfx.zig` › `Sfx.shots`.
+  Demonstration — Sean listens to the native and the web build.
+- **Relations:** none

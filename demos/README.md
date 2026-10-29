@@ -11,6 +11,7 @@ same on each run.
 | Demo | What it shows |
 |---|---|
 | `cow` | An original voxel cow turns on a stand. The script changes one setting at a time. Anti-aliasing: off, FXAA, MSAA. Meshing: naive, greedy, with a wireframe and the quad count. Colour: the tonemap curve, the exposure, a palette swap. Light: the time of day, shadows, ambient occlusion. Then fog and the sky. |
+| `shooter` | A first-person fight in a snowy arena, offline. Three bots move, take cover, step out and fire back. Falling snow, a cloud layer, fog, the sky and shadows. Muzzle flashes, impacts and snow as particles. The bots are one box model, a dead bot falls as a ragdoll, and the shots play as 3D sound. The script plays the player with key and mouse commands; the bots use a seeded random number generator, so each run gives the same fight. The gun models are the Quaternius Ultimate Gun Pack (CC0). |
 | `menu` | A full game menu over the turning cow (sw_ui). A main screen and a screen stack with Back. The focus moves with the keyboard, the mouse and a gamepad. Graphics, audio, controls (key rebinding with a conflict warning, mouse sensitivity, invert Y) and gamepad (dead zone) settings apply at once to the cow. A text field, the on-screen keyboard, a scroll list and tooltips. English or Hebrew (right to left), and a TrueType or a bitmap font. The web page mirrors the menu for a screen reader. |
 
 ## Commands

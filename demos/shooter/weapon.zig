@@ -537,7 +537,7 @@ pub const Loadout = struct {
     /// The slot before the current one. The grenade slot goes back to it.
     last: Slot = .primary,
     hands: Hands = .{},
-    /// A moped thief took the primary in this life (moped.zig): a new pick
+    /// A moped thief took the primary in this life: a new pick
     /// does not fill the primary slot before the next life.
     primary_locked: bool = false,
 

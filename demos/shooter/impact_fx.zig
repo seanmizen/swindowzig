@@ -211,3 +211,29 @@ pub fn snowStep(sys: *System, r: Rng, p: V3, light: V3) void {
         sys.spawn(.{ .pos = arr(p + v3(0, 0.08, 0)), .vel = arr(v), .life = 0.6 + 0.3 * r.float(f32), .size = 0.22 + 0.12 * r.float(f32), .color = .{ col[0], col[1], col[2], 0.45 }, .fade = true, .gravity = 1.2, .drag = 2.5 });
     }
 }
+
+test "impact fx: one seed gives the same particles, and snow has its own recipe (REQ-DEMO-023)" {
+    var a = try System.init(std.testing.allocator, 256);
+    defer a.deinit(std.testing.allocator);
+    var b = try System.init(std.testing.allocator, 256);
+    defer b.deinit(std.testing.allocator);
+    var ra: std.Random.DefaultPrng = .init(7);
+    var rb: std.Random.DefaultPrng = .init(7);
+    const light = v3(1, 1, 1);
+    spawn(&a, ra.random(), v3(1, 1, 1), v3(0, 0, 1), .metal, false, 1, light);
+    spawn(&b, rb.random(), v3(1, 1, 1), v3(0, 0, 1), .metal, false, 1, light);
+    a.step(0.1);
+    b.step(0.1);
+    try std.testing.expectEqual(a.count(), b.count());
+    for (0..a.count()) |i| try std.testing.expectEqual(a.get(i).pos, b.get(i).pos);
+    // A spark of metal glows: its colour is over 1.
+    var glow = false;
+    for (0..a.count()) |i| glow = glow or a.get(i).color[0] > 1;
+    try std.testing.expect(glow);
+    // Snow throws white puffs.
+    var s = try System.init(std.testing.allocator, 256);
+    defer s.deinit(std.testing.allocator);
+    spawn(&s, ra.random(), v3(0, 0, 0), v3(0, 1, 0), .earth, true, 1, light);
+    try std.testing.expect(s.count() > 4);
+    try std.testing.expect(s.get(0).color[2] > 0.9);
+}

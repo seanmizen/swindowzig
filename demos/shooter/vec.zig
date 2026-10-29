@@ -1,5 +1,5 @@
-// Small vector and matrix helpers on @Vector(3, f32). sw_math.Mat4 is the
-// matrix type (column major).
+// Small vector and matrix helpers on @Vector(3, f32), from the action game.
+// sw_math.Mat4 is the matrix type (column major).
 const std = @import("std");
 const sw_math = @import("sw_math");
 
@@ -59,44 +59,6 @@ pub fn xdir(m: Mat4, p: V3) V3 {
         d[1] * p[0] + d[5] * p[1] + d[9] * p[2],
         d[2] * p[0] + d[6] * p[1] + d[10] * p[2],
     };
-}
-
-/// A perspective projection with reversed Z (REQ-RENDER-001): the near
-/// plane maps to depth 1 and the far plane to depth 0. A float depth buffer
-/// has the most precision near 0, and the depth of a far surface is near 0,
-/// so far surfaces a few millimetres apart stay apart. Right-handed, depth
-/// 0 to 1 (WebGPU), column major. fov is the vertical field of view in
-/// radians.
-pub fn reversedPerspective(fov: f32, aspect: f32, near: f32, far: f32) Mat4 {
-    const f = 1.0 / @tan(fov / 2.0);
-    const k = near / (far - near);
-    return .{ .data = .{
-        f / aspect, 0, 0,       0,
-        0,          f, 0,       0,
-        0,          0, k,       -1,
-        0,          0, far * k, 0,
-    } };
-}
-
-test "reversed perspective: the near plane is depth 1, the far plane depth 0 (REQ-RENDER-001)" {
-    const m = reversedPerspective(1.2, 1.6, 0.04, 260);
-    const depth = struct {
-        fn at(p: Mat4, d: f32) f32 {
-            const z = p.data[10] * -d + p.data[14];
-            const w = p.data[11] * -d + p.data[15];
-            return z / w;
-        }
-    }.at;
-    try std.testing.expectApproxEqAbs(@as(f32, 1), depth(m, 0.04), 1e-6);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), depth(m, 260), 1e-6);
-    // Nearer is more.
-    try std.testing.expect(depth(m, 49.99) > depth(m, 50));
-    // At 100 m, faces 2 mm apart get depths that are 100 float steps or more
-    // apart: one step at 100 m is less than 0.01 mm.
-    const a = depth(m, 100);
-    const b = depth(m, 100.002);
-    const step = std.math.floatEps(f32) * a;
-    try std.testing.expect((a - b) / step > 100);
 }
 
 pub fn translate(p: V3) Mat4 {

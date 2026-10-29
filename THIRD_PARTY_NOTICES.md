@@ -212,6 +212,22 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ------------------------------------------------------------------------------
 ```
 
+## Ultimate Gun Pack (gun models in the shooter demo)
+
+- Author: Quaternius (July 2019)
+- Source: https://opengameart.org/content/low-poly-guns-pack
+  (`ultimate_gun_pack_by_quaternius.zip`)
+- Files: `demos/shooter/guns.bin`. It holds each gun of the pack except the
+  six sniper rifles, and the `Bayonet_2` accessory, converted to one binary
+  file by `scripts/convert-gun.ts` of the action game (seanorepo
+  `apps/action`). `demos/shooter/weapon.zig` reads it.
+- Licence: CC0 1.0 Universal (public domain dedication). Attribution is not
+  necessary. https://creativecommons.org/publicdomain/zero/1.0/
+
+The other code and sounds of the shooter demo come from the action game of
+the same author as swindowzig. The sounds are procedural: the demo has no
+audio file.
+
 ## Lato (font in the flat2d example and the demos)
 
 - Files: `examples/flat2d/assets/Lato-Regular.ttf`, and the licence in

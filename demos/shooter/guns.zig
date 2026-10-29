@@ -610,7 +610,7 @@ pub const table: [gun_count]Stats = blk: {
 
 /// The share of the pellets that hit the body and the head of a player at
 /// `dist` m, with a cone of half angle `cone`, aimed at the chest. The
-/// pellets fall evenly in the cone (main.zig fire). The body is the legs
+/// pellets fall evenly in the cone. The body is the legs
 /// and the torso hit boxes (0.6 m wide, 1.2 m below the chest to 0.26 m
 /// above it). The head box is 0.32 m.
 pub fn pelletShare(dist: f32, cone: f32) struct { body: f32, head: f32 } {

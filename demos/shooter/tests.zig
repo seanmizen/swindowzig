@@ -6,4 +6,5 @@ test {
     _ = @import("body_model.zig");
     _ = @import("guns_test.zig");
     _ = @import("game.zig");
+    _ = @import("impact_fx.zig");
 }

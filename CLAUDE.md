@@ -126,7 +126,8 @@ swindowzig/
 ├── demos/              # Showcase demos (-Ddemo=<name>): scripts, capture, frame hashes. See demos/README.md
 │   ├── common/         # Shared frame (demo.zig), CowScene, script, mesher
 │   ├── cow/            # The turning cow; one setting at a time
-│   └── menu/           # A full sw_ui game menu over the cow; script input commands
+│   ├── menu/           # A full sw_ui game menu over the cow; script input commands
+│   └── shooter/        # Offline first-person fight in a snowy arena; seeded bots
 └── backends/
     └── wasm/           # Web platform boot + dev server
 ```
