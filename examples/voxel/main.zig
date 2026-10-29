@@ -4649,7 +4649,7 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     // Hardware depth testing. The Metal crash (wgpu-native v0.19.4.1 "bus error at 0x29")
     // was fixed upstream; wgpu-native v22.1.0.5 (current pinned version) no longer crashes.
     // Depth testing eliminates the painter's-algorithm sort-order failures that caused
-    // AO shadow faces to bleed through occluding roof geometry (README bug #2).
+    // AO shadow faces to bleed through occluding roof geometry (docs/overview.md bug #2).
     const main_depth_stencil: gpu_mod.DepthStencilState = .{
         .format = .depth24plus,
         .depth_write_enabled = true,

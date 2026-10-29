@@ -23,7 +23,7 @@ The repository carries its Yarn 4 release in `.yarn/releases`, and
 `.yarnrc.yml` names it in `yarnPath`. Any system `yarn` runs that release,
 Yarn 1 included. Do not use corepack. Yarn installs the hooks and Biome. Zig
 (the version in `build.zig.zon`), SDL2, wgpu-native and Bun come from the
-system: see `README.md`.
+system: see `docs/overview.md`.
 
 ## Hard rules
 
