@@ -186,6 +186,8 @@ comment blocks at the top of `examples/voxel/tests/ao_corners.tas`,
 | `--world=<preset>` | Worldgen preset. Accepted: `flatland` (flat Y=63), `hilly` (default — procedural noise terrain). |
 | `--seed=<u64>` | World seed. **Default: 0.** Generation mixes the seed into each random source: the height and biome noise, the caves, the trees and the glowstone. Seed 0 gives the terrain from before the seed existed. The web build reads the seed from the page URL, `?seed=12345` (REQ-VOXEL-034): `backends/wasm/seed.ts` parses it for the loader and the Bun runner, and gives it to the export `swindowzig_set_seed` before init. A value that is not a u64 gives seed 0 and one warning. `zig build terrain-hash` builds a tool that prints the block hash of a 9×9 hilly area for each seed, from native and from wasm. CI compares the two. |
 | `--print-world-hash` | Native, with `--headless`. When the scheduler is idle after the loading screen, log `world_hash=<hex>` (the hash of `voxel_debug_world_hash`) and stop. `tests/seed_web_native.sh` compares it with `bun backends/wasm/headless.ts --world-hash --query '?seed=N'` (REQ-VOXEL-034). |
+| `--save=<on\|off>` | Save the edit log (REQ-VOXEL-035). The default is `on`, but `off` when `--tas`, `--headless`, `--dump-frame` or `--compare-golden` is given: those runs, the goldens and the TAS tests must not depend on earlier runs. `on` loads the saved edits of the world (key `voxel-edits-<preset>-<seed>`) before the loading screen and saves at most one time each second, and at exit. The web build has no flags: it always saves (localStorage). Settings > Tab: Game > New World deletes the saved edits and loads the world again from the seed. |
+| `--save-dir=<path>` | Native. The storage folder of `--save`. The default is the per-user data folder of SDL (`seanmizen/voxel`). `tests/save_reload.sh` uses a temp folder. |
 | `--ao=<mode>` | Ambient-occlusion sampler. Accepted: `none` (no AO, full brightness), `classic` (per-vertex Mojang face-plane AO), `moore` (**default** — extended sampler that adds the outward+2 slab at half weight to darken indoor corners). `propagated` and `ssao` are reserved enum values that fall back to `classic` with a one-shot warning. Read at startup only — runtime changes (future settings menu) require remeshing all loaded chunks. |
 | `--lighting=<mode>` | World-lighting mode for the mesher. Accepted: `none` (every face fully lit by sky — A baseline for the cave-darkness regression) and `skylight` (default — per-chunk skylight propagation. Caves and overhangs go dark). Skylight is baked per-vertex at mesh time, so the in-game settings menu picker remeshes every loaded chunk on toggle. Digging or placing a block updates the light incrementally (`light.update`), then meshes the chunk again. See `examples/voxel/docs/lighting.md` for the algorithm and phase 3 (block light / glowstone) design. |
 | `--smooth-light=<on\|off>` | Smooth light of the mesher. `on` (default): each corner gets the mean light of the 4 cells at the corner. `off`: flat light, each face gets the light of the cell in front of it (REQ-VOXEL-008). Goes through `Scheduler.setSmoothLight`. |
@@ -294,6 +296,12 @@ TAS scripts for regression live under `examples/voxel/`:
 - `tests/seed_web_native.sh` — `?seed=12345` in app.wasm (Bun, with and
   without the worker pool) gives the world hash of native `--seed=12345`.
   No query and an invalid seed give the hash of seed 0 (REQ-VOXEL-034).
+- `tests/save_reload.sh` — the edits stay after a restart: a TAS digs
+  with `--save=on`, and the next run loads the edits (another world hash).
+  Corrupt data gives one warning and no edits. `tests/new_world.tas`
+  (Settings > New World) deletes the save (REQ-VOXEL-035).
+  `bun test backends/wasm/save.test.ts` does the same for app.wasm with a
+  fake localStorage.
 - `tests/tas_parse_fail.sh` — a TAS script that does not parse stops
   voxel with no leak report of the debug allocator (REQ-VOXEL-033). The
   errdefers of `voxelInit` free each allocation of init.
@@ -518,6 +526,7 @@ for the experiment and "why MC's 16×16 is the right default" writeup.
 | `voxel.wgsl` | Voxel vertex+fragment shader, `PackedQuad` decode, GPU debug tint |
 | `fluid.wgsl` | The fluid pass: reads the fluid vertices of a chunk from a storage buffer, alpha blend (REQ-VOXEL-028) |
 | `libs/sw_gpu/src/fxaa.wgsl` | FXAA 3.11 post-process shader, fullscreen triangle VS + luminance-based edge search FS |
+| `edit_save.zig` | The saved edit log: compaction (the last edit of each cell), a versioned binary format with a CRC, the 1 MiB limit (the newest edits stay), and `Store` over sw_platform storage (REQ-VOXEL-035, REQ-VOXEL-036). Not region files: a region file holds whole chunks |
 | `terrain_hash.zig` | Block hash of a 9×9 hilly area for a seed. Native CLI and tests. `terrain_hash_wasm.zig` is the wasm root, and `scripts/terrain_hash_wasm.mjs` runs it in Node or Bun |
 | `framespike.tas` | TAS script used by the mandatory headless regression test |
 | `tests/msaa_flatland.tas` | MSAA regression test — flatland, block-remove, camera pan |

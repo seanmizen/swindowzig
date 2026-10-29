@@ -144,6 +144,8 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_ui", native_libs.ui);
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
     native_exe.root_module.addImport("sw_render", native_libs.render);
+    // The voxel demo saves its edit log with sw_platform storage.
+    native_exe.root_module.addImport("sw_platform", native_libs.platform);
     native_exe.root_module.addOptions("chunk_build", chunk_build);
     native_exe.root_module.addImport("demo_common", addDemoCommon(b, native_libs, .{}));
     const native_voxel = addVoxel(b, native_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
@@ -735,7 +737,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = demo_content_tests.content })).step);
     // Demo tests: sw_voxel World on the demo terrain, and the demo shader
     // against the mesher.
-    inline for (.{ .{ "examples/voxel/world_test.zig", "world: " }, .{ "examples/voxel/shader_test.zig", "shader: " } }) |t| {
+    inline for (.{ .{ "examples/voxel/world_test.zig", "world: " }, .{ "examples/voxel/shader_test.zig", "shader: " }, .{ "examples/voxel/edit_save.zig", "edit_save: " } }) |t| {
         const demo_tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path(t[0]),

@@ -1,0 +1,36 @@
+# new_world.tas — the "New World" entry of the Settings menu
+# (REQ-VOXEL-035).
+#
+# Purpose: dig one block, then open the pause menu and select
+# Settings > Tab: Game > New World. The demo deletes the saved edits and
+# starts the world again from the seed. tests/save_reload.sh runs it with
+# --save=on and checks that the save file is gone and that the next run
+# has the terrain of the seed.
+#
+# Keys: Escape opens the pause menu (Resume selected). Down selects
+# Settings, Enter opens it (the tab picker, Video). Left changes the tab to
+# Game and selects New World. Enter starts the new world.
+#
+# Usage (from the repo root):
+#   zig build native -Dexample=voxel
+#   ./zig-out/bin/voxel --headless --world=flatland --save=on \
+#     --tas examples/voxel/tests/new_world.tas
+
+1 mouse_down left
+2 mouse_up left
+3 mouse_move 0 400
+5 mouse_down left
+6 mouse_up left
+
+10 keydown Escape
+11 keyup Escape
+13 keydown Down
+14 keyup Down
+16 keydown Enter
+17 keyup Enter
+19 keydown Left
+20 keyup Left
+22 keydown Enter
+23 keyup Enter
+
+60 wait 1

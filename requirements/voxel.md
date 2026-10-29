@@ -768,3 +768,54 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   - Test — `examples/voxel/tests/seed_web_native.sh` › "seed 12345,
     worker pool"
 - **Relations:** none
+
+## REQ-VOXEL-035 — The voxel demo keeps the edits of a world after a restart
+
+- **Status:** active
+- **Source:** agent:SWZ-11
+- **Origin:** #11
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the save is on, the voxel demo shall load the saved
+  edit log of the world (its preset and its seed) before the loading
+  screen, and give each edit to the World and to each chunk worker.
+- **Rationale:** The world is the seed plus the edit log. The demo saves
+  the log with sw_platform storage (localStorage on the web, a file
+  natively), at most one time each second and at exit. The save keeps
+  the last edit of each cell. A TAS, `--headless`, `--dump-frame` and
+  `--compare-golden` turn the save off by default, so the goldens and the
+  TAS tests do not depend on earlier runs. Settings > New World deletes
+  the saved log.
+- **Verification:**
+  - Test — `examples/voxel/tests/save_reload.sh` › "the second run read 4
+    edits"
+  - Test — `backends/wasm/save.test.ts` › "an edit stays after a reload,
+    through localStorage"
+  - Test — `examples/voxel/edit_save.zig` › "edit_save: compaction keeps
+    the last edit of each cell, in order"
+- **Relations:** none
+
+## REQ-VOXEL-036 — The saved edit log has a size limit and can fail
+
+- **Status:** active
+- **Source:** agent:SWZ-11
+- **Origin:** #11
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** When the storage is not available, or the saved data is
+  damaged, the voxel demo shall continue with an empty edit log and log
+  one warning.
+- **Rationale:** localStorage can be blocked or full, and a file can be
+  cut. The saved data of one world is at most 1 MiB
+  (`edit_save.MAX_BYTES`): a larger log keeps the newest edits, with one
+  warning. The format has a version byte and a CRC-32, so damaged data
+  does not give wrong blocks.
+- **Verification:**
+  - Test — `examples/voxel/edit_save.zig` › "edit_save: corrupt data and
+    unavailable storage give an empty log and one warning"
+  - Test — `examples/voxel/edit_save.zig` › "edit_save: the save keeps
+    the newest edits within the size limit"
+  - Test — `backends/wasm/save.test.ts` › "corrupt saved data gives an
+    empty world and one warning"
+- **Relations:**
+  - refines REQ-VOXEL-035

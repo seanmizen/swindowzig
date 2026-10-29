@@ -129,6 +129,8 @@
 | [`REQ-VOXEL-032`](voxel.md#req-voxel-032--a-merged-quad-has-the-shade-of-the-11-quads) | A merged quad has the shade of the 1×1 quads | active | functional | P2 | agent:SWZ-17 |
 | [`REQ-VOXEL-033`](voxel.md#req-voxel-033--an-init-error-of-the-demo-frees-each-allocation-of-init) | An init error of the demo frees each allocation of init | active | quality | P3 | agent:SWZ-112 |
 | [`REQ-VOXEL-034`](voxel.md#req-voxel-034--the-web-build-takes-the-world-seed-from-the-page-url) | The web build takes the world seed from the page URL | active | functional | P2 | agent:SWZ-8 |
+| [`REQ-VOXEL-035`](voxel.md#req-voxel-035--the-voxel-demo-keeps-the-edits-of-a-world-after-a-restart) | The voxel demo keeps the edits of a world after a restart | active | functional | P2 | agent:SWZ-11 |
+| [`REQ-VOXEL-036`](voxel.md#req-voxel-036--the-saved-edit-log-has-a-size-limit-and-can-fail) | The saved edit log has a size limit and can fail | active | quality | P2 | agent:SWZ-11 |
 
 ## Dependency graph
 
@@ -258,6 +260,8 @@ graph TD
   REQ_VOXEL_032["REQ-VOXEL-032<br/>A merged quad has the shade of the 1×1 quads"]
   REQ_VOXEL_033["REQ-VOXEL-033<br/>An init error of the demo frees each allocation of init"]
   REQ_VOXEL_034["REQ-VOXEL-034<br/>The web build takes the world seed from the page URL"]
+  REQ_VOXEL_035["REQ-VOXEL-035<br/>The voxel demo keeps the edits of a world after a restart"]
+  REQ_VOXEL_036["REQ-VOXEL-036<br/>The saved edit log has a size limit and can fail"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -328,6 +332,7 @@ graph TD
   REQ_VOXEL_031 -->|depends-on| REQ_GPU_040
   REQ_VOXEL_031 -->|depends-on| REQ_GPU_023
   REQ_VOXEL_032 -->|refines| REQ_VOXEL_010
+  REQ_VOXEL_036 -->|refines| REQ_VOXEL_035
 ```
 
 ## Derived reverse links
@@ -373,3 +378,4 @@ graph TD
 - `REQ-VOXEL-027` — required-by REQ-VOXEL-028, required-by REQ-VOXEL-030
 - `REQ-VOXEL-029` — required-by REQ-VOXEL-030
 - `REQ-VOXEL-030` — required-by REQ-VOXEL-031
+- `REQ-VOXEL-035` — refined-by REQ-VOXEL-036
