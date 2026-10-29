@@ -8,6 +8,8 @@ same on each run.
 
 ![The menu demo](../docs/media/menu.webp)
 
+![The shooter demo](../docs/media/shooter.webp)
+
 | Demo | What it shows |
 |---|---|
 | `cow` | An original voxel cow turns on a stand. The script changes one setting at a time. Anti-aliasing: off, FXAA, MSAA. Meshing: naive, greedy, with a wireframe and the quad count. Colour: the tonemap curve, the exposure, a palette swap. Light: the time of day, shadows, ambient occlusion. Then fog and the sky. |
