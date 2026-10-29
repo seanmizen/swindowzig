@@ -11,7 +11,7 @@
 // The demo makes no sound in a capture or a check run. The frames do not
 // depend on the sound.
 const std = @import("std");
-const sw_audio = @import("sw_audio");
+const sw_audio = @import("demo_common").audio;
 const vec = @import("vec.zig");
 const weapon = @import("weapon.zig");
 const guns = @import("guns.zig");

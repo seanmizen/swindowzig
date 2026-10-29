@@ -17,6 +17,7 @@
 import { createAssetImports } from './assets';
 import { createFileImports } from './files';
 import { HeldBytes } from './held-bytes';
+import { passSeed, seedFromQuery } from './seed';
 import { createStorageImports } from './storage';
 import {
   attachPool,
@@ -292,6 +293,8 @@ interface VoxelExports {
     block: number,
   ) => number;
   voxel_debug_gpu_counts?: () => number;
+  voxel_debug_block?: (wx: number, wy: number, wz: number) => number;
+  voxel_debug_new_world?: () => number;
   voxel_debug_set_render_distance?: (r: number) => void;
 }
 
@@ -355,6 +358,16 @@ export interface AppOptions {
    * A --measure run sets false, so the stub costs less time.
    */
   recordGpu?: boolean;
+  /**
+   * The URL query of the page, as `location.search` (for example
+   * '?seed=12345'). The seed goes to app.wasm as the loader gives it
+   * (seed.ts, REQ-VOXEL-034).
+   */
+  query?: string;
+  /** Called with each line of the wasm log. */
+  onLog?: (text: string) => void;
+  /** Called for each warning of the start. The default is console.warn. */
+  onWarning?: (message: string) => void;
 }
 
 export interface HeadlessApp {
@@ -366,6 +379,10 @@ export interface HeadlessApp {
   pipeline(): PipelineCounts | null;
   worldHash(): bigint;
   edit(wx: number, wy: number, wz: number, block: number): boolean;
+  /** The block id at a world cell (the prefetch radius only, else 0). */
+  block(wx: number, wy: number, wz: number): number;
+  /** The "New World" entry of the Settings menu. */
+  newWorld(): boolean;
   /** The mesh upload counters of app.wasm (C5). */
   gpuCounts(): GpuCounts;
   /** Set the render distance, as the Settings picker does. */
@@ -448,9 +465,12 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
     env: {
       jsGetTime: opts.clock === 'sim' ? () => nowMs : () => performance.now(),
       jsLog: (ptr: number, len: number) => {
-        if (!opts.log) return;
-        const bytes = new Uint8Array(getMemory().buffer, ptr, len);
-        console.log(`wasm: ${decoder.decode(bytes)}`);
+        if (!opts.log && !opts.onLog) return;
+        const text = decoder.decode(
+          new Uint8Array(getMemory().buffer, ptr, len),
+        );
+        opts.onLog?.(text);
+        if (opts.log) console.log(`wasm: ${text}`);
       },
       ...createStorageImports(getMemory),
       ...createAssetImports(getMemory),
@@ -502,6 +522,11 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
   const debugCounts = wasm.voxel_debug_chunk_counts;
   if (!debugCounts)
     throw new Error('app.wasm has no voxel_debug_chunk_counts export');
+
+  // As the loader: read the seed of the query, and give it to app.wasm
+  // before init (REQ-VOXEL-034).
+  const warn = opts.onWarning ?? ((m: string) => console.warn(m));
+  passSeed(instance.exports, seedFromQuery(opts.query ?? '', warn));
 
   wasm.swindowzig_init();
   wasm.swindowzig_event_resize(1280, 720, 1);
@@ -565,6 +590,16 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
       if (!wasm.voxel_debug_edit)
         throw new Error('app.wasm has no voxel_debug_edit export');
       return wasm.voxel_debug_edit(wx, wy, wz, block) !== 0;
+    },
+    block(wx: number, wy: number, wz: number): number {
+      if (!wasm.voxel_debug_block)
+        throw new Error('app.wasm has no voxel_debug_block export');
+      return wasm.voxel_debug_block(wx, wy, wz);
+    },
+    newWorld(): boolean {
+      if (!wasm.voxel_debug_new_world)
+        throw new Error('app.wasm has no voxel_debug_new_world export');
+      return wasm.voxel_debug_new_world() !== 0;
     },
     gpuCounts(): GpuCounts {
       if (!wasm.voxel_debug_gpu_counts)

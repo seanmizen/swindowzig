@@ -32,6 +32,7 @@ import {
 import { attachFileDrop, createFileImports } from './files';
 import { browserGamepads, type GamepadExports, GamepadPoller } from './gamepad';
 import { createNetImports } from './net';
+import { passSeed, seedFromQuery } from './seed';
 import { createStorageImports } from './storage';
 import { type GPUBridge, initWebGPU } from './webgpu';
 import { createWebSocketImports } from './websocket';
@@ -113,6 +114,13 @@ export interface LoaderOptions {
    * to the game (sw_assets files.poll), and the browser does not open it.
    */
   fileDrop?: boolean;
+  /**
+   * The world seed (REQ-VOXEL-034). The default is the `seed` parameter of
+   * the page URL (`?seed=12345`), or 0. The loader gives it to the wasm
+   * export `swindowzig_set_seed` before swindowzig_init. A wasm with no
+   * such export ignores it.
+   */
+  seed?: bigint;
   /** Called one time if the start fails. The default writes to the console. */
   onFailure?: (failure: LoadFailure) => void;
   /** Called immediately before swindowzig_init(). */
@@ -384,6 +392,14 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
     setCursorVisible(true);
   }
 
+  // The seed is read here only, one time (REQ-VOXEL-034). The chunk
+  // workers get it from app.wasm in the Hello (the GenConfig).
+  const seed =
+    options.seed ??
+    seedFromQuery(window.location.search, (msg) =>
+      console.warn(`${logPrefix} ${msg}`),
+    );
+
   const poolHolder: PoolHolder = { pool: null };
   let instance: WebAssembly.Instance;
   try {
@@ -416,6 +432,8 @@ export async function loadWasm(options: LoaderOptions): Promise<void> {
     attachPool(poolHolder, pool, exports, logPrefix);
     performance.measure('chunk worker pool start', { start: poolT0 });
   }
+
+  passSeed(instance.exports, seed);
 
   const init = exports.swindowzig_init;
   const frame = exports.swindowzig_frame;

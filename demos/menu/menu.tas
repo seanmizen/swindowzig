@@ -1,0 +1,250 @@
+# The menu demo script (REQ-DEMO-002, REQ-DEMO-008). The input commands
+# (key, text, pad, axis, mouse) press keys as a player does. The script goes
+# through each screen of the menu, and each setting applies at once to the
+# cow behind the menu. A loop starts from the default settings (App.reset).
+
+0 set language english
+0 set font truetype
+
+0 caption The main menu, over the live cow
++50 key Down
++30 key Down
++40 checkpoint main_tooltip
++10 caption Enter opens a screen: Settings
++20 key Enter
++50 key Enter
+
++10 caption Graphics preset: Low
++30 key Left
++50 checkpoint preset_low
++10 caption Graphics preset: High (MSAA)
++20 key Right
++20 key Right
++50 checkpoint preset_high
+
++10 caption Anti-aliasing: FXAA
++10 key Down
++20 key Left
++40 caption Coat: a palette swap
++10 key Down
++20 key Right
++50 checkpoint coat
+
++10 caption Exposure: a slider
++10 key Down
++15 key Right
++8 key Right
++8 key Right
++8 key Right
++40 checkpoint exposure
+
++10 caption Time of day: late afternoon
++10 key Down
++12 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++3 key Right
++40 checkpoint sunset
+
++10 caption Turn speed: slower
++10 key Down
++15 key Left
++8 key Left
++8 key Left
+
++30 caption Shadows and occlusion: off
++10 key Down
++15 key Enter
++15 key Down
++15 key Enter
++40 checkpoint shadows_off
+
++10 caption Fog and sky: off
++10 key Down
++15 key Enter
++15 key Down
++15 key Enter
++40 checkpoint sky_off
++10 key Enter
++15 key Up
++15 key Enter
+
++20 caption Wireframe: the quads of the mesh
++10 key Down
++15 key Down
++15 key Enter
++40 checkpoint wireframe
++10 key Enter
+
++20 caption Back goes down the screen stack
++10 key Down
++15 key Enter
++40 key Down
++20 key Enter
+
++10 caption Audio: one volume for each sound group
++20 key Left
++8 key Left
++8 key Left
++8 key Left
++15 key Down
++15 key Left
++8 key Left
++8 key Left
++15 key Down
++15 key Right
++8 key Right
++15 key Down
++15 key Left
++8 key Left
++40 checkpoint audio
++10 caption Esc goes back
++10 key Escape
+
++30 key Down
++20 key Enter
++20 caption Controls: rebind Turn left
++30 key Enter
++40 checkpoint press_key
++10 key D
++10 caption D is also Turn right: a conflict warning
++60 checkpoint conflict
++10 caption Rebind Turn left to J: no conflict
++10 key Enter
++30 key J
++30 caption J turns the camera at once
++10 key J down
++60 key J up
++10 checkpoint turn_j
+
++10 caption Mouse sensitivity, then a drag
++10 key Down
++8 key Down
++8 key Down
++8 key Down
++8 key Down
++15 key Right
++8 key Right
++8 key Right
++8 key Right
++8 key Right
++20 mouse move 300 300
++5 mouse left down
++3 mouse move 310 300
++3 mouse move 320 300
++3 mouse move 330 300
++3 mouse move 340 300
++3 mouse move 350 300
++3 mouse left up
++40 checkpoint drag
+
++10 caption Invert Y: a drag up moves the camera up
++10 key Down
++15 key Enter
++20 mouse move 300 300
++5 mouse left down
++3 mouse move 300 295
++3 mouse move 300 290
++3 mouse move 300 285
++3 mouse move 300 280
++3 mouse left up
++40 checkpoint invert_y
++10 key Escape
+
++30 caption Gamepad: the right stick turns the camera
++10 key Down
++15 pad south
++30 axis right_x 0.35
++60 checkpoint stick_turn
++10 caption Dead zone 0.45: the same stick does nothing
++10 key Right
++6 key Right
++6 key Right
++6 key Right
++6 key Right
++6 key Right
++60 checkpoint dead_zone
++10 axis right_x 0
++10 caption The D-pad moves the focus too
++20 pad dpad_down
++20 pad south
+
++30 caption Interface: a bitmap font
++10 pad dpad_down
++20 pad south
++30 key Down
++20 key Down
++20 key Down
++20 key Enter
++50 checkpoint bitmap_font
++10 key Up
++20 key Enter
++10 caption Hebrew: right to left, with no letter joining
++10 key Up
++20 key Enter
++50 checkpoint hebrew
++10 key Escape
++20 key Escape
+
++20 caption Player: a text field
++10 key Up
++20 key Enter
++20 text Daisy
++40 checkpoint name
++10 caption The on-screen keyboard (Hebrew keys)
++10 key Down
++20 key Enter
++30 key Down
++20 key Down
++8 key Down
++8 key Down
++8 key Right
++8 key Right
++8 key Right
++8 key Right
++8 key Down
++15 key Enter
++15 key Up
++8 key Right
++15 key Enter
++15 key Up
++8 key Up
++8 key Right
++15 key Enter
++40 checkpoint keyboard
++10 key Escape
+
++20 caption A scroll list: the hour
++10 key Down
++20 key Down
++8 key Down
++8 key Down
++8 key Down
++15 key Enter
++50 checkpoint hour
++10 key Escape
+
++20 caption Resume: the menu hides, and A, D, W, S turn the camera
++10 key Up
++15 key Enter
++20 key D down
++60 key D up
++10 caption M: Moo! (a sound of the effects group)
++10 key M
++20 checkpoint menu_hidden
++10 caption Esc shows the menu again
++10 key Escape
++60 checkpoint menu_again
++20 end

@@ -3,15 +3,17 @@
 //
 //   yarn test:browser
 //
-// Two web servers build two examples for the web and serve them with the
-// dev server: flat2d on port 3020 (the other tests) and justabox on port
-// 3021 (the frame graph on the canvas, canvas.pw.ts). Each example has its own
-// install prefix, so the two builds do not write the same app.wasm.
+// Three web servers build three programs for the web and serve them with
+// the dev server: flat2d on port 3020 (the other tests), justabox on port
+// 3021 (the frame graph on the canvas, canvas.pw.ts), and the menu demo on
+// port 3022 (menu.pw.ts). Each program has its own install prefix, so the
+// builds do not write the same app.wasm.
 
 import { defineConfig } from '@playwright/test';
 
 const flat2dPort = 3020;
 const canvasPort = 3021;
+const menuPort = 3022;
 
 // WebGPU in headless Chromium. On Linux (CI) it uses the SwiftShader Vulkan
 // driver of Chromium. Do not set VK_LOADER_DRIVERS_SELECT for the browser: a
@@ -51,7 +53,7 @@ export default defineConfig({
     // such a press and its modifiers (REQ-INPUT-007).
     {
       name: 'flat2d',
-      testIgnore: 'canvas.pw.ts',
+      testIgnore: ['canvas.pw.ts', 'menu.pw.ts'],
       use: {
         baseURL: `http://localhost:${flat2dPort}`,
         launchOptions: { args: canvasArgs },
@@ -64,6 +66,16 @@ export default defineConfig({
       use: {
         baseURL: `http://localhost:${canvasPort}`,
         viewport: { width: 640, height: 360 },
+        launchOptions: { args: canvasArgs },
+      },
+    },
+    // The menu demo: its screen-reader mirror.
+    {
+      name: 'menu',
+      testMatch: 'menu.pw.ts',
+      use: {
+        baseURL: `http://localhost:${menuPort}`,
+        viewport: { width: 960, height: 540 },
         launchOptions: { args: canvasArgs },
       },
     },
@@ -81,6 +93,13 @@ export default defineConfig({
       command: `zig build web -Dexample=justabox -p zig-out/justabox && bun backends/wasm/dev-server.ts --example justabox --no-build --port ${canvasPort} --out zig-out/justabox`,
       cwd: '../..',
       port: canvasPort,
+      timeout: 300_000,
+      reuseExistingServer: !process.env.CI,
+    },
+    {
+      command: `zig build web -Ddemo=menu -Doptimize=ReleaseFast -p zig-out/menu && bun backends/wasm/dev-server.ts --demo menu --no-build --port ${menuPort} --out zig-out/menu`,
+      cwd: '../..',
+      port: menuPort,
       timeout: 300_000,
       reuseExistingServer: !process.env.CI,
     },

@@ -230,6 +230,11 @@ const mesher_mod = @import("sw_voxel").mesher;
 const models_mod = @import("sw_voxel").models;
 const mesh_bytes = @import("sw_voxel").mesh_bytes;
 const protocol_mod = @import("sw_voxel").protocol;
+/// The saved edit log (REQ-VOXEL-035, REQ-VOXEL-036).
+const edit_save = @import("edit_save.zig");
+const SaveStore = edit_save.Store(@import("sw_platform").storage);
+/// The time from one save of the edit log to the next, at most.
+const SAVE_INTERVAL_NS: u64 = 1_000_000_000;
 const sw_render = @import("sw_render");
 
 comptime {
@@ -456,6 +461,9 @@ fn settingsTabLabel(tab: SettingsTab) []const u8 {
 // state so navigation, rendering, and input dispatch all stay in sync.
 const SettingsEntry = enum {
     tab_selector,
+    /// Game tab: delete the saved edits and start the world again from the
+    /// seed (REQ-VOXEL-035).
+    new_world,
     aa_method,
     msaa_samples,
     fxaa_quality,
@@ -469,7 +477,8 @@ const SettingsEntry = enum {
 
 fn settingsEntryCount() u8 {
     return switch (state.settings_tab) {
-        .game, .audio => 2, // tab_selector + back
+        .game => 3, // tab_selector + new_world + back
+        .audio => 2, // tab_selector + back
         .video => switch (aaConfig().method) {
             // tab_selector + aa_method + quality + ao + lighting + frustum + fog + render_dist + back
             .msaa, .fxaa => 9,
@@ -482,7 +491,8 @@ fn settingsEntryCount() u8 {
 fn settingsEntryAt(i: u8) SettingsEntry {
     if (i == 0) return .tab_selector;
     switch (state.settings_tab) {
-        .game, .audio => return .back,
+        .game => return if (i == 1) .new_world else .back,
+        .audio => return .back,
         .video => {
             // Video tab: aa_method, [quality], ao, lighting, frustum, fog_dist, render_dist, back
             const has_quality = switch (aaConfig().method) {
@@ -676,7 +686,8 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             state.scheduler.setRenderDistance(&state.world, next_rd);
             std.log.info("Settings: Render Distance -> {}", .{next_rd});
         },
-        .back => {},
+        // Only Enter or a click starts a new world (activateMenuEntry).
+        .new_world, .back => {},
     }
 }
 
@@ -1020,9 +1031,33 @@ const State = struct {
     world_loading: bool = true,
     /// Selected world generation preset. Parsed from --world=<flatland|hilly>.
     world_preset: world_gen.Preset = .hilly,
-    /// World seed. Parsed from --seed=<u64> on native. The web build stays at
-    /// seed 0. Seed 0 gives the terrain from before the seed existed.
+    /// World seed. Native: --seed=<u64>. Web: the `seed` parameter of the
+    /// page URL, which the loader gives to `swindowzig_set_seed` before
+    /// init (REQ-VOXEL-034). Seed 0 gives the terrain from before the seed
+    /// existed.
     world_seed: u64 = 0,
+    /// --print-world-hash (native, with --headless): when the scheduler is
+    /// idle after the loading screen, print the hash of `worldHash` and
+    /// stop. The Bun runner prints the same hash for app.wasm.
+    print_world_hash: bool = false,
+
+    /// Save the edit log (REQ-VOXEL-035). --save=on|off. Null: on, but
+    /// off when a TAS, --headless, --dump-frame or --compare-golden runs,
+    /// so that those runs do not depend on earlier runs.
+    save_flag: ?bool = null,
+    save_enabled: bool = false,
+    /// --save-dir=<path> (native): the storage folder. With no flag, the
+    /// per-user data folder of SDL.
+    save_dir: ?[]const u8 = null,
+    /// The edits of this world since the seed, in order. The save
+    /// compacts it.
+    save_log: std.ArrayList(edit_save.SavedEdit) = .empty,
+    save_dirty: bool = false,
+    save_last_ns: u64 = 0,
+    save_warned: bool = false,
+    save_limit_warned: bool = false,
+    save_key_buf: [64]u8 = undefined,
+    save_key: []const u8 = "",
     /// Water in the generator (REQ-VOXEL-028). Parsed from --water=on|off.
     /// Off by default, so the default terrain does not change.
     world_water: bool = false,
@@ -1269,6 +1304,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.fps_window_filled = false;
     state.last_frame_ns = 0;
     state.dump_frame_path = null;
+    state.save_dir = null;
+    state.save_flag = null;
+    state.save_log = .empty;
     state.dump_frame_done = false;
     state.compare_golden_path = null;
     state.profile_csv_path = null;
@@ -1287,6 +1325,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     // they use the hardcoded defaults set above (hilly world, skylight,
     // classic AO, 4× MSAA) which is exactly what the browser should show.
     const args = ctx.args;
+    // The web seed came from the page URL before init (REQ-VOXEL-034).
+    if (comptime is_wasm) state.world_seed = web_seed;
 
     // Pre-scan: collect all flags before processing --tas, so flag order doesn't matter.
     for (args) |arg| {
@@ -1329,6 +1369,22 @@ fn voxelInit(ctx: *sw.Context) !void {
                 fatalExit(1);
             }
             state.chunk_workers = n;
+        }
+        if (std.mem.eql(u8, arg, "--print-world-hash")) state.print_world_hash = true;
+        if (std.mem.startsWith(u8, arg, "--save=")) {
+            const val = std.mem.sliceTo(arg["--save=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.save_flag = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.save_flag = false;
+            } else {
+                std.log.err("--save: invalid value '{s}'. Accepted: on, off", .{val});
+                fatalExit(1);
+            }
+        }
+        if (std.mem.startsWith(u8, arg, "--save-dir=")) {
+            const p = std.mem.sliceTo(arg["--save-dir=".len..], 0);
+            state.save_dir = try ctx.allocator().dupe(u8, p);
         }
         if (std.mem.startsWith(u8, arg, "--seed=")) {
             const val = std.mem.sliceTo(arg["--seed=".len..], 0);
@@ -1655,6 +1711,10 @@ fn voxelInit(ctx: *sw.Context) !void {
     errdefer state.scheduler.deinit();
     state.scheduler.setSmoothLight(state.smooth_light);
     state.scheduler.setLodDistance(state.lod_distance);
+    // The saved edits go to the World and to the outbox of the scheduler
+    // before the first job, so the workers get them (REQ-VOXEL-035).
+    try initSave(ctx);
+    errdefer state.save_log.deinit(ctx.allocator());
     try startExecutor(ctx);
     errdefer state.executor.deinit();
     state.last_frame = .{};
@@ -1930,6 +1990,154 @@ fn playerChunk() struct { i32, i32 } {
 /// --chunk-workers threads, by default min(CPU count - 1, 4). Web: the
 /// WorkerPool of the JS loader. --chunk-workers=0 uses the Inline executor.
 /// When no thread or worker starts, the Inline executor is the fallback.
+/// One warning for each run when storage fails (REQ-VOXEL-036). The game
+/// continues without the save.
+fn warnSave(what: []const u8, reason: []const u8) void {
+    if (state.save_warned) return;
+    state.save_warned = true;
+    std.log.warn("[SAVE] {s} ({s}). The game continues", .{ what, reason });
+}
+
+/// Turn the save on or off, open the storage, read the saved edits of the
+/// world and give them to the World and the scheduler (REQ-VOXEL-035).
+/// Call after the World and the scheduler exist, before the executor.
+fn initSave(ctx: *sw.Context) !void {
+    var has_tas = false;
+    for (ctx.args) |arg| {
+        if (std.mem.eql(u8, arg, "--tas")) has_tas = true;
+    }
+    const replay = has_tas or state.headless or state.dump_frame_path != null or state.compare_golden_path != null;
+    state.save_enabled = state.save_flag orelse !replay;
+    state.save_log = .empty;
+    state.save_dirty = false;
+    state.save_warned = false;
+    state.save_limit_warned = false;
+    state.save_last_ns = 0;
+    if (!state.save_enabled) {
+        std.log.info("[SAVE] off: the edits are not saved", .{});
+        return;
+    }
+    if (comptime !is_wasm) {
+        if (ctx.io) |io| {
+            if (state.save_dir) |dir_path| {
+                if (std.Io.Dir.cwd().createDirPathOpen(io, dir_path, .{})) |dir| {
+                    platform_mod.storage.useDirectory(dir, io);
+                } else |err| warnSave("the --save-dir folder cannot be opened", @errorName(err));
+            } else {
+                platform_mod.native_sdl.initStorage(io, "seanmizen", "voxel") catch |err| warnSave("the save folder cannot be opened", @errorName(err));
+            }
+        }
+    }
+    state.save_key = edit_save.key(&state.save_key_buf, @tagName(state.world_preset), state.world_seed);
+    state.save_log = try SaveStore.load(state.allocator, state.save_key, @backingInt(state.world_preset), state.world_seed, &warnSave);
+    try restoreEdits();
+    std.log.info("[SAVE] on: {} saved edits from '{s}'", .{ state.save_log.items.len, state.save_key });
+}
+
+/// Give each edit of `state.save_log` to the edit log of the World and to
+/// the outbox of the scheduler, with the next block version of its chunk.
+/// No chunk is loaded yet, so each chunk gets its edits when it loads.
+fn restoreEdits() !void {
+    try state.scheduler.outbox.ensureUnusedCapacity(state.allocator, state.save_log.items.len);
+    for (state.save_log.items) |e| {
+        const edit: protocol_mod.Edit = .{
+            .cx = e.cx,
+            .cz = e.cz,
+            .version = state.world.editVersion(e.cx, e.cz) + 1,
+            .x = e.x,
+            .y = e.y,
+            .z = e.z,
+            .block = e.block,
+        };
+        try state.world.logEdit(edit);
+        state.scheduler.outbox.appendAssumeCapacity(edit);
+    }
+    if (state.save_log.items.len > 0) state.scheduler.dirty = true;
+}
+
+/// Set a block (a dig or a place) and add it to the saved log.
+fn editBlock(wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) !bool {
+    const ok = try state.scheduler.editBlock(&state.world, wx, wy, wz, block);
+    if (ok and state.save_enabled) {
+        if (edit_save.SavedEdit.fromWorld(wx, wy, wz, block)) |e| {
+            try state.save_log.append(state.allocator, e);
+            state.save_dirty = true;
+        }
+    }
+    return ok;
+}
+
+/// Write the edit log when it changed, at most one time each
+/// SAVE_INTERVAL_NS. `force` writes now (the shutdown).
+fn saveEdits(force: bool) void {
+    if (!state.save_enabled or !state.save_dirty) return;
+    const now = clock.frameNowNs();
+    if (!force and state.save_last_ns != 0 and now -% state.save_last_ns < SAVE_INTERVAL_NS) return;
+    state.save_last_ns = now;
+    state.save_dirty = false;
+    const dropped = SaveStore.save(state.allocator, state.save_key, @backingInt(state.world_preset), state.world_seed, &state.save_log) catch |err| {
+        warnSave("the edits are not saved", @errorName(err));
+        return;
+    };
+    if (dropped > 0 and !state.save_limit_warned) {
+        state.save_limit_warned = true;
+        std.log.warn("[SAVE] the edit log is larger than {} bytes. The save keeps the newest {} edits", .{ edit_save.MAX_BYTES, edit_save.MAX_RECORDS });
+    }
+    std.log.info("[SAVE] wrote {} edits to '{s}'", .{ state.save_log.items.len, state.save_key });
+}
+
+/// The "New World" entry of the Settings menu (REQ-VOXEL-035): delete
+/// the saved edits, and start the world again from the seed. The chunks,
+/// their GPU buffers, the scheduler and the executor start again, and the
+/// loading screen shows.
+fn newWorld(ctx: *sw.Context) !void {
+    const a = state.allocator;
+    if (state.save_enabled) {
+        SaveStore.delete(state.save_key) catch |err| warnSave("the saved edits cannot be deleted", @errorName(err));
+    }
+    state.save_log.clearRetainingCapacity();
+    state.save_dirty = false;
+
+    // A Web Worker can still send replies to the jobs of the old executor.
+    // The new executor starts its job ids after the old ids, so it discards
+    // those replies as unknown. It also keeps the byte counters (C5), so
+    // they stay equal to the counters of JS.
+    const old_web: ?(if (is_wasm) exec_web.Web else void) = if (comptime is_wasm) switch (state.executor) {
+        .web => |w| w,
+        else => null,
+    } else null;
+    state.executor.deinit();
+    state.scheduler.deinit();
+    var it = state.chunk_gpu.iterator();
+    while (it.next()) |entry| entry.value_ptr.release();
+    state.chunk_gpu.clearRetainingCapacity();
+    state.occ_results.clearRetainingCapacity();
+    state.world.deinit();
+
+    state.world = try world_mod.World.init(a, world_gen.presetConfig(state.world_preset), state.render_distance);
+    state.world.gen_config.seed = state.world_seed;
+    state.world.gen_config.water = state.world_water;
+    state.scheduler = scheduler_mod.Scheduler.init(a, state.render_distance, state.ao_strategy, state.graphics.lighting);
+    state.scheduler.setSmoothLight(state.smooth_light);
+    state.scheduler.setLodDistance(state.lod_distance);
+    try startExecutor(ctx);
+    if (comptime is_wasm) {
+        switch (state.executor) {
+            .web => |*w| if (old_web) |o| {
+                w.next_id = o.next_id;
+                w.head_bytes = o.head_bytes;
+                w.payload_bytes = o.payload_bytes;
+                w.held_meshes = o.held_meshes;
+            },
+            else => {},
+        }
+    }
+    state.world_loading = true;
+    state.spawn_point = .{ 24.0, 64.0, 20.0 };
+    state.spawn_resolved = false;
+    std.log.info("[SAVE] new world: the saved edits of '{s}' are deleted", .{state.save_key});
+}
+
 fn startExecutor(ctx: *sw.Context) !void {
     const a = ctx.allocator();
     const config = state.world.gen_config;
@@ -2229,6 +2437,22 @@ fn voxelFrame(ctx: *sw.Context) !void {
             state.uploads_dropped += 1;
         }
     }
+
+    saveEdits(false);
+
+    // --print-world-hash: the hash of the desired state around the player,
+    // when it is complete. examples/voxel/tests/seed_web_native.sh compares
+    // it with the hash of app.wasm for the same seed (REQ-VOXEL-034).
+    if (comptime !is_wasm) {
+        if (state.print_world_hash and !state.world_loading and state.scheduler.isIdle()) {
+            const h = worldHash();
+            if (h != 0) {
+                std.log.info("world_hash={x:0>16} seed={d}", .{ h, state.world_seed });
+                state.print_world_hash = false;
+                ctx.requestShutdown();
+            }
+        }
+    }
 }
 
 /// Activate the currently-selected menu entry on the active screen.
@@ -2269,6 +2493,12 @@ fn activateMenuEntry(ctx: *sw.Context) void {
             if (entry == .back) {
                 state.menu_screen = .main;
                 std.log.info("Menu: -> main (Back)", .{});
+            } else if (entry == .new_world) {
+                newWorld(ctx) catch |err| {
+                    std.log.err("[SAVE] new world failed: {s}", .{@errorName(err)});
+                    fatalExit(1);
+                };
+                state.menu_screen = .main;
             } else {
                 // Pickers: Enter/click cycles forward (same as Right) so a
                 // one-key workflow works on keyboards without arrow keys.
@@ -2766,7 +2996,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     // The edit changes the blocks only. The frame phase
                     // relights and meshes the chunks that read the block,
                     // first in the queue (C7, C8 class 2).
-                    _ = try state.scheduler.editBlock(&state.world, bx, by, bz, .air);
+                    _ = try editBlock(bx, by, bz, .air);
                     std.log.info("[TICK  tick={d:4}] remove ({},{},{})", .{ ctx.tickId(), bx, by, bz });
                 }
 
@@ -2797,7 +3027,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     }
 
                     // See the note in the break-block path above.
-                    _ = try state.scheduler.editBlock(&state.world, px, py, pz, sel_block);
+                    _ = try editBlock(px, py, pz, sel_block);
                     std.log.info("[TICK  tick={d:4}] place ({},{},{})", .{ ctx.tickId(), px, py, pz });
                 }
             } else {
@@ -3753,6 +3983,7 @@ fn voxelRender(ctx: *sw.Context) !void {
                         const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {}", .{state.render_distance}) catch "Render Distance: ?";
                         break :blk s;
                     },
+                    .new_world => "New World (delete saved edits)",
                     .back => "Back",
                 },
                 .exit_confirm => switch (i) {
@@ -4289,6 +4520,8 @@ fn freeArgCopies(a: std.mem.Allocator) void {
     if (state.dump_frame_path) |p| a.free(p);
     if (state.compare_golden_path) |p| a.free(p);
     if (state.profile_csv_path) |p| a.free(p);
+    if (state.save_dir) |p| a.free(p);
+    state.save_dir = null;
     state.dump_frame_path = null;
     state.compare_golden_path = null;
     state.profile_csv_path = null;
@@ -4296,6 +4529,8 @@ fn freeArgCopies(a: std.mem.Allocator) void {
 
 fn voxelShutdown(ctx: *sw.Context) !void {
     logGpuMeshStats();
+    saveEdits(true);
+    state.save_log.deinit(state.allocator);
     // Stop the chunk worker threads and wait for them, before the World
     // and the scheduler go.
     state.executor.deinit();
@@ -4414,7 +4649,7 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     // Hardware depth testing. The Metal crash (wgpu-native v0.19.4.1 "bus error at 0x29")
     // was fixed upstream; wgpu-native v22.1.0.5 (current pinned version) no longer crashes.
     // Depth testing eliminates the painter's-algorithm sort-order failures that caused
-    // AO shadow faces to bleed through occluding roof geometry (README bug #2).
+    // AO shadow faces to bleed through occluding roof geometry (docs/overview.md bug #2).
     const main_depth_stencil: gpu_mod.DepthStencilState = .{
         .format = .depth24plus,
         .depth_write_enabled = true,
@@ -5029,6 +5264,18 @@ fn wasmDebugPipelineCounts() callconv(.c) [*]const u32 {
 /// same edits give the same hash, with any executor. Returns 0 while a mesh
 /// of the desired state is not current.
 fn wasmDebugWorldHash() callconv(.c) u64 {
+    return worldHash();
+}
+
+/// The seed from the page URL (REQ-VOXEL-034). The loader calls
+/// `swindowzig_set_seed` before swindowzig_init, and voxelInit reads it.
+var web_seed: u64 = 0;
+
+fn wasmSetSeed(seed: u64) callconv(.c) void {
+    web_seed = seed;
+}
+
+fn worldHash() u64 {
     const sched = &state.scheduler;
     const world = &state.world;
     const r = sched.render_distance;
@@ -5120,13 +5367,26 @@ fn wasmDebugSetRenderDistance(r: i32) callconv(.c) void {
 fn wasmDebugEdit(wx: i32, wy: i32, wz: i32, block: u32) callconv(.c) u32 {
     if (!wasm_initialised or block >= std.enums.values(chunk_mod.BlockType).len) return 0;
     const b: chunk_mod.BlockType = @fromBackingInt(@intCast(block));
-    const ok = state.scheduler.editBlock(&state.world, wx, wy, wz, b) catch return 0;
+    const ok = editBlock(wx, wy, wz, b) catch return 0;
     return @intFromBool(ok);
 }
 
 // The handshake values of the worker pool (C9). chunks.wasm exports the
 // same values (pipeline/chunk_worker_main.zig). The loader starts the pool
 // only when all three are equal.
+/// The block id at a world cell, for the Bun tests (save.test.ts). Main
+/// has the blocks of the prefetch radius only. Returns 0 (air) elsewhere.
+fn wasmDebugBlock(wx: i32, wy: i32, wz: i32) callconv(.c) u32 {
+    return @backingInt(state.world.getBlock(wx, wy, wz));
+}
+
+/// The "New World" entry of the Settings menu, for the Bun tests
+/// (save.test.ts). Returns 1 when the new world starts.
+fn wasmDebugNewWorld() callconv(.c) u32 {
+    newWorld(&wasm_ctx) catch return 0;
+    return 1;
+}
+
 fn wasmChunkProtocolVersion() callconv(.c) u32 {
     return @import("sw_voxel").protocol.VERSION;
 }
@@ -5148,7 +5408,10 @@ comptime {
         @export(&wasmDebugChunkCounts, .{ .name = "voxel_debug_chunk_counts" });
         @export(&wasmDebugPipelineCounts, .{ .name = "voxel_debug_pipeline_counts" });
         @export(&wasmDebugWorldHash, .{ .name = "voxel_debug_world_hash" });
+        @export(&wasmSetSeed, .{ .name = "swindowzig_set_seed" });
         @export(&wasmDebugEdit, .{ .name = "voxel_debug_edit" });
+        @export(&wasmDebugBlock, .{ .name = "voxel_debug_block" });
+        @export(&wasmDebugNewWorld, .{ .name = "voxel_debug_new_world" });
         @export(&wasmDebugGpuCounts, .{ .name = "voxel_debug_gpu_counts" });
         @export(&wasmDebugSetRenderDistance, .{ .name = "voxel_debug_set_render_distance" });
         @export(&wasmChunkProtocolVersion, .{ .name = "voxel_chunk_protocol_version" });

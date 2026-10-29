@@ -29,6 +29,9 @@
 | [`REQ-DEMO-005`](demo.md#req-demo-005--the-cow-is-an-original-voxel-model) | The cow is an original voxel model | active | constraint | P2 | agent:SWZ-79 |
 | [`REQ-DEMO-006`](demo.md#req-demo-006--greedy-meshing-merges-only-faces-that-shade-the-same) | Greedy meshing merges only faces that shade the same | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-DEMO-007`](demo.md#req-demo-007--the-record-script-makes-a-video-and-a-loop-for-each-run) | The record script makes a video and a loop for each run | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-008`](demo.md#req-demo-008--a-demo-script-can-press-keys-as-a-player-does) | A demo script can press keys as a player does | active | functional | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-009`](demo.md#req-demo-009--the-menu-demo-applies-each-setting-at-once) | The menu demo applies each setting at once | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-010`](demo.md#req-demo-010--the-player-can-take-control-of-an-interactive-demo) | The player can take control of an interactive demo | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -128,6 +131,9 @@
 | [`REQ-VOXEL-031`](voxel.md#req-voxel-031--the-demo-draws-translucent-blocks-with-sw_render-translucent) | The demo draws translucent blocks with sw_render Translucent | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-VOXEL-032`](voxel.md#req-voxel-032--a-merged-quad-has-the-shade-of-the-11-quads) | A merged quad has the shade of the 1×1 quads | active | functional | P2 | agent:SWZ-17 |
 | [`REQ-VOXEL-033`](voxel.md#req-voxel-033--an-init-error-of-the-demo-frees-each-allocation-of-init) | An init error of the demo frees each allocation of init | active | quality | P3 | agent:SWZ-112 |
+| [`REQ-VOXEL-034`](voxel.md#req-voxel-034--the-web-build-takes-the-world-seed-from-the-page-url) | The web build takes the world seed from the page URL | active | functional | P2 | agent:SWZ-8 |
+| [`REQ-VOXEL-035`](voxel.md#req-voxel-035--the-voxel-demo-keeps-the-edits-of-a-world-after-a-restart) | The voxel demo keeps the edits of a world after a restart | active | functional | P2 | agent:SWZ-11 |
+| [`REQ-VOXEL-036`](voxel.md#req-voxel-036--the-saved-edit-log-has-a-size-limit-and-can-fail) | The saved edit log has a size limit and can fail | active | quality | P2 | agent:SWZ-11 |
 
 ## Dependency graph
 
@@ -157,6 +163,9 @@ graph TD
   REQ_DEMO_005["REQ-DEMO-005<br/>The cow is an original voxel model"]
   REQ_DEMO_006["REQ-DEMO-006<br/>Greedy meshing merges only faces that shade the same"]
   REQ_DEMO_007["REQ-DEMO-007<br/>The record script makes a video and a loop for each run"]
+  REQ_DEMO_008["REQ-DEMO-008<br/>A demo script can press keys as a player does"]
+  REQ_DEMO_009["REQ-DEMO-009<br/>The menu demo applies each setting at once"]
+  REQ_DEMO_010["REQ-DEMO-010<br/>The player can take control of an interactive demo"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
@@ -256,6 +265,9 @@ graph TD
   REQ_VOXEL_031["REQ-VOXEL-031<br/>The demo draws translucent blocks with sw_render Translucent"]
   REQ_VOXEL_032["REQ-VOXEL-032<br/>A merged quad has the shade of the 1×1 quads"]
   REQ_VOXEL_033["REQ-VOXEL-033<br/>An init error of the demo frees each allocation of init"]
+  REQ_VOXEL_034["REQ-VOXEL-034<br/>The web build takes the world seed from the page URL"]
+  REQ_VOXEL_035["REQ-VOXEL-035<br/>The voxel demo keeps the edits of a world after a restart"]
+  REQ_VOXEL_036["REQ-VOXEL-036<br/>The saved edit log has a size limit and can fail"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -264,6 +276,9 @@ graph TD
   REQ_A11Y_008 -->|refines| REQ_A11Y_007
   REQ_DEMO_003 -->|depends-on| REQ_DEMO_004
   REQ_DEMO_007 -->|depends-on| REQ_DEMO_004
+  REQ_DEMO_008 -->|depends-on| REQ_DEMO_002
+  REQ_DEMO_009 -->|depends-on| REQ_DEMO_008
+  REQ_DEMO_010 -->|depends-on| REQ_DEMO_008
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
@@ -326,13 +341,16 @@ graph TD
   REQ_VOXEL_031 -->|depends-on| REQ_GPU_040
   REQ_VOXEL_031 -->|depends-on| REQ_GPU_023
   REQ_VOXEL_032 -->|refines| REQ_VOXEL_010
+  REQ_VOXEL_036 -->|refines| REQ_VOXEL_035
 ```
 
 ## Derived reverse links
 
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
 - `REQ-A11Y-007` — refined-by REQ-A11Y-008
+- `REQ-DEMO-002` — required-by REQ-DEMO-008
 - `REQ-DEMO-004` — required-by REQ-DEMO-003, required-by REQ-DEMO-007
+- `REQ-DEMO-008` — required-by REQ-DEMO-009, required-by REQ-DEMO-010
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
@@ -371,3 +389,4 @@ graph TD
 - `REQ-VOXEL-027` — required-by REQ-VOXEL-028, required-by REQ-VOXEL-030
 - `REQ-VOXEL-029` — required-by REQ-VOXEL-030
 - `REQ-VOXEL-030` — required-by REQ-VOXEL-031
+- `REQ-VOXEL-035` — refined-by REQ-VOXEL-036

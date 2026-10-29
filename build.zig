@@ -144,7 +144,8 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_ui", native_libs.ui);
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
     native_exe.root_module.addImport("sw_render", native_libs.render);
-    native_exe.root_module.addImport("sw_audio", native_libs.audio);
+    // The voxel demo saves its edit log with sw_platform storage.
+    native_exe.root_module.addImport("sw_platform", native_libs.platform);
     native_exe.root_module.addOptions("chunk_build", chunk_build);
     native_exe.root_module.addImport("demo_common", addDemoCommon(b, native_libs, .{}));
     const native_voxel = addVoxel(b, native_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
@@ -736,7 +737,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = demo_content_tests.content })).step);
     // Demo tests: sw_voxel World on the demo terrain, and the demo shader
     // against the mesher.
-    inline for (.{ .{ "examples/voxel/world_test.zig", "world: " }, .{ "examples/voxel/shader_test.zig", "shader: " } }) |t| {
+    inline for (.{ .{ "examples/voxel/world_test.zig", "world: " }, .{ "examples/voxel/shader_test.zig", "shader: " }, .{ "examples/voxel/edit_save.zig", "edit_save: " } }) |t| {
         const demo_tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path(t[0]),
@@ -937,7 +938,6 @@ fn webExample(b: *std.Build, web_libs: Libs, example_path: []const u8, optimize:
     example.root_module.addImport("sw_ui", web_libs.ui);
     example.root_module.addImport("sw_assets", web_libs.assets);
     example.root_module.addImport("sw_render", web_libs.render);
-    example.root_module.addImport("sw_audio", web_libs.audio);
     // sw_platform is needed by examples that drive their own wasm entry
     // (e.g. voxel, which constructs a WasmBackend directly in its
     // swindowzig_init export).
@@ -1063,6 +1063,7 @@ fn addDemoCommon(b: *std.Build, libs: Libs, options: std.Build.Module.CreateOpti
     m.addImport("sw_gfx2d", libs.gfx2d);
     m.addImport("sw_text", libs.text);
     m.addImport("sw_render", libs.render);
+    m.addImport("sw_audio", libs.audio);
     m.addAnonymousImport("demo_font", .{ .root_source_file = b.path("examples/flat2d/assets/Lato-Regular.ttf") });
     return m;
 }

@@ -20,13 +20,18 @@
 // The test finds bugs in the wasm-only code of main.zig. Example: chunks
 // that do not load past the spawn ring.
 //
+// `--query <search>` gives the URL query of the page, for example
+// '?seed=12345' (REQ-VOXEL-034). `--world-hash` stops after the loading
+// screen: when the scheduler is idle, it prints "world_hash=<hex>", the hash
+// that native `voxel --headless --print-world-hash` prints.
+//
 // `--measure` uses the real clock and runs 60 frames per second, as a
 // browser does. It prints the main-thread time of the frames during the
 // load and during the walk, and the load times.
 //
 // Usage (from the repo root, after `zig build web -Dexample=voxel`):
 //   bun backends/wasm/headless.ts [--wasm zig-out/bin/app.wasm] [--chunks 5]
-//       [--workers auto|0|N] [--measure]
+//       [--workers auto|0|N] [--measure] [--query '?seed=N'] [--world-hash]
 //       [--chunks-wasm <path>] [--worker <path of the worker script>]
 // The last two test the production files of bundle.sh, for example
 // public/chunks-<hash>.wasm and public/chunk-worker-<hash>.js.
@@ -63,6 +68,8 @@ interface Options {
   measure: boolean;
   chunksWasm?: string;
   worker?: string;
+  query?: string;
+  worldHash: boolean;
 }
 
 function parseArgs(argv: string[]): Options {
@@ -71,6 +78,7 @@ function parseArgs(argv: string[]): Options {
     chunks: 5,
     workers: 'auto',
     measure: false,
+    worldHash: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -84,6 +92,11 @@ function parseArgs(argv: string[]): Options {
     } else if (arg === '--workers' && value) {
       opts.workers = value === 'auto' ? 'auto' : Number(value);
       i++;
+    } else if (arg === '--query' && value !== undefined) {
+      opts.query = value;
+      i++;
+    } else if (arg === '--world-hash') {
+      opts.worldHash = true;
     } else if (arg === '--measure') {
       opts.measure = true;
     } else if (arg === '--chunks-wasm' && value) {
@@ -135,6 +148,7 @@ async function main() {
       : null,
     clock: opts.measure ? 'real' : 'sim',
     recordGpu: !opts.measure,
+    query: opts.query,
   });
   const startMs = performance.now() - t0;
   const pool = app.pool;
@@ -177,6 +191,22 @@ async function main() {
     `Loaded after ${app.frameCount()} frames: player chunk (${spawn.cx}, ${spawn.cz}), ` +
       `${spawn.loadedTotal} chunks, ${spawn.meshedTotal} meshed`,
   );
+
+  if (opts.worldHash) {
+    let n = 0;
+    let hash = 0n;
+    while (true) {
+      if (!pool || app.pipeline()?.idle) {
+        hash = app.worldHash();
+        if (hash !== 0n) break;
+      }
+      if (n++ >= MAX_SETTLE_FRAMES) fail('The world hash is not complete');
+      await step();
+    }
+    console.log(`world_hash=${hash.toString(16).padStart(16, '0')}`);
+    app.stop();
+    process.exit(0);
+  }
 
   // 2. Click to capture the mouse. The game moves the player only then.
   app.mouse(MOUSE_LEFT, true);

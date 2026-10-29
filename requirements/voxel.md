@@ -745,3 +745,77 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
 - **Verification:** Test — `examples/voxel/tests/tas_parse_fail.sh` ›
   "a TAS parse error stops voxel with no memory leak"
 - **Relations:** none
+
+## REQ-VOXEL-034 — The web build takes the world seed from the page URL
+
+- **Status:** active
+- **Source:** agent:SWZ-8
+- **Origin:** #8
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the page URL of the voxel web build has a `seed`
+  parameter with a u64 value, the web build shall generate the terrain of
+  that seed, on the main thread and in each chunk worker. A value that
+  is not a u64 gives seed 0 and one warning.
+- **Rationale:** The native build takes `--seed=<u64>`, and a seed must
+  give the same terrain on each platform. The loader reads the seed one
+  time (`backends/wasm/seed.ts`) and gives it to app.wasm as a BigInt
+  before init. The workers get it in the Hello. No parameter gives seed
+  0, so the goldens do not change.
+- **Verification:**
+  - Test — `backends/wasm/seed.test.ts` › "a value that is not a u64
+    gives seed 0 and a warning"
+  - Test — `examples/voxel/tests/seed_web_native.sh` › "seed 12345,
+    worker pool"
+- **Relations:** none
+
+## REQ-VOXEL-035 — The voxel demo keeps the edits of a world after a restart
+
+- **Status:** active
+- **Source:** agent:SWZ-11
+- **Origin:** #11
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the save is on, the voxel demo shall load the saved
+  edit log of the world (its preset and its seed) before the loading
+  screen, and give each edit to the World and to each chunk worker.
+- **Rationale:** The world is the seed plus the edit log. The demo saves
+  the log with sw_platform storage (localStorage on the web, a file
+  natively), at most one time each second and at exit. The save keeps
+  the last edit of each cell. A TAS, `--headless`, `--dump-frame` and
+  `--compare-golden` turn the save off by default, so the goldens and the
+  TAS tests do not depend on earlier runs. Settings > New World deletes
+  the saved log.
+- **Verification:**
+  - Test — `examples/voxel/tests/save_reload.sh` › "the second run read 4
+    edits"
+  - Test — `backends/wasm/save.test.ts` › "an edit stays after a reload,
+    through localStorage"
+  - Test — `examples/voxel/edit_save.zig` › "edit_save: compaction keeps
+    the last edit of each cell, in order"
+- **Relations:** none
+
+## REQ-VOXEL-036 — The saved edit log has a size limit and can fail
+
+- **Status:** active
+- **Source:** agent:SWZ-11
+- **Origin:** #11
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** When the storage is not available, or the saved data is
+  damaged, the voxel demo shall continue with an empty edit log and log
+  one warning.
+- **Rationale:** localStorage can be blocked or full, and a file can be
+  cut. The saved data of one world is at most 1 MiB
+  (`edit_save.MAX_BYTES`): a larger log keeps the newest edits, with one
+  warning. The format has a version byte and a CRC-32, so damaged data
+  does not give wrong blocks.
+- **Verification:**
+  - Test — `examples/voxel/edit_save.zig` › "edit_save: corrupt data and
+    unavailable storage give an empty log and one warning"
+  - Test — `examples/voxel/edit_save.zig` › "edit_save: the save keeps
+    the newest edits within the size limit"
+  - Test — `backends/wasm/save.test.ts` › "corrupt saved data gives an
+    empty world and one warning"
+- **Relations:**
+  - refines REQ-VOXEL-035

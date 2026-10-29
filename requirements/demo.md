@@ -133,3 +133,59 @@ scripts, the frame hashes and the recordings.
 - **Verification:** Inspection — `scripts/demos-record.sh`: the loop over
   `demos/*/main.zig` and the presets, and the WebP size limit.
 - **Relations:** depends-on REQ-DEMO-004
+
+## REQ-DEMO-008 — A demo script can press keys as a player does
+
+- **Status:** active
+- **Source:** agent:SWZ-79
+- **Origin:** #79
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a demo script names an input command (`key`, `text`,
+  `pad`, `axis`, `mouse` or `wheel`) at a tick, the demo shall give the
+  engine input event of that command to the demo at that tick.
+- **Rationale:** A menu demo needs key presses, text and a gamepad to go
+  through its screens. The events go into an input snapshot, so the action
+  map, the binding capture and the UI read them as they read a player. The
+  same script then gives the same frames on each run.
+- **Verification:**
+  - Test — `demos/common/script.zig` › "script: input commands keep the
+    device and the arguments (REQ-DEMO-008)"
+  - Test — `scripts/demos-check.sh` › the menu demo drives its menu only
+    with input commands, and `--twice` gives the same hashes.
+- **Relations:** depends-on REQ-DEMO-002
+
+## REQ-DEMO-009 — The menu demo applies each setting at once
+
+- **Status:** active
+- **Source:** agent:SWZ-79
+- **Origin:** #79
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When the player changes a setting in the menu demo, the
+  demo shall apply the setting to the live background in the same tick.
+- **Rationale:** The demo shows that a game menu built on sw_ui needs no
+  Apply button: the graphics settings change the cow scene, the volumes
+  change the sound groups, and the control settings change the camera.
+  Each checkpoint of the menu script shows a setting after its change.
+- **Verification:** Test — `scripts/demos-check.sh` › the checkpoints of
+  `demos/menu/menu.tas` (for example `preset_low`, `sky_off`,
+  `turn_j`, `dead_zone`).
+- **Relations:** depends-on REQ-DEMO-008
+
+## REQ-DEMO-010 — The player can take control of an interactive demo
+
+- **Status:** active
+- **Source:** agent:SWZ-79
+- **Origin:** #79
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** While an interactive demo plays its script in a window,
+  when the player presses a key, a mouse button or a gamepad button, the
+  demo shall stop the script and read the input of the player.
+- **Rationale:** The web page of the menu demo plays the script as a
+  film. A visitor who presses a key wants to use the menu, and the script
+  must not fight the visitor.
+- **Verification:** Inspection — `demos/common/demo.zig` › `playerActed`
+  and `Host.input`.
+- **Relations:** depends-on REQ-DEMO-008

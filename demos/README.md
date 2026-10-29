@@ -6,9 +6,12 @@ same on each run.
 
 ![The cow demo](../docs/media/cow.webp)
 
+![The menu demo](../docs/media/menu.webp)
+
 | Demo | What it shows |
 |---|---|
 | `cow` | An original voxel cow turns on a stand. The script changes one setting at a time. Anti-aliasing: off, FXAA, MSAA. Meshing: naive, greedy, with a wireframe and the quad count. Colour: the tonemap curve, the exposure, a palette swap. Light: the time of day, shadows, ambient occlusion. Then fog and the sky. |
+| `menu` | A full game menu over the turning cow (sw_ui). A main screen and a screen stack with Back. The focus moves with the keyboard, the mouse and a gamepad. Graphics, audio, controls (key rebinding with a conflict warning, mouse sensitivity, invert Y) and gamepad (dead zone) settings apply at once to the cow. A text field, the on-screen keyboard, a scroll list and tooltips. English or Hebrew (right to left), and a TrueType or a bitmap font. The web page mirrors the menu for a screen reader. |
 
 ## Commands
 
@@ -53,6 +56,17 @@ tick number, or `+N` for N ticks after the line before. `#` starts a comment.
   names are the fields of `CowSettings` (`demos/common/cow_scene.zig`).
 - `checkpoint <name>`: `--check` hashes this frame.
 - `end`: the run stops (capture and check), or the script starts again.
+- Input commands (REQ-DEMO-008): `key <KeyCode> [press|down|up]`,
+  `text <text>`, `pad <GamepadButton> [press|down|up]`,
+  `axis <GamepadAxis> <value>`, `mouse move <x> <y>`,
+  `mouse <left|right|middle> [press|down|up]` and `wheel <lines>`. The
+  names are the enum names of `sw_core`. `press` (the default) is down and
+  up in one tick. `demos/common/input_script.zig` makes the engine events,
+  and the demo reads them with `host.input()`.
+
+A demo with `pub const interactive = true` (the menu) plays its script in
+a window until the player presses a key, a mouse button or a gamepad
+button. Then the script stops, and the player has control (REQ-DEMO-010).
 
 Set each setting at tick 0, so each loop starts the same.
 

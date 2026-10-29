@@ -233,7 +233,7 @@ Summary: 12 passed, 0 failed, 0 missing (backend=metal)
   produces normalized + amplified diffs via ImageMagick, prints differing-pixel
   counts via inline Python.
 - Crucially: **prints stats only, does not gate.** The script's header comment
-  explicitly says "see README.md TODO: resolve headless GPU path before making
+  explicitly says "see docs/overview.md TODO: resolve headless GPU path before making
   this mandatory". This doc is the resolution of that TODO.
 - It works today on a developer's mac (a real window flashes up briefly during
   each capture), and would presumably work on a Linux dev box with X11/Wayland.

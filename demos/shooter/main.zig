@@ -79,6 +79,8 @@ const seed: u64 = 79;
 const App = struct {
     pub const name = "shooter";
     pub const script = @embedFile("shooter.tas");
+    /// A key, a click or a gamepad button takes the control from the script.
+    pub const interactive = true;
 
     var scene: scene_mod.Scene = undefined;
     var g: game_mod.Game = undefined;
@@ -87,8 +89,8 @@ const App = struct {
     var sfx: ?sfx_mod.Sfx = null;
     var actions: Actions = undefined;
     var mouse: sw_core.MouseSettings = .{};
-    /// A key, a click or a gamepad button took the control from the script.
-    var live = false;
+    /// The pointer lock is on: the player took the control.
+    var locked = false;
     var ticks: u64 = 0;
 
     pub fn init(host: *demo.Host) !void {
@@ -108,7 +110,6 @@ const App = struct {
     }
 
     pub fn reset(_: *demo.Host) !void {
-        if (live) return;
         g = game_mod.Game.init(seed, g.settings);
         particles.clear();
         fx_rng = .init(seed);
@@ -122,14 +123,6 @@ const App = struct {
             return;
         } else |err| if (err != error.UnknownSetting) return err;
         try demo.reflect.setField(game_mod.Settings, &g.settings, setting, value);
-    }
-
-    fn anyLiveInput(in: *const sw_core.InputSnapshot) bool {
-        if (in.keyboard.pressed.count() > 0 or in.mouse.pressed.count() > 0) return true;
-        for (in.gamepads) |pad| {
-            if (pad.pressed.count() > 0) return true;
-        }
-        return false;
     }
 
     fn readInput(snap: *const sw_core.InputSnapshot, dt: f32) game_mod.Input {
@@ -151,12 +144,11 @@ const App = struct {
 
     pub fn tick(host: *demo.Host) !void {
         const dt = host.dt;
-        if (!host.deterministic() and !live and anyLiveInput(host.ctx.input())) {
-            live = true;
+        if (host.user_control and !locked) {
+            locked = true;
             host.ctx.setCursorMode(.locked);
         }
-        const snap = if (live) host.ctx.input() else &host.script_input;
-        g.step(dt, readInput(snap, dt));
+        g.step(dt, readInput(host.input(), dt));
         ticks += 1;
 
         // The particles of the tick.
@@ -317,7 +309,7 @@ const App = struct {
             try r.fillRect(.{ .x = p[0] - ww / 2 - 1, .y = p[1] - 1, .w = ww + 2, .h = 6 * k + 2 }, rgba(0, 0, 0, 0.6));
             try r.fillRect(.{ .x = p[0] - ww / 2, .y = p[1], .w = ww * bk, .h = 6 * k }, rgba(235, 70, 55, 0.95));
         }
-        if (!host.deterministic() and !live) {
+        if (!host.deterministic() and !host.user_control) {
             const s = "Press a key, click or press a gamepad button to play";
             const m = o.text.measure(s, 14 * k);
             try shadowed(o, s, w - m.w - 16 * k, 14 * k, 14 * k, rgba(255, 244, 214, 0.9));

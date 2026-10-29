@@ -144,6 +144,8 @@ const server = serve({
       '/clipboard': './backends/wasm/clipboard.ts',
       '/gamepad.js': './backends/wasm/gamepad.ts',
       '/gamepad': './backends/wasm/gamepad.ts',
+      '/seed.js': './backends/wasm/seed.ts',
+      '/seed': './backends/wasm/seed.ts',
       // The chunk worker pool (C9). chunk-worker.ts has no imports, so the
       // worker gets one transpiled file.
       '/worker-pool.js': './backends/wasm/worker-pool.ts',
