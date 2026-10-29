@@ -1,0 +1,61 @@
+name: Demo videos
+
+# Records each demo in demos/ with each preset on lavapipe, and attaches the
+# MP4 files to a GitHub Release (REQ-DEMO-007). Run it by hand from the
+# Actions tab, with the tag of an existing release. The WebP loops are a
+# workflow artifact: copy one to docs/media/<demo>.webp to change the one in
+# the README.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag of the release that gets the MP4 files (for example v0.3.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    name: record the demos on lavapipe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      VK_LOADER_DRIVERS_SELECT: '*lvp*'
+      LD_LIBRARY_PATH: /home/runner/.local/lib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install lavapipe, SDL2 and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-tools libsdl2-dev ffmpeg
+          vulkaninfo --summary | grep -i llvmpipe
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install wgpu-native
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
+            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+          mkdir -p ~/.local
+          unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
+
+      - name: Record each demo with each preset
+        run: scripts/demos-record.sh --out zig-out/demos
+
+      - name: Attach the MP4 files to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" zig-out/demos/*.mp4 --clobber
+
+      - name: Upload the WebP loops
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-webp
+          path: zig-out/demos/*.webp

@@ -1,0 +1,78 @@
+name: Check (demos)
+
+# Replays the script of each demo in demos/ with each preset on lavapipe
+# (Mesa software Vulkan). The frame hash at each checkpoint of the script
+# must match demos/<demo>/hashes/lavapipe-<preset>.txt (REQ-DEMO-003). So a
+# change that breaks a demo, or changes its frames, does not go unseen.
+#
+# A failed compare is a regression or a deliberate visual change. For a
+# deliberate change, the job uploads the new hash files (artifact
+# demo-hashes) and prints the command that accepts them. Commit them on the
+# same branch.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  demos:
+    name: demo scripts on lavapipe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      VK_LOADER_DRIVERS_SELECT: '*lvp*'
+      # build.zig links wgpu-native from ~/.local/lib.
+      LD_LIBRARY_PATH: /home/runner/.local/lib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install lavapipe and SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-tools libsdl2-dev
+          vulkaninfo --summary | grep -i llvmpipe
+
+      - name: Install Zig
+        # No version: setup-zig reads minimum_zig_version from build.zig.zon.
+        uses: mlugg/setup-zig@v2
+
+      - name: Install wgpu-native
+        # The same version as the bindings in libs/sw_gpu/src/native_webgpu.zig.
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
+            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+          mkdir -p ~/.local
+          unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
+
+      - name: Web build of each demo
+        run: |
+          for main in demos/*/main.zig; do
+            demo="$(basename "$(dirname "$main")")"
+            echo "== $demo"
+            zig build web -Ddemo="$demo"
+          done
+
+      - name: Replay each demo script and compare the frame hashes
+        run: scripts/demos-check.sh
+
+      - name: Upload the new frame hashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-hashes
+          path: zig-out/demo-hashes/
+          if-no-files-found: ignore
+
+      - name: How to accept the new hashes
+        if: failure()
+        run: |
+          echo "If the frame change is deliberate, download the demo-hashes artifact of this run:"
+          echo "  gh run download ${{ github.run_id }} -n demo-hashes -D zig-out/demo-hashes"
+          echo "Then copy each file to demos/<demo>/hashes/lavapipe-<preset>.txt"
+          echo "(zig-out/demo-hashes/<demo>-lavapipe-<preset>.txt), and commit the files."
