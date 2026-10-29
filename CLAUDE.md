@@ -125,7 +125,8 @@ swindowzig/
 │   └── voxel/          # Voxel demo on sw_voxel: content.zig, world_gen, renderer
 ├── demos/              # Showcase demos (-Ddemo=<name>): scripts, capture, frame hashes. See demos/README.md
 │   ├── common/         # Shared frame (demo.zig), CowScene, script, mesher
-│   └── cow/            # The turning cow; one setting at a time
+│   ├── cow/            # The turning cow; one setting at a time
+│   └── menu/           # A full sw_ui game menu over the cow; script input commands
 └── backends/
     └── wasm/           # Web platform boot + dev server
 ```

@@ -12,6 +12,21 @@
 //! +30  end                             # the script stops here
 //! ```
 //!
+//! A demo that takes input also reads the input commands. Each one gives
+//! the demo an input event on its tick, as if a player pressed a key
+//! (`demos/common/input_script.zig` makes the events):
+//!
+//! ```
+//! 0   key Down              # press and release a key in this tick
+//! 0   key Shift down        # hold a key: down, then later up
+//! 0   text Daisy            # type text (UTF-8)
+//! 0   pad south             # a gamepad button: press, down or up
+//! 0   axis right_x 0.4      # a gamepad axis value
+//! 0   mouse move 400 300    # the pointer, in layout units of the demo
+//! 0   mouse left down       # a mouse button: press, down or up
+//! 0   wheel -2              # the wheel, in lines
+//! ```
+//!
 //! The script has no clock. A demo gives the tick, and the script gives
 //! the commands of that tick, so two runs of one script are equal.
 //! The parser keeps slices into the source text: the source must stay
@@ -26,8 +41,20 @@ pub const Command = union(enum) {
     set: struct { name: []const u8, value: []const u8 },
     /// Hash the frame of this tick under this name.
     checkpoint: []const u8,
+    /// An input event for a demo that takes input. The parser checks the
+    /// device word only. `input_script.zig` reads the arguments.
+    input: Input,
     /// The end of the script.
     end,
+};
+
+/// The input devices of an `input` command.
+pub const Device = enum { key, text, pad, axis, mouse, wheel };
+
+pub const Input = struct {
+    device: Device,
+    /// The rest of the line: the key name and the action, the text, ...
+    args: []const u8,
 };
 
 pub const Entry = struct {
@@ -124,6 +151,9 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, diag: *Diagnostic
         } else if (std.mem.eql(u8, name, "checkpoint")) blk: {
             if (args.len == 0) return error.MissingArgument;
             break :blk .{ .checkpoint = args };
+        } else if (std.meta.stringToEnum(Device, name)) |device| blk: {
+            if (args.len == 0) return error.MissingArgument;
+            break :blk .{ .input = .{ .device = device, .args = args } };
         } else if (std.mem.eql(u8, name, "end")) blk: {
             end_tick = tick;
             break :blk .end;
@@ -192,6 +222,19 @@ test "script: absolute and relative ticks, each command (REQ-DEMO-002)" {
     try testing.expectEqual(@as(?u64, 215), s.end_tick);
     try testing.expectEqual(@as(u64, 215), s.lastTick());
     try testing.expectEqual(@as(usize, 1), s.checkpointCount());
+}
+
+test "script: input commands keep the device and the arguments (REQ-DEMO-008)" {
+    var diag: Diagnostic = .{};
+    var s = try parse(testing.allocator, "0 key Down\n+5 text Daisy May\n+5 mouse move 10 20\n", &diag);
+    defer s.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 3), s.entries.len);
+    try testing.expectEqual(Device.key, s.entries[0].command.input.device);
+    try testing.expectEqualStrings("Down", s.entries[0].command.input.args);
+    try testing.expectEqualStrings("Daisy May", s.entries[1].command.input.args);
+    try testing.expectEqual(@as(u64, 10), s.entries[2].tick);
+    try testing.expectEqualStrings("move 10 20", s.entries[2].command.input.args);
+    try testing.expectError(error.MissingArgument, parse(testing.allocator, "0 key\n", &diag));
 }
 
 test "script: errors name the line (REQ-DEMO-002)" {

@@ -269,6 +269,10 @@ const State = struct {
     composite_pass: PassId,
     /// The turn angle of the cow, in radians.
     angle: f32 = 0,
+    /// The camera orbit round the cow, in radians. 0 and 0: the fixed
+    /// camera of the cow demo.
+    orbit_yaw: f32 = 0,
+    orbit_pitch: f32 = 0,
     /// The scene time in seconds: the sum of the tick steps.
     time: f32 = 0,
     palette: cow_model.Palette,
@@ -662,6 +666,30 @@ pub const CowScene = struct {
         self.state.angle = angle;
     }
 
+    /// Move the camera round the cow: `yaw` turns it round the vertical
+    /// axis, `pitch` moves it up or down (radians). 0 and 0 give the fixed
+    /// camera. A menu over the scene uses it for a mouse orbit.
+    pub fn setOrbit(self: *CowScene, yaw: f32, pitch: f32) void {
+        self.state.orbit_yaw = yaw;
+        self.state.orbit_pitch = std.math.clamp(pitch, -0.5, 1.0);
+    }
+
+    /// The camera position for the current orbit.
+    fn eyePosition(s: *const State) [3]f32 {
+        if (s.orbit_yaw == 0 and s.orbit_pitch == 0) return eye;
+        const dx = eye[0] - look_at[0];
+        const dy = eye[1] - look_at[1];
+        const dz = eye[2] - look_at[2];
+        const dist = @sqrt(dx * dx + dy * dy + dz * dz);
+        const yaw = std.math.atan2(dx, dz) + s.orbit_yaw;
+        const pitch = std.math.clamp(std.math.asin(dy / dist) + s.orbit_pitch, -0.1, 1.3);
+        return .{
+            look_at[0] + dist * @cos(pitch) * @sin(yaw),
+            look_at[1] + dist * @sin(pitch),
+            look_at[2] + dist * @cos(pitch) * @cos(yaw),
+        };
+    }
+
     /// Make the frame uniforms for a surface of `width` by `height`
     /// pixels, and update the sky and the shadow cascades. Call it one time
     /// each frame, before `FrameGraph.execute`.
@@ -670,8 +698,9 @@ pub const CowScene = struct {
         const w: f32 = @floatFromInt(@max(width, 1));
         const h: f32 = @floatFromInt(@max(height, 1));
         const proj = sw_math.perspective(fov_y, w / h, 0.1, 200.0);
+        const e = eyePosition(s);
         const view = sw_math.lookAt(
-            .{ .x = eye[0], .y = eye[1], .z = eye[2] },
+            .{ .x = e[0], .y = e[1], .z = e[2] },
             .{ .x = look_at[0], .y = look_at[1], .z = look_at[2] },
             .{ .x = 0, .y = 1, .z = 0 },
         );
@@ -679,7 +708,7 @@ pub const CowScene = struct {
             .view = view.data,
             .proj = proj.data,
             .view_proj = proj.mul(view).data,
-            .camera_pos = .{ eye[0], eye[1], eye[2], 1 },
+            .camera_pos = .{ e[0], e[1], e[2], 1 },
             .time = s.time,
         };
         f.sky = try s.sky.update();

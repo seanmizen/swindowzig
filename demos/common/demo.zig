@@ -25,8 +25,16 @@
 //!     pub fn reset(host: *demo.Host) !void {}    // optional: before a loop
 //!     pub fn drawOverlay(host: *demo.Host, o: *demo.Overlay) !void {} // optional
 //!     pub fn deinit(host: *demo.Host) void {}
+//!     // Optional: the demo takes input (a menu). See `Host.input`.
+//!     pub const interactive = true;
 //! };
 //! ```
+//!
+//! The input commands of the script (`key`, `text`, `pad`, `axis`, `mouse`,
+//! `wheel`) go to `host.script_input` (REQ-DEMO-008). `host.input()` gives
+//! that snapshot. In a window, an `interactive` demo plays its script until
+//! the player presses a key, a button or a gamepad button. Then the script
+//! stops, and `host.input()` gives the input of the player.
 //!
 //! The host owns the frame graph (`host.graph`) and the post chain
 //! (`host.post`). The overlay pass draws on `.screen` at order 2000.
@@ -51,6 +59,7 @@ const builtin = @import("builtin");
 const sw = @import("sw_app");
 const sw_gpu = @import("sw_gpu");
 const sw_render = @import("sw_render");
+const sw_core = @import("sw_core");
 
 pub const cli = @import("cli.zig");
 pub const script = @import("script.zig");
@@ -60,6 +69,13 @@ pub const voxel_mesh = @import("voxel_mesh.zig");
 pub const cow_model = @import("cow_model.zig");
 pub const cow_scene = @import("cow_scene.zig");
 pub const overlay = @import("overlay.zig");
+pub const input_script = @import("input_script.zig");
+/// sw_audio, for a demo with sound. The demo wiring in build.zig does not
+/// give the demo itself this module.
+pub const audio = @import("sw_audio");
+/// The overlay font (Lato, SIL Open Font License), for a demo that draws
+/// more text.
+pub const font_ttf = @embedFile("demo_font");
 
 pub const CowScene = cow_scene.CowScene;
 pub const CowSettings = cow_scene.Settings;
@@ -110,6 +126,17 @@ pub const Host = struct {
     /// The tick of the script, from 0. It starts again at 0 for each loop.
     script_tick: u64 = 0,
     caption: []const u8 = "",
+    /// The input of the script commands (REQ-DEMO-008).
+    script_input: input_script.ScriptInput = .{},
+    /// True after the player of an `interactive` demo took control. The
+    /// script then stops.
+    user_control: bool = false,
+
+    /// The input of this tick: the script input, or the input of the
+    /// player after the player took control.
+    pub fn input(self: *const Host) *const sw_core.InputSnapshot {
+        return if (self.user_control) self.ctx.input() else &self.script_input.snapshot;
+    }
 
     /// True in a capture or check run (REQ-DEMO-004).
     pub fn deterministic(self: *const Host) bool {
@@ -225,8 +252,17 @@ pub fn Demo(comptime App: type) type {
             }
 
             pub fn tick(ctx: *sw.Context) !void {
-                _ = ctx;
                 if (!ready or ending) return;
+                if (@hasDecl(App, "interactive") and !host.user_control and !host.deterministic() and playerActed(ctx.input())) {
+                    // The player takes control: the script stops.
+                    host.user_control = true;
+                    host.caption = "";
+                    host.script_input.reset();
+                }
+                if (host.user_control) {
+                    try App.tick(&host);
+                    return;
+                }
                 const t = host.script_tick;
                 while (player.next(t)) |e| {
                     switch (e.command) {
@@ -235,9 +271,13 @@ pub fn Demo(comptime App: type) type {
                             fail("{s}: script line {d}: set {s} {s}: {s}", .{ App.name, e.line, s.name, s.value, @errorName(err) });
                         },
                         .checkpoint => |n| pending_checkpoint = n,
+                        .input => |in| host.script_input.add(in) catch |err| {
+                            fail("{s}: script line {d}: {s} {s}: {s}", .{ App.name, e.line, @tagName(in.device), in.args, @errorName(err) });
+                        },
                         .end => ending = true,
                     }
                 }
+                host.script_input.step(t);
                 if (player.finished() and t >= parsed.lastTick()) ending = true;
                 try App.tick(&host);
                 host.script_tick += 1;
@@ -246,6 +286,7 @@ pub fn Demo(comptime App: type) type {
                     ending = false;
                     player.restart();
                     host.script_tick = 0;
+                    host.script_input.reset();
                     if (@hasDecl(App, "reset")) try App.reset(&host);
                 }
             }
@@ -281,6 +322,18 @@ pub fn Demo(comptime App: type) type {
                 ready = false;
             }
         };
+
+        /// True when the player pressed a key, a mouse button, a gamepad
+        /// button, or moved the wheel in this tick (REQ-DEMO-010).
+        fn playerActed(snap: *const sw_core.InputSnapshot) bool {
+            for (std.enums.values(sw_core.KeyCode)) |k| if (snap.keyPressed(k)) return true;
+            for (std.enums.values(sw_core.MouseButton)) |b| if (snap.buttonPressed(b)) return true;
+            if (snap.wheel.delta_y != 0 or snap.wheel.delta_x != 0) return true;
+            for (&snap.gamepads) |*g| {
+                for (std.enums.values(sw_core.GamepadButton)) |b| if (g.buttonPressed(b)) return true;
+            }
+            return false;
+        }
 
         fn drawOverlay(pass: *sw_render.Pass) !void {
             const o = &host.overlay;

@@ -1053,6 +1053,7 @@ fn addDemoCommon(b: *std.Build, libs: Libs, options: std.Build.Module.CreateOpti
     m.addImport("sw_gfx2d", libs.gfx2d);
     m.addImport("sw_text", libs.text);
     m.addImport("sw_render", libs.render);
+    m.addImport("sw_audio", libs.audio);
     m.addAnonymousImport("demo_font", .{ .root_source_file = b.path("examples/flat2d/assets/Lato-Regular.ttf") });
     return m;
 }

@@ -29,6 +29,9 @@
 | [`REQ-DEMO-005`](demo.md#req-demo-005--the-cow-is-an-original-voxel-model) | The cow is an original voxel model | active | constraint | P2 | agent:SWZ-79 |
 | [`REQ-DEMO-006`](demo.md#req-demo-006--greedy-meshing-merges-only-faces-that-shade-the-same) | Greedy meshing merges only faces that shade the same | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-DEMO-007`](demo.md#req-demo-007--the-record-script-makes-a-video-and-a-loop-for-each-run) | The record script makes a video and a loop for each run | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-008`](demo.md#req-demo-008--a-demo-script-can-press-keys-as-a-player-does) | A demo script can press keys as a player does | active | functional | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-009`](demo.md#req-demo-009--the-menu-demo-applies-each-setting-at-once) | The menu demo applies each setting at once | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-010`](demo.md#req-demo-010--the-player-can-take-control-of-an-interactive-demo) | The player can take control of an interactive demo | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -160,6 +163,9 @@ graph TD
   REQ_DEMO_005["REQ-DEMO-005<br/>The cow is an original voxel model"]
   REQ_DEMO_006["REQ-DEMO-006<br/>Greedy meshing merges only faces that shade the same"]
   REQ_DEMO_007["REQ-DEMO-007<br/>The record script makes a video and a loop for each run"]
+  REQ_DEMO_008["REQ-DEMO-008<br/>A demo script can press keys as a player does"]
+  REQ_DEMO_009["REQ-DEMO-009<br/>The menu demo applies each setting at once"]
+  REQ_DEMO_010["REQ-DEMO-010<br/>The player can take control of an interactive demo"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
@@ -270,6 +276,9 @@ graph TD
   REQ_A11Y_008 -->|refines| REQ_A11Y_007
   REQ_DEMO_003 -->|depends-on| REQ_DEMO_004
   REQ_DEMO_007 -->|depends-on| REQ_DEMO_004
+  REQ_DEMO_008 -->|depends-on| REQ_DEMO_002
+  REQ_DEMO_009 -->|depends-on| REQ_DEMO_008
+  REQ_DEMO_010 -->|depends-on| REQ_DEMO_008
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
@@ -339,7 +348,9 @@ graph TD
 
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
 - `REQ-A11Y-007` — refined-by REQ-A11Y-008
+- `REQ-DEMO-002` — required-by REQ-DEMO-008
 - `REQ-DEMO-004` — required-by REQ-DEMO-003, required-by REQ-DEMO-007
+- `REQ-DEMO-008` — required-by REQ-DEMO-009, required-by REQ-DEMO-010
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
