@@ -128,6 +128,7 @@
 | [`REQ-VOXEL-031`](voxel.md#req-voxel-031--the-demo-draws-translucent-blocks-with-sw_render-translucent) | The demo draws translucent blocks with sw_render Translucent | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-VOXEL-032`](voxel.md#req-voxel-032--a-merged-quad-has-the-shade-of-the-11-quads) | A merged quad has the shade of the 1×1 quads | active | functional | P2 | agent:SWZ-17 |
 | [`REQ-VOXEL-033`](voxel.md#req-voxel-033--an-init-error-of-the-demo-frees-each-allocation-of-init) | An init error of the demo frees each allocation of init | active | quality | P3 | agent:SWZ-112 |
+| [`REQ-VOXEL-034`](voxel.md#req-voxel-034--the-web-build-takes-the-world-seed-from-the-page-url) | The web build takes the world seed from the page URL | active | functional | P2 | agent:SWZ-8 |
 
 ## Dependency graph
 
@@ -256,6 +257,7 @@ graph TD
   REQ_VOXEL_031["REQ-VOXEL-031<br/>The demo draws translucent blocks with sw_render Translucent"]
   REQ_VOXEL_032["REQ-VOXEL-032<br/>A merged quad has the shade of the 1×1 quads"]
   REQ_VOXEL_033["REQ-VOXEL-033<br/>An init error of the demo frees each allocation of init"]
+  REQ_VOXEL_034["REQ-VOXEL-034<br/>The web build takes the world seed from the page URL"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001

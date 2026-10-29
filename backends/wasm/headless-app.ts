@@ -17,6 +17,7 @@
 import { createAssetImports } from './assets';
 import { createFileImports } from './files';
 import { HeldBytes } from './held-bytes';
+import { passSeed, seedFromQuery } from './seed';
 import { createStorageImports } from './storage';
 import {
   attachPool,
@@ -355,6 +356,14 @@ export interface AppOptions {
    * A --measure run sets false, so the stub costs less time.
    */
   recordGpu?: boolean;
+  /**
+   * The URL query of the page, as `location.search` (for example
+   * '?seed=12345'). The seed goes to app.wasm as the loader gives it
+   * (seed.ts, REQ-VOXEL-034).
+   */
+  query?: string;
+  /** Called for each warning of the start. The default is console.warn. */
+  onWarning?: (message: string) => void;
 }
 
 export interface HeadlessApp {
@@ -502,6 +511,11 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
   const debugCounts = wasm.voxel_debug_chunk_counts;
   if (!debugCounts)
     throw new Error('app.wasm has no voxel_debug_chunk_counts export');
+
+  // As the loader: read the seed of the query, and give it to app.wasm
+  // before init (REQ-VOXEL-034).
+  const warn = opts.onWarning ?? ((m: string) => console.warn(m));
+  passSeed(instance.exports, seedFromQuery(opts.query ?? '', warn));
 
   wasm.swindowzig_init();
   wasm.swindowzig_event_resize(1280, 720, 1);

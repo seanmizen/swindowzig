@@ -126,6 +126,11 @@ jobs:
         # the error on a page that is not a secure context.
         run: bun test backends/wasm/files.test.ts
 
+      - name: Seed parser tests in Bun
+        # The seed of the page URL: valid, the largest u64, negative, not a
+        # number, too large, empty (REQ-VOXEL-034).
+        run: bun test backends/wasm/seed.test.ts
+
       - name: WebSocket bridge tests in Bun
         # sw_net in wasm with websocket.ts, against a local Bun server:
         # binary and text messages, the close codes, and the reconnect.
@@ -359,6 +364,20 @@ jobs:
             fi
           done
           exit $status
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: The URL seed of app.wasm gives the terrain of native --seed
+        # Native voxel and app.wasm (in Bun, with and without the worker
+        # pool) print the hash of the world around the player. The hashes
+        # must be equal for each seed (REQ-VOXEL-034).
+        timeout-minutes: 10
+        run: |
+          zig build web -Dexample=voxel -Doptimize=ReleaseFast
+          ./examples/voxel/tests/seed_web_native.sh
 
       - name: A TAS parse error stops voxel with no leak
         # The debug build reports each leak at exit (REQ-VOXEL-033).

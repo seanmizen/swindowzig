@@ -745,3 +745,26 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
 - **Verification:** Test — `examples/voxel/tests/tas_parse_fail.sh` ›
   "a TAS parse error stops voxel with no memory leak"
 - **Relations:** none
+
+## REQ-VOXEL-034 — The web build takes the world seed from the page URL
+
+- **Status:** active
+- **Source:** agent:SWZ-8
+- **Origin:** #8
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the page URL of the voxel web build has a `seed`
+  parameter with a u64 value, the web build shall generate the terrain of
+  that seed, on the main thread and in each chunk worker. A value that
+  is not a u64 gives seed 0 and one warning.
+- **Rationale:** The native build takes `--seed=<u64>`, and a seed must
+  give the same terrain on each platform. The loader reads the seed one
+  time (`backends/wasm/seed.ts`) and gives it to app.wasm as a BigInt
+  before init. The workers get it in the Hello. No parameter gives seed
+  0, so the goldens do not change.
+- **Verification:**
+  - Test — `backends/wasm/seed.test.ts` › "a value that is not a u64
+    gives seed 0 and a warning"
+  - Test — `examples/voxel/tests/seed_web_native.sh` › "seed 12345,
+    worker pool"
+- **Relations:** none

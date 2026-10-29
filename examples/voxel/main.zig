@@ -1020,9 +1020,15 @@ const State = struct {
     world_loading: bool = true,
     /// Selected world generation preset. Parsed from --world=<flatland|hilly>.
     world_preset: world_gen.Preset = .hilly,
-    /// World seed. Parsed from --seed=<u64> on native. The web build stays at
-    /// seed 0. Seed 0 gives the terrain from before the seed existed.
+    /// World seed. Native: --seed=<u64>. Web: the `seed` parameter of the
+    /// page URL, which the loader gives to `swindowzig_set_seed` before
+    /// init (REQ-VOXEL-034). Seed 0 gives the terrain from before the seed
+    /// existed.
     world_seed: u64 = 0,
+    /// --print-world-hash (native, with --headless): when the scheduler is
+    /// idle after the loading screen, print the hash of `worldHash` and
+    /// stop. The Bun runner prints the same hash for app.wasm.
+    print_world_hash: bool = false,
     /// Water in the generator (REQ-VOXEL-028). Parsed from --water=on|off.
     /// Off by default, so the default terrain does not change.
     world_water: bool = false,
@@ -1287,6 +1293,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     // they use the hardcoded defaults set above (hilly world, skylight,
     // classic AO, 4× MSAA) which is exactly what the browser should show.
     const args = ctx.args;
+    // The web seed came from the page URL before init (REQ-VOXEL-034).
+    if (comptime is_wasm) state.world_seed = web_seed;
 
     // Pre-scan: collect all flags before processing --tas, so flag order doesn't matter.
     for (args) |arg| {
@@ -1330,6 +1338,7 @@ fn voxelInit(ctx: *sw.Context) !void {
             }
             state.chunk_workers = n;
         }
+        if (std.mem.eql(u8, arg, "--print-world-hash")) state.print_world_hash = true;
         if (std.mem.startsWith(u8, arg, "--seed=")) {
             const val = std.mem.sliceTo(arg["--seed=".len..], 0);
             state.world_seed = std.fmt.parseInt(u64, val, 10) catch {
@@ -2227,6 +2236,20 @@ fn voxelFrame(ctx: *sw.Context) !void {
             if (lc.*.upload == null) continue;
             lc.*.dropUpload();
             state.uploads_dropped += 1;
+        }
+    }
+
+    // --print-world-hash: the hash of the desired state around the player,
+    // when it is complete. examples/voxel/tests/seed_web_native.sh compares
+    // it with the hash of app.wasm for the same seed (REQ-VOXEL-034).
+    if (comptime !is_wasm) {
+        if (state.print_world_hash and !state.world_loading and state.scheduler.isIdle()) {
+            const h = worldHash();
+            if (h != 0) {
+                std.log.info("world_hash={x:0>16} seed={d}", .{ h, state.world_seed });
+                state.print_world_hash = false;
+                ctx.requestShutdown();
+            }
         }
     }
 }
@@ -5029,6 +5052,18 @@ fn wasmDebugPipelineCounts() callconv(.c) [*]const u32 {
 /// same edits give the same hash, with any executor. Returns 0 while a mesh
 /// of the desired state is not current.
 fn wasmDebugWorldHash() callconv(.c) u64 {
+    return worldHash();
+}
+
+/// The seed from the page URL (REQ-VOXEL-034). The loader calls
+/// `swindowzig_set_seed` before swindowzig_init, and voxelInit reads it.
+var web_seed: u64 = 0;
+
+fn wasmSetSeed(seed: u64) callconv(.c) void {
+    web_seed = seed;
+}
+
+fn worldHash() u64 {
     const sched = &state.scheduler;
     const world = &state.world;
     const r = sched.render_distance;
@@ -5148,6 +5183,7 @@ comptime {
         @export(&wasmDebugChunkCounts, .{ .name = "voxel_debug_chunk_counts" });
         @export(&wasmDebugPipelineCounts, .{ .name = "voxel_debug_pipeline_counts" });
         @export(&wasmDebugWorldHash, .{ .name = "voxel_debug_world_hash" });
+        @export(&wasmSetSeed, .{ .name = "swindowzig_set_seed" });
         @export(&wasmDebugEdit, .{ .name = "voxel_debug_edit" });
         @export(&wasmDebugGpuCounts, .{ .name = "voxel_debug_gpu_counts" });
         @export(&wasmDebugSetRenderDistance, .{ .name = "voxel_debug_set_render_distance" });
