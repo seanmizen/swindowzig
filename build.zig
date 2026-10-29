@@ -144,6 +144,7 @@ pub fn build(b: *std.Build) void {
     native_exe.root_module.addImport("sw_ui", native_libs.ui);
     native_exe.root_module.addImport("sw_assets", native_libs.assets);
     native_exe.root_module.addImport("sw_render", native_libs.render);
+    native_exe.root_module.addImport("sw_audio", native_libs.audio);
     native_exe.root_module.addOptions("chunk_build", chunk_build);
     native_exe.root_module.addImport("demo_common", addDemoCommon(b, native_libs, .{}));
     const native_voxel = addVoxel(b, native_libs, .{ .root_source_file = b.path("libs/sw_voxel/src/sw_voxel.zig") }, .{ .root_source_file = b.path("examples/voxel/content.zig") });
@@ -747,6 +748,16 @@ pub fn build(b: *std.Build) void {
         addVoxelDemo(demo_tests.root_module, web_voxel);
         test_step.dependOn(&b.addRunArtifact(demo_tests).step);
     }
+    // The shooter demo without the GPU: the arena, the body model, the gun
+    // model and the bot fight (REQ-DEMO-020 to REQ-DEMO-023).
+    const shooter_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("demos/shooter/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    shooter_tests.root_module.addImport("sw_math", web_libs.math);
+    shooter_tests.root_module.addImport("sw_render", web_libs.render);
+    test_step.dependOn(&b.addRunArtifact(shooter_tests).step);
     // Chunk stage tests (pipeline/stages.zig): equivalence with World,
     // install order, and edits with versions (C2, C3, P3).
     const stages_tests = b.addTest(.{
@@ -926,6 +937,7 @@ fn webExample(b: *std.Build, web_libs: Libs, example_path: []const u8, optimize:
     example.root_module.addImport("sw_ui", web_libs.ui);
     example.root_module.addImport("sw_assets", web_libs.assets);
     example.root_module.addImport("sw_render", web_libs.render);
+    example.root_module.addImport("sw_audio", web_libs.audio);
     // sw_platform is needed by examples that drive their own wasm entry
     // (e.g. voxel, which constructs a WasmBackend directly in its
     // swindowzig_init export).
