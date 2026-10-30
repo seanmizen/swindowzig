@@ -434,9 +434,11 @@ pub const InputSnapshot = struct {
         return self.keyboard.isKeyReleased(key);
     }
 
-    /// Is this mouse button currently held down?
+    /// Is this mouse button held down in this tick? A button that goes down
+    /// and up in the same tick is down for that tick, so a short click is
+    /// not lost (REQ-INPUT-011). A trackpad tap gives such a click.
     pub fn buttonDown(self: *const InputSnapshot, button: MouseButton) bool {
-        return self.mouse.isButtonDown(button);
+        return self.mouse.isButtonDown(button) or self.mouse.isButtonPressed(button);
     }
 
     /// Was this mouse button just pressed this tick? (goes from up to down)
@@ -510,6 +512,22 @@ test "InputSnapshot keeps a key press shorter than one tick (REQ-INPUT-007)" {
     snapshot.updateFromEvents(&.{keyEvent(.Alt, true, .{ .alt = true })});
     snapshot.updateFromEvents(&.{keyEvent(.Alt, false, .{})});
     try std.testing.expect(!snapshot.mods.alt);
+}
+
+test "InputSnapshot keeps a click shorter than one tick (REQ-INPUT-011)" {
+    var snapshot = InputSnapshot.init();
+    // A trackpad tap: the down and the up arrive in one tick.
+    snapshot.updateFromEvents(&.{
+        Event.init(0, 0, 0, .{ .pointer_button = .{ .button = .left, .down = true, .mods = .{} } }),
+        Event.init(0, 0, 1, .{ .pointer_button = .{ .button = .left, .down = false, .mods = .{} } }),
+    });
+    try std.testing.expect(snapshot.buttonPressed(.left));
+    try std.testing.expect(snapshot.buttonDown(.left));
+    try std.testing.expect(snapshot.buttonReleased(.left));
+    // The next tick has no event: the button is up.
+    snapshot.updateFromEvents(&.{});
+    try std.testing.expect(!snapshot.buttonDown(.left));
+    try std.testing.expect(!snapshot.buttonPressed(.left));
 }
 
 test "InputSnapshot mouse events" {

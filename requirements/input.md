@@ -204,3 +204,23 @@ input actions that a game binds to them.
 - **Verification:** Test — `libs/sw_core/src/serialize.zig` › "a wheel event
   with a bad mode byte gives an error (REQ-INPUT-010)"
 - **Relations:** none
+
+## REQ-INPUT-011 — A click shorter than one tick is not lost
+
+- **Status:** active
+- **Source:** agent:SWZ-114
+- **Origin:** #114
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a mouse button goes down and up in the same tick,
+  the `sw_core` `InputSnapshot` shall give the button as down and pressed
+  in that tick.
+- **Rationale:** A trackpad tap sends the down and the up together, after
+  the tap delay of the system. Before this requirement, `buttonDown` gave
+  false for such a tap, so an automatic gun of the shooter demo, which
+  fires while the button is down, did not fire. The player then tapped
+  again, and the gun felt late. REQ-INPUT-007 gives the same rule for keys.
+- **Verification:** Test — `libs/sw_core/src/input.zig` › "InputSnapshot
+  keeps a click shorter than one tick (REQ-INPUT-011)"
+- **Relations:**
+  - refines REQ-INPUT-007

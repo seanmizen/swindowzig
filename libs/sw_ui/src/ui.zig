@@ -113,12 +113,19 @@ pub const Opts = struct {
     live: bool = false,
     /// A container: draw a panel behind it.
     panel: bool = false,
-    /// A row or column: its accessible name.
+    /// A row or column: its accessible name. Another node: its accessible
+    /// name when it is not the text on the screen, for example a button
+    /// that shows arrows around its value.
     label: []const u8 = "",
     /// The text of a tooltip. It shows when the pointer or the focus stays
     /// on the node for `Theme.tooltip_delay` frames. The semantic tree gives
     /// it as the description of the node.
     tooltip: []const u8 = "",
+    /// More text about the node for assistive technology only, such as how
+    /// to change it. Nothing shows on the screen. The semantic tree gives it
+    /// as the description of the node. If the node also has a tooltip,
+    /// the semantic tree gives this text, not the tooltip.
+    description: []const u8 = "",
     /// A container: the arrow keys move the focus to the nearest node in the
     /// direction of the key, among the nodes inside the container that take
     /// focus. The container is one tab stop. Use it for a grid of buttons.
@@ -1853,7 +1860,7 @@ pub const Ui = struct {
             try self.sem_nodes.append(self.alloc, .{
                 .id = n.id,
                 .role = roleOf(n.kind),
-                .name = n.text,
+                .name = if (n.opts.label.len > 0) n.opts.label else n.text,
                 .value = value,
                 .focused = n.id == self.focus_id and n.id != root_id,
                 .disabled = n.opts.disabled,
@@ -1862,7 +1869,7 @@ pub const Ui = struct {
                 .changed = changed,
                 .bounds = n.rect,
                 .children = self.sem_children.items[span[0]..span[1]],
-                .description = n.opts.tooltip,
+                .description = if (n.opts.description.len > 0) n.opts.description else n.opts.tooltip,
                 .range = range,
             });
         }
@@ -2781,6 +2788,27 @@ test "tooltip: it shows after the delay, on hover or on focus" {
     try std.testing.expectEqual(@as(?u32, 2), u.focused());
     for (0..3) |_| try runFrame(&u, .{ .pointer_x = 390, .pointer_y = 290 }, buildTips);
     try std.testing.expectEqual(@as(u32, 2), u.tooltip().?.target);
+}
+
+fn buildDescription(u: *Ui) anyerror!void {
+    try u.beginColumn(1, .{ .gap = 4 });
+    try u.addButton(2, "AA: < FXAA >", .{ .label = "AA: FXAA", .description = "Left and Right change it" });
+    u.endContainer();
+}
+
+test "description: the semantic tree has it, and no tooltip shows" {
+    var u = Ui.init(std.testing.allocator, .{ .measureFn = fakeMeasure }, .{ .tooltip_delay = 1 });
+    defer u.deinit();
+    try runFrame(&u, .{ .pointer_x = 390, .pointer_y = 290 }, buildDescription);
+    const b = u.bounds(2).?;
+    const hover: Input = .{ .pointer_x = b.x + 2, .pointer_y = b.y + 2 };
+    for (0..4) |_| try runFrame(&u, hover, buildDescription);
+    try std.testing.expect(u.tooltip() == null);
+    const tree = u.semanticTree();
+    try std.testing.expect(tree.find(tooltip_id) == null);
+    try std.testing.expectEqualStrings("Left and Right change it", tree.find(2).?.description);
+    // The label is the accessible name, not the text on the screen.
+    try std.testing.expectEqualStrings("AA: FXAA", tree.find(2).?.name);
 }
 
 test "errors: an app node cannot use the tooltip ID" {
