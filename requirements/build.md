@@ -64,3 +64,19 @@ dependent package uses, and the targets that the build supports.
     `sw_gpu: adapter "<GPU name>" backend=d3d12` (or `vulkan`) and draws
     the world.
 - **Relations:** none
+
+## REQ-BUILD-004 — The Windows build opens no console window
+
+- **Status:** active
+- **Source:** sean
+- **Origin:** #9
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When the target is Windows, the native build shall make a
+  GUI program, unless the build has the option `-Dwindows-console=true`.
+- **Rationale:** A game opens its window only. A redirect of stdout and
+  stderr still gets the log, and the option gives the console back for
+  debug.
+- **Verification:** Inspection — `voxel.exe` starts with no console window,
+  and `voxel.exe > log.txt 2>&1` writes the log.
+- **Relations:** refines REQ-BUILD-002
