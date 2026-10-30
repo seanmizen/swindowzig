@@ -401,9 +401,10 @@ jobs:
           vulkaninfo --summary | grep -i llvmpipe
 
       - name: Install Zig
+        # The same voxel build as the headless job, so the same Zig cache.
         uses: mlugg/setup-zig@v2
         with:
-          cache-key: ${{ github.job }}
+          cache-key: headless
 
       - name: Install wgpu-native
         run: |
