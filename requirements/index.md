@@ -20,6 +20,7 @@
 | [`REQ-BUILD-001`](build.md#req-build-001--a-dependent-package-builds-an-example-to-wasm-with-no-nested-build) | A dependent package builds an example to wasm with no nested build | active | functional | P2 | agent:SWZ-21 |
 | [`REQ-BUILD-002`](build.md#req-build-002--the-native-examples-cross-compile-to-windows) | The native examples cross-compile to Windows | active | functional | P3 | agent:SWZ-9 |
 | [`REQ-BUILD-003`](build.md#req-build-003--on-windows-the-native-surface-is-the-win32-window) | On Windows, the native surface is the Win32 window | active | functional | P3 | agent:SWZ-9 |
+| [`REQ-BUILD-004`](build.md#req-build-004--the-windows-build-opens-no-console-window) | The Windows build opens no console window | active | functional | P3 | sean |
 | [`REQ-CAMERA-001`](camera.md#req-camera-001--the-camera-result-does-not-depend-on-the-frame-rate) | The camera result does not depend on the frame rate | active | quality | P2 | agent:SWZ-43 |
 | [`REQ-CAMERA-002`](camera.md#req-camera-002--the-camera-controller-reads-no-platform-input) | The camera controller reads no platform input | active | constraint | P2 | agent:SWZ-43 |
 | [`REQ-DEMO-001`](demo.md#req-demo-001--each-demo-takes-one-command-line) | Each demo takes one command line | active | functional | P2 | agent:SWZ-79 |
@@ -160,6 +161,7 @@ graph TD
   REQ_BUILD_001["REQ-BUILD-001<br/>A dependent package builds an example to wasm with no nested build"]
   REQ_BUILD_002["REQ-BUILD-002<br/>The native examples cross-compile to Windows"]
   REQ_BUILD_003["REQ-BUILD-003<br/>On Windows, the native surface is the Win32 window"]
+  REQ_BUILD_004["REQ-BUILD-004<br/>The Windows build opens no console window"]
   REQ_CAMERA_001["REQ-CAMERA-001<br/>The camera result does not depend on the frame rate"]
   REQ_CAMERA_002["REQ-CAMERA-002<br/>The camera controller reads no platform input"]
   REQ_DEMO_001["REQ-DEMO-001<br/>Each demo takes one command line"]
@@ -286,6 +288,7 @@ graph TD
   REQ_A11Y_005 -->|refines| REQ_A11Y_001
   REQ_A11Y_006 -->|refines| REQ_A11Y_001
   REQ_A11Y_008 -->|refines| REQ_A11Y_007
+  REQ_BUILD_004 -->|refines| REQ_BUILD_002
   REQ_DEMO_003 -->|depends-on| REQ_DEMO_004
   REQ_DEMO_007 -->|depends-on| REQ_DEMO_004
   REQ_DEMO_008 -->|depends-on| REQ_DEMO_002
@@ -364,6 +367,7 @@ graph TD
 
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
 - `REQ-A11Y-007` — refined-by REQ-A11Y-008
+- `REQ-BUILD-002` — refined-by REQ-BUILD-004
 - `REQ-DEMO-001` — required-by REQ-DEMO-020
 - `REQ-DEMO-002` — required-by REQ-DEMO-008
 - `REQ-DEMO-004` — required-by REQ-DEMO-003, required-by REQ-DEMO-007, required-by REQ-DEMO-021
