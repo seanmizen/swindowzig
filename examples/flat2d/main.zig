@@ -209,6 +209,11 @@ fn uiInput(ctx: *sw.Context) sw_ui.Input {
     };
 }
 
+/// The value of a 0 to 1 slider as a percentage, for the screen reader.
+fn percentText(value: f32, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "{d:.0}%", .{value * 100}) catch "";
+}
+
 /// Send the semantic tree to the screen reader, and take its requests. A
 /// focus request moves the focus now. A click, increment or decrement first
 /// moves the focus, then `readerInput` gives the key on a later frame.
@@ -285,7 +290,7 @@ fn buildSettings(u: *sw_ui.Ui) !void {
     const percent = try u.print("{d:.0}%", .{volume * 100});
     try u.beginRow(ids.volume_row, .{ .gap = 8, .cross_align = .center });
     try u.addText(ids.volume_label, "Volume", .{});
-    try u.addSlider(ids.volume_slider, "Volume", &volume, .{ .min = 0, .max = 1, .step = 0.05, .text = percent }, .{
+    try u.addSlider(ids.volume_slider, "Volume", &volume, .{ .min = 0, .max = 1, .step = 0.05, .format = percentText }, .{
         .tooltip = "Left and Right change it, or drag it",
     });
     try u.addText(ids.volume_text, percent, .{});

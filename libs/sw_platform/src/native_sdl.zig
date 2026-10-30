@@ -66,13 +66,17 @@ pub const SDL2Backend = struct {
         const title_z = try allocator.dupeSentinel(u8, title, 0);
         defer allocator.free(title_z);
 
+        // Windows: the window stays hidden until sw_app calls showWindow
+        // after the init callback. The AccessKit Windows adapter must
+        // subclass the window before it is shown (REQ-PLATFORM-004).
+        const visibility: u32 = if (builtin.os.tag == .windows) sdl.SDL_WINDOW_HIDDEN else sdl.SDL_WINDOW_SHOWN;
         const window = sdl.SDL_CreateWindow(
             title_z.ptr,
             sdl.SDL_WINDOWPOS_CENTERED,
             sdl.SDL_WINDOWPOS_CENTERED,
             @intCast(width),
             @intCast(height),
-            sdl.SDL_WINDOW_SHOWN | sdl.SDL_WINDOW_RESIZABLE | sdl.SDL_WINDOW_ALLOW_HIGHDPI,
+            visibility | sdl.SDL_WINDOW_RESIZABLE | sdl.SDL_WINDOW_ALLOW_HIGHDPI,
         ) orelse {
             std.log.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
             sdl.SDL_Quit();
@@ -109,6 +113,7 @@ pub const SDL2Backend = struct {
                 .requestClipboardText = requestClipboardText,
                 .clipboardText = clipboardText,
                 .getNativeWindow = getNativeWindow,
+                .showWindow = showWindow,
             },
         };
     }
@@ -387,6 +392,11 @@ pub const SDL2Backend = struct {
 
     /// The native handle from SDL_GetWindowWMInfo, the focus, and the place
     /// of the window on the screen (REQ-A11Y-007).
+    fn showWindow(ptr: *anyopaque) void {
+        const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
+        sdl.SDL_ShowWindow(self.window);
+    }
+
     fn getNativeWindow(ptr: *anyopaque) platform.NativeWindow {
         const self: *SDL2Backend = @ptrCast(@alignCast(ptr));
         var out: platform.NativeWindow = .{};
