@@ -374,7 +374,9 @@ jobs:
   cull:
     # The frame tests that render each frame of a TAS on lavapipe. Each
     # one has its own job, so that they run at the same time: the 5 scenes
-    # of cave_cull.sh, and chunk_border.sh.
+    # of cave_cull.sh, and chunk_border.sh. The two slowest (surface and
+    # chunk_border, about 100 s and 150 s after a 2 to 3 min build) run
+    # only on a push to main, so that a pull request check stays short.
     name: voxel frames ${{ matrix.test }} (lavapipe)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -385,28 +387,33 @@ jobs:
     env:
       VK_LOADER_DRIVERS_SELECT: '*lvp*'
       LD_LIBRARY_PATH: /home/runner/.local/lib
+      RUN_TEST: ${{ github.event_name == 'push' || (matrix.test != 'surface' && matrix.test != 'chunk_border') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install lavapipe and SDL2 (from the apt cache)
+        if: env.RUN_TEST == 'true'
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: mesa-vulkan-drivers vulkan-tools libsdl2-dev
           version: 1
 
       - name: Check that lavapipe works
+        if: env.RUN_TEST == 'true'
         run: |
           sudo ldconfig
           vulkaninfo --summary | grep -i llvmpipe
 
       - name: Install Zig
+        if: env.RUN_TEST == 'true'
         # The same voxel build as the headless job, so the same Zig cache.
         uses: mlugg/setup-zig@v2
         with:
           cache-key: headless
 
       - name: Install wgpu-native
+        if: env.RUN_TEST == 'true'
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
             https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
@@ -414,19 +421,20 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
+        if: env.RUN_TEST == 'true'
         run: zig build native -Dexample=voxel
 
       - name: Cave cull, section cull and occlusion cull (${{ matrix.test }})
         # Each cull must give the same frame as the frustum cull only
         # (REQ-VOXEL-020, REQ-VOXEL-024, REQ-VOXEL-025).
-        if: matrix.test != 'chunk_border'
+        if: env.RUN_TEST == 'true' && matrix.test != 'chunk_border'
         timeout-minutes: 15
         run: ./examples/voxel/tests/cave_cull.sh --skip-build --only ${{ matrix.test }}
 
       - name: The ground hides the chunk border lines of debug mode
         # --debug=on and --debug=off must give the same near ground. This
         # also fails when a debug entity tints the first-person view.
-        if: matrix.test == 'chunk_border'
+        if: env.RUN_TEST == 'true' && matrix.test == 'chunk_border'
         timeout-minutes: 15
         run: ./examples/voxel/tests/chunk_border.sh
 
