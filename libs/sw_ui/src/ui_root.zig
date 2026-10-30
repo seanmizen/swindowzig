@@ -8,7 +8,8 @@
 //! - events (`frameEvents`): activations, cancel, text and value changes;
 //! - drawing (`draw.draw`): sw_gfx2d shapes and sw_text text, with a focus ring;
 //! - the semantic tree (`semanticTree`): plain data for a backend. The web
-//!   build sends it to the screen-reader mirror (`web_mirror.zig`).
+//!   build sends it to the screen-reader mirror (`web_mirror.zig`). A native
+//!   build with `-Daccesskit=true` can send it to AccessKit (`accesskit.zig`).
 //!
 //! The widgets: text, button, list, scroll list, text field (caret,
 //! selection, clipboard), slider, image, tooltip (`Opts.tooltip`) and screen.
@@ -23,6 +24,11 @@ const ui_mod = @import("ui.zig");
 pub const semantic = @import("semantic.zig");
 pub const draw = @import("draw.zig");
 pub const web_mirror = @import("web_mirror.zig");
+/// The native screen-reader backend (accesskit-c). Off unless the build has
+/// `-Daccesskit=true` (REQ-A11Y-007).
+pub const accesskit = @import("accesskit.zig");
+/// The map from the semantic tree to AccessKit nodes, with no C code.
+pub const accesskit_map = @import("accesskit_map.zig");
 pub const osk = @import("osk.zig");
 pub const ScreenStack = @import("screen.zig").ScreenStack;
 

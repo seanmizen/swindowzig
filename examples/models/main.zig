@@ -21,10 +21,12 @@
 // scene, from far to near, with the depth test on and the depth write off
 // (REQ-GPU-022, REQ-GPU-023). The ground hides the third quad.
 //
-// A spark emitter at the right throws particles up. The particle pass
-// draws them as camera-facing quads in one draw call, from far to near
-// (REQ-GPU-024). The check uses two fixed particles in place of the
-// emitter.
+// A spark emitter at the right throws particles up. The particles draw
+// as camera-facing quads, from far to near (REQ-GPU-024). The
+// translucent quads and the particles draw in one far-to-near order in
+// one pass (`SortedBlend`, REQ-GPU-041): a particle behind a quad draws
+// before it. The check uses three fixed particles in place of the
+// emitter: two at the right, and one behind the red and the blue quads.
 //
 // A performance overlay at the top left draws a chart of the frame times
 // with sw_gfx2d (REQ-GPU-029). When the device has GPU timestamps, a pass
@@ -43,8 +45,9 @@
 // in the shadow of a figure, the same ground in light, and the ground
 // under the point light. It checks the draw calls and the instance
 // counts. The pixel through the two translucent quads must be the CPU
-// blend of the far quad, then the near quad, over the ground. The same
-// test is done for two particles, in one draw call. The background of
+// blend of the particle behind them, then the far quad, then the near
+// quad, over the ground. The same test is done for two particles, with
+// one draw call for each run of the blend. The background of
 // the overlay must have its colour. When the device has GPU timestamps,
 // each render pass must have a time. It exits
 // with 0 (pass) or 1 (fail).
@@ -191,6 +194,9 @@ var models: ?sw_render.BoxModels = null;
 var glass: ?sw_render.Translucent = null;
 var sparks: ?sw_render.Particles = null;
 var spark_system: ?sw_render.ParticleSystem = null;
+/// The translucent quads and the particles in one far-to-near order, in
+/// one pass (REQ-GPU-041).
+var blend_pass: ?sw_render.SortedBlend = null;
 var spark_emitter: sw_render.ParticleEmitter = .{
     .position = .{ 4.5, 0.2, 1.5 },
     .rate = 60,
@@ -246,6 +252,17 @@ const glass_ground: [3]f32 = .{ -1.0, 0, 2.5 };
 /// `glass_ground`, at this part of the line.
 const glass_at = [3]f32{ 0.6, 0.4, 1.3 };
 const glass_color = [3][4]f32{ .{ 1, 0, 0, 0.5 }, .{ 0, 0, 1, 0.5 }, .{ 0, 1, 0, 0.8 } };
+
+/// The particle behind the red and blue quads: yellow at alpha 0.5, at
+/// this part of the line from the eye to `glass_ground` (REQ-GPU-041).
+const glass_spark_at: f32 = 0.8;
+const glass_spark_color: [4]f32 = .{ 1, 1, 0, 0.5 };
+
+fn glassAt(t: f32) [3]f32 {
+    var c: [3]f32 = undefined;
+    for (0..3) |i| c[i] = eye[i] + t * (glass_ground[i] - eye[i]);
+    return c;
+}
 
 /// A square quad of side 0.2 that faces +Z, at part `t` of the line from
 /// the eye to `glass_ground`.
@@ -387,11 +404,17 @@ const Callbacks = struct {
         spark_system = try sw_render.ParticleSystem.init(allocator, 256);
         sparks = try sw_render.Particles.init(allocator, g, .{ .color_format = p.hdr_format, .capacity = 256 });
         try sparks.?.addPass(.{ .color = p.hdr, .depth = depth });
+        // One order for both: the blend turns off the two passes above.
+        blend_pass = sw_render.SortedBlend.init(allocator, &glass.?, &sparks.?);
+        try blend_pass.?.addPass(.{ .color = p.hdr, .depth = depth });
         if (check_mode) {
             // The near particle first, so that only the sort gives the
             // correct blend.
             spark_system.?.spawn(.{ .pos = sparkAt(spark_at[1]), .size = 0.15, .color = spark_color[1], .life = 1000 });
             spark_system.?.spawn(.{ .pos = sparkAt(spark_at[0]), .size = 0.15, .color = spark_color[0], .life = 1000 });
+            // A particle behind the red and the blue translucent quads.
+            // The quads must blend over it (REQ-GPU-041).
+            spark_system.?.spawn(.{ .pos = glassAt(glass_spark_at), .size = 0.15, .color = glass_spark_color, .life = 1000 });
         }
         // The performance overlay draws on the screen after the post chain.
         overlay = try sw_gfx2d.Renderer.init(allocator, gpu, .{});
@@ -467,8 +490,7 @@ const Callbacks = struct {
             try l.setPointLights(&.{});
         }
         try l.update(f);
-        try glass.?.update(eye);
-        try sparks.?.update(&spark_system.?, sw_render.ParticleCamera.fromView(f.view, eye));
+        try blend_pass.?.update(&spark_system.?, sw_render.ParticleCamera.fromView(f.view, eye));
         if (try g.execute(f)) {
             if (comptime !builtin.cpu.arch.isWasm()) {
                 if (check_mode) try checkFrame(ctx, f);
@@ -484,6 +506,8 @@ const Callbacks = struct {
         timer = null;
         if (overlay) |*o| o.deinit();
         overlay = null;
+        if (blend_pass) |*b| b.deinit();
+        blend_pass = null;
         if (glass) |*gl| gl.deinit();
         glass = null;
         if (sparks) |*s| s.deinit();
@@ -830,8 +854,11 @@ fn checkGlass(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w:
     ground = sw_render.sky.applyFog(frame.sky, ground, distance(glass_ground, eye));
     const red_c: [3]f32 = .{ glass_color[0][0], glass_color[0][1], glass_color[0][2] };
     const blue_c: [3]f32 = .{ glass_color[1][0], glass_color[1][1], glass_color[1][2] };
+    const yellow_c: [3]f32 = .{ glass_spark_color[0], glass_spark_color[1], glass_spark_color[2] };
     const blend = sw_render.translucent.over;
-    const want = display(blend(blend(ground, red_c, glass_color[0][3]), blue_c, glass_color[1][3]));
+    // The particle behind the quads draws first (REQ-GPU-041).
+    const under = blend(ground, yellow_c, glass_spark_color[3]);
+    const want = display(blend(blend(under, red_c, glass_color[0][3]), blue_c, glass_color[1][3]));
     const xy = project(frame.view_proj, glass_ground, w, h);
     ok = expectPixel(step, "ground through the translucent quads", pixels, w, xy, want) and ok;
     const got = pixelAt(pixels, w, xy);
@@ -869,8 +896,11 @@ fn checkSparks(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w
     const near: [3]f32 = .{ spark_color[1][0], spark_color[1][1], spark_color[1][2] };
     const want = display(blend(blend(ground, far, spark_color[0][3]), near, spark_color[1][3]));
     ok = expectPixel(step, "ground through two particles", pixels, w, project(frame.view_proj, spark_ground, w, h), want) and ok;
-    if (sparks.?.draw_calls != 1) {
-        std.log.err("models: {s}: the particles used {d} draw calls, not 1", .{ step.name, sparks.?.draw_calls });
+    // One draw call for each run of the blend: the particles of a run draw
+    // in one call (REQ-GPU-024, REQ-GPU-041).
+    const b = &blend_pass.?;
+    if (b.draw_calls != b.runs.items.len or b.runs.items.len > 6) {
+        std.log.err("models: {s}: the blend used {d} draw calls for {d} runs", .{ step.name, b.draw_calls, b.runs.items.len });
         ok = false;
     }
     return ok;
@@ -884,7 +914,7 @@ fn checkOverlay(step: Step, pixels: []const u8, w: u32) bool {
     const want: [3]u8 = .{ @intFromFloat(@round(bg.r * 255)), @intFromFloat(@round(bg.g * 255)), @intFromFloat(@round(bg.b * 255)) };
     ok = expectPixel(step, "overlay background", pixels, w, .{ 9, 9 }, want) and ok;
     const t = if (timer) |*pt| pt else return ok;
-    for ([_][]const u8{ "scene", "sw_translucent", "sw_particles", "overlay" }) |name| {
+    for ([_][]const u8{ "scene", "sw_blend", "overlay" }) |name| {
         const ms = t.find(name) orelse {
             std.log.err("models: {s}: the pass timer has no time for the pass {s}", .{ step.name, name });
             ok = false;

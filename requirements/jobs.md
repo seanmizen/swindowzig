@@ -47,3 +47,22 @@ The worker pools of `sw_jobs`: native threads and Web Workers.
   - Test — `backends/wasm/worker-pool.test.ts` › the voxel chunk pool on
     real Web Workers, through the "jobs" imports
 - **Relations:** none
+
+## REQ-JOBS-003 — The Web Worker pool starts again a worker that stops with no event
+
+- **Status:** active
+- **Source:** agent:SWZ-5
+- **Origin:** #5
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** The Web Worker pool shall start again a worker that has
+  jobs in flight and sends no reply for `STALL_TIMEOUT_MS` (5 s), with the
+  same steps as after an `error` event: the Module, the Hello, the edits,
+  then the jobs in flight.
+- **Rationale:** A browser can stop a worker with no event, for example
+  when the worker runs out of memory. Without this rule, the jobs of that
+  worker stay in flight, and their chunks never load.
+- **Verification:**
+  - Test — `backends/wasm/worker-pool.test.ts` › "stall: a worker that
+    stops with no event starts again, and its jobs run"
+- **Relations:** depends-on REQ-JOBS-002

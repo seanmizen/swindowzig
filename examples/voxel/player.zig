@@ -5,6 +5,11 @@ const BlockGetter = chunk_mod.BlockGetter;
 const mesher_mod = @import("sw_voxel").mesher;
 const VoxelVertex = mesher_mod.VoxelVertex;
 
+/// True when the player can move through `block`: air and water.
+fn passable(block: chunk_mod.BlockType) bool {
+    return block == .air or block == .water;
+}
+
 pub const PLAYER_RADIUS: f32 = 0.3;
 pub const PLAYER_HEIGHT: f32 = 1.8;
 pub const EYE_HEIGHT: f32 = 1.6;
@@ -166,7 +171,7 @@ fn isOnGround(getter: BlockGetter, pos: [3]f32) bool {
     while (xi <= x1) : (xi += 1) {
         var zi = z0;
         while (zi <= z1) : (zi += 1) {
-            if (getter.getBlock(xi, by, zi) != .air) return true;
+            if (!passable(getter.getBlock(xi, by, zi))) return true;
         }
     }
     return false;
@@ -188,7 +193,7 @@ fn resolveY(getter: BlockGetter, pos: [3]f32, new_y: f32) f32 {
         while (xi <= x1) : (xi += 1) {
             var zi = z0;
             while (zi <= z1) : (zi += 1) {
-                if (getter.getBlock(xi, by, zi) != .air) {
+                if (!passable(getter.getBlock(xi, by, zi))) {
                     // Block top is at by+1; stand feet there.
                     return @as(f32, @floatFromInt(by)) + 1.0;
                 }
@@ -201,7 +206,7 @@ fn resolveY(getter: BlockGetter, pos: [3]f32, new_y: f32) f32 {
         while (xi <= x1) : (xi += 1) {
             var zi = z0;
             while (zi <= z1) : (zi += 1) {
-                if (getter.getBlock(xi, head_y, zi) != .air) {
+                if (!passable(getter.getBlock(xi, head_y, zi))) {
                     // Block bottom is at head_y; feet go to head_y - HEIGHT.
                     return @as(f32, @floatFromInt(head_y)) - PLAYER_HEIGHT;
                 }
@@ -226,7 +231,7 @@ fn resolveX(getter: BlockGetter, pos: [3]f32, new_x: f32) f32 {
         while (yi <= y1) : (yi += 1) {
             var zi = z0;
             while (zi <= z1) : (zi += 1) {
-                if (getter.getBlock(bx, yi, zi) != .air) {
+                if (!passable(getter.getBlock(bx, yi, zi))) {
                     return @as(f32, @floatFromInt(bx)) - PLAYER_RADIUS;
                 }
             }
@@ -237,7 +242,7 @@ fn resolveX(getter: BlockGetter, pos: [3]f32, new_x: f32) f32 {
         while (yi <= y1) : (yi += 1) {
             var zi = z0;
             while (zi <= z1) : (zi += 1) {
-                if (getter.getBlock(bx, yi, zi) != .air) {
+                if (!passable(getter.getBlock(bx, yi, zi))) {
                     return @as(f32, @floatFromInt(bx + 1)) + PLAYER_RADIUS;
                 }
             }
@@ -261,7 +266,7 @@ fn resolveZ(getter: BlockGetter, pos: [3]f32, new_z: f32) f32 {
         while (yi <= y1) : (yi += 1) {
             var xi = x0;
             while (xi <= x1) : (xi += 1) {
-                if (getter.getBlock(xi, yi, bz) != .air) {
+                if (!passable(getter.getBlock(xi, yi, bz))) {
                     return @as(f32, @floatFromInt(bz)) - PLAYER_RADIUS;
                 }
             }
@@ -272,7 +277,7 @@ fn resolveZ(getter: BlockGetter, pos: [3]f32, new_z: f32) f32 {
         while (yi <= y1) : (yi += 1) {
             var xi = x0;
             while (xi <= x1) : (xi += 1) {
-                if (getter.getBlock(xi, yi, bz) != .air) {
+                if (!passable(getter.getBlock(xi, yi, bz))) {
                     return @as(f32, @floatFromInt(bz + 1)) + PLAYER_RADIUS;
                 }
             }

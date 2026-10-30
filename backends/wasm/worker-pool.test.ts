@@ -50,6 +50,10 @@ const CHUNK_W = 16;
 const BLOCK_AIR = 0;
 const BLOCK_STONE = 3;
 const BLOCK_GLOWSTONE = 5;
+/** examples/voxel/content.zig: a full fluid cell (REQ-VOXEL-014). */
+const BLOCK_WATER = 10;
+/** examples/voxel/content.zig: a translucent block (REQ-VOXEL-029). */
+const BLOCK_GLASS = 11;
 /** The memory test: the chunks to walk, and the growth that it allows. */
 const WALK_CHUNKS = 24;
 const MEMORY_GROWTH_LIMIT = 1 << 20;
@@ -104,6 +108,8 @@ interface Outcome {
   editsWhileJobsRan: number;
   /** The check of the mesh uploads at the end of the run (C5). */
   uploads: UploadReport;
+  /** Translucent quad centres that main read (REQ-VOXEL-030). */
+  centerBytes: number;
 }
 
 /**
@@ -173,6 +179,7 @@ async function run(
         : null,
       editsWhileJobsRan,
       uploads,
+      centerBytes: app.held.stats.centerBytes,
     };
   } finally {
     app.stop();
@@ -252,6 +259,59 @@ describe('chunk worker pool (real Bun Web Workers)', () => {
   );
 
   test(
+    'fluid: water gives a fluid stream that goes to the GPU from the held bytes (REQ-VOXEL-027)',
+    async () => {
+      // A small pool of water in the air of the spawn chunk and its +x
+      // neighbour, over the chunk border.
+      const water: Edit[] = [];
+      for (const x of [14, 15, 0, 1])
+        for (const z of [4, 5])
+          water.push({
+            dcx: x < 8 ? 1 : 0,
+            dcz: 0,
+            x,
+            y: 120,
+            z,
+            block: BLOCK_WATER,
+          });
+      const inline = await run(null, water);
+      const o = await run({ size: 2 }, water);
+      expectWorkersOnly(o);
+      expectSameState(o, inline);
+      // Each chunk with water has one more held write: its fluid stream.
+      expect(o.uploads.fluidWrites).toBeGreaterThanOrEqual(2);
+      expect(inline.uploads.fluidWrites).toBe(0);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    'translucent: glass gives a translucent stream from the held bytes, and main reads only the centres (REQ-VOXEL-030)',
+    async () => {
+      const glass: Edit[] = [];
+      for (const x of [15, 0])
+        for (const y of [120, 121])
+          glass.push({
+            dcx: x < 8 ? 1 : 0,
+            dcz: 0,
+            x,
+            y,
+            z: 7,
+            block: BLOCK_GLASS,
+          });
+      const inline = await run(null, glass);
+      const o = await run({ size: 2 }, glass);
+      expectWorkersOnly(o);
+      expectSameState(o, inline);
+      expect(o.uploads.translucentWrites).toBeGreaterThanOrEqual(2);
+      // Main read the centres (12 bytes for each quad), and no quad.
+      expect(o.centerBytes).toBeGreaterThan(0);
+      expect(o.centerBytes % 12).toBe(0);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
     'restart: a worker that stops during the load starts again, and its jobs run',
     async () => {
       const ref = await inlineReference();
@@ -262,6 +322,27 @@ describe('chunk worker pool (real Bun Web Workers)', () => {
       });
       expect(o.pool?.restarts).toBeGreaterThanOrEqual(3);
       expect(o.pool?.alive).toBe(3);
+      expectWorkersOnly(o);
+      expectSameState(o, ref);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    'stall: a worker that stops with no event starts again, and its jobs run',
+    async () => {
+      const ref = await inlineReference();
+      const o = await run(
+        { size: 2, stallTimeoutMs: 1_000 },
+        EDITS,
+        (app, frame) => {
+          // The worker ignores its messages from now: no error, no close, no
+          // reply. Only the stall timer can find it.
+          if (frame === 3) app.pool?.hang(0);
+        },
+      );
+      expect(o.pool?.restarts).toBeGreaterThanOrEqual(1);
+      expect(o.pool?.alive).toBe(2);
       expectWorkersOnly(o);
       expectSameState(o, ref);
     },

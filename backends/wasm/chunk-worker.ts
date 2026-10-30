@@ -13,13 +13,16 @@
 // 'chunk <stage> <cx>,<cz>' (C12).
 //
 // This file has no imports, so the dev server can send it as one
-// transpiled file, and `bun build` makes one small bundle.
+// transpiled file, and RSBuild makes one small bundle (rsbuild.config.ts).
 
 export type ToWorker =
   | { type: 'init'; module: WebAssembly.Module; slot: number }
   | { type: 'msg'; buf: ArrayBuffer }
   // Tests only: the worker throws, as a worker that stops does.
-  | { type: 'crash' };
+  | { type: 'crash' }
+  // Tests only: the worker ignores all later messages, as a worker that
+  // stops with no event does.
+  | { type: 'hang' };
 
 export type FromWorker =
   | {
@@ -62,6 +65,8 @@ const scope = self as unknown as WorkerScope;
 let wasm: ChunkExports | null = null;
 let slot = 0;
 let jobs = 0;
+/** Tests only: true after a 'hang' message. The worker then ignores all messages. */
+let hung = false;
 const decoder = new TextDecoder();
 
 function instantiate(module: WebAssembly.Module): ChunkExports {
@@ -115,6 +120,7 @@ function handle(w: ChunkExports, buf: ArrayBuffer): void {
 }
 
 scope.onmessage = (event: MessageEvent<ToWorker>): void => {
+  if (hung) return;
   const data = event.data;
   switch (data.type) {
     case 'init': {
@@ -144,5 +150,8 @@ scope.onmessage = (event: MessageEvent<ToWorker>): void => {
     }
     case 'crash':
       throw new Error('chunk worker: crash for a test');
+    case 'hang':
+      hung = true;
+      return;
   }
 };

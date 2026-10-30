@@ -62,6 +62,22 @@ const QUERY_TYPES: Record<number, GPUQueryType> = {
   2: 'timestamp',
 };
 
+// Key = `viewDimensionCode` in libs/sw_gpu/src/types.zig (REQ-GPU-034).
+// `createTextureView` and `createBindGroupLayout` both use this map. 0 is
+// "the dimension of the texture", and WebGPU wants `undefined` for it.
+export const VIEW_DIMENSIONS: Record<
+  number,
+  GPUTextureViewDimension | undefined
+> = {
+  0: undefined,
+  1: '1d',
+  2: '2d',
+  3: '2d-array',
+  4: 'cube',
+  5: 'cube-array',
+  6: '3d',
+};
+
 // Index = the value of `CompareFunction` in libs/sw_gpu/src/types.zig.
 const COMPARE_FUNCTIONS: GPUCompareFunction[] = [
   'never',
@@ -406,20 +422,8 @@ function createWebGPUImports(
     ): number => {
       const texture = getHandle<GPUTexture>(textureHandle);
 
-      // Zig passes 0 to mean "use the texture's natural dimension" — that
-      // should become JS `undefined`, NOT the string 'undefined'. The old
-      // map returned a literal string which WebGPU rejects as "not a valid
-      // enum value of type GPUTextureViewDimension".
-      const dimensionMap: Record<number, GPUTextureViewDimension | undefined> =
-        {
-          0: undefined,
-          1: '1d',
-          2: '2d',
-          3: '2d-array',
-          4: 'cube',
-          5: 'cube-array',
-          6: '3d',
-        };
+      // 0 is "the dimension of the texture": VIEW_DIMENSIONS gives
+      // `undefined`, not the string 'undefined'.
 
       const aspectMap: Record<number, GPUTextureAspect> = {
         0: 'all',
@@ -435,7 +439,7 @@ function createWebGPUImports(
       const layerCount = arrayLayerCount >>> 0;
       const view = texture.createView({
         format: format ? TEXTURE_FORMAT_MAP[format] : undefined,
-        dimension: dimensionMap[dimension],
+        dimension: VIEW_DIMENSIONS[dimension],
         aspect: aspectMap[aspect] || 'all',
         baseMipLevel: baseMipLevel >>> 0,
         mipLevelCount: mipCount === 0xffffffff ? undefined : mipCount,
@@ -682,17 +686,9 @@ function createWebGPUImports(
             4: 'sint',
             5: 'uint',
           };
-          const viewDimensionMap: Record<number, GPUTextureViewDimension> = {
-            0: '1d',
-            1: '2d',
-            2: '2d-array',
-            3: 'cube',
-            4: 'cube-array',
-            5: '3d',
-          };
           entry.texture = {
             sampleType: sampleTypeMap[textureSampleType],
-            viewDimension: viewDimensionMap[textureViewDimension],
+            viewDimension: VIEW_DIMENSIONS[textureViewDimension],
             multisampled: textureMultisampled,
           };
         }
@@ -704,18 +700,10 @@ function createWebGPUImports(
             2: 'read-only',
             3: 'read-write',
           };
-          const viewDimensionMap: Record<number, GPUTextureViewDimension> = {
-            0: '1d',
-            1: '2d',
-            2: '2d-array',
-            3: 'cube',
-            4: 'cube-array',
-            5: '3d',
-          };
           entry.storageTexture = {
             access: accessMap[storageAccess],
-            format: storageFormat as GPUTextureFormat,
-            viewDimension: viewDimensionMap[storageViewDimension],
+            format: TEXTURE_FORMAT_MAP[storageFormat],
+            viewDimension: VIEW_DIMENSIONS[storageViewDimension],
           };
         }
 

@@ -1,0 +1,115 @@
+# The cow demo script (REQ-DEMO-002). Each step changes one setting.
+# Line: <tick> <command> [arguments]. +N: N ticks after the line before.
+# Commands: caption <text>, set <setting> <value>, checkpoint <name>, end.
+# The settings are the fields of CowSettings (demos/common/cow_scene.zig).
+
+# Tick 0 sets every setting, so each loop starts the same.
+0 set aa off
+0 set meshing greedy
+0 set wireframe off
+0 set tonemap aces
+0 set exposure 1.0
+0 set palette classic
+0 set time 0.4
+0 set shadows on
+0 set ao on
+0 set fog on
+0 set sky on
+0 set spin 0.5
+
+0 caption Anti-aliasing: off
+0 set aa off
+100 checkpoint aa_off
+
+120 caption Anti-aliasing: FXAA
+120 set aa fxaa
+220 checkpoint aa_fxaa
+
+240 caption Anti-aliasing: MSAA 4x
+240 set aa msaa
+340 checkpoint aa_msaa
+
+360 caption Meshing: naive, one quad per face
+360 set aa fxaa
+360 set meshing naive
+360 set wireframe on
+460 checkpoint mesh_naive
+
+480 caption Meshing: greedy, merged quads
+480 set meshing greedy
+580 checkpoint mesh_greedy
+
+600 caption Tonemap: clamp
+600 set wireframe off
+600 set tonemap clamp
+700 checkpoint tonemap_clamp
+
+720 caption Tonemap: Reinhard
+720 set tonemap reinhard
+820 checkpoint tonemap_reinhard
+
+840 caption Tonemap: ACES
+840 set tonemap aces
+940 checkpoint tonemap_aces
+
+960 caption Exposure: 0.5
+960 set exposure 0.5
+1060 checkpoint exposure_low
+
+1080 caption Exposure: 2.0
+1080 set exposure 2.0
+1180 checkpoint exposure_high
+
+1200 caption Palette: highland
+1200 set exposure 1.0
+1200 set palette highland
+1300 checkpoint palette_highland
+
+1320 caption Palette: neon
+1320 set palette neon
+1420 checkpoint palette_neon
+
+1440 caption Time of day: morning
+1440 set palette classic
+1440 set time 0.3
+1540 checkpoint time_morning
+
+1560 caption Time of day: sunset
+1560 set time 0.72
+1660 checkpoint time_sunset
+
+1680 caption Time of day: night
+1680 set time 0.95
+1780 checkpoint time_night
+
+1800 caption Shadows: off
+1800 set time 0.4
+1800 set shadows off
+1900 checkpoint shadows_off
+
+1920 caption Shadows: on
+1920 set shadows on
+2020 checkpoint shadows_on
+
+2040 caption Ambient occlusion: off
+2040 set ao off
+2140 checkpoint ao_off
+
+2160 caption Ambient occlusion: on
+2160 set ao on
+2260 checkpoint ao_on
+
+2280 caption Fog: off
+2280 set fog off
+2380 checkpoint fog_off
+
+2400 caption Sky: off
+2400 set sky off
+2500 checkpoint sky_off
+
+2520 caption Fog and sky: on
+2520 set fog on
+2520 set sky on
+2620 checkpoint fog_sky_on
+
+2640 end

@@ -23,11 +23,13 @@ The repository carries its Yarn 4 release in `.yarn/releases`, and
 `.yarnrc.yml` names it in `yarnPath`. Any system `yarn` runs that release,
 Yarn 1 included. Do not use corepack. Yarn installs the hooks and Biome. Zig
 (the version in `build.zig.zon`), SDL2, wgpu-native and Bun come from the
-system: see `README.md`.
+system: see `docs/overview.md`.
 
 ## Hard rules
 
 - **Yarn 4 only.** Never `npm install` or `bun install`. Bun is a runtime only.
+  Bundling belongs to RSBuild (`rsbuild.config.ts`, `yarn build:js`), never
+  `bun build`.
 - **Before you finish:** run `yarn fix` (Biome), `zig build test` and
   `zig build web`. Fix every error. A change to the voxel example also runs
   the mandatory headless tests below.
@@ -121,6 +123,11 @@ swindowzig/
 │   ├── sky/            # sw_render sky, fog, time of day, clouds and weather. `--check` tests it
 │   ├── models/         # sw_render instanced box models, the first-person pass, shadows and a point light. `--check` tests it
 │   └── voxel/          # Voxel demo on sw_voxel: content.zig, world_gen, renderer
+├── demos/              # Showcase demos (-Ddemo=<name>): scripts, capture, frame hashes. See demos/README.md
+│   ├── common/         # Shared frame (demo.zig), CowScene, script, mesher
+│   ├── cow/            # The turning cow; one setting at a time
+│   ├── menu/           # A full sw_ui game menu over the cow; script input commands
+│   └── shooter/        # Offline first-person fight in a snowy arena; seeded bots
 └── backends/
     └── wasm/           # Web platform boot + dev server
 ```

@@ -41,6 +41,16 @@ pub const Block = enum(u8) {
     /// A half block: the lower half of the cell. It has a baked model
     /// (`model`), so the model mesher meshes it. Hotbar slot 5 places it.
     slab = 9,
+    /// Still water: a full fluid cell (REQ-VOXEL-014). The fluid mesher
+    /// of sw_voxel meshes it, and the fluid pass of the demo draws it
+    /// translucent (REQ-VOXEL-028). The generator puts it in only with
+    /// `GenConfig.water` (`--water=on`). `--place-block=water` places it.
+    water = 10,
+    /// Glass: a translucent block (sw_voxel REQ-VOXEL-029). The demo draws
+    /// its faces with sw_render `Translucent`, sorted far to near
+    /// (REQ-VOXEL-031). The generator does not place it.
+    /// `--place-block=glass` places it.
+    glass = 11,
     debug_marker = 99,
 };
 const BlockType = Block;
@@ -55,12 +65,37 @@ pub fn emission(block: Block) u8 {
 
 /// The light that a cell of `block` stops, 0 to 15. Air and the half block
 /// let all light through, so the face of a full cube next to a half block
-/// is not dark. All other blocks stop all light.
+/// is not dark. Water also lets all light through: with each opacity 0 or
+/// 15, the light stage keeps its fast queue (`light.ordered`). All other
+/// blocks stop all light.
 pub fn opacity(block: Block) u8 {
     return switch (block) {
-        .air, .slab => 0,
+        .air, .slab, .water, .glass => 0,
         else => 15,
     };
+}
+
+/// The fluid of `block` (sw_voxel REQ-VOXEL-014). Water is fluid 1, a
+/// full cell.
+pub fn fluid(block: Block) ?sw_voxel.fluid.Level {
+    return switch (block) {
+        .water => .{ .fluid = 1, .level = sw_voxel.fluid.MAX_LEVEL },
+        else => null,
+    };
+}
+
+/// The colour of a translucent block (sw_voxel REQ-VOXEL-029): glass is a
+/// pale blue, mostly clear.
+pub fn translucent(block: Block) ?[4]u8 {
+    return switch (block) {
+        .glass => .{ 190, 225, 245, 100 },
+        else => null,
+    };
+}
+
+/// True when the player can walk through `block`: air and water.
+pub fn isPassable(block: Block) bool {
+    return block == .air or block == .water;
 }
 
 const model_mod = sw_voxel.model;
@@ -156,7 +191,8 @@ pub const GenConfig = world_gen.WorldGenConfig;
 /// The length of a `GenConfig` in the Hello message, without the seed.
 ///
 ///   0  u8   preset
-///   1  u8×3 reserved, 0
+///   1  u8   flags: bit 0 = water (`GenConfig.water`)
+///   2  u8×2 reserved, 0
 ///   4  i32  sea level
 ///   8  i32  terrain height min
 ///   12 i32  terrain height max
@@ -169,7 +205,8 @@ pub const GEN_CONFIG_LEN = 32;
 /// Write `config`, without the seed, into `out`. Little-endian.
 pub fn encodeGenConfig(config: GenConfig, out: *[GEN_CONFIG_LEN]u8) void {
     out[0] = @backingInt(config.preset);
-    @memset(out[1..4], 0);
+    out[1] = @intFromBool(config.water);
+    @memset(out[2..4], 0);
     std.mem.writeInt(i32, out[4..8], config.sea_level, .little);
     std.mem.writeInt(i32, out[8..12], config.terrain_height_min, .little);
     std.mem.writeInt(i32, out[12..16], config.terrain_height_max, .little);
@@ -183,9 +220,11 @@ pub fn encodeGenConfig(config: GenConfig, out: *[GEN_CONFIG_LEN]u8) void {
 /// Hello message holds it.
 pub fn decodeGenConfig(bytes: *const [GEN_CONFIG_LEN]u8) error{BadField}!GenConfig {
     const preset = std.enums.fromInt(world_gen.Preset, bytes[0]) orelse return error.BadField;
-    for (bytes[1..4]) |b| if (b != 0) return error.BadField;
+    if (bytes[1] & ~@as(u8, 1) != 0) return error.BadField;
+    for (bytes[2..4]) |b| if (b != 0) return error.BadField;
     return .{
         .preset = preset,
+        .water = bytes[1] & 1 != 0,
         .sea_level = std.mem.readInt(i32, bytes[4..8], .little),
         .terrain_height_min = std.mem.readInt(i32, bytes[8..12], .little),
         .terrain_height_max = std.mem.readInt(i32, bytes[12..16], .little),
@@ -347,6 +386,24 @@ fn fillTerrain(dense: *DenseBlocks, cx: i32, cz: i32, config: world_gen.WorldGen
         }
     }
 
+    // Water (REQ-VOXEL-028): with `config.water`, each column with its
+    // surface below the sea level gets water from the surface up to the
+    // sea level. The default config has no water, so the default terrain
+    // does not change.
+    if (config.water) {
+        var wx_idx: i32 = 0;
+        while (wx_idx < CHUNK_W) : (wx_idx += 1) {
+            var wz_idx: i32 = 0;
+            while (wz_idx < CHUNK_W) : (wz_idx += 1) {
+                const surface = columns.get(cx * CHUNK_W + wx_idx, cz * CHUNK_W + wz_idx).height;
+                var wy: i32 = surface + 1;
+                while (wy <= config.sea_level and wy < CHUNK_H) : (wy += 1) {
+                    if (getDense(dense, wx_idx, wy, wz_idx) == .air) putDense(dense, wx_idx, wy, wz_idx, .water);
+                }
+            }
+        }
+    }
+
     // Tree planter: place oak trees seeded from world coordinates.
     // Searches a halo around the chunk so canopy from trees in adjacent
     // chunks is correctly placed here as well.
@@ -405,18 +462,59 @@ fn fillTerrain(dense: *DenseBlocks, cx: i32, cz: i32, config: world_gen.WorldGen
 }
 
 test "a GenConfig round trip keeps each field but the seed" {
-    for ([_]world_gen.Preset{ .flatland, .hilly }) |preset| {
+    for ([_]world_gen.Preset{ .flatland, .hilly }, [_]bool{ false, true }) |preset, water| {
         var c = world_gen.presetConfig(preset);
         c.seed = 99;
+        c.water = water;
         var bytes: [GEN_CONFIG_LEN]u8 = undefined;
         encodeGenConfig(c, &bytes);
         var got = try decodeGenConfig(&bytes);
         try std.testing.expectEqual(@as(u64, 0), got.seed);
         got.seed = c.seed;
         try std.testing.expectEqual(c, got);
+        bytes[1] = 2;
+        try std.testing.expectError(error.BadField, decodeGenConfig(&bytes));
         bytes[0] = 200;
         try std.testing.expectError(error.BadField, decodeGenConfig(&bytes));
     }
+}
+
+test "water fills the low columns to the sea level only with the water flag (REQ-VOXEL-028)" {
+    const dense = try std.testing.allocator.create(DenseBlocks);
+    defer std.testing.allocator.destroy(dense);
+    var c = world_gen.presetConfig(.hilly);
+    // Find a column below the sea level.
+    var low: ?[2]i32 = null;
+    var wx: i32 = -512;
+    search: while (wx < 512) : (wx += 4) {
+        var wz: i32 = -512;
+        while (wz < 512) : (wz += 4) {
+            if (world_gen.sampleColumn(wx, wz, c).height < c.sea_level) {
+                low = .{ wx, wz };
+                break :search;
+            }
+        }
+    }
+    const found = low != null;
+    if (low) |p| {
+        const cx = @divFloor(p[0], CHUNK_W);
+        const cz = @divFloor(p[1], CHUNK_W);
+        c.water = true;
+        fillTerrain(dense, cx, cz, c);
+        var waters: usize = 0;
+        for (dense, 0..) |b, i| {
+            if (b != .water) continue;
+            waters += 1;
+            // Each water cell is at or below the sea level.
+            const y: i32 = @intCast((i / CHUNK_W) % CHUNK_H);
+            try std.testing.expect(y <= c.sea_level);
+        }
+        try std.testing.expect(waters > 0);
+        c.water = false;
+        fillTerrain(dense, cx, cz, c);
+        for (dense) |b| try std.testing.expect(b != .water);
+    }
+    try std.testing.expect(found);
 }
 
 test {

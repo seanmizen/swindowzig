@@ -10,10 +10,12 @@
 ## Status: the CI gate (current)
 
 The `swindowzig-check` workflow (`.github/workflows/swindowzig-check.yml`) runs
-on each PR to `main` that touches the engine, and on push to `main`. On
-an Ubuntu runner with lavapipe it runs `zig build test`, the web build, and
-`run_headless_regressions.sh`. A scene that does not match its golden fails
-the job.
+on each PR to `main` that touches the engine, and on push to `main`. Its
+jobs run at the same time on Ubuntu runners. The `goldens` job runs
+`run_headless_regressions.sh` with lavapipe. A scene that does not match its
+golden fails that job. The `headless` job runs each TAS script in
+`examples/voxel/tests/` and `tests/cave_cull.sh`. Other jobs run
+`zig build test`, the web builds and the browser tests.
 
 - The goldens are in `examples/voxel/assets/goldens/lavapipe/`. CI makes them.
   The Metal goldens went stale with no check, so this change deleted them. On macOS
@@ -122,8 +124,10 @@ ao_corners_moore             PASS
 cave_skylight_none           PASS
 cave_skylight_skylight       PASS
 dig_relight                  PASS
+water_pool                   PASS
+glass_blocks                 PASS
 
-Summary: 10 passed, 0 failed, 0 missing (backend=metal)
+Summary: 12 passed, 0 failed, 0 missing (backend=metal)
 ```
 
 ### Verified backends
@@ -229,7 +233,7 @@ Summary: 10 passed, 0 failed, 0 missing (backend=metal)
   produces normalized + amplified diffs via ImageMagick, prints differing-pixel
   counts via inline Python.
 - Crucially: **prints stats only, does not gate.** The script's header comment
-  explicitly says "see README.md TODO: resolve headless GPU path before making
+  explicitly says "see docs/overview.md TODO: resolve headless GPU path before making
   this mandatory". This doc is the resolution of that TODO.
 - It works today on a developer's mac (a real window flashes up briefly during
   each capture), and would presumably work on a Linux dev box with X11/Wayland.

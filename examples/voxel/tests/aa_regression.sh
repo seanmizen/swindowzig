@@ -4,7 +4,7 @@
 # Builds voxel, captures three deterministic frames (none / fxaa / msaa4) from
 # the flatland TAS, produces both normalized and amplified diffs, and prints
 # pixel-coverage stats. Prints results only — does NOT gate on thresholds yet
-# (see README.md TODO: resolve headless GPU path before making this mandatory).
+# (see docs/overview.md TODO: resolve headless GPU path before making this mandatory).
 #
 # Usage:
 #   ./examples/voxel/tests/aa_regression.sh

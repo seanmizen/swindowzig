@@ -13,6 +13,7 @@ pub const gamepad = @import("gamepad.zig");
 pub const WindowInfo = platform.WindowInfo;
 pub const WindowMode = platform.WindowMode;
 pub const CursorMode = platform.CursorMode;
+pub const NativeWindow = platform.NativeWindow;
 pub const Backend = backend.Backend;
 
 pub const storageGet = storage.storageGet;

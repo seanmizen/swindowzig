@@ -67,7 +67,9 @@ Prefixes are globally unique. Add a row when you add a file.
 | `A11Y` | `requirements/a11y.md` | Access for assistive technology (screen readers) to a swindowzig UI |
 | `ASSETS` | `requirements/assets.md` | Data from `sw_assets`: zip archives, files from the player and the data cache |
 | `AUDIO` | `requirements/audio.md` | Sound output from `sw_audio`: the waveform API, samples, streams, the mixer and 3D sound |
+| `BUILD` | `requirements/build.md` | The Zig build of swindowzig: the steps and functions that a dependent package uses, and the targets |
 | `CAMERA` | `requirements/camera.md` | The camera controller of `sw_math`: modes, smoothing, field of view |
+| `DEMO` | `requirements/demo.md` | The showcase demos in `demos/`: scripts, frame hashes and recordings |
 | `GPU` | `requirements/gpu.md` | Textures, samplers and other resources of `sw_gpu` |
 | `INPUT` | `requirements/input.md` | Keyboard, mouse, wheel and gamepad input from the platform backends |
 | `NET` | `requirements/net.md` | The WebSocket client of `sw_net`: events, frames and the reconnect |

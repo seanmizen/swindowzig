@@ -101,6 +101,20 @@
 //!       Give it an `opacity` and a `collision` too: the defaults are
 //!       the values of a full cube.
 //!
+//! The content module can declare translucent blocks (REQ-VOXEL-029).
+//! With no declaration, no block is translucent:
+//!
+//!   pub fn translucent(block: Block) ?[4]u8
+//!       The colour (red, green, blue, alpha, 0 to 255, straight alpha)
+//!       of the translucent block `block`, or null. A translucent block is
+//!       a cell with 6 faces in the translucent stream of the mesh
+//!       (`translucent.generate`). It is not a full cube: the greedy
+//!       mesher skips it, and the faces of the blocks next to it show. It
+//!       does not darken AO. sw_voxel calls it at comptime for each block
+//!       type, so the result must be comptime-known. A translucent block
+//!       must not have a model and must not be a fluid. Give it an
+//!       `opacity` too: the default is the value of a full cube.
+//!
 //! The content module can declare the height of the world. With no
 //! declaration, the world is y 0 to 255:
 //!
@@ -155,6 +169,12 @@ pub fn collision(comptime block: Block) ?[]const collision_mod.CellBox {
 /// only: `fluid.zig` makes a table.
 pub fn fluid(comptime block: Block) ?fluid_mod.Level {
     return if (@hasDecl(c, "fluid")) c.fluid(block) else null;
+}
+
+/// The colour of the translucent block `block`, or null (REQ-VOXEL-029).
+/// Comptime only: `translucent.zig` makes a table.
+pub fn translucent(comptime block: Block) ?[4]u8 {
+    return if (@hasDecl(c, "translucent")) c.translucent(block) else null;
 }
 
 /// True when the content gives tint colours (REQ-VOXEL-009).

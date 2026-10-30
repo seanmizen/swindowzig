@@ -1,0 +1,417 @@
+# shooter: a shootout in a snowy arena, offline (REQ-DEMO-020).
+#
+# The script plays the player with input commands (REQ-DEMO-008): `key`
+# and `mouse`. The bots use a seeded random number generator on
+# the fixed timestep, so each run gives the same fight and the same frames
+# (REQ-DEMO-021). A change to the fight or to the arena moves the bots:
+# then the turns and the shots below must change too. `set trace on`
+# writes the places and the aim angles to the log.
+#
+# Each caption names the engine feature that shows. The checkpoints hash
+# the frames for scripts/demos-check.sh (REQ-DEMO-003).
+0 set time 0.37
+0 set snow on
+0 set clouds on
+0 set fog on
+0 set shadows on
+0 set exposure 0.8
+0 set bots_hold on
+0 set god off
+0 set follow -1
+0 set bot_damage 0.2
+0 set bot_error 0.06
+0 set trace off
+0 caption A shootout in a snowy arena, offline
+150 caption Falling snow and a cloud layer
+150 mouse move 0.000 -0.233
+151 mouse move 0.000 -0.929
+152 mouse move 0.000 -2.086
+153 mouse move 0.000 -3.698
+154 mouse move 0.000 -5.757
+155 mouse move 0.000 -8.252
+156 mouse move 0.000 -11.173
+157 mouse move 0.000 -14.504
+158 mouse move 0.000 -18.230
+159 mouse move 0.000 -22.332
+160 mouse move 0.000 -26.790
+161 mouse move 0.000 -31.583
+162 mouse move 0.000 -36.687
+163 mouse move 0.000 -42.077
+164 mouse move 0.000 -47.727
+165 mouse move 0.000 -53.610
+166 mouse move 0.000 -59.697
+167 mouse move 0.000 -65.957
+168 mouse move 0.000 -72.362
+169 mouse move 0.000 -78.879
+170 mouse move 0.000 -85.477
+171 mouse move 0.000 -92.123
+172 mouse move 0.000 -98.786
+173 mouse move 0.000 -105.432
+174 mouse move 0.000 -112.030
+175 mouse move 0.000 -118.547
+176 mouse move 0.000 -124.952
+177 mouse move 0.000 -131.212
+178 mouse move 0.000 -137.299
+179 mouse move 0.000 -143.182
+180 mouse move 0.000 -148.832
+181 mouse move 0.000 -154.222
+182 mouse move 0.000 -159.326
+183 mouse move 0.000 -164.119
+184 mouse move 0.000 -168.577
+185 mouse move 0.000 -172.679
+186 mouse move 0.000 -176.405
+187 mouse move 0.000 -179.736
+188 mouse move 0.000 -182.657
+189 mouse move 0.000 -185.152
+190 mouse move 0.000 -187.211
+191 mouse move 0.000 -188.823
+192 mouse move 0.000 -189.980
+193 mouse move 0.000 -190.677
+194 mouse move 0.000 -190.909
+240 checkpoint snow_clouds
+270 mouse move 0.000 -190.615
+271 mouse move 0.000 -189.734
+272 mouse move 0.000 -188.272
+273 mouse move 0.000 -186.237
+274 mouse move 0.000 -183.643
+275 mouse move 0.000 -180.505
+276 mouse move 0.000 -176.843
+277 mouse move 0.000 -172.679
+278 mouse move 0.000 -168.039
+279 mouse move 0.000 -162.951
+280 mouse move 0.000 -157.447
+281 mouse move 0.000 -151.561
+282 mouse move 0.000 -145.329
+283 mouse move 0.000 -138.790
+284 mouse move 0.000 -131.983
+285 mouse move 0.000 -124.952
+286 mouse move 0.000 -117.738
+287 mouse move 0.000 -110.387
+288 mouse move 0.000 -102.944
+289 mouse move 0.000 -95.455
+290 mouse move 0.000 -87.965
+291 mouse move 0.000 -80.522
+292 mouse move 0.000 -73.171
+293 mouse move 0.000 -65.957
+294 mouse move 0.000 -58.926
+295 mouse move 0.000 -52.119
+296 mouse move 0.000 -45.580
+297 mouse move 0.000 -39.348
+298 mouse move 0.000 -33.462
+299 mouse move 0.000 -27.958
+300 mouse move 0.000 -22.870
+301 mouse move 0.000 -18.230
+302 mouse move 0.000 -14.066
+303 mouse move 0.000 -10.404
+304 mouse move 0.000 -7.266
+305 mouse move 0.000 -4.672
+306 mouse move 0.000 -2.637
+307 mouse move 0.000 -1.175
+308 mouse move 0.000 -0.294
+309 mouse move 0.000 -0.000
+330 caption Fog and the sky: the far wall fades into the haze
+330 mouse move -0.415 -0.011
+331 mouse move -1.659 -0.044
+332 mouse move -3.725 -0.099
+333 mouse move -6.603 -0.176
+334 mouse move -10.280 -0.274
+335 mouse move -14.737 -0.393
+336 mouse move -19.952 -0.532
+337 mouse move -25.901 -0.691
+338 mouse move -32.554 -0.868
+339 mouse move -39.879 -1.063
+340 mouse move -47.840 -1.276
+341 mouse move -56.398 -1.504
+342 mouse move -65.512 -1.747
+343 mouse move -75.138 -2.004
+344 mouse move -85.227 -2.273
+345 mouse move -95.732 -2.553
+346 mouse move -106.601 -2.843
+347 mouse move -117.781 -3.141
+348 mouse move -129.218 -3.446
+349 mouse move -140.855 -3.756
+350 mouse move -152.637 -4.070
+351 mouse move -164.506 -4.387
+352 mouse move -176.403 -4.704
+353 mouse move -188.272 -5.021
+354 mouse move -200.054 -5.335
+355 mouse move -211.691 -5.645
+356 mouse move -223.128 -5.950
+357 mouse move -234.308 -6.248
+358 mouse move -245.177 -6.538
+359 mouse move -255.682 -6.818
+360 mouse move -265.772 -7.087
+361 mouse move -275.397 -7.344
+362 mouse move -284.511 -7.587
+363 mouse move -293.069 -7.815
+364 mouse move -301.030 -8.027
+365 mouse move -308.355 -8.223
+366 mouse move -315.008 -8.400
+367 mouse move -320.957 -8.559
+368 mouse move -326.173 -8.698
+369 mouse move -330.629 -8.817
+370 mouse move -334.306 -8.915
+371 mouse move -337.184 -8.992
+372 mouse move -339.250 -9.047
+373 mouse move -340.494 -9.080
+374 mouse move -340.909 -9.091
+420 checkpoint fog_sky
+440 mouse move -340.384 -9.077
+441 mouse move -338.811 -9.035
+442 mouse move -336.199 -8.965
+443 mouse move -332.566 -8.868
+444 mouse move -327.934 -8.745
+445 mouse move -322.331 -8.595
+446 mouse move -315.791 -8.421
+447 mouse move -308.355 -8.223
+448 mouse move -300.069 -8.002
+449 mouse move -290.984 -7.760
+450 mouse move -281.156 -7.497
+451 mouse move -270.645 -7.217
+452 mouse move -259.517 -6.920
+453 mouse move -247.839 -6.609
+454 mouse move -235.685 -6.285
+455 mouse move -223.128 -5.950
+456 mouse move -210.246 -5.607
+457 mouse move -197.120 -5.257
+458 mouse move -183.828 -4.902
+459 mouse move -170.455 -4.545
+460 mouse move -157.081 -4.189
+461 mouse move -143.790 -3.834
+462 mouse move -130.663 -3.484
+463 mouse move -117.781 -3.141
+464 mouse move -105.224 -2.806
+465 mouse move -93.070 -2.482
+466 mouse move -81.392 -2.170
+467 mouse move -70.264 -1.874
+468 mouse move -59.753 -1.593
+469 mouse move -49.925 -1.331
+470 mouse move -40.840 -1.089
+471 mouse move -32.554 -0.868
+472 mouse move -25.118 -0.670
+473 mouse move -18.578 -0.495
+474 mouse move -12.975 -0.346
+475 mouse move -8.343 -0.222
+476 mouse move -4.710 -0.126
+477 mouse move -2.099 -0.056
+478 mouse move -0.525 -0.014
+479 mouse move 0.000 -0.000
+490 caption Shadows: the cover casts them on the snow
+490 mouse move 0.503 0.110
+491 mouse move 2.009 0.438
+492 mouse move 4.505 0.983
+493 mouse move 7.971 1.739
+494 mouse move 12.379 2.701
+495 mouse move 17.694 3.860
+496 mouse move 23.873 5.209
+497 mouse move 30.866 6.734
+498 mouse move 38.617 8.426
+499 mouse move 47.064 10.268
+500 mouse move 56.138 12.248
+501 mouse move 65.766 14.349
+502 mouse move 75.872 16.554
+503 mouse move 86.373 18.845
+504 mouse move 97.185 21.204
+505 mouse move 108.221 23.612
+506 mouse move 119.392 26.049
+507 mouse move 130.608 28.496
+508 mouse move 141.779 30.934
+509 mouse move 152.815 33.341
+510 mouse move 163.627 35.700
+511 mouse move 174.128 37.992
+512 mouse move 184.234 40.196
+513 mouse move 193.862 42.297
+514 mouse move 202.936 44.277
+515 mouse move 211.383 46.120
+516 mouse move 219.134 47.811
+517 mouse move 226.127 49.337
+518 mouse move 232.306 50.685
+519 mouse move 237.621 51.845
+520 mouse move 242.029 52.806
+521 mouse move 245.495 53.563
+522 mouse move 247.991 54.107
+523 mouse move 249.497 54.436
+524 mouse move 250.000 54.545
+560 checkpoint shadows
+580 mouse move 249.315 54.396
+581 mouse move 247.268 53.949
+582 mouse move 243.882 53.211
+583 mouse move 239.193 52.188
+584 mouse move 233.253 50.892
+585 mouse move 226.127 49.337
+586 mouse move 217.893 47.540
+587 mouse move 208.641 45.522
+588 mouse move 198.473 43.303
+589 mouse move 187.500 40.909
+590 mouse move 175.842 38.366
+591 mouse move 163.627 35.700
+592 mouse move 150.989 32.943
+593 mouse move 138.066 30.124
+594 mouse move 125.000 27.273
+595 mouse move 111.934 24.422
+596 mouse move 99.011 21.602
+597 mouse move 86.373 18.845
+598 mouse move 74.158 16.180
+599 mouse move 62.500 13.636
+600 mouse move 51.527 11.242
+601 mouse move 41.359 9.024
+602 mouse move 32.107 7.005
+603 mouse move 23.873 5.209
+604 mouse move 16.747 3.654
+605 mouse move 10.807 2.358
+606 mouse move 6.118 1.335
+607 mouse move 2.732 0.596
+608 mouse move 0.685 0.149
+609 mouse move -0.000 -0.000
+620 caption The bots take cover: box models, one draw for all bodies
+620 set follow 0
+700 checkpoint bots_cover
+740 set follow 2
+820 set follow -1
+820 caption The bots fire back: 3D gun sound, the crack of a near miss
+820 set bots_hold off
+1050 checkpoint fire_back
+1140 caption Take cover: the input actions of sw_core (keys, mouse, gamepad)
+1140 key A down
+1150 key W down
+1168 key W up
+1220 key A up
+1240 caption Aim and fire: muzzle flash and impact particles
+1240 mouse move 1.457 0.025
+1241 mouse move 5.811 0.099
+1242 mouse move 13.015 0.222
+1243 mouse move 22.989 0.393
+1244 mouse move 35.625 0.609
+1245 mouse move 50.784 0.868
+1246 mouse move 68.300 1.168
+1247 mouse move 87.981 1.504
+1248 mouse move 109.612 1.874
+1249 mouse move 132.955 2.273
+1250 mouse move 157.754 2.697
+1251 mouse move 183.739 3.141
+1252 mouse move 210.623 3.600
+1253 mouse move 238.114 4.070
+1254 mouse move 265.909 4.545
+1255 mouse move 293.704 5.021
+1256 mouse move 321.195 5.491
+1257 mouse move 348.080 5.950
+1258 mouse move 374.064 6.394
+1259 mouse move 398.864 6.818
+1260 mouse move 422.207 7.217
+1261 mouse move 443.837 7.587
+1262 mouse move 463.518 7.923
+1263 mouse move 481.034 8.223
+1264 mouse move 496.193 8.482
+1265 mouse move 508.829 8.698
+1266 mouse move 518.804 8.868
+1267 mouse move 526.007 8.992
+1268 mouse move 530.362 9.066
+1269 mouse move 531.818 9.091
+1350 mouse left down
+1372 checkpoint first_kill
+1385 mouse left up
+1440 mouse move 531.040 9.091
+1441 mouse move 528.714 9.091
+1442 mouse move 524.856 9.091
+1443 mouse move 519.500 9.091
+1444 mouse move 512.687 9.091
+1445 mouse move 504.473 9.091
+1446 mouse move 494.924 9.091
+1447 mouse move 484.116 9.091
+1448 mouse move 472.137 9.091
+1449 mouse move 459.083 9.091
+1450 mouse move 445.060 9.091
+1451 mouse move 430.179 9.091
+1452 mouse move 414.562 9.091
+1453 mouse move 398.333 9.091
+1454 mouse move 381.623 9.091
+1455 mouse move 364.568 9.091
+1456 mouse move 347.303 9.091
+1457 mouse move 329.969 9.091
+1458 mouse move 312.705 9.091
+1459 mouse move 295.649 9.091
+1460 mouse move 278.940 9.091
+1461 mouse move 262.711 9.091
+1462 mouse move 247.094 9.091
+1463 mouse move 232.213 9.091
+1464 mouse move 218.189 9.091
+1465 mouse move 205.136 9.091
+1466 mouse move 193.157 9.091
+1467 mouse move 182.349 9.091
+1468 mouse move 172.800 9.091
+1469 mouse move 164.586 9.091
+1470 mouse move 157.773 9.091
+1471 mouse move 152.416 9.091
+1472 mouse move 148.559 9.091
+1473 mouse move 146.232 9.091
+1474 mouse move 145.455 9.091
+1540 mouse move 145.030 9.103
+1541 mouse move 143.762 9.141
+1542 mouse move 141.672 9.203
+1543 mouse move 138.792 9.288
+1544 mouse move 135.168 9.395
+1545 mouse move 130.856 9.522
+1546 mouse move 125.925 9.668
+1547 mouse move 120.452 9.829
+1548 mouse move 114.525 10.004
+1549 mouse move 108.236 10.190
+1550 mouse move 101.684 10.384
+1551 mouse move 94.973 10.582
+1552 mouse move 88.209 10.782
+1553 mouse move 81.498 10.980
+1554 mouse move 74.946 11.173
+1555 mouse move 68.657 11.359
+1556 mouse move 62.729 11.534
+1557 mouse move 57.257 11.696
+1558 mouse move 52.326 11.842
+1559 mouse move 48.014 11.969
+1560 mouse move 44.390 12.076
+1561 mouse move 41.510 12.161
+1562 mouse move 39.419 12.223
+1563 mouse move 38.152 12.260
+1564 mouse move 37.727 12.273
+1596 mouse left down
+1625 checkpoint second_kill
+1630 mouse left up
+1700 caption Step out of cover: the last bot
+1700 key D down
+1722 key D up
+1840 mouse move 37.937 12.258
+1841 mouse move 38.563 12.216
+1842 mouse move 39.595 12.145
+1843 mouse move 41.016 12.048
+1844 mouse move 42.806 11.925
+1845 mouse move 44.934 11.780
+1846 mouse move 47.368 11.613
+1847 mouse move 50.070 11.429
+1848 mouse move 52.996 11.229
+1849 mouse move 56.101 11.016
+1850 mouse move 59.336 10.795
+1851 mouse move 62.649 10.569
+1852 mouse move 65.988 10.340
+1853 mouse move 69.301 10.114
+1854 mouse move 72.535 9.893
+1855 mouse move 75.640 9.680
+1856 mouse move 78.566 9.480
+1857 mouse move 81.268 9.296
+1858 mouse move 83.702 9.129
+1859 mouse move 85.831 8.984
+1860 mouse move 87.620 8.861
+1861 mouse move 89.042 8.764
+1862 mouse move 90.074 8.693
+1863 mouse move 90.699 8.651
+1864 mouse move 90.909 8.636
+1895 mouse left down
+1925 checkpoint third_kill
+1930 mouse left up
+1960 caption Wave cleared. R reloads: a gamepad gives the same actions
+1985 key R down
+1990 key R up
+2030 checkpoint reload
+2045 caption A ragdoll for each dead bot
+2045 set follow 0
+2085 checkpoint ragdoll
+2092 set follow -1
+2100 caption The next wave comes. Press a key to play
+2190 checkpoint next_wave
+2280 end

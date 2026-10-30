@@ -1,8 +1,8 @@
 //! Graphics settings and quality presets (REQ-GPU-026).
 //!
 //! `GraphicsSettings` holds the values that a settings menu changes: the
-//! render distance, the anti-aliasing, the mip levels, the shadows, vsync
-//! and the frame limit. A `Preset` sets all of them. The game reads the
+//! render distance, the anti-aliasing, the mip levels, the shadows, the
+//! lighting mode, vsync and the frame limit. A `Preset` sets all of them. The game reads the
 //! values and gives them to the parts that use them:
 //!
 //! ```zig
@@ -22,6 +22,7 @@ pub const Preset = enum { low, medium, high, ultra };
 pub const AntiAliasing = enum {
     none,
     fxaa,
+    msaa2,
     msaa4,
     msaa8,
 
@@ -29,6 +30,7 @@ pub const AntiAliasing = enum {
     pub fn samples(self: AntiAliasing) u32 {
         return switch (self) {
             .none, .fxaa => 1,
+            .msaa2 => 2,
             .msaa4 => 4,
             .msaa8 => 8,
         };
@@ -49,6 +51,9 @@ pub const GraphicsSettings = struct {
     shadow_cascades: u32 = 3,
     /// The width and height of each shadow map, in texels.
     shadow_map_size: u32 = 2048,
+    /// The world lighting. `.skylight` darkens the places that the sky
+    /// does not reach. `.none` lights each face fully.
+    lighting: gpu_mod.LightingMode = .skylight,
     vsync: bool = true,
     /// The frame rate that the frame limiter holds. Null: no limit.
     frame_limit: ?u32 = null,
@@ -106,7 +111,7 @@ pub const GraphicsSettings = struct {
         return switch (self.anti_aliasing) {
             .none => .{},
             .fxaa => .{ .method = .fxaa, .fxaa_quality = self.fxaa_quality },
-            .msaa4, .msaa8 => .{ .method = .msaa, .msaa_samples = self.anti_aliasing.samples() },
+            .msaa2, .msaa4, .msaa8 => .{ .method = .msaa, .msaa_samples = self.anti_aliasing.samples() },
         };
     }
 
@@ -154,6 +159,8 @@ test "settings: the anti-aliasing gives the sw_gpu configuration (REQ-GPU-026)" 
     var s: GraphicsSettings = .{ .anti_aliasing = .msaa4 };
     try testing.expectEqual(gpu_mod.AAMethod.msaa, s.antiAliasingConfig().method);
     try testing.expectEqual(@as(u32, 4), s.antiAliasingConfig().msaa_samples);
+    s.anti_aliasing = .msaa2;
+    try testing.expectEqual(@as(u32, 2), s.antiAliasingConfig().msaa_samples);
     s.anti_aliasing = .fxaa;
     s.fxaa_quality = .high;
     try testing.expectEqual(gpu_mod.AAMethod.fxaa, s.antiAliasingConfig().method);

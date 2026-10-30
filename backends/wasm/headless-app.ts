@@ -17,6 +17,7 @@
 import { createAssetImports } from './assets';
 import { createFileImports } from './files';
 import { HeldBytes } from './held-bytes';
+import { passSeed, seedFromQuery } from './seed';
 import { createStorageImports } from './storage';
 import {
   attachPool,
@@ -51,7 +52,16 @@ export interface StubWrite {
   /** A held write: the first byte in the held message. */
   heldOffset?: number;
   /** A held write of a mesh Result: its chunk and its quad count. */
-  mesh?: { cx: number; cz: number; quads: number; messageLength: number };
+  mesh?: {
+    cx: number;
+    cz: number;
+    quads: number;
+    /** The fluid quads after the quads (REQ-VOXEL-027). */
+    fluidQuads: number;
+    /** The translucent quads after the fluid quads (REQ-VOXEL-030). */
+    translucentQuads: number;
+    messageLength: number;
+  };
 }
 
 /**
@@ -240,6 +250,8 @@ export class StubGpu {
             cx: view.getInt32(HEADER_LEN + 4, true),
             cz: view.getInt32(HEADER_LEN + 8, true),
             quads: view.getUint32(HEADER_LEN + 24, true),
+            fluidQuads: view.getUint32(HEADER_LEN + 40, true),
+            translucentQuads: view.getUint32(HEADER_LEN + 44, true),
             messageLength: bytes.byteLength,
           };
         }
@@ -281,6 +293,8 @@ interface VoxelExports {
     block: number,
   ) => number;
   voxel_debug_gpu_counts?: () => number;
+  voxel_debug_block?: (wx: number, wy: number, wz: number) => number;
+  voxel_debug_new_world?: () => number;
   voxel_debug_set_render_distance?: (r: number) => void;
 }
 
@@ -322,6 +336,7 @@ export interface PoolSetup {
   size?: number;
   createWorker?: WorkerPoolOptions['createWorker'];
   maxRestarts?: number;
+  stallTimeoutMs?: number;
   /** Tests only: change the handshake values of app.wasm. */
   appHandshake?: {
     protocolVersion?: number;
@@ -343,6 +358,16 @@ export interface AppOptions {
    * A --measure run sets false, so the stub costs less time.
    */
   recordGpu?: boolean;
+  /**
+   * The URL query of the page, as `location.search` (for example
+   * '?seed=12345'). The seed goes to app.wasm as the loader gives it
+   * (seed.ts, REQ-VOXEL-034).
+   */
+  query?: string;
+  /** Called with each line of the wasm log. */
+  onLog?: (text: string) => void;
+  /** Called for each warning of the start. The default is console.warn. */
+  onWarning?: (message: string) => void;
 }
 
 export interface HeadlessApp {
@@ -354,6 +379,10 @@ export interface HeadlessApp {
   pipeline(): PipelineCounts | null;
   worldHash(): bigint;
   edit(wx: number, wy: number, wz: number, block: number): boolean;
+  /** The block id at a world cell (the prefetch radius only, else 0). */
+  block(wx: number, wy: number, wz: number): number;
+  /** The "New World" entry of the Settings menu. */
+  newWorld(): boolean;
   /** The mesh upload counters of app.wasm (C5). */
   gpuCounts(): GpuCounts;
   /** Set the render distance, as the Settings picker does. */
@@ -427,6 +456,7 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
       size: opts.pool.size,
       createWorker: opts.pool.createWorker,
       maxRestarts: opts.pool.maxRestarts,
+      stallTimeoutMs: opts.pool.stallTimeoutMs,
       logPrefix: '[headless chunks]',
     });
   }
@@ -435,9 +465,12 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
     env: {
       jsGetTime: opts.clock === 'sim' ? () => nowMs : () => performance.now(),
       jsLog: (ptr: number, len: number) => {
-        if (!opts.log) return;
-        const bytes = new Uint8Array(getMemory().buffer, ptr, len);
-        console.log(`wasm: ${decoder.decode(bytes)}`);
+        if (!opts.log && !opts.onLog) return;
+        const text = decoder.decode(
+          new Uint8Array(getMemory().buffer, ptr, len),
+        );
+        opts.onLog?.(text);
+        if (opts.log) console.log(`wasm: ${text}`);
       },
       ...createStorageImports(getMemory),
       ...createAssetImports(getMemory),
@@ -489,6 +522,11 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
   const debugCounts = wasm.voxel_debug_chunk_counts;
   if (!debugCounts)
     throw new Error('app.wasm has no voxel_debug_chunk_counts export');
+
+  // As the loader: read the seed of the query, and give it to app.wasm
+  // before init (REQ-VOXEL-034).
+  const warn = opts.onWarning ?? ((m: string) => console.warn(m));
+  passSeed(instance.exports, seedFromQuery(opts.query ?? '', warn));
 
   wasm.swindowzig_init();
   wasm.swindowzig_event_resize(1280, 720, 1);
@@ -553,6 +591,16 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
         throw new Error('app.wasm has no voxel_debug_edit export');
       return wasm.voxel_debug_edit(wx, wy, wz, block) !== 0;
     },
+    block(wx: number, wy: number, wz: number): number {
+      if (!wasm.voxel_debug_block)
+        throw new Error('app.wasm has no voxel_debug_block export');
+      return wasm.voxel_debug_block(wx, wy, wz);
+    },
+    newWorld(): boolean {
+      if (!wasm.voxel_debug_new_world)
+        throw new Error('app.wasm has no voxel_debug_new_world export');
+      return wasm.voxel_debug_new_world() !== 0;
+    },
     gpuCounts(): GpuCounts {
       if (!wasm.voxel_debug_gpu_counts)
         throw new Error('app.wasm has no voxel_debug_gpu_counts export');
@@ -608,6 +656,19 @@ export async function startApp(opts: AppOptions): Promise<HeadlessApp> {
  * ranges (REQ-VOXEL-023).
  */
 export const RESULT_HEAD_BYTES = 160;
+/**
+ * The bytes of one fluid quad in a mesh payload: 4 vertices of 24 bytes
+ * (protocol.FLUID_QUAD_LEN, REQ-VOXEL-027). The fluid vertices follow the
+ * quads.
+ */
+export const FLUID_QUAD_BYTES = 96;
+/**
+ * The bytes of one translucent quad: 4 vertices of 28 bytes
+ * (protocol.TRANSLUCENT_QUAD_LEN), and its centre, 12 bytes, at the end of
+ * the payload (REQ-VOXEL-030).
+ */
+export const TRANSLUCENT_QUAD_BYTES = 112;
+export const CENTER_BYTES = 12;
 /** The GPU header of a chunk quad buffer: (origin x, tick, origin z, 0). */
 const GPU_HEADER_BYTES = 16;
 const CHUNK_W = 16;
@@ -616,8 +677,12 @@ const CHUNK_W = 16;
 export interface UploadReport {
   /** Each problem, as a sentence. Empty when the uploads are correct. */
   failures: string[];
-  /** GPU writes of meshes from held bytes. */
+  /** GPU writes of mesh quads from held bytes, one for each upload. */
   heldWrites: number;
+  /** GPU writes of fluid streams from held bytes (REQ-VOXEL-027). */
+  fluidWrites: number;
+  /** GPU writes of translucent streams from held bytes (REQ-VOXEL-030). */
+  translucentWrites: number;
   /** Bytes that JS wrote into the wasm memory for each held result. */
   headBytesPerResult: number;
 }
@@ -631,8 +696,14 @@ export interface UploadReport {
  *     at most RESULT_HEAD_BYTES into the wasm memory.
  *   - Each mesh went to the GPU from the held bytes: one held write for
  *     each upload, at byte 16 of the buffer, from byte 160 of the message,
- *     with the size of the quads. Just before it, main wrote the 16-byte
- *     GPU header of the same chunk to the same buffer.
+ *     with the size of the quads. A mesh with fluid quads has one more
+ *     held write: the fluid vertices, at byte 16 of their buffer, from the
+ *     end of the quads (REQ-VOXEL-027). A mesh with translucent quads
+ *     has one more: the translucent vertices, at byte 0 of their vertex
+ *     buffer, from the end of the fluid vertices (REQ-VOXEL-030). The
+ *     streams and the translucent quad centres fill the payload. Just
+ *     before each held write of quads or fluid, main wrote the 16-byte GPU
+ *     header of the same chunk to the same buffer.
  * With no pool (`pooled` false): no held upload. With null (a run that
  * changed from the pool to the Inline executor), no check of the kind.
  *
@@ -653,7 +724,8 @@ export function checkMeshUploads(
 
   // The list of writes exists only when the stub records it.
   const last = new Map<number, StubWrite>();
-  const heldWrites = app.gpu.heldWrites;
+  let fluidHeldWrites = 0;
+  let translucentHeldWrites = 0;
   for (const w of app.gpu.writes) {
     if (w.source === 'held') {
       const m = w.mesh;
@@ -661,15 +733,50 @@ export function checkMeshUploads(
       if (!m) {
         failures.push(`a held write to ${where} is not a mesh Result`);
       } else {
-        if (w.size !== m.quads * 16)
-          failures.push(`${where}: ${w.size} bytes for ${m.quads} quads`);
-        if (w.size !== m.messageLength - RESULT_HEAD_BYTES)
-          failures.push(`${where}: the write is not the whole payload`);
+        const quadBytes = m.quads * 16;
+        const fluidBytes = m.fluidQuads * FLUID_QUAD_BYTES;
+        const transBytes = m.translucentQuads * TRANSLUCENT_QUAD_BYTES;
+        if (
+          quadBytes +
+            fluidBytes +
+            transBytes +
+            m.translucentQuads * CENTER_BYTES !==
+          m.messageLength - RESULT_HEAD_BYTES
+        )
+          failures.push(`${where}: the streams do not fill the payload`);
+        const fluid = w.heldOffset === RESULT_HEAD_BYTES + quadBytes;
+        const trans =
+          w.heldOffset === RESULT_HEAD_BYTES + quadBytes + fluidBytes;
+        if (trans && m.translucentQuads > 0) {
+          translucentHeldWrites++;
+          if (w.size !== transBytes)
+            failures.push(
+              `${where}: ${w.size} bytes for ${m.translucentQuads} translucent quads`,
+            );
+          if (w.offset !== 0)
+            failures.push(
+              `${where}: translucent vertices at buffer offset ${w.offset}`,
+            );
+          last.set(w.buffer, w);
+          continue;
+        }
+        if (fluid && m.fluidQuads > 0) {
+          fluidHeldWrites++;
+          if (w.size !== fluidBytes)
+            failures.push(
+              `${where}: ${w.size} bytes for ${m.fluidQuads} fluid quads`,
+            );
+        } else {
+          if (w.size !== quadBytes)
+            failures.push(`${where}: ${w.size} bytes for ${m.quads} quads`);
+          if (w.heldOffset !== RESULT_HEAD_BYTES)
+            failures.push(
+              `${where}: quads from message offset ${w.heldOffset}`,
+            );
+        }
       }
-      if (w.offset !== GPU_HEADER_BYTES || w.heldOffset !== RESULT_HEAD_BYTES)
-        failures.push(
-          `${where}: quads at buffer offset ${w.offset} from message offset ${w.heldOffset}`,
-        );
+      if (w.offset !== GPU_HEADER_BYTES)
+        failures.push(`${where}: a stream at buffer offset ${w.offset}`);
       const h = last.get(w.buffer);
       if (
         !h?.header ||
@@ -696,6 +803,10 @@ export function checkMeshUploads(
     );
   if (app.held.count !== 0)
     failures.push(`JS still holds ${app.held.count} results`);
+  // One held write for the quads of each held upload, and one for each
+  // fluid stream (REQ-VOXEL-027).
+  const heldWrites =
+    app.gpu.heldWrites - fluidHeldWrites - translucentHeldWrites;
   if (pooled === true) {
     if (g.uploadsHeld === 0 || heldWrites === 0)
       failures.push('no mesh went to the GPU from held bytes');
@@ -712,5 +823,11 @@ export function checkMeshUploads(
   } else if (pooled === false && (g.uploadsHeld !== 0 || heldWrites !== 0)) {
     failures.push('a run with no pool made a held upload');
   }
-  return { failures: failures.slice(0, 20), heldWrites, headBytesPerResult };
+  return {
+    failures: failures.slice(0, 20),
+    heldWrites,
+    fluidWrites: fluidHeldWrites,
+    translucentWrites: translucentHeldWrites,
+    headBytesPerResult,
+  };
 }

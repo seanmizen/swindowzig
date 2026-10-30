@@ -11,6 +11,15 @@ const exampleArg = (() => {
     : undefined;
 })();
 
+// --demo <name>: a demo in demos/<name>/ in place of an example
+// (REQ-DEMO-001). `yarn dev:demo cow` uses it.
+const demoArg = (() => {
+  const idx = process.argv.indexOf('--demo');
+  return idx !== -1 && process.argv[idx + 1]
+    ? process.argv[idx + 1]
+    : undefined;
+})();
+
 // --no-build: serve zig-out as it is, with no build and no watch. The
 // Playwright test uses it after its own `zig build web`.
 const noBuild = process.argv.includes('--no-build');
@@ -42,7 +51,9 @@ async function rebuildZig() {
 
   const start = performance.now();
   const buildArgs = ['zig', 'build', 'web'];
-  if (exampleArg) {
+  if (demoArg) {
+    buildArgs.push(`-Ddemo=${demoArg}`, '-Doptimize=ReleaseFast');
+  } else if (exampleArg) {
     buildArgs.push(`-Dexample=${exampleArg}`, '-Doptimize=ReleaseFast');
   }
   const proc = spawn(buildArgs, {
@@ -69,7 +80,7 @@ async function rebuildZig() {
 }
 
 // Watch directories for .zig file changes
-const watchDirs = noBuild ? [] : ['libs', 'examples'];
+const watchDirs = noBuild ? [] : ['libs', 'examples', 'demos'];
 for (const dir of watchDirs) {
   try {
     watch(dir, { recursive: true }, (_event, filename) => {
@@ -133,6 +144,8 @@ const server = serve({
       '/clipboard': './backends/wasm/clipboard.ts',
       '/gamepad.js': './backends/wasm/gamepad.ts',
       '/gamepad': './backends/wasm/gamepad.ts',
+      '/seed.js': './backends/wasm/seed.ts',
+      '/seed': './backends/wasm/seed.ts',
       // The chunk worker pool (C9). chunk-worker.ts has no imports, so the
       // worker gets one transpiled file.
       '/worker-pool.js': './backends/wasm/worker-pool.ts',
@@ -147,13 +160,13 @@ const server = serve({
     // the page root, so `loadBytes("sprite.png")` works on the web as on
     // native. Only a plain file name or a sub path with no '..' is allowed.
     let filePath = fileMap[path];
-    if (
-      !filePath &&
-      exampleArg &&
-      !path.includes('..') &&
-      !path.includes('\\')
-    ) {
-      const candidate = `./examples/${exampleArg}${path}`;
+    const assetDir = demoArg
+      ? `./demos/${demoArg}`
+      : exampleArg
+        ? `./examples/${exampleArg}`
+        : undefined;
+    if (!filePath && assetDir && !path.includes('..') && !path.includes('\\')) {
+      const candidate = `${assetDir}${path}`;
       if (await Bun.file(candidate).exists()) filePath = candidate;
     }
     if (!filePath) {
@@ -180,7 +193,9 @@ const server = serve({
       const ext = filePath.substring(filePath.lastIndexOf('.'));
       const contentType = contentTypes[ext] || 'application/octet-stream';
 
-      // Transpile TypeScript files
+      // Transpile each TypeScript file alone: remove the types, and keep
+      // the imports. The browser loads each module from this server. This
+      // is not a bundle. RSBuild makes the bundles (`yarn build:js`).
       let responseBody: BlobPart;
       if (ext === '.ts') {
         const transpiler = new Bun.Transpiler({ loader: 'ts' });

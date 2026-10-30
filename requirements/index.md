@@ -11,12 +11,32 @@
 | [`REQ-A11Y-004`](a11y.md#req-a11y-004--the-mirror-is-visually-hidden) | The mirror is visually hidden | active | constraint | P1 | sean |
 | [`REQ-A11Y-005`](a11y.md#req-a11y-005--an-unchanged-tree-is-not-sent-to-js) | An unchanged tree is not sent to JS | active | quality | P1 | sean |
 | [`REQ-A11Y-006`](a11y.md#req-a11y-006--each-widget-has-its-aria-role-in-the-mirror) | Each widget has its ARIA role in the mirror | active | functional | P2 | agent:SWZ-47 |
+| [`REQ-A11Y-007`](a11y.md#req-a11y-007--the-native-build-can-send-the-semantic-tree-to-accesskit) | The native build can send the semantic tree to AccessKit | active | functional | P3 | sean |
+| [`REQ-A11Y-008`](a11y.md#req-a11y-008--accesskit-gets-the-focus-and-the-live-region-changes) | AccessKit gets the focus and the live-region changes | active | functional | P3 | sean |
 | [`REQ-ASSETS-001`](assets.md#req-assets-001--opening-a-zip-archive-does-not-decompress-it) | Opening a zip archive does not decompress it | active | quality | P1 | agent:SWZ-54 |
 | [`REQ-ASSETS-002`](assets.md#req-assets-002--the-cache-tells-why-opfs-is-missing) | The cache tells why OPFS is missing | active | functional | P2 | agent:SWZ-54 |
 | [`REQ-AUDIO-001`](audio.md#req-audio-001--the-waveform-api-does-not-change) | The waveform API does not change | active | constraint | P1 | agent:SWZ-48 |
 | [`REQ-AUDIO-002`](audio.md#req-audio-002--a-stream-does-not-decode-all-of-its-data) | A stream does not decode all of its data | active | quality | P1 | agent:SWZ-48 |
+| [`REQ-BUILD-001`](build.md#req-build-001--a-dependent-package-builds-an-example-to-wasm-with-no-nested-build) | A dependent package builds an example to wasm with no nested build | active | functional | P2 | agent:SWZ-21 |
+| [`REQ-BUILD-002`](build.md#req-build-002--the-native-examples-cross-compile-to-windows) | The native examples cross-compile to Windows | active | functional | P3 | agent:SWZ-9 |
+| [`REQ-BUILD-003`](build.md#req-build-003--on-windows-the-native-surface-is-the-win32-window) | On Windows, the native surface is the Win32 window | active | functional | P3 | agent:SWZ-9 |
 | [`REQ-CAMERA-001`](camera.md#req-camera-001--the-camera-result-does-not-depend-on-the-frame-rate) | The camera result does not depend on the frame rate | active | quality | P2 | agent:SWZ-43 |
 | [`REQ-CAMERA-002`](camera.md#req-camera-002--the-camera-controller-reads-no-platform-input) | The camera controller reads no platform input | active | constraint | P2 | agent:SWZ-43 |
+| [`REQ-DEMO-001`](demo.md#req-demo-001--each-demo-takes-one-command-line) | Each demo takes one command line | active | functional | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-002`](demo.md#req-demo-002--a-script-changes-the-demo-on-the-fixed-timestep) | A script changes the demo on the fixed timestep | active | functional | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-003`](demo.md#req-demo-003--ci-compares-the-frame-hashes-of-each-demo-script) | CI compares the frame hashes of each demo script | active | quality | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-004`](demo.md#req-demo-004--capture-and-check-runs-do-not-read-the-wall-clock) | Capture and check runs do not read the wall clock | active | constraint | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-005`](demo.md#req-demo-005--the-cow-is-an-original-voxel-model) | The cow is an original voxel model | active | constraint | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-006`](demo.md#req-demo-006--greedy-meshing-merges-only-faces-that-shade-the-same) | Greedy meshing merges only faces that shade the same | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-007`](demo.md#req-demo-007--the-record-script-makes-a-video-and-a-loop-for-each-run) | The record script makes a video and a loop for each run | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-008`](demo.md#req-demo-008--a-demo-script-can-press-keys-as-a-player-does) | A demo script can press keys as a player does | active | functional | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-009`](demo.md#req-demo-009--the-menu-demo-applies-each-setting-at-once) | The menu demo applies each setting at once | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-010`](demo.md#req-demo-010--the-player-can-take-control-of-an-interactive-demo) | The player can take control of an interactive demo | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-020`](demo.md#req-demo-020--the-shooter-demo-is-a-fight-in-a-snowy-arena-offline) | The shooter demo is a fight in a snowy arena, offline | active | functional | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-021`](demo.md#req-demo-021--the-bots-of-the-shooter-give-the-same-fight-on-each-run) | The bots of the shooter give the same fight on each run | active | functional | P2 | agent:SWZ-79 |
+| [`REQ-DEMO-022`](demo.md#req-demo-022--one-box-model-draws-the-bodies-of-all-the-bots) | One box model draws the bodies of all the bots | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-023`](demo.md#req-demo-023--each-hit-throws-the-particles-of-its-material) | Each hit throws the particles of its material | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-024`](demo.md#req-demo-024--the-shots-of-the-shooter-play-as-3d-sound) | The shots of the shooter play as 3D sound | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -55,6 +75,8 @@
 | [`REQ-GPU-037`](gpu.md#req-gpu-037--the-web-build-resolves-query-sets-and-copies-buffers) | The web build resolves query sets and copies buffers | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-038`](gpu.md#req-gpu-038--a-buffer-read-does-not-wait-for-the-gpu) | A buffer read does not wait for the GPU | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-039`](gpu.md#req-gpu-039--occlusion-queries-of-boxes-come-back-with-the-tag-of-their-frame) | Occlusion queries of boxes come back with the tag of their frame | active | functional | P2 | agent:SWZ-40 |
+| [`REQ-GPU-040`](gpu.md#req-gpu-040--translucent-quads-draw-in-a-render-pass-of-the-game-with-no-frame-graph) | Translucent quads draw in a render pass of the game with no frame graph | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-GPU-041`](gpu.md#req-gpu-041--particles-and-translucent-quads-draw-in-one-far-to-near-order) | Particles and translucent quads draw in one far-to-near order | active | functional | P3 | agent:SWZ-112 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -63,8 +85,11 @@
 | [`REQ-INPUT-006`](input.md#req-input-006--old-recordings-still-play) | Old recordings still play | active | constraint | P1 | agent:SWZ-50 |
 | [`REQ-INPUT-007`](input.md#req-input-007--a-key-press-shorter-than-one-tick-is-not-lost) | A key press shorter than one tick is not lost | active | functional | P2 | agent:SWZ-92 |
 | [`REQ-INPUT-008`](input.md#req-input-008--the-wheel-snapshot-is-in-lines) | The wheel snapshot is in lines | active | functional | P2 | agent:SWZ-77 |
+| [`REQ-INPUT-009`](input.md#req-input-009--the-snapshot-counts-the-presses-of-one-key-in-one-tick) | The snapshot counts the presses of one key in one tick | active | functional | P3 | agent:SWZ-112 |
+| [`REQ-INPUT-010`](input.md#req-input-010--a-recording-with-a-bad-wheel-mode-gives-an-error) | A recording with a bad wheel mode gives an error | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-JOBS-001`](jobs.md#req-jobs-001--a-native-worker-runs-its-messages-in-order-and-can-stop) | A native worker runs its messages in order, and can stop | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-JOBS-002`](jobs.md#req-jobs-002--native-threads-and-web-workers-have-one-transport-api) | Native threads and Web Workers have one Transport API | active | functional | P2 | agent:SWZ-26 |
+| [`REQ-JOBS-003`](jobs.md#req-jobs-003--the-web-worker-pool-starts-again-a-worker-that-stops-with-no-event) | The Web Worker pool starts again a worker that stops with no event | active | functional | P3 | agent:SWZ-5 |
 | [`REQ-NET-001`](net.md#req-net-001--the-game-polls-network-events) | The game polls network events | active | constraint | P1 | agent:SWZ-53 |
 | [`REQ-NET-002`](net.md#req-net-002--the-native-client-masks-each-frame) | The native client masks each frame | active | functional | P1 | agent:SWZ-53 |
 | [`REQ-NET-003`](net.md#req-net-003--the-reconnect-delay-doubles-to-a-limit) | The reconnect delay doubles to a limit | active | functional | P2 | agent:SWZ-53 |
@@ -104,6 +129,17 @@
 | [`REQ-VOXEL-024`](voxel.md#req-voxel-024--the-demo-draws-only-the-sections-that-the-walk-reaches) | The demo draws only the sections that the walk reaches | active | quality | P2 | agent:SWZ-40 |
 | [`REQ-VOXEL-025`](voxel.md#req-voxel-025--the-occlusion-cull-skips-a-chunk-only-while-its-result-is-correct) | The occlusion cull skips a chunk only while its result is correct | active | quality | P2 | agent:SWZ-40 |
 | [`REQ-VOXEL-026`](voxel.md#req-voxel-026--the-demo-culls-its-entity-boxes-with-the-visible-sections) | The demo culls its entity boxes with the visible sections | active | functional | P3 | agent:SWZ-40 |
+| [`REQ-VOXEL-027`](voxel.md#req-voxel-027--the-mesh-result-carries-the-fluid-quads-after-the-packed-quads) | The mesh result carries the fluid quads after the packed quads | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-028`](voxel.md#req-voxel-028--the-demo-draws-water-in-a-fluid-pass-after-the-opaque-chunks) | The demo draws water in a fluid pass after the opaque chunks | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-029`](voxel.md#req-voxel-029--a-translucent-block-has-faces-with-their-centres-in-world-space) | A translucent block has faces with their centres in world space | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-030`](voxel.md#req-voxel-030--the-mesh-result-carries-the-translucent-quads-and-their-centres) | The mesh result carries the translucent quads and their centres | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-031`](voxel.md#req-voxel-031--the-demo-draws-translucent-blocks-with-sw_render-translucent) | The demo draws translucent blocks with sw_render Translucent | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-VOXEL-032`](voxel.md#req-voxel-032--a-merged-quad-has-the-shade-of-the-11-quads) | A merged quad has the shade of the 1×1 quads | active | functional | P2 | agent:SWZ-17 |
+| [`REQ-VOXEL-033`](voxel.md#req-voxel-033--an-init-error-of-the-demo-frees-each-allocation-of-init) | An init error of the demo frees each allocation of init | active | quality | P3 | agent:SWZ-112 |
+| [`REQ-VOXEL-034`](voxel.md#req-voxel-034--the-web-build-takes-the-world-seed-from-the-page-url) | The web build takes the world seed from the page URL | active | functional | P2 | agent:SWZ-8 |
+| [`REQ-VOXEL-035`](voxel.md#req-voxel-035--the-voxel-demo-keeps-the-edits-of-a-world-after-a-restart) | The voxel demo keeps the edits of a world after a restart | active | functional | P2 | agent:SWZ-11 |
+| [`REQ-VOXEL-036`](voxel.md#req-voxel-036--the-saved-edit-log-has-a-size-limit-and-can-fail) | The saved edit log has a size limit and can fail | active | quality | P2 | agent:SWZ-11 |
+| [`REQ-VOXEL-037`](voxel.md#req-voxel-037--a-block-edit-shows-on-the-screen-within-2-frames) | A block edit shows on the screen within 2 frames | active | quality | P2 | agent:SWZ-13 |
 
 ## Dependency graph
 
@@ -115,12 +151,32 @@ graph TD
   REQ_A11Y_004["REQ-A11Y-004<br/>The mirror is visually hidden"]
   REQ_A11Y_005["REQ-A11Y-005<br/>An unchanged tree is not sent to JS"]
   REQ_A11Y_006["REQ-A11Y-006<br/>Each widget has its ARIA role in the mirror"]
+  REQ_A11Y_007["REQ-A11Y-007<br/>The native build can send the semantic tree to AccessKit"]
+  REQ_A11Y_008["REQ-A11Y-008<br/>AccessKit gets the focus and the live-region changes"]
   REQ_ASSETS_001["REQ-ASSETS-001<br/>Opening a zip archive does not decompress it"]
   REQ_ASSETS_002["REQ-ASSETS-002<br/>The cache tells why OPFS is missing"]
   REQ_AUDIO_001["REQ-AUDIO-001<br/>The waveform API does not change"]
   REQ_AUDIO_002["REQ-AUDIO-002<br/>A stream does not decode all of its data"]
+  REQ_BUILD_001["REQ-BUILD-001<br/>A dependent package builds an example to wasm with no nested build"]
+  REQ_BUILD_002["REQ-BUILD-002<br/>The native examples cross-compile to Windows"]
+  REQ_BUILD_003["REQ-BUILD-003<br/>On Windows, the native surface is the Win32 window"]
   REQ_CAMERA_001["REQ-CAMERA-001<br/>The camera result does not depend on the frame rate"]
   REQ_CAMERA_002["REQ-CAMERA-002<br/>The camera controller reads no platform input"]
+  REQ_DEMO_001["REQ-DEMO-001<br/>Each demo takes one command line"]
+  REQ_DEMO_002["REQ-DEMO-002<br/>A script changes the demo on the fixed timestep"]
+  REQ_DEMO_003["REQ-DEMO-003<br/>CI compares the frame hashes of each demo script"]
+  REQ_DEMO_004["REQ-DEMO-004<br/>Capture and check runs do not read the wall clock"]
+  REQ_DEMO_005["REQ-DEMO-005<br/>The cow is an original voxel model"]
+  REQ_DEMO_006["REQ-DEMO-006<br/>Greedy meshing merges only faces that shade the same"]
+  REQ_DEMO_007["REQ-DEMO-007<br/>The record script makes a video and a loop for each run"]
+  REQ_DEMO_008["REQ-DEMO-008<br/>A demo script can press keys as a player does"]
+  REQ_DEMO_009["REQ-DEMO-009<br/>The menu demo applies each setting at once"]
+  REQ_DEMO_010["REQ-DEMO-010<br/>The player can take control of an interactive demo"]
+  REQ_DEMO_020["REQ-DEMO-020<br/>The shooter demo is a fight in a snowy arena, offline"]
+  REQ_DEMO_021["REQ-DEMO-021<br/>The bots of the shooter give the same fight on each run"]
+  REQ_DEMO_022["REQ-DEMO-022<br/>One box model draws the bodies of all the bots"]
+  REQ_DEMO_023["REQ-DEMO-023<br/>Each hit throws the particles of its material"]
+  REQ_DEMO_024["REQ-DEMO-024<br/>The shots of the shooter play as 3D sound"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
@@ -159,6 +215,8 @@ graph TD
   REQ_GPU_037["REQ-GPU-037<br/>The web build resolves query sets and copies buffers"]
   REQ_GPU_038["REQ-GPU-038<br/>A buffer read does not wait for the GPU"]
   REQ_GPU_039["REQ-GPU-039<br/>Occlusion queries of boxes come back with the tag of their frame"]
+  REQ_GPU_040["REQ-GPU-040<br/>Translucent quads draw in a render pass of the game with no frame graph"]
+  REQ_GPU_041["REQ-GPU-041<br/>Particles and translucent quads draw in one far-to-near order"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -167,8 +225,11 @@ graph TD
   REQ_INPUT_006["REQ-INPUT-006<br/>Old recordings still play"]
   REQ_INPUT_007["REQ-INPUT-007<br/>A key press shorter than one tick is not lost"]
   REQ_INPUT_008["REQ-INPUT-008<br/>The wheel snapshot is in lines"]
+  REQ_INPUT_009["REQ-INPUT-009<br/>The snapshot counts the presses of one key in one tick"]
+  REQ_INPUT_010["REQ-INPUT-010<br/>A recording with a bad wheel mode gives an error"]
   REQ_JOBS_001["REQ-JOBS-001<br/>A native worker runs its messages in order, and can stop"]
   REQ_JOBS_002["REQ-JOBS-002<br/>Native threads and Web Workers have one Transport API"]
+  REQ_JOBS_003["REQ-JOBS-003<br/>The Web Worker pool starts again a worker that stops with no event"]
   REQ_NET_001["REQ-NET-001<br/>The game polls network events"]
   REQ_NET_002["REQ-NET-002<br/>The native client masks each frame"]
   REQ_NET_003["REQ-NET-003<br/>The reconnect delay doubles to a limit"]
@@ -208,11 +269,31 @@ graph TD
   REQ_VOXEL_024["REQ-VOXEL-024<br/>The demo draws only the sections that the walk reaches"]
   REQ_VOXEL_025["REQ-VOXEL-025<br/>The occlusion cull skips a chunk only while its result is correct"]
   REQ_VOXEL_026["REQ-VOXEL-026<br/>The demo culls its entity boxes with the visible sections"]
+  REQ_VOXEL_027["REQ-VOXEL-027<br/>The mesh result carries the fluid quads after the packed quads"]
+  REQ_VOXEL_028["REQ-VOXEL-028<br/>The demo draws water in a fluid pass after the opaque chunks"]
+  REQ_VOXEL_029["REQ-VOXEL-029<br/>A translucent block has faces with their centres in world space"]
+  REQ_VOXEL_030["REQ-VOXEL-030<br/>The mesh result carries the translucent quads and their centres"]
+  REQ_VOXEL_031["REQ-VOXEL-031<br/>The demo draws translucent blocks with sw_render Translucent"]
+  REQ_VOXEL_032["REQ-VOXEL-032<br/>A merged quad has the shade of the 1×1 quads"]
+  REQ_VOXEL_033["REQ-VOXEL-033<br/>An init error of the demo frees each allocation of init"]
+  REQ_VOXEL_034["REQ-VOXEL-034<br/>The web build takes the world seed from the page URL"]
+  REQ_VOXEL_035["REQ-VOXEL-035<br/>The voxel demo keeps the edits of a world after a restart"]
+  REQ_VOXEL_036["REQ-VOXEL-036<br/>The saved edit log has a size limit and can fail"]
+  REQ_VOXEL_037["REQ-VOXEL-037<br/>A block edit shows on the screen within 2 frames"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_005 -->|refines| REQ_A11Y_001
   REQ_A11Y_006 -->|refines| REQ_A11Y_001
+  REQ_A11Y_008 -->|refines| REQ_A11Y_007
+  REQ_DEMO_003 -->|depends-on| REQ_DEMO_004
+  REQ_DEMO_007 -->|depends-on| REQ_DEMO_004
+  REQ_DEMO_008 -->|depends-on| REQ_DEMO_002
+  REQ_DEMO_009 -->|depends-on| REQ_DEMO_008
+  REQ_DEMO_010 -->|depends-on| REQ_DEMO_008
+  REQ_DEMO_020 -->|depends-on| REQ_DEMO_001
+  REQ_DEMO_021 -->|depends-on| REQ_DEMO_004
+  REQ_DEMO_023 -->|depends-on| REQ_DEMO_021
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
@@ -239,6 +320,11 @@ graph TD
   REQ_GPU_036 -->|depends-on| REQ_GPU_035
   REQ_GPU_039 -->|depends-on| REQ_GPU_036
   REQ_GPU_039 -->|depends-on| REQ_GPU_038
+  REQ_GPU_040 -->|refines| REQ_GPU_022
+  REQ_GPU_041 -->|refines| REQ_GPU_023
+  REQ_GPU_041 -->|refines| REQ_GPU_024
+  REQ_INPUT_009 -->|refines| REQ_INPUT_007
+  REQ_JOBS_003 -->|depends-on| REQ_JOBS_002
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
   REQ_TEXT_004 -->|refines| REQ_TEXT_001
@@ -262,11 +348,27 @@ graph TD
   REQ_VOXEL_024 -->|depends-on| REQ_VOXEL_023
   REQ_VOXEL_025 -->|depends-on| REQ_GPU_039
   REQ_VOXEL_026 -->|depends-on| REQ_VOXEL_020
+  REQ_VOXEL_027 -->|depends-on| REQ_VOXEL_014
+  REQ_VOXEL_028 -->|depends-on| REQ_VOXEL_027
+  REQ_VOXEL_030 -->|depends-on| REQ_VOXEL_029
+  REQ_VOXEL_030 -->|depends-on| REQ_VOXEL_027
+  REQ_VOXEL_031 -->|depends-on| REQ_VOXEL_030
+  REQ_VOXEL_031 -->|depends-on| REQ_GPU_040
+  REQ_VOXEL_031 -->|depends-on| REQ_GPU_023
+  REQ_VOXEL_032 -->|refines| REQ_VOXEL_010
+  REQ_VOXEL_036 -->|refines| REQ_VOXEL_035
+  REQ_VOXEL_037 -->|refines| REQ_VOXEL_017
 ```
 
 ## Derived reverse links
 
 - `REQ-A11Y-001` — required-by REQ-A11Y-002, required-by REQ-A11Y-003, required-by REQ-A11Y-004, refined-by REQ-A11Y-005, refined-by REQ-A11Y-006
+- `REQ-A11Y-007` — refined-by REQ-A11Y-008
+- `REQ-DEMO-001` — required-by REQ-DEMO-020
+- `REQ-DEMO-002` — required-by REQ-DEMO-008
+- `REQ-DEMO-004` — required-by REQ-DEMO-003, required-by REQ-DEMO-007, required-by REQ-DEMO-021
+- `REQ-DEMO-008` — required-by REQ-DEMO-009, required-by REQ-DEMO-010
+- `REQ-DEMO-021` — required-by REQ-DEMO-023
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
@@ -277,12 +379,17 @@ graph TD
 - `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
 - `REQ-GPU-016` — refined-by REQ-GPU-018
 - `REQ-GPU-020` — required-by REQ-GPU-031, required-by REQ-GPU-032
-- `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024
+- `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024, refined-by REQ-GPU-040
+- `REQ-GPU-023` — refined-by REQ-GPU-041, required-by REQ-VOXEL-031
+- `REQ-GPU-024` — refined-by REQ-GPU-041
 - `REQ-GPU-030` — required-by REQ-GPU-031, required-by REQ-GPU-033
 - `REQ-GPU-035` — required-by REQ-GPU-036
 - `REQ-GPU-036` — required-by REQ-GPU-039
 - `REQ-GPU-038` — required-by REQ-GPU-039
 - `REQ-GPU-039` — required-by REQ-VOXEL-025
+- `REQ-GPU-040` — required-by REQ-VOXEL-031
+- `REQ-INPUT-007` — refined-by REQ-INPUT-009
+- `REQ-JOBS-002` — required-by REQ-JOBS-003
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
 - `REQ-TEXT-002` — required-by REQ-TEXT-005
 - `REQ-VOXEL-001` — refined-by REQ-VOXEL-002, refined-by REQ-VOXEL-009
@@ -290,9 +397,15 @@ graph TD
 - `REQ-VOXEL-006` — required-by REQ-VOXEL-007
 - `REQ-VOXEL-008` — refined-by REQ-VOXEL-010
 - `REQ-VOXEL-009` — refined-by REQ-VOXEL-010
+- `REQ-VOXEL-010` — refined-by REQ-VOXEL-032
 - `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
-- `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016
+- `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016, required-by REQ-VOXEL-027
+- `REQ-VOXEL-017` — refined-by REQ-VOXEL-037
 - `REQ-VOXEL-019` — required-by REQ-VOXEL-020
 - `REQ-VOXEL-020` — required-by REQ-VOXEL-024, required-by REQ-VOXEL-026
 - `REQ-VOXEL-021` — required-by REQ-VOXEL-022
 - `REQ-VOXEL-023` — required-by REQ-VOXEL-024
+- `REQ-VOXEL-027` — required-by REQ-VOXEL-028, required-by REQ-VOXEL-030
+- `REQ-VOXEL-029` — required-by REQ-VOXEL-030
+- `REQ-VOXEL-030` — required-by REQ-VOXEL-031
+- `REQ-VOXEL-035` — refined-by REQ-VOXEL-036

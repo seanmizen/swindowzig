@@ -1,0 +1,23 @@
+# cow: frame hashes at the checkpoints of the script, preset low, lavapipe (REQ-DEMO-003)
+aa_off a2462a4e23d3fb6c
+aa_fxaa 483e93e6381efe45
+aa_msaa 78bd80aac4f68c47
+mesh_naive 3d3820463c3076b2
+mesh_greedy 0055d7a1030b16d9
+tonemap_clamp 92ce3562d8b5fbb7
+tonemap_reinhard a5544024b50ee8c5
+tonemap_aces d2f44554b55dcef2
+exposure_low 10083c0f2e54c131
+exposure_high 3062e2dac06e23e7
+palette_highland b4f931d9aacfbfe1
+palette_neon 9be94f9632daa98c
+time_morning 9eee3bf49d12988d
+time_sunset 8483a11e01a063a4
+time_night 9b2863070f9e09fa
+shadows_off 2f6f572625def1e7
+shadows_on 900d01dd587b6aaf
+ao_off 38fbabd2544e981b
+ao_on 0b0f043eafc8b90b
+fog_off 392c617cd7ddbdf8
+sky_off dc5174b7aa46bb41
+fog_sky_on 7eb77312a2823c77

@@ -833,6 +833,19 @@ test "texture view: each explicit dimension has its webgpu.h number (REQ-GPU-034
     }
 }
 
+test "texture view: each code is the native dimension of the same name (REQ-GPU-034)" {
+    // `createView` and `createBindGroupLayout` give the code to wgpu-native
+    // with `@fromBackingInt`. The code must name the same dimension there.
+    const native = @import("native_webgpu.zig");
+    inline for (@typeInfo(TextureViewDimension).@"enum".field_names) |name| {
+        const d = @field(TextureViewDimension, name);
+        const n: native.WGPUTextureViewDimension = @fromBackingInt(viewDimensionCode(d));
+        var want: [name.len]u8 = name[0..name.len].*;
+        std.mem.replaceScalar(u8, &want, '-', '_');
+        try std.testing.expectEqualStrings(&want, @tagName(n));
+    }
+}
+
 test "sampler: the defaults are valid" {
     try (SamplerDescriptor{}).validate();
 }

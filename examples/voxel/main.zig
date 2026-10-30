@@ -23,7 +23,7 @@ const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 // the TAS tools read its info lines.
 pub const std_options: std.Options = .{
     .logFn = swindowzigLogFn,
-    .log_level = if (is_wasm) .warn else std.log.default_level,
+    .log_level = if (is_wasm) (if (chunk_build.web_log_info) .info else .warn) else std.log.default_level,
 };
 
 extern fn jsLog(ptr: [*]const u8, len: u32) void;
@@ -229,6 +229,23 @@ const BlockType = chunk_mod.BlockType;
 const mesher_mod = @import("sw_voxel").mesher;
 const models_mod = @import("sw_voxel").models;
 const mesh_bytes = @import("sw_voxel").mesh_bytes;
+const protocol_mod = @import("sw_voxel").protocol;
+/// The saved edit log (REQ-VOXEL-035, REQ-VOXEL-036).
+const edit_save = @import("edit_save.zig");
+const SaveStore = edit_save.Store(@import("sw_platform").storage);
+/// The time from one save of the edit log to the next, at most.
+const SAVE_INTERVAL_NS: u64 = 1_000_000_000;
+const sw_render = @import("sw_render");
+
+comptime {
+    // The translucent vertices of sw_voxel go to sw_render Translucent as
+    // they are (REQ-VOXEL-031).
+    const V = @import("sw_voxel").translucent.Vertex;
+    const R = sw_render.TranslucentVertex;
+    std.debug.assert(@sizeOf(V) == @sizeOf(R));
+    std.debug.assert(@offsetOf(V, "pos") == @offsetOf(R, "pos"));
+    std.debug.assert(@offsetOf(V, "color") == @offsetOf(R, "color"));
+}
 const Mesh = mesher_mod.Mesh;
 const VoxelVertex = mesher_mod.VoxelVertex;
 
@@ -326,7 +343,8 @@ const CAMERA_CLIP_SKIN: f32 = 0.2;
 const IsSolidWorld = struct {
     world: *const world_mod.World,
     pub fn isSolid(self: IsSolidWorld, x: i32, y: i32, z: i32) bool {
-        return self.world.getBlock(x, y, z) != .air;
+        const b = self.world.getBlock(x, y, z);
+        return b != .air and b != .water;
     }
 };
 
@@ -443,6 +461,9 @@ fn settingsTabLabel(tab: SettingsTab) []const u8 {
 // state so navigation, rendering, and input dispatch all stay in sync.
 const SettingsEntry = enum {
     tab_selector,
+    /// Game tab: delete the saved edits and start the world again from the
+    /// seed (REQ-VOXEL-035).
+    new_world,
     aa_method,
     msaa_samples,
     fxaa_quality,
@@ -456,8 +477,9 @@ const SettingsEntry = enum {
 
 fn settingsEntryCount() u8 {
     return switch (state.settings_tab) {
-        .game, .audio => 2, // tab_selector + back
-        .video => switch (state.msaa_config.method) {
+        .game => 3, // tab_selector + new_world + back
+        .audio => 2, // tab_selector + back
+        .video => switch (aaConfig().method) {
             // tab_selector + aa_method + quality + ao + lighting + frustum + fog + render_dist + back
             .msaa, .fxaa => 9,
             // tab_selector + aa_method + ao + lighting + frustum + fog + render_dist + back
@@ -469,16 +491,17 @@ fn settingsEntryCount() u8 {
 fn settingsEntryAt(i: u8) SettingsEntry {
     if (i == 0) return .tab_selector;
     switch (state.settings_tab) {
-        .game, .audio => return .back,
+        .game => return if (i == 1) .new_world else .back,
+        .audio => return .back,
         .video => {
             // Video tab: aa_method, [quality], ao, lighting, frustum, fog_dist, render_dist, back
-            const has_quality = switch (state.msaa_config.method) {
+            const has_quality = switch (aaConfig().method) {
                 .msaa, .fxaa => true,
                 else => false,
             };
             if (i == 1) return .aa_method;
             if (has_quality and i == 2) {
-                return switch (state.msaa_config.method) {
+                return switch (aaConfig().method) {
                     .msaa => .msaa_samples,
                     .fxaa => .fxaa_quality,
                     else => unreachable,
@@ -497,6 +520,12 @@ fn settingsEntryAt(i: u8) SettingsEntry {
             };
         },
     }
+}
+
+/// The anti-aliasing of the graphics settings, as sw_gpu takes it
+/// (REQ-GPU-026).
+fn aaConfig() gpu_mod.AntiAliasingConfig {
+    return state.graphics.antiAliasingConfig();
 }
 
 fn menuEntryCount(screen: MenuScreen) u8 {
@@ -521,8 +550,8 @@ fn aaMethodLabel(method: gpu_mod.AAMethod) []const u8 {
 }
 
 /// Cycle the value of the Settings entry at visual index `idx` by `dir` (+1 / -1).
-/// AA Method / MSAA Samples / FXAA Quality all write through to
-/// `state.msaa_config` / `state.fxaa_quality`. AO Strategy cycles
+/// AA Method, MSAA Samples, FXAA Quality and Lighting write to
+/// `state.graphics` (REQ-GPU-026). AO Strategy cycles
 /// state.ao_strategy (none/classic/moore). Lighting flips between
 /// none and skylight. Render Distance changes the desired state of the
 /// chunk scheduler at runtime (C8).
@@ -547,52 +576,44 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             // supported native sample count for bgra8unorm); when landing on
             // FXAA the quality snaps to whatever was most recently chosen
             // (preserved on the state field so re-entering FXAA keeps it).
-            const next_method: gpu_mod.AAMethod = switch (state.msaa_config.method) {
-                .none => if (dir > 0) .msaa else .fxaa,
-                .msaa => if (dir > 0) .fxaa else .none,
-                .fxaa => if (dir > 0) .none else .msaa,
-                else => .none,
+            const AA = sw_render.AntiAliasing;
+            const next: AA = switch (state.graphics.anti_aliasing) {
+                .none => if (dir > 0) .msaa4 else .fxaa,
+                .msaa2, .msaa4, .msaa8 => if (dir > 0) .fxaa else .none,
+                .fxaa => if (dir > 0) .none else .msaa4,
             };
-            const next_samples: u32 = if (next_method == .msaa)
-                if (state.msaa_config.msaa_samples >= 2) state.msaa_config.msaa_samples else 4
-            else
-                1;
-            state.msaa_config = .{
-                .method = next_method,
-                .msaa_samples = next_samples,
-                .fxaa_quality = state.msaa_config.fxaa_quality,
-            };
-            std.log.info("Settings: AA Method -> {s} (applies on next pipeline rebuild)", .{@tagName(next_method)});
+            state.graphics.anti_aliasing = next;
+            std.log.info("Settings: AA Method -> {s} (applies on next pipeline rebuild)", .{@tagName(aaConfig().method)});
         },
         .msaa_samples => {
             // Cycle MSAA sample count across 2 / 4 / 8. The GPU wrapper
             // caps the requested count for the current surface format at
             // pipeline-create time — see configureMSAA in gpu.zig.
-            const cur = state.msaa_config.msaa_samples;
-            const next: u32 = if (dir > 0) switch (cur) {
-                2 => 4,
-                4 => 8,
-                8 => 2,
-                else => 4,
-            } else switch (cur) {
-                2 => 8,
-                4 => 2,
-                8 => 4,
-                else => 4,
+            const AA = sw_render.AntiAliasing;
+            const next: AA = if (dir > 0) switch (state.graphics.anti_aliasing) {
+                .msaa2 => .msaa4,
+                .msaa4 => .msaa8,
+                .msaa8 => .msaa2,
+                .none, .fxaa => .msaa4,
+            } else switch (state.graphics.anti_aliasing) {
+                .msaa2 => .msaa8,
+                .msaa4 => .msaa2,
+                .msaa8 => .msaa4,
+                .none, .fxaa => .msaa4,
             };
-            state.msaa_config.msaa_samples = next;
-            std.log.info("Settings: MSAA Samples -> {} (applies on next pipeline rebuild)", .{next});
+            state.graphics.anti_aliasing = next;
+            std.log.info("Settings: MSAA Samples -> {} (applies on next pipeline rebuild)", .{next.samples()});
         },
         .fxaa_quality => {
             // Cycle FXAA quality tier: low → medium → high → low …
             // Mark the AA pipeline dirty so the render loop re-runs
             // configureFXAA with the new token substitutions on the next tick.
-            const next: gpu_mod.FxaaQuality = switch (state.msaa_config.fxaa_quality) {
+            const next: gpu_mod.FxaaQuality = switch (state.graphics.fxaa_quality) {
                 .low => if (dir > 0) .medium else .high,
                 .medium => if (dir > 0) .high else .low,
                 .high => if (dir > 0) .low else .medium,
             };
-            state.msaa_config.fxaa_quality = next;
+            state.graphics.fxaa_quality = next;
             state.aa_dirty = true;
             std.log.info("Settings: FXAA Quality -> {s} (pipeline rebuild queued)", .{@tagName(next)});
         },
@@ -605,7 +626,7 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
                 .moore, .propagated, .ssao => if (dir > 0) .none else .classic,
             };
             state.ao_strategy = next_ao;
-            state.scheduler.setMeshOptions(state.ao_strategy, state.lighting_mode);
+            state.scheduler.setMeshOptions(state.ao_strategy, state.graphics.lighting);
             std.log.info("Settings: AO Strategy -> {s} (each mesh is stale)", .{@tagName(next_ao)});
         },
         .lighting => {
@@ -613,12 +634,12 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             // ignored here — we flip on every press, same as a checkbox.
             // Skylight is baked per-vertex at mesh time, same as AO, so
             // each mesh becomes stale and the scheduler meshes it again.
-            const next_mode: gpu_mod.LightingMode = switch (state.lighting_mode) {
+            const next_mode: gpu_mod.LightingMode = switch (state.graphics.lighting) {
                 .none => .skylight,
                 .skylight => .none,
             };
-            state.lighting_mode = next_mode;
-            state.scheduler.setMeshOptions(state.ao_strategy, state.lighting_mode);
+            state.graphics.lighting = next_mode;
+            state.scheduler.setMeshOptions(state.ao_strategy, state.graphics.lighting);
             std.log.info("Settings: Lighting -> {s} (each mesh is stale)", .{@tagName(next_mode)});
         },
         .frustum => {
@@ -665,7 +686,8 @@ fn cycleSettingsValue(idx: u8, dir: i32) void {
             state.scheduler.setRenderDistance(&state.world, next_rd);
             std.log.info("Settings: Render Distance -> {}", .{next_rd});
         },
-        .back => {},
+        // Only Enter or a click starts a new world (activateMenuEntry).
+        .new_world, .back => {},
     }
 }
 
@@ -832,10 +854,20 @@ const ChunkGPU = struct {
     /// header of the quad buffer holds it, and vs_chunk tints the chunk
     /// orange for 64 ticks after it when GPU debug is on.
     rebuilt_tick: u32 = 0,
+    /// The fluid vertices of the mesh after a 16-byte header, or null
+    /// (REQ-VOXEL-027). The buffer comes from the quad pool: one fluid
+    /// quad is FLUID_ELEMENTS elements of 16 bytes.
+    fluid: ?QuadBuffer = null,
+    fluid_quads: u32 = 0,
+    /// The translucent quads of the mesh and their sort, or null
+    /// (REQ-VOXEL-031).
+    glass: ?sw_render.TranslucentBatch = null,
 
-    /// Give the buffer to the pool.
+    /// Give the buffers to the pool.
     fn release(self: *ChunkGPU) void {
         if (self.quads) |qb| state.quad_pool.put(state.allocator, qb);
+        if (self.fluid) |fb| state.quad_pool.put(state.allocator, fb);
+        if (self.glass) |*b| b.deinit();
         self.* = .{};
         // The depth of the scene can change: old occlusion results are
         // not correct now (REQ-VOXEL-025).
@@ -860,13 +892,19 @@ const State = struct {
     camera: CameraType = undefined, // set by voxelInit
     player: Player = undefined, // set by voxelInit
     pipeline: ?gpu_mod.RenderPipeline = null,
+    /// The debug shapes of debug mode: the hitbox cylinder, the spawn disc
+    /// and the chunk border wireframe. Alpha, no face culling, and a depth
+    /// test with no depth write, so the terrain hides the parts behind it.
     cylinder_pipeline: ?gpu_mod.RenderPipeline = null,
-    /// The chunk border wireframe of debug mode: the cylinder pipeline with
-    /// a depth test, so the terrain hides the lines behind it.
-    border_pipeline: ?gpu_mod.RenderPipeline = null,
     /// Chunk meshes: vs_chunk, with the packed quads at group 1 and the
     /// baked model quads at group 2.
     chunk_pipeline: ?gpu_mod.RenderPipeline = null,
+    /// The fluid pass (fluid.wgsl, REQ-VOXEL-028).
+    fluid_pipeline: ?gpu_mod.RenderPipeline = null,
+    /// The frame uniforms and the pipeline of the translucent quads
+    /// (sw_render, REQ-VOXEL-031).
+    frame_binding: ?sw_render.FrameBinding = null,
+    translucent_pipeline: ?sw_render.TranslucentPipeline = null,
     chunk_bg_layout: ?gpu_mod.BindGroupLayout = null,
     /// The baked model quads of the content (sw_voxel `models.gpu_table`),
     /// uploaded one time. The model quad records of the chunks index it.
@@ -924,7 +962,13 @@ const State = struct {
     /// True once the spawn chunk has loaded and the player has been placed at
     /// the resolved (terrain-safe) position for the current spawn_point.
     spawn_resolved: bool = false,
+    /// Debug mode (Cmd+D, --debug=on): the 2D HUD and the 3D debug shapes
+    /// (the hitbox, the spawn disc and the chunk border).
     debug_mode: bool = false,
+    /// The 2D HUD only: the debug panel and the keyboard HUD. A TAS run
+    /// turns it on, so the keyboard HUD shows the TAS input. The 3D debug
+    /// shapes stay off. --debug=off turns it off.
+    hud_2d: bool = false,
     tas_step_mode: bool = false,
     /// Set by Right arrow — preTick will inject the next TAS event group on the next sim tick.
     tas_step_pending: bool = false,
@@ -941,28 +985,22 @@ const State = struct {
     /// gpu_debug is on (0 when off), and each chunk stores the value at its
     /// last rebuild (ChunkGPU.rebuilt_tick). It starts at 1, so 0 means off.
     debug_tick: u32 = 1,
-    /// AA config parsed from `--aa=<none|msaa|fxaa>` (plus `--msaa=N` /
-    /// `--fxaa-quality=<tier>`). Default: FXAA 3.11 at medium quality — this
-    /// is the engine-wide ships-by-default AA mode. Override with
-    /// `--aa=none --ao=classic --render-distance=4` to reproduce the
-    /// pre-default-change behaviour used by existing regression tests.
-    msaa_config: gpu_mod.AntiAliasingConfig = .{
-        .method = .fxaa,
-        .msaa_samples = 1,
-        .fxaa_quality = .medium,
-    },
+    /// The graphics settings of sw_render (REQ-GPU-026): the anti-aliasing,
+    /// vsync and the lighting mode. The flags `--aa=<none|msaa|fxaa>`,
+    /// `--msaa=N`, `--fxaa-quality=<tier>`, `--vsync=<on|off>` and
+    /// `--lighting=<none|skylight>` set them. The defaults are the defaults
+    /// of the struct: FXAA 3.11 at medium quality, vsync on, skylight.
+    /// Skylight darkens the caves. `.none` lights each face fully. A change
+    /// to the lighting goes through Scheduler.setMeshOptions, because
+    /// skylight is baked per vertex at mesh time, as AO is. The demo has
+    /// no texture atlas, so it does not use `mip_levels`.
+    graphics: sw_render.GraphicsSettings = .{},
     /// Ambient-occlusion sampling strategy parsed from --ao=<none|classic|moore>.
     /// Default: moore (extended indoor-corner darkening). The future in-game
     /// settings menu reads/writes this same field; changing it at runtime
     /// requires marking every loaded chunk's mesh dirty so they get remeshed
     /// with the new sampler.
     ao_strategy: gpu_mod.AOStrategy = .moore,
-    /// World-lighting mode parsed from --lighting=<none|skylight>. Default:
-    /// skylight (caves are dark). `.none` is the regression-test baseline that
-    /// makes every face fully lit by sky regardless of how enclosed it is.
-    /// A change at runtime goes through Scheduler.setMeshOptions, because
-    /// skylight is baked per-vertex at mesh time, same as AO.
-    lighting_mode: gpu_mod.LightingMode = .skylight,
     /// Smooth light, parsed from --smooth-light=<on|off>. Off gives flat
     /// light: each face takes the light of the cell in front of it
     /// (sw_voxel REQ-VOXEL-008). Default: on.
@@ -993,9 +1031,42 @@ const State = struct {
     world_loading: bool = true,
     /// Selected world generation preset. Parsed from --world=<flatland|hilly>.
     world_preset: world_gen.Preset = .hilly,
-    /// World seed. Parsed from --seed=<u64> on native. The web build stays at
-    /// seed 0. Seed 0 gives the terrain from before the seed existed.
+    /// World seed. Native: --seed=<u64>. Web: the `seed` parameter of the
+    /// page URL, which the loader gives to `swindowzig_set_seed` before
+    /// init (REQ-VOXEL-034). Seed 0 gives the terrain from before the seed
+    /// existed.
     world_seed: u64 = 0,
+    /// --print-world-hash (native, with --headless): when the scheduler is
+    /// idle after the loading screen, print the hash of `worldHash` and
+    /// stop. The Bun runner prints the same hash for app.wasm.
+    print_world_hash: bool = false,
+
+    /// Save the edit log (REQ-VOXEL-035). --save=on|off. Null: on, but
+    /// off when a TAS, --headless, --dump-frame or --compare-golden runs,
+    /// so that those runs do not depend on earlier runs.
+    save_flag: ?bool = null,
+    save_enabled: bool = false,
+    /// --save-dir=<path> (native): the storage folder. With no flag, the
+    /// per-user data folder of SDL.
+    save_dir: ?[]const u8 = null,
+    /// The edits of this world since the seed, in order. The save
+    /// compacts it.
+    save_log: std.ArrayList(edit_save.SavedEdit) = .empty,
+    save_dirty: bool = false,
+    save_last_ns: u64 = 0,
+    save_warned: bool = false,
+    save_limit_warned: bool = false,
+    save_key_buf: [64]u8 = undefined,
+    save_key: []const u8 = "",
+    /// Frames since the start, 1 more for each frame callback.
+    frame_seq: u64 = 0,
+    /// The last block edit, until its chunk uploads a mesh that has it.
+    /// Then `[EDIT]` logs the number of frames to the screen.
+    edit_watch: ?EditWatch = null,
+    /// Water in the generator (REQ-VOXEL-028). Parsed from --water=on|off.
+    /// On by default. `--water=off` gives the terrain of the generator with
+    /// no water.
+    world_water: bool = true,
     /// Frustum-cull strategy parsed from --frustum=<none|sphere|cone>.
     /// Default is `.none` so the feature is opt-in — see frustum.zig header
     /// for the rationale and the cone-vs-sphere math notes.
@@ -1132,7 +1203,6 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Explicitly null all optional fields — `var state: State = undefined` bypasses struct defaults
     state.pipeline = null;
     state.cylinder_pipeline = null;
-    state.border_pipeline = null;
     state.uniform_buffer = null;
     state.bind_group = null;
     state.depth_texture = null;
@@ -1176,6 +1246,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.spawn_resolved = false;
     state.camera_view = .first_person;
     state.debug_mode = false;
+    state.hud_2d = false;
     state.tas_step_mode = false;
     state.tas_step_pending = false;
     state.tas_step_executing = false;
@@ -1200,18 +1271,16 @@ fn voxelInit(ctx: *sw.Context) !void {
 
     // Initialize overlay renderer
     state.overlay = OverlayRenderer.init(ctx.allocator());
+    // An init error (for example a TAS script that does not parse) frees
+    // each allocation of init, in the reverse order. Thus the demo exits
+    // with no memory leak.
+    errdefer state.overlay.deinit();
 
-    // Default AA config: FXAA 3.11 at medium quality (ships-by-default).
-    // `--aa=...`, `--msaa=N`, and `--fxaa-quality=<tier>` override below.
-    state.msaa_config = .{
-        .method = .fxaa,
-        .msaa_samples = 1,
-        .fxaa_quality = .medium,
-    };
+    // Default graphics settings (REQ-GPU-026): FXAA 3.11 at medium
+    // quality, vsync on, skylight. The flags below change them.
+    state.graphics = .{};
     // Default AO strategy: moore (extended indoor-corner AO).
     state.ao_strategy = .moore;
-    // Default lighting: skylight (caves dark). `--lighting=none` overrides.
-    state.lighting_mode = .skylight;
     // Frustum-cull defaults: the cone strategy, with a cone that covers the
     // screen diagonal (frustum_fov_auto). The cone test uses each chunk's
     // full-height bounding sphere, so it keeps every chunk that is on screen.
@@ -1235,21 +1304,28 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.occlusion_culled = 0;
     state.occ_stable_frames = 0;
     state.idle_frames = 0;
+    state.frame_seq = 0;
+    state.edit_watch = null;
     state.entities_culled = 0;
     state.fps_window_ns = @splat(0);
     state.fps_window_idx = 0;
     state.fps_window_filled = false;
     state.last_frame_ns = 0;
     state.dump_frame_path = null;
+    state.save_dir = null;
+    state.save_flag = null;
+    state.save_log = .empty;
     state.dump_frame_done = false;
     state.compare_golden_path = null;
+    state.profile_csv_path = null;
+    errdefer freeArgCopies(ctx.allocator());
     state.golden_max_diff_pct = 0.5;
     state.golden_max_channel_delta = 2;
 
     // Hotbar defaults: slot 1 = stone, slot 2 = grass, slot 3 = dirt,
     // slot 4 = glowstone (block-light BFS is live), slot 5 = the half block
     // (a block with a baked model). Slots 6-10 empty.
-    state.hotbar_slots = .{ .stone, .grass, .dirt, .glowstone, .slab, .air, .air, .air, .air, .air };
+    state.hotbar_slots = .{ .stone, .grass, .dirt, .glowstone, .slab, .water, .glass, .air, .air, .air };
     state.hotbar_selected = 0;
     state.hotbar_visible = true;
 
@@ -1257,6 +1333,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     // they use the hardcoded defaults set above (hilly world, skylight,
     // classic AO, 4× MSAA) which is exactly what the browser should show.
     const args = ctx.args;
+    // The web seed came from the page URL before init (REQ-VOXEL-034).
+    if (comptime is_wasm) state.world_seed = web_seed;
 
     // Pre-scan: collect all flags before processing --tas, so flag order doesn't matter.
     for (args) |arg| {
@@ -1300,12 +1378,39 @@ fn voxelInit(ctx: *sw.Context) !void {
             }
             state.chunk_workers = n;
         }
+        if (std.mem.eql(u8, arg, "--print-world-hash")) state.print_world_hash = true;
+        if (std.mem.startsWith(u8, arg, "--save=")) {
+            const val = std.mem.sliceTo(arg["--save=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.save_flag = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.save_flag = false;
+            } else {
+                std.log.err("--save: invalid value '{s}'. Accepted: on, off", .{val});
+                fatalExit(1);
+            }
+        }
+        if (std.mem.startsWith(u8, arg, "--save-dir=")) {
+            const p = std.mem.sliceTo(arg["--save-dir=".len..], 0);
+            state.save_dir = try ctx.allocator().dupe(u8, p);
+        }
         if (std.mem.startsWith(u8, arg, "--seed=")) {
             const val = std.mem.sliceTo(arg["--seed=".len..], 0);
             state.world_seed = std.fmt.parseInt(u64, val, 10) catch {
                 std.log.err("--seed: cannot parse '{s}' as u64", .{val});
                 fatalExit(1);
             };
+        }
+        if (std.mem.startsWith(u8, arg, "--water=")) {
+            const val = std.mem.sliceTo(arg["--water=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.world_water = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.world_water = false;
+            } else {
+                std.log.err("--water: invalid value '{s}'. Accepted: on, off", .{val});
+                fatalExit(1);
+            }
         }
         if (std.mem.startsWith(u8, arg, "--world=")) {
             const val = std.mem.sliceTo(arg["--world=".len..], 0);
@@ -1320,19 +1425,16 @@ fn voxelInit(ctx: *sw.Context) !void {
         }
         if (std.mem.startsWith(u8, arg, "--msaa=")) {
             const val = arg["--msaa=".len..];
-            // `--msaa=N` always implies method=msaa; preserves any fxaa_quality
-            // already parsed (though FXAA is inactive when method=msaa anyway).
-            const q = state.msaa_config.fxaa_quality;
-            if (std.mem.eql(u8, val, "none") or std.mem.eql(u8, val, "0")) {
-                state.msaa_config = .{ .method = .none, .msaa_samples = 1, .fxaa_quality = q };
-            } else if (std.mem.eql(u8, val, "1")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 1, .fxaa_quality = q };
+            // `--msaa=N` sets MSAA with N samples. 0, 1 and none set no
+            // anti-aliasing: one sample is no MSAA. The FXAA quality stays.
+            if (std.mem.eql(u8, val, "none") or std.mem.eql(u8, val, "0") or std.mem.eql(u8, val, "1")) {
+                state.graphics.anti_aliasing = .none;
             } else if (std.mem.eql(u8, val, "2")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 2, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .msaa2;
             } else if (std.mem.eql(u8, val, "4")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 4, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .msaa4;
             } else if (std.mem.eql(u8, val, "8")) {
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = 8, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .msaa8;
             } else {
                 std.log.err("--msaa: invalid value '{s}'. Accepted: none, 0, 1, 2, 4, 8", .{val});
                 fatalExit(1);
@@ -1343,17 +1445,14 @@ fn voxelInit(ctx: *sw.Context) !void {
             // Preserve method-specific knobs (sample count, FXAA quality) when
             // switching methods so `--aa=fxaa --fxaa-quality=high` and
             // `--msaa=8 --aa=msaa` work regardless of flag order.
-            const samples = state.msaa_config.msaa_samples;
-            const q = state.msaa_config.fxaa_quality;
             if (std.mem.eql(u8, val, "none")) {
-                state.msaa_config = .{ .method = .none, .msaa_samples = 1, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .none;
             } else if (std.mem.eql(u8, val, "msaa")) {
                 // Keep the sample count from --msaa=N if set earlier; default
-                // to 4 when it isn't already a valid MSAA sample count.
-                const s: u32 = if (samples >= 2) samples else 4;
-                state.msaa_config = .{ .method = .msaa, .msaa_samples = s, .fxaa_quality = q };
+                // to 4 when the setting is not MSAA.
+                if (state.graphics.anti_aliasing.samples() == 1) state.graphics.anti_aliasing = .msaa4;
             } else if (std.mem.eql(u8, val, "fxaa")) {
-                state.msaa_config = .{ .method = .fxaa, .msaa_samples = 1, .fxaa_quality = q };
+                state.graphics.anti_aliasing = .fxaa;
             } else {
                 std.log.err("--aa: invalid value '{s}'. Accepted: none, msaa, fxaa", .{val});
                 fatalExit(1);
@@ -1362,11 +1461,11 @@ fn voxelInit(ctx: *sw.Context) !void {
         if (std.mem.startsWith(u8, arg, "--fxaa-quality=")) {
             const val = arg["--fxaa-quality=".len..];
             if (std.mem.eql(u8, val, "low")) {
-                state.msaa_config.fxaa_quality = .low;
+                state.graphics.fxaa_quality = .low;
             } else if (std.mem.eql(u8, val, "medium") or std.mem.eql(u8, val, "med")) {
-                state.msaa_config.fxaa_quality = .medium;
+                state.graphics.fxaa_quality = .medium;
             } else if (std.mem.eql(u8, val, "high")) {
-                state.msaa_config.fxaa_quality = .high;
+                state.graphics.fxaa_quality = .high;
             } else {
                 std.log.err("--fxaa-quality: invalid value '{s}'. Accepted: low, medium, high", .{val});
                 fatalExit(1);
@@ -1424,11 +1523,22 @@ fn voxelInit(ctx: *sw.Context) !void {
         if (std.mem.startsWith(u8, arg, "--lighting=")) {
             const val = arg["--lighting=".len..];
             if (std.mem.eql(u8, val, "none")) {
-                state.lighting_mode = .none;
+                state.graphics.lighting = .none;
             } else if (std.mem.eql(u8, val, "skylight")) {
-                state.lighting_mode = .skylight;
+                state.graphics.lighting = .skylight;
             } else {
                 std.log.err("--lighting: invalid value '{s}'. Accepted: none, skylight", .{val});
+                fatalExit(1);
+            }
+        }
+        if (std.mem.startsWith(u8, arg, "--vsync=")) {
+            const val = std.mem.sliceTo(arg["--vsync=".len..], 0);
+            if (std.mem.eql(u8, val, "on")) {
+                state.graphics.vsync = true;
+            } else if (std.mem.eql(u8, val, "off")) {
+                state.graphics.vsync = false;
+            } else {
+                std.log.err("--vsync: invalid value '{s}'. Accepted: on, off", .{val});
                 fatalExit(1);
             }
         }
@@ -1551,13 +1661,14 @@ fn voxelInit(ctx: *sw.Context) !void {
             state.hotbar_slots[0] = block;
         }
     }
-    std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s}", .{
-        @tagName(state.msaa_config.method),
-        state.msaa_config.msaa_samples,
-        @tagName(state.msaa_config.fxaa_quality),
+    std.log.info("AA config (post-parse): method={s} requested_samples={} fxaa_quality={s} vsync={}", .{
+        @tagName(aaConfig().method),
+        aaConfig().msaa_samples,
+        @tagName(state.graphics.fxaa_quality),
+        state.graphics.vsync,
     });
     std.log.info("AO strategy (post-parse): {s}", .{@tagName(state.ao_strategy)});
-    std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.lighting_mode)});
+    std.log.info("Lighting mode (post-parse): {s}", .{@tagName(state.graphics.lighting)});
     std.log.info("Smooth light (post-parse): {}", .{state.smooth_light});
     std.log.info("World preset: {s}", .{@tagName(state.world_preset)});
     std.log.info("World seed: {d}", .{state.world_seed});
@@ -1572,7 +1683,9 @@ fn voxelInit(ctx: *sw.Context) !void {
     // distance (deferred until here so --world= / --render-distance= work
     // regardless of flag order).
     state.world = try world_mod.World.init(ctx.allocator(), world_gen.presetConfig(state.world_preset), state.render_distance);
+    errdefer state.world.deinit();
     state.world.gen_config.seed = state.world_seed;
+    state.world.gen_config.water = state.world_water;
 
     // Open the profile CSV if requested. Writing the header here means every
     // subsequent row can be appended without a seek. Failures log a warning
@@ -1589,18 +1702,29 @@ fn voxelInit(ctx: *sw.Context) !void {
             } else |err| {
                 std.log.err("--profile-csv: failed to open '{s}': {}", .{ p, err });
                 state.profile_csv_file = null;
+                ctx.allocator().free(p);
                 state.profile_csv_path = null;
             }
         }
     }
+    errdefer if (comptime !is_wasm) {
+        if (state.profile_csv_file) |f| f.close(ctx.io.?);
+        state.profile_csv_file = null;
+    };
 
     // The chunk pipeline (C1): one scheduler and one executor. The pool
     // starts before the loading screen, and the loading screen uses it
     // (D6, D7). The first frame plans the loading of the spawn area.
-    state.scheduler = scheduler_mod.Scheduler.init(ctx.allocator(), state.render_distance, state.ao_strategy, state.lighting_mode);
+    state.scheduler = scheduler_mod.Scheduler.init(ctx.allocator(), state.render_distance, state.ao_strategy, state.graphics.lighting);
+    errdefer state.scheduler.deinit();
     state.scheduler.setSmoothLight(state.smooth_light);
     state.scheduler.setLodDistance(state.lod_distance);
+    // The saved edits go to the World and to the outbox of the scheduler
+    // before the first job, so the workers get them (REQ-VOXEL-035).
+    try initSave(ctx);
+    errdefer state.save_log.deinit(ctx.allocator());
     try startExecutor(ctx);
+    errdefer state.executor.deinit();
     state.last_frame = .{};
 
     // TAS loading — native only. `TasScript.parseFile` calls std.fs.cwd()
@@ -1614,6 +1738,8 @@ fn voxelInit(ctx: *sw.Context) !void {
                 std.log.info("Loading TAS script: {s}", .{tas_path});
 
                 // Parse TAS script
+                // A parse error returns from init. The errdefers above free
+                // the allocations of init.
                 var tas_script = core.TasScript.parseFile(ctx.allocator(), ctx.io.?, tas_path) catch |err| {
                     std.log.err("Failed to parse TAS script: {}", .{err});
                     return err;
@@ -1641,8 +1767,9 @@ fn voxelInit(ctx: *sw.Context) !void {
                     ctx.setInputBlocked(true);
                 }
 
-                // Enable debug mode automatically so the keyboard HUD shows TAS input live.
-                state.debug_mode = true;
+                // Turn on the 2D HUD, so the keyboard HUD shows the TAS
+                // input. The 3D debug shapes stay off.
+                state.hud_2d = true;
                 // Auto-enable GPU debug in step mode so rebuilt faces are highlighted.
                 if (state.tas_step_mode) state.gpu_debug = true;
                 std.log.info("TAS replayer ready — will start after world loading completes", .{});
@@ -1652,10 +1779,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     }
 
     // --debug=on|off final pass: parsed AFTER TAS init so it overrides the
-    // automatic `state.debug_mode = true` that TAS load forces (the keyboard
-    // HUD wants to be visible during a normal TAS run, but the
-    // debug_overlay.sh regression test needs to capture a clean baseline with
-    // debug_mode=off even when a TAS is loaded for camera determinism).
+    // 2D HUD that a TAS turns on. The goldens and debug_overlay.sh need a
+    // clean frame with --debug=off even when a TAS is loaded.
     for (args) |arg| {
         if (std.mem.startsWith(u8, arg, "--debug=")) {
             const val = std.mem.sliceTo(arg["--debug=".len..], 0);
@@ -1663,6 +1788,7 @@ fn voxelInit(ctx: *sw.Context) !void {
                 state.debug_mode = true;
             } else if (std.mem.eql(u8, val, "off")) {
                 state.debug_mode = false;
+                state.hud_2d = false;
             } else {
                 std.log.err("--debug: invalid value '{s}'. Accepted: on, off", .{val});
                 fatalExit(1);
@@ -1741,6 +1867,8 @@ fn hotbarBlockColor(bt: chunk_mod.BlockType) [3]f32 {
         .leaves => .{ 0.18, 0.50, 0.12 },
         .sand => .{ 0.85, 0.78, 0.48 },
         .slab => .{ 0.66, 0.68, 0.74 },
+        .water => .{ 0.17, 0.38, 0.75 },
+        .glass => .{ 0.75, 0.88, 0.96 },
         .debug_marker => .{ 1.0, 0.0, 0.0 },
         .air => .{ 0.0, 0.0, 0.0 },
     };
@@ -1870,6 +1998,174 @@ fn playerChunk() struct { i32, i32 } {
 /// --chunk-workers threads, by default min(CPU count - 1, 4). Web: the
 /// WorkerPool of the JS loader. --chunk-workers=0 uses the Inline executor.
 /// When no thread or worker starts, the Inline executor is the fallback.
+/// One warning for each run when storage fails (REQ-VOXEL-036). The game
+/// continues without the save.
+fn warnSave(what: []const u8, reason: []const u8) void {
+    if (state.save_warned) return;
+    state.save_warned = true;
+    std.log.warn("[SAVE] {s} ({s}). The game continues", .{ what, reason });
+}
+
+/// Turn the save on or off, open the storage, read the saved edits of the
+/// world and give them to the World and the scheduler (REQ-VOXEL-035).
+/// Call after the World and the scheduler exist, before the executor.
+fn initSave(ctx: *sw.Context) !void {
+    var has_tas = false;
+    for (ctx.args) |arg| {
+        if (std.mem.eql(u8, arg, "--tas")) has_tas = true;
+    }
+    const replay = has_tas or state.headless or state.dump_frame_path != null or state.compare_golden_path != null;
+    state.save_enabled = state.save_flag orelse !replay;
+    state.save_log = .empty;
+    state.save_dirty = false;
+    state.save_warned = false;
+    state.save_limit_warned = false;
+    state.save_last_ns = 0;
+    if (!state.save_enabled) {
+        std.log.info("[SAVE] off: the edits are not saved", .{});
+        return;
+    }
+    if (comptime !is_wasm) {
+        if (ctx.io) |io| {
+            if (state.save_dir) |dir_path| {
+                if (std.Io.Dir.cwd().createDirPathOpen(io, dir_path, .{})) |dir| {
+                    platform_mod.storage.useDirectory(dir, io);
+                } else |err| warnSave("the --save-dir folder cannot be opened", @errorName(err));
+            } else {
+                platform_mod.native_sdl.initStorage(io, "seanmizen", "voxel") catch |err| warnSave("the save folder cannot be opened", @errorName(err));
+            }
+        }
+    }
+    state.save_key = edit_save.key(&state.save_key_buf, @tagName(state.world_preset), state.world_seed);
+    state.save_log = try SaveStore.load(state.allocator, state.save_key, @backingInt(state.world_preset), state.world_seed, &warnSave);
+    try restoreEdits();
+    std.log.info("[SAVE] on: {} saved edits from '{s}'", .{ state.save_log.items.len, state.save_key });
+}
+
+/// Give each edit of `state.save_log` to the edit log of the World and to
+/// the outbox of the scheduler, with the next block version of its chunk.
+/// No chunk is loaded yet, so each chunk gets its edits when it loads.
+fn restoreEdits() !void {
+    try state.scheduler.outbox.ensureUnusedCapacity(state.allocator, state.save_log.items.len);
+    for (state.save_log.items) |e| {
+        const edit: protocol_mod.Edit = .{
+            .cx = e.cx,
+            .cz = e.cz,
+            .version = state.world.editVersion(e.cx, e.cz) + 1,
+            .x = e.x,
+            .y = e.y,
+            .z = e.z,
+            .block = e.block,
+        };
+        try state.world.logEdit(edit);
+        state.scheduler.outbox.appendAssumeCapacity(edit);
+    }
+    if (state.save_log.items.len > 0) state.scheduler.dirty = true;
+}
+
+/// Set a block (a dig or a place) and add it to the saved log.
+/// A block edit that is not on the screen yet (see `State.edit_watch`).
+const EditWatch = struct {
+    cx: i32,
+    cz: i32,
+    /// The block version of the chunk after the edit.
+    block_ver: stages.Version,
+    /// The number of the frame of the edit. An edit runs in a tick, before
+    /// `voxelFrame` counts its frame, so this is `State.frame_seq + 1`.
+    frame: u64,
+    /// `clock.frameNowNs()` at the edit.
+    ns: u64,
+};
+
+fn editBlock(wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) !bool {
+    const ok = try state.scheduler.editBlock(&state.world, wx, wy, wz, block);
+    if (ok) {
+        const cx = @divFloor(wx, chunk_mod.CHUNK_W);
+        const cz = @divFloor(wz, chunk_mod.CHUNK_W);
+        if (state.world.get(cx, cz)) |lc| {
+            state.edit_watch = .{ .cx = cx, .cz = cz, .block_ver = lc.block_ver, .frame = state.frame_seq + 1, .ns = clock.frameNowNs() };
+        }
+    }
+    if (ok and state.save_enabled) {
+        if (edit_save.SavedEdit.fromWorld(wx, wy, wz, block)) |e| {
+            try state.save_log.append(state.allocator, e);
+            state.save_dirty = true;
+        }
+    }
+    return ok;
+}
+
+/// Write the edit log when it changed, at most one time each
+/// SAVE_INTERVAL_NS. `force` writes now (the shutdown).
+fn saveEdits(force: bool) void {
+    if (!state.save_enabled or !state.save_dirty) return;
+    const now = clock.frameNowNs();
+    if (!force and state.save_last_ns != 0 and now -% state.save_last_ns < SAVE_INTERVAL_NS) return;
+    state.save_last_ns = now;
+    state.save_dirty = false;
+    const dropped = SaveStore.save(state.allocator, state.save_key, @backingInt(state.world_preset), state.world_seed, &state.save_log) catch |err| {
+        warnSave("the edits are not saved", @errorName(err));
+        return;
+    };
+    if (dropped > 0 and !state.save_limit_warned) {
+        state.save_limit_warned = true;
+        std.log.warn("[SAVE] the edit log is larger than {} bytes. The save keeps the newest {} edits", .{ edit_save.MAX_BYTES, edit_save.MAX_RECORDS });
+    }
+    std.log.info("[SAVE] wrote {} edits to '{s}'", .{ state.save_log.items.len, state.save_key });
+}
+
+/// The "New World" entry of the Settings menu (REQ-VOXEL-035): delete
+/// the saved edits, and start the world again from the seed. The chunks,
+/// their GPU buffers, the scheduler and the executor start again, and the
+/// loading screen shows.
+fn newWorld(ctx: *sw.Context) !void {
+    const a = state.allocator;
+    if (state.save_enabled) {
+        SaveStore.delete(state.save_key) catch |err| warnSave("the saved edits cannot be deleted", @errorName(err));
+    }
+    state.save_log.clearRetainingCapacity();
+    state.save_dirty = false;
+
+    // A Web Worker can still send replies to the jobs of the old executor.
+    // The new executor starts its job ids after the old ids, so it discards
+    // those replies as unknown. It also keeps the byte counters (C5), so
+    // they stay equal to the counters of JS.
+    const old_web: ?(if (is_wasm) exec_web.Web else void) = if (comptime is_wasm) switch (state.executor) {
+        .web => |w| w,
+        else => null,
+    } else null;
+    state.executor.deinit();
+    state.scheduler.deinit();
+    var it = state.chunk_gpu.iterator();
+    while (it.next()) |entry| entry.value_ptr.release();
+    state.chunk_gpu.clearRetainingCapacity();
+    state.occ_results.clearRetainingCapacity();
+    state.world.deinit();
+
+    state.world = try world_mod.World.init(a, world_gen.presetConfig(state.world_preset), state.render_distance);
+    state.world.gen_config.seed = state.world_seed;
+    state.world.gen_config.water = state.world_water;
+    state.scheduler = scheduler_mod.Scheduler.init(a, state.render_distance, state.ao_strategy, state.graphics.lighting);
+    state.scheduler.setSmoothLight(state.smooth_light);
+    state.scheduler.setLodDistance(state.lod_distance);
+    try startExecutor(ctx);
+    if (comptime is_wasm) {
+        switch (state.executor) {
+            .web => |*w| if (old_web) |o| {
+                w.next_id = o.next_id;
+                w.head_bytes = o.head_bytes;
+                w.payload_bytes = o.payload_bytes;
+                w.held_meshes = o.held_meshes;
+            },
+            else => {},
+        }
+    }
+    state.world_loading = true;
+    state.spawn_point = .{ 24.0, 64.0, 20.0 };
+    state.spawn_resolved = false;
+    std.log.info("[SAVE] new world: the saved edits of '{s}' are deleted", .{state.save_key});
+}
+
 fn startExecutor(ctx: *sw.Context) !void {
     const a = ctx.allocator();
     const config = state.world.gen_config;
@@ -2108,6 +2404,7 @@ fn ensureSimRadius() !void {
 }
 
 fn voxelFrame(ctx: *sw.Context) !void {
+    state.frame_seq += 1;
     const cx, const cz = playerChunk();
     state.scheduler.setCenter(cx, cz);
     const view = captureFrustum();
@@ -2169,6 +2466,22 @@ fn voxelFrame(ctx: *sw.Context) !void {
             state.uploads_dropped += 1;
         }
     }
+
+    saveEdits(false);
+
+    // --print-world-hash: the hash of the desired state around the player,
+    // when it is complete. examples/voxel/tests/seed_web_native.sh compares
+    // it with the hash of app.wasm for the same seed (REQ-VOXEL-034).
+    if (comptime !is_wasm) {
+        if (state.print_world_hash and !state.world_loading and state.scheduler.isIdle()) {
+            const h = worldHash();
+            if (h != 0) {
+                std.log.info("world_hash={x:0>16} seed={d}", .{ h, state.world_seed });
+                state.print_world_hash = false;
+                ctx.requestShutdown();
+            }
+        }
+    }
 }
 
 /// Activate the currently-selected menu entry on the active screen.
@@ -2209,6 +2522,12 @@ fn activateMenuEntry(ctx: *sw.Context) void {
             if (entry == .back) {
                 state.menu_screen = .main;
                 std.log.info("Menu: -> main (Back)", .{});
+            } else if (entry == .new_world) {
+                newWorld(ctx) catch |err| {
+                    std.log.err("[SAVE] new world failed: {s}", .{@errorName(err)});
+                    fatalExit(1);
+                };
+                state.menu_screen = .main;
             } else {
                 // Pickers: Enter/click cycles forward (same as Right) so a
                 // one-key workflow works on keyboards without arrow keys.
@@ -2403,6 +2722,8 @@ fn voxelTick(ctx: *sw.Context) !void {
     // Cmd+D (macOS) / Ctrl+D (Windows/Linux) — toggle debug mode (shows hitbox cylinder)
     if (input.keyPressed(.D) and (input.mods.super or input.mods.ctrl)) {
         state.debug_mode = !state.debug_mode;
+        // Cmd+D off also hides the 2D HUD of a TAS run.
+        state.hud_2d = false;
         std.log.info("Debug mode: {}", .{state.debug_mode});
     }
 
@@ -2704,7 +3025,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     // The edit changes the blocks only. The frame phase
                     // relights and meshes the chunks that read the block,
                     // first in the queue (C7, C8 class 2).
-                    _ = try state.scheduler.editBlock(&state.world, bx, by, bz, .air);
+                    _ = try editBlock(bx, by, bz, .air);
                     std.log.info("[TICK  tick={d:4}] remove ({},{},{})", .{ ctx.tickId(), bx, by, bz });
                 }
 
@@ -2735,7 +3056,7 @@ fn voxelTick(ctx: *sw.Context) !void {
                     }
 
                     // See the note in the break-block path above.
-                    _ = try state.scheduler.editBlock(&state.world, px, py, pz, sel_block);
+                    _ = try editBlock(px, py, pz, sel_block);
                     std.log.info("[TICK  tick={d:4}] place ({},{},{})", .{ ctx.tickId(), px, py, pz });
                 }
             } else {
@@ -3181,8 +3502,8 @@ fn voxelRender(ctx: *sw.Context) !void {
     // sample_count, which is a separate follow-up.
     if (state.aa_dirty) {
         state.aa_dirty = false;
-        if (state.msaa_config.method == .fxaa) {
-            g.configureFXAA(g.getSurfaceWidth(), g.getSurfaceHeight(), state.msaa_config.fxaa_quality) catch |err| {
+        if (aaConfig().method == .fxaa) {
+            g.configureFXAA(g.getSurfaceWidth(), g.getSurfaceHeight(), state.graphics.fxaa_quality) catch |err| {
                 std.log.err("FXAA reconfigure failed: {}", .{err});
             };
         }
@@ -3342,7 +3663,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     {
         var it = state.world.chunks.valueIterator();
         while (it.next()) |lc_ptr| {
-            if (lc_ptr.*.mesh.quadCount() == 0) continue;
+            if (lc_ptr.*.mesh.isEmpty()) continue;
             // The y range of the chunk's uploaded mesh. A chunk with no upload
             // yet is not drawn anyway, so the full height is only a default.
             const cg = state.chunk_gpu.get(.{ .cx = lc_ptr.*.cx, .cz = lc_ptr.*.cz });
@@ -3421,14 +3742,47 @@ fn voxelRender(ctx: *sw.Context) !void {
         state.occ.?.draw(g, pass);
         pass.setBindGroup(0, state.bind_group.?);
     }
+    // The fluid pass (REQ-VOXEL-028) and the translucent blocks
+    // (REQ-VOXEL-031): after the opaque chunks and the box tests, so they
+    // do not hide a chunk from a box test. The chunks draw far to near for
+    // the alpha blend. In a chunk, the fluid draws first, then the
+    // translucent quads, sorted far to near by their centres.
+    if (state.fluid_pipeline) |fp| {
+        if (state.frame_binding) |*fbind| fbind.write(g, .{
+            .view_proj = view_proj.data,
+            .camera_pos = .{ cam_eye[0], cam_eye[1], cam_eye[2], 1 },
+        });
+        var i = sorted_chunks.items.len;
+        while (i > 0) {
+            i -= 1;
+            const lc = sorted_chunks.items[i];
+            const cg = state.chunk_gpu.getPtr(.{ .cx = lc.cx, .cz = lc.cz }) orelse continue;
+            if (cg.fluid) |fb| if (cg.fluid_quads > 0) {
+                pass.setPipeline(fp);
+                pass.setBindGroup(0, state.bind_group.?);
+                pass.setBindGroup(1, fb.bind_group);
+                pass.draw(cg.fluid_quads * 6, 1, 0, 0);
+            };
+            if (cg.glass) |*batch| {
+                _ = batch.update(g, cam_eye) catch |err| {
+                    std.log.err("Translucent sort failed: {}", .{err});
+                    continue;
+                };
+                state.translucent_pipeline.?.draw(pass, state.frame_binding.?.bind_group, batch);
+            }
+        }
+    }
     // The debug entities (REQ-VOXEL-026): the player hitbox and the spawn
     // marker. `visibility.cullBoxes` removes each entity box that is out of
     // the frustum or in no visible section.
     const entity_keep = cullEntities(cave, &live_frustum);
     // =========================================================================
-    // Player hitbox cylinder (drawn after voxels; no face culling so always visible)
+    // Player hitbox cylinder (drawn after voxels, no face culling). The
+    // terrain in front of it hides it. Only the third-person views draw it:
+    // in first person the camera is inside the cylinder, and its walls tint
+    // the whole view.
     // =========================================================================
-    if (state.debug_mode and entity_keep[@backingInt(DebugEntity.player)] and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
+    if (state.debug_mode and state.camera_view != .first_person and entity_keep[@backingInt(DebugEntity.player)] and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
         player_mod.buildCylinderMesh(
             state.player.feet_pos,
             100, // cyan
@@ -3452,9 +3806,11 @@ fn voxelRender(ctx: *sw.Context) !void {
     }
 
     // =========================================================================
-    // Spawn point debug marker (debug mode; flat red disc plate on the ground)
-    // Reuses the same scratch buffers and GPU buffers as the player hitbox —
-    // they're drawn sequentially so there's no overlap.
+    // Spawn point debug marker (debug mode; flat red disc plate on the ground,
+    // hidden by the terrain in front of it)
+    // Reuses the CPU scratch lists of the player hitbox. On the GPU it has
+    // its own range after the hitbox: each writeBuffer runs before the
+    // pass, so one shared range gave both draws the data of the last write.
     // =========================================================================
     if (state.debug_mode and entity_keep[@backingInt(DebugEntity.spawn_marker)] and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
         player_mod.buildDiscMesh(
@@ -3468,24 +3824,25 @@ fn voxelRender(ctx: *sw.Context) !void {
         };
 
         if (state.cylinder_verts.items.len > 0) {
-            g.writeBuffer(state.cylinder_vertex_buffer.?, 0, std.mem.sliceAsBytes(state.cylinder_verts.items));
-            g.writeBuffer(state.cylinder_index_buffer.?, 0, std.mem.sliceAsBytes(state.cylinder_indices.items));
+            const vert_off = player_mod.CYLINDER_VERT_COUNT * @sizeOf(VoxelVertex);
+            const idx_off = player_mod.CYLINDER_IDX_COUNT * @sizeOf(u32);
+            g.writeBuffer(state.cylinder_vertex_buffer.?, vert_off, std.mem.sliceAsBytes(state.cylinder_verts.items));
+            g.writeBuffer(state.cylinder_index_buffer.?, idx_off, std.mem.sliceAsBytes(state.cylinder_indices.items));
 
             pass.setPipeline(state.cylinder_pipeline.?);
             pass.setBindGroup(0, state.bind_group.?);
-            pass.setVertexBuffer(0, state.cylinder_vertex_buffer.?, 0, state.cylinder_verts.items.len * @sizeOf(VoxelVertex));
-            pass.setIndexBuffer(state.cylinder_index_buffer.?, .uint32, 0, state.cylinder_indices.items.len * @sizeOf(u32));
+            pass.setVertexBuffer(0, state.cylinder_vertex_buffer.?, vert_off, state.cylinder_verts.items.len * @sizeOf(VoxelVertex));
+            pass.setIndexBuffer(state.cylinder_index_buffer.?, .uint32, idx_off, state.cylinder_indices.items.len * @sizeOf(u32));
             pass.drawIndexed(@intCast(state.cylinder_indices.items.len), 1, 0, 0, 0);
         }
     }
 
     // =========================================================================
-    // Chunk border wireframe (debug mode only). The border pipeline has
-    // alpha and no face culling, as the cylinder pipeline has, but it keeps
+    // Chunk border wireframe (debug mode only). The cylinder pipeline has
     // the depth test. With no depth test, the full-height corner lines drew
     // through the ground and looked like a dark crack in the terrain.
     // =========================================================================
-    if (state.debug_mode and state.border_pipeline != null) {
+    if (state.debug_mode and state.cylinder_pipeline != null) {
         // Draw border for the chunk the player is currently in.
         const pcx = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[0]))));
         const pcz = world_mod.chunkCoordOf(@as(i32, @intFromFloat(@floor(state.player.feet_pos[2]))));
@@ -3493,7 +3850,7 @@ fn voxelRender(ctx: *sw.Context) !void {
         const border_oz: f32 = @as(f32, @floatFromInt(pcz)) * @as(f32, @floatFromInt(chunk_mod.CHUNK_W));
         buildChunkBorderMesh(g, border_ox, border_oz);
         if (state.border_vertex_buffer != null and state.border_idx_count > 0) {
-            pass.setPipeline(state.border_pipeline.?);
+            pass.setPipeline(state.cylinder_pipeline.?);
             pass.setBindGroup(0, state.bind_group.?);
             pass.setVertexBuffer(0, state.border_vertex_buffer.?, 0, state.border_vert_count * @sizeOf(VoxelVertex));
             pass.setIndexBuffer(state.border_index_buffer.?, .uint32, 0, state.border_idx_count * @sizeOf(u32));
@@ -3523,7 +3880,8 @@ fn voxelRender(ctx: *sw.Context) !void {
         const cam_bx: i32 = @intFromFloat(@floor(state.camera.position.x));
         const cam_by: i32 = @intFromFloat(@floor(state.camera.position.y));
         const cam_bz: i32 = @intFromFloat(@floor(state.camera.position.z));
-        if (state.world.getBlock(cam_bx, cam_by, cam_bz) != .air) {
+        const cam_block = state.world.getBlock(cam_bx, cam_by, cam_bz);
+        if (cam_block != .air and cam_block != .water and cam_block != .glass) {
             // Dark purple base
             state.overlay.rect(0, 0, overlay_w, overlay_h, .{ 0.08, 0.02, 0.12, 1 }, overlay_w, overlay_h) catch {};
 
@@ -3623,16 +3981,16 @@ fn voxelRender(ctx: *sw.Context) !void {
                         break :blk s;
                     },
                     .aa_method => blk: {
-                        const aa_label = aaMethodLabel(state.msaa_config.method);
+                        const aa_label = aaMethodLabel(aaConfig().method);
                         const s = std.fmt.bufPrint(&entry_buf, "AA Method: {s}", .{aa_label}) catch "AA Method: ?";
                         break :blk s;
                     },
                     .msaa_samples => blk: {
-                        const s = std.fmt.bufPrint(&entry_buf, "MSAA Samples: {}", .{state.msaa_config.msaa_samples}) catch "MSAA Samples: ?";
+                        const s = std.fmt.bufPrint(&entry_buf, "MSAA Samples: {}", .{aaConfig().msaa_samples}) catch "MSAA Samples: ?";
                         break :blk s;
                     },
                     .fxaa_quality => blk: {
-                        const s = std.fmt.bufPrint(&entry_buf, "FXAA Quality: {s}", .{@tagName(state.msaa_config.fxaa_quality)}) catch "FXAA Quality: ?";
+                        const s = std.fmt.bufPrint(&entry_buf, "FXAA Quality: {s}", .{@tagName(state.graphics.fxaa_quality)}) catch "FXAA Quality: ?";
                         break :blk s;
                     },
                     .ao_strategy => blk: {
@@ -3641,7 +3999,7 @@ fn voxelRender(ctx: *sw.Context) !void {
                         break :blk s;
                     },
                     .lighting => blk: {
-                        const light_label = @tagName(state.lighting_mode);
+                        const light_label = @tagName(state.graphics.lighting);
                         const s = std.fmt.bufPrint(&entry_buf, "Lighting: {s}", .{light_label}) catch "Lighting: ?";
                         break :blk s;
                     },
@@ -3659,6 +4017,7 @@ fn voxelRender(ctx: *sw.Context) !void {
                         const s = std.fmt.bufPrint(&entry_buf, "Render Distance: {}", .{state.render_distance}) catch "Render Distance: ?";
                         break :blk s;
                     },
+                    .new_world => "New World (delete saved edits)",
                     .back => "Back",
                 },
                 .exit_confirm => switch (i) {
@@ -3713,7 +4072,7 @@ fn voxelRender(ctx: *sw.Context) !void {
     // tried 1.5 first, but the resulting 7.5×10.5 quads blurred at edges.
     // bitmap_font.zig has only ASCII 0x20-0x5A — no lowercase rendering
     // (auto-uppercased), no degree sign (uses 'D'), no brackets (uses parens).
-    if (state.debug_mode and !state.game_state.isLayerActive(.pause_menu)) {
+    if ((state.debug_mode or state.hud_2d) and !state.game_state.isLayerActive(.pause_menu)) {
         const dbg_scale: f32 = 2.0; // smaller than menu entries (3.0); integer-aligned glyph quads
         const dbg_line_h: f32 = (GLYPH_H + 2) * dbg_scale; // 18 px per line
         const dbg_edge: f32 = 2; // 2-pixel gutter from screen edge per spec
@@ -3850,11 +4209,11 @@ fn voxelRender(ctx: *sw.Context) !void {
                 drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
             }
             {
-                const s = std.fmt.bufPrint(&dbg_buf, "LIGHTING: {s}", .{@tagName(state.lighting_mode)}) catch "LIGHTING: ?";
+                const s = std.fmt.bufPrint(&dbg_buf, "LIGHTING: {s}", .{@tagName(state.graphics.lighting)}) catch "LIGHTING: ?";
                 drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
             }
             {
-                const s = std.fmt.bufPrint(&dbg_buf, "ANTIALIAS: {s} ({}X)", .{ aaMethodLabel(state.msaa_config.method), state.msaa_config.msaa_samples }) catch "ANTIALIAS: ?";
+                const s = std.fmt.bufPrint(&dbg_buf, "ANTIALIAS: {s} ({}X)", .{ aaMethodLabel(aaConfig().method), aaConfig().msaa_samples }) catch "ANTIALIAS: ?";
                 drawLine(s, dbg_text_x, &line_y, dbg_line_h, dbg_scale, dbg_col, overlay_w, overlay_h);
             }
 
@@ -3900,8 +4259,8 @@ fn voxelRender(ctx: *sw.Context) !void {
         }
     }
 
-    // Full keyboard HUD — only in debug mode
-    if (state.debug_mode) {
+    // Full keyboard HUD — in debug mode and in the 2D HUD of a TAS run
+    if (state.debug_mode or state.hud_2d) {
         keyboard_hud.draw(&state.overlay, ctx.input(), overlay_w, overlay_h);
     }
 
@@ -4189,8 +4548,23 @@ fn compareAgainstGolden(
     return if (pass) @as(u8, 0) else @as(u8, 1);
 }
 
+/// Free the copies of the path flags (--dump-frame, --compare-golden,
+/// --profile-csv) that init makes.
+fn freeArgCopies(a: std.mem.Allocator) void {
+    if (state.dump_frame_path) |p| a.free(p);
+    if (state.compare_golden_path) |p| a.free(p);
+    if (state.profile_csv_path) |p| a.free(p);
+    if (state.save_dir) |p| a.free(p);
+    state.save_dir = null;
+    state.dump_frame_path = null;
+    state.compare_golden_path = null;
+    state.profile_csv_path = null;
+}
+
 fn voxelShutdown(ctx: *sw.Context) !void {
     logGpuMeshStats();
+    saveEdits(true);
+    state.save_log.deinit(state.allocator);
     // Stop the chunk worker threads and wait for them, before the World
     // and the scheduler go.
     state.executor.deinit();
@@ -4224,16 +4598,19 @@ fn voxelShutdown(ctx: *sw.Context) !void {
             std.log.info("[PROFILE] csv closed: {s}", .{p});
         }
     }
+    freeArgCopies(ctx.allocator());
 
     std.log.info("Voxel demo shutdown", .{});
 }
 
 fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     // Configure AA from CLI flags (default: FXAA medium quality).
-    try g.configureMSAA(state.msaa_config, width, height);
-    if (state.msaa_config.method == .fxaa) {
-        try g.configureFXAA(width, height, state.msaa_config.fxaa_quality);
+    // The graphics settings give the AA and vsync (REQ-GPU-026).
+    try g.configureMSAA(aaConfig(), width, height);
+    if (aaConfig().method == .fxaa) {
+        try g.configureFXAA(width, height, state.graphics.fxaa_quality);
     }
+    if (g.vsync != state.graphics.vsync) g.setVsync(state.graphics.vsync);
     const sample_count = g.getSampleCount();
 
     // Load shader
@@ -4306,7 +4683,7 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
     // Hardware depth testing. The Metal crash (wgpu-native v0.19.4.1 "bus error at 0x29")
     // was fixed upstream; wgpu-native v22.1.0.5 (current pinned version) no longer crashes.
     // Depth testing eliminates the painter's-algorithm sort-order failures that caused
-    // AO shadow faces to bleed through occluding roof geometry (README bug #2).
+    // AO shadow faces to bleed through occluding roof geometry (docs/overview.md bug #2).
     const main_depth_stencil: gpu_mod.DepthStencilState = .{
         .format = .depth24plus,
         .depth_write_enabled = true,
@@ -4391,15 +4768,63 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         .depth_stencil = main_depth_stencil,
     });
 
+    // Fluid pipeline (REQ-VOXEL-028): fluid.wgsl reads the fluid vertices
+    // of a chunk from a storage buffer at group 1, as vs_chunk reads the
+    // quads. Alpha blend, the depth test on and the depth write off, no
+    // back-face cull: the player sees the surface from below.
+    var fluid_shader = try g.createShaderModule(.{ .code = @embedFile("fluid.wgsl") });
+    var fluid_pipeline_layout = try g.createPipelineLayout(.{
+        .bind_group_layouts = &[_]*gpu_mod.BindGroupLayout{ &bg_layout, &state.chunk_bg_layout.? },
+    });
+    var fluid_depth_stencil = main_depth_stencil;
+    fluid_depth_stencil.depth_write_enabled = false;
+    state.fluid_pipeline = try g.createRenderPipeline(.{
+        .layout = &fluid_pipeline_layout,
+        .vertex = .{
+            .module = &fluid_shader,
+            .entry_point = "vs_fluid",
+            .buffers = &[_]sw.gpu_types.VertexBufferLayout{},
+        },
+        .fragment = .{
+            .module = &fluid_shader,
+            .entry_point = "fs_fluid",
+            .targets = &[_]sw.gpu_types.ColorTargetState{.{
+                .format = .bgra8unorm,
+                .blend = .{
+                    .color = .{ .operation = .add, .src_factor = .src_alpha, .dst_factor = .one_minus_src_alpha },
+                    .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
+                },
+            }},
+        },
+        .primitive = .{
+            .topology = .triangle_list,
+            .front_face = .ccw,
+            .cull_mode = .none,
+        },
+        .multisample = .{ .count = sample_count },
+        .depth_stencil = fluid_depth_stencil,
+    });
+
+    // Translucent blocks (REQ-VOXEL-031): sw_render Translucent in the
+    // scene pass, with the sw_render frame uniforms at group 0.
+    state.frame_binding = try sw_render.FrameBinding.init(g);
+    state.translucent_pipeline = try sw_render.TranslucentPipeline.init(g, &state.frame_binding.?.layout, .{
+        .color_format = .bgra8unorm,
+        .depth_format = .depth24plus,
+        .sample_count = sample_count,
+    });
+
     // Cylinder pipeline: no face culling + alpha blending so the hitbox is semi-transparent
     // and visible from both inside (first-person) and outside (third-person, F5).
     // depth_stencil must match the render pass attachment.
-    // depth_write disabled + compare=always so debug overlays render on top of
-    // everything without occluding voxel geometry.
+    // The depth test is on, so the terrain in front of a debug shape hides
+    // it. The shapes do not write depth, so they do not hide the terrain or
+    // each other. The hitbox, the spawn disc and the chunk border lines
+    // use this pipeline.
     const cylinder_depth_stencil: gpu_mod.DepthStencilState = .{
         .format = .depth24plus,
         .depth_write_enabled = false,
-        .depth_compare = .always,
+        .depth_compare = .less_equal,
         .stencil_read_mask = 0,
         .stencil_write_mask = 0,
     };
@@ -4445,45 +4870,14 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         };
     }
 
-    // Border pipeline: the cylinder pipeline with the depth test on. The
-    // lines do not write depth, so they do not hide the terrain, but the
-    // terrain in front of a line hides it.
-    var border_depth_stencil = cylinder_depth_stencil;
-    border_depth_stencil.depth_compare = .less_equal;
-    state.border_pipeline = try g.createRenderPipeline(.{
-        .layout = &pipeline_layout,
-        .vertex = .{
-            .module = &shader,
-            .entry_point = "vs_main",
-            .buffers = &[_]sw.gpu_types.VertexBufferLayout{voxel_vbl},
-        },
-        .fragment = .{
-            .module = &shader,
-            .entry_point = "fs_main",
-            .targets = &[_]sw.gpu_types.ColorTargetState{.{
-                .format = .bgra8unorm,
-                .blend = .{
-                    .color = .{ .operation = .add, .src_factor = .src_alpha, .dst_factor = .one_minus_src_alpha },
-                    .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .zero },
-                },
-            }},
-        },
-        .primitive = .{
-            .topology = .triangle_list,
-            .front_face = .ccw,
-            .cull_mode = .none,
-        },
-        .multisample = .{ .count = sample_count },
-        .depth_stencil = border_depth_stencil,
-    });
-
-    // Pre-allocate fixed-size cylinder GPU buffers (size never changes)
+    // Pre-allocate fixed-size GPU buffers for the debug entities: the hitbox
+    // cylinder first, then the spawn disc (size never changes)
     state.cylinder_vertex_buffer = try g.createBuffer(.{
-        .size = player_mod.CYLINDER_VERT_COUNT * @sizeOf(VoxelVertex),
+        .size = (player_mod.CYLINDER_VERT_COUNT + player_mod.DISC_VERT_COUNT) * @sizeOf(VoxelVertex),
         .usage = .{ .vertex = true, .copy_dst = true },
     });
     state.cylinder_index_buffer = try g.createBuffer(.{
-        .size = player_mod.CYLINDER_IDX_COUNT * @sizeOf(u32),
+        .size = (player_mod.CYLINDER_IDX_COUNT + player_mod.DISC_IDX_COUNT) * @sizeOf(u32),
         .usage = .{ .index = true, .copy_dst = true },
     });
 
@@ -4586,6 +4980,14 @@ fn uploadNewMeshes(g: *gpu_mod.GPU) void {
         const dt = perfNowNs() - t0;
         upload_us += @divTrunc(dt, 1000);
         upload_chunks += 1;
+        if (state.edit_watch) |w| if (lc.cx == w.cx and lc.cz == w.cz) {
+            // The installed mesh read the edited blocks: the edit is in
+            // this frame. A block edit shows within 2 frames (REQ-VOXEL-037).
+            if (lc.mesh_inputs) |in| if (in.blocks[stages.CENTER] >= w.block_ver) {
+                std.log.info("[EDIT] chunk ({},{}): the edit shows after {} frame(s), {} us", .{ w.cx, w.cz, state.frame_seq - w.frame, (clock.frameNowNs() -| w.ns) / 1000 });
+                state.edit_watch = null;
+            };
+        };
         if (state.profile_csv_file != null) {
             state.upload_ns +%= @intCast(dt);
             state.upload_count +%= 1;
@@ -4614,40 +5016,103 @@ fn uploadChunkMesh(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !
     // The depth of the scene can change: old occlusion results are not
     // correct now (REQ-VOXEL-025).
     state.scene_gen +%= 1;
+    const header = mesher_mod.PackedQuad{ @bitCast(lc.cx * chunk_mod.CHUNK_W), state.debug_tick, @bitCast(lc.cz * chunk_mod.CHUNK_W), @bitCast(@as(i32, chunk_mod.MIN_Y)) };
+    const quad_size = @sizeOf(mesher_mod.PackedQuad);
     if (n == 0) {
         // Nothing to draw. The buffer goes back to the pool.
         if (cg.quads) |qb| state.quad_pool.put(state.allocator, qb);
         cg.quads = null;
         cg.quad_count = 0;
-        lc.dropUpload();
-        return;
-    }
-    if (cg.quads) |qb| if (qb.capacity < n) {
-        state.quad_pool.put(state.allocator, qb);
-        cg.quads = null;
-    };
-    if (cg.quads == null) cg.quads = try state.quad_pool.acquire(g, n);
-    const buffer = cg.quads.?.buffer;
+    } else {
+        if (cg.quads) |qb| if (qb.capacity < n) {
+            state.quad_pool.put(state.allocator, qb);
+            cg.quads = null;
+        };
+        if (cg.quads == null) cg.quads = try state.quad_pool.acquire(g, n);
+        const buffer = cg.quads.?.buffer;
 
-    cg.rebuilt_tick = state.debug_tick;
-    const header = mesher_mod.PackedQuad{ @bitCast(lc.cx * chunk_mod.CHUNK_W), cg.rebuilt_tick, @bitCast(lc.cz * chunk_mod.CHUNK_W), @bitCast(@as(i32, chunk_mod.MIN_Y)) };
-    const quad_size = @sizeOf(mesher_mod.PackedQuad);
-    g.writeBuffer(buffer, 0, std.mem.asBytes(&header));
-    switch (bytes) {
-        .local => |l| {
-            g.writeBuffer(buffer, quad_size, l.msg[mesh_bytes.QUADS_OFFSET..]);
-            state.uploads_local += 1;
-        },
-        .held => |h| {
-            g.writeBufferHeld(buffer, quad_size, h.handle, mesh_bytes.QUADS_OFFSET, bytes.quadBytesLen());
-            state.uploads_held += 1;
-        },
+        cg.rebuilt_tick = state.debug_tick;
+        g.writeBuffer(buffer, 0, std.mem.asBytes(&header));
+        switch (bytes) {
+            .local => |l| {
+                g.writeBuffer(buffer, quad_size, l.msg[mesh_bytes.QUADS_OFFSET..][0 .. @as(usize, n) * quad_size]);
+                state.uploads_local += 1;
+            },
+            .held => |h| {
+                g.writeBufferHeld(buffer, quad_size, h.handle, mesh_bytes.QUADS_OFFSET, @as(usize, n) * quad_size);
+                state.uploads_held += 1;
+            },
+        }
+        cg.quad_count = n;
     }
-    cg.quad_count = n;
+    try uploadFluid(g, lc, cg, header);
+    try uploadTranslucent(g, lc, cg);
     cg.y_min = lc.mesh.y_min;
     cg.y_max = lc.mesh.y_max;
     cg.ranges = lc.mesh.ranges;
     lc.dropUpload();
+}
+
+/// Write the translucent quads of the new mesh of `lc` to its batch, and
+/// give the batch their centres (REQ-VOXEL-031). The vertices go from the
+/// mesh bytes to the GPU. Main reads only the centres, for the sort.
+fn uploadTranslucent(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU) !void {
+    const bytes = lc.upload.?;
+    const t = lc.mesh.translucent_quad_count;
+    if (t == 0) {
+        if (cg.glass) |*b| b.deinit();
+        cg.glass = null;
+        return;
+    }
+    if (cg.glass) |*b| if (b.capacity < t) {
+        b.deinit();
+        cg.glass = null;
+    };
+    if (cg.glass == null) cg.glass = try sw_render.TranslucentBatch.init(state.allocator, g, std.math.ceilPowerOfTwoAssert(u32, @max(t, 16)), 1);
+    const batch = &cg.glass.?;
+    const info_offset = mesh_bytes.QUADS_OFFSET + @as(usize, lc.mesh.quad_count) * @sizeOf(mesher_mod.PackedQuad) +
+        @as(usize, lc.mesh.fluid_quad_count) * protocol_mod.FLUID_QUAD_LEN;
+    const len = @as(usize, t) * protocol_mod.TRANSLUCENT_QUAD_LEN;
+    switch (bytes) {
+        .local => |l| g.writeBuffer(batch.vertex_buffer, 0, l.msg[info_offset..][0..len]),
+        .held => |h| g.writeBufferHeld(batch.vertex_buffer, 0, h.handle, @intCast(info_offset), len),
+    }
+    const centers = try state.allocator.alloc([3]f32, t);
+    defer state.allocator.free(centers);
+    try bytes.readCenters(state.allocator, info_offset + len, centers);
+    try batch.setCenters(centers);
+}
+
+/// The 16-byte elements of one fluid quad in a quad pool buffer.
+const FLUID_ELEMENTS = protocol_mod.FLUID_QUAD_LEN / @sizeOf(mesher_mod.PackedQuad);
+
+/// Write the fluid vertices of the new mesh of `lc` to its fluid buffer
+/// (REQ-VOXEL-027). The vertices follow the quads in the mesh bytes. Main
+/// does not copy them (C5).
+fn uploadFluid(g: *gpu_mod.GPU, lc: *world_mod.LoadedChunk, cg: *ChunkGPU, header: mesher_mod.PackedQuad) !void {
+    const bytes = lc.upload.?;
+    const f = lc.mesh.fluid_quad_count;
+    if (f == 0) {
+        if (cg.fluid) |fb| state.quad_pool.put(state.allocator, fb);
+        cg.fluid = null;
+        cg.fluid_quads = 0;
+        return;
+    }
+    const elements = @as(usize, f) * FLUID_ELEMENTS;
+    if (cg.fluid) |fb| if (fb.capacity < elements) {
+        state.quad_pool.put(state.allocator, fb);
+        cg.fluid = null;
+    };
+    if (cg.fluid == null) cg.fluid = try state.quad_pool.acquire(g, elements);
+    const buffer = cg.fluid.?.buffer;
+    const offset = mesh_bytes.QUADS_OFFSET + @as(usize, lc.mesh.quad_count) * @sizeOf(mesher_mod.PackedQuad);
+    const len = @as(usize, f) * protocol_mod.FLUID_QUAD_LEN;
+    g.writeBuffer(buffer, 0, std.mem.asBytes(&header));
+    switch (bytes) {
+        .local => |l| g.writeBuffer(buffer, @sizeOf(mesher_mod.PackedQuad), l.msg[offset..][0..len]),
+        .held => |h| g.writeBufferHeld(buffer, @sizeOf(mesher_mod.PackedQuad), h.handle, @intCast(offset), len),
+    }
+    cg.fluid_quads = f;
 }
 
 // ----------------------------------------------------------------------------
@@ -4842,6 +5307,18 @@ fn wasmDebugPipelineCounts() callconv(.c) [*]const u32 {
 /// same edits give the same hash, with any executor. Returns 0 while a mesh
 /// of the desired state is not current.
 fn wasmDebugWorldHash() callconv(.c) u64 {
+    return worldHash();
+}
+
+/// The seed from the page URL (REQ-VOXEL-034). The loader calls
+/// `swindowzig_set_seed` before swindowzig_init, and voxelInit reads it.
+var web_seed: u64 = 0;
+
+fn wasmSetSeed(seed: u64) callconv(.c) void {
+    web_seed = seed;
+}
+
+fn worldHash() u64 {
     const sched = &state.scheduler;
     const world = &state.world;
     const r = sched.render_distance;
@@ -4933,13 +5410,26 @@ fn wasmDebugSetRenderDistance(r: i32) callconv(.c) void {
 fn wasmDebugEdit(wx: i32, wy: i32, wz: i32, block: u32) callconv(.c) u32 {
     if (!wasm_initialised or block >= std.enums.values(chunk_mod.BlockType).len) return 0;
     const b: chunk_mod.BlockType = @fromBackingInt(@intCast(block));
-    const ok = state.scheduler.editBlock(&state.world, wx, wy, wz, b) catch return 0;
+    const ok = editBlock(wx, wy, wz, b) catch return 0;
     return @intFromBool(ok);
 }
 
 // The handshake values of the worker pool (C9). chunks.wasm exports the
 // same values (pipeline/chunk_worker_main.zig). The loader starts the pool
 // only when all three are equal.
+/// The block id at a world cell, for the Bun tests (save.test.ts). Main
+/// has the blocks of the prefetch radius only. Returns 0 (air) elsewhere.
+fn wasmDebugBlock(wx: i32, wy: i32, wz: i32) callconv(.c) u32 {
+    return @backingInt(state.world.getBlock(wx, wy, wz));
+}
+
+/// The "New World" entry of the Settings menu, for the Bun tests
+/// (save.test.ts). Returns 1 when the new world starts.
+fn wasmDebugNewWorld() callconv(.c) u32 {
+    newWorld(&wasm_ctx) catch return 0;
+    return 1;
+}
+
 fn wasmChunkProtocolVersion() callconv(.c) u32 {
     return @import("sw_voxel").protocol.VERSION;
 }
@@ -4961,7 +5451,10 @@ comptime {
         @export(&wasmDebugChunkCounts, .{ .name = "voxel_debug_chunk_counts" });
         @export(&wasmDebugPipelineCounts, .{ .name = "voxel_debug_pipeline_counts" });
         @export(&wasmDebugWorldHash, .{ .name = "voxel_debug_world_hash" });
+        @export(&wasmSetSeed, .{ .name = "swindowzig_set_seed" });
         @export(&wasmDebugEdit, .{ .name = "voxel_debug_edit" });
+        @export(&wasmDebugBlock, .{ .name = "voxel_debug_block" });
+        @export(&wasmDebugNewWorld, .{ .name = "voxel_debug_new_world" });
         @export(&wasmDebugGpuCounts, .{ .name = "voxel_debug_gpu_counts" });
         @export(&wasmDebugSetRenderDistance, .{ .name = "voxel_debug_set_render_distance" });
         @export(&wasmChunkProtocolVersion, .{ .name = "voxel_chunk_protocol_version" });

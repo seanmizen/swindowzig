@@ -375,6 +375,16 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   meshes. Each mesh is a GPU upload, and many uploads in one frame make
   a frame spike. The meshes that wait upload in the next frames. The
   loading screen has no limit.
+  The limit is a count and not a time. A time limit
+  needs a GPU timestamp for each upload, because `writeBuffer` only puts
+  the copy in the queue: the GPU does the transfer after the submit. A
+  CPU time around the queue writes measures only the copy into the
+  staging memory of wgpu (native) or the call into JS (web). That time is
+  small and does not show the GPU cost. Also, a time limit makes the
+  uploads of a frame depend on the clock, so a TAS run is not the same on
+  each machine. A count is deterministic. If the count is not
+  sufficient, a byte limit (the sum of the quad bytes) is the next step:
+  it is also deterministic and it follows the transfer size.
 - **Verification:** Test — `libs/sw_voxel/src/pipeline/streaming.zig` ›
   "streaming: the upload budget keeps the chunks in view, nearest first
   (REQ-VOXEL-017)"
@@ -568,3 +578,268 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
   - Inspection — `examples/voxel/main.zig`: `cullEntities` and the debug
     draws of the player hitbox and the spawn marker.
 - **Relations:** depends-on REQ-VOXEL-020
+
+## REQ-VOXEL-027 — The mesh result carries the fluid quads after the packed quads
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a chunk holds fluid cells, the `sw_voxel` mesh stage
+  shall put the quads of `fluid.generate` in the mesh result after the
+  packed quads.
+- **Rationale:** The fluid quads have 4 corner heights, so they cannot go
+  in the greedy stream. The worker makes them with the other quads, and
+  the result carries them as a second stream with its count in the head
+  of the result. Main does not copy them (C5): it writes them to a GPU buffer from
+  the result bytes. A chunk with no fluid gives the payload bytes of
+  protocol version 6, so its mesh hash does not change.
+- **Verification:**
+  - Test — `examples/voxel/protocol_test.zig` › "protocol: a mesh Result
+    holds the fluid quads after the quads (REQ-VOXEL-027)"
+  - Test — `backends/wasm/worker-pool.test.ts` › "fluid: water gives a
+    fluid stream that goes to the GPU from the held bytes
+    (REQ-VOXEL-027)"
+- **Relations:** depends-on REQ-VOXEL-014
+
+## REQ-VOXEL-028 — The demo draws water in a fluid pass after the opaque chunks
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a chunk mesh has fluid quads, the voxel demo shall
+  draw them after the opaque chunks with alpha blend and with the depth
+  write off.
+- **Rationale:** Water is translucent: the ground under it must show
+  through, and a water surface must not hide the terrain behind it from
+  the depth test. The chunks draw far to near. The demo generator puts
+  water in the low columns by default. `--water=off` gives the terrain
+  with no water. `--place-block=water` places water, and the hotbar has
+  water and glass.
+- **Verification:**
+  - Demonstration — the `water_pool` golden of
+    `examples/voxel/scripts/run_headless_regressions.sh` (lavapipe, in
+    CI): water in a dug hole and on the grass.
+  - Test — `examples/voxel/content.zig` › "water fills the low columns to
+    the sea level only with the water flag (REQ-VOXEL-028)"
+- **Relations:** depends-on REQ-VOXEL-027
+
+## REQ-VOXEL-029 — A translucent block has faces with their centres in world space
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** Where the content gives a colour for a translucent block,
+  the `sw_voxel` translucent mesher shall make each face of a cell of that
+  block that is not next to the same block or a full cube, with its
+  centre, in world space.
+- **Rationale:** Translucent faces must draw far to near, so the game
+  needs the centre of each face for the sort. The worker calculates the
+  centres, so main does not read the vertices (C5). World space lets the
+  game sort the faces of a chunk with no chunk offset, and gives the
+  vertices to sw_render `Translucent` as they are. A translucent block is
+  not a full cube: the faces of the blocks next to it show, and it does
+  not darken AO.
+- **Verification:**
+  - Test — `libs/sw_voxel/src/translucent.zig` › "a translucent cell has
+    6 faces in world space, with a centre for each face (REQ-VOXEL-029)"
+  - Test — `libs/sw_voxel/src/translucent.zig` › "two cells of one
+    translucent block have no face between them, a full cube hides a face
+    (REQ-VOXEL-029)"
+- **Relations:** none
+
+## REQ-VOXEL-030 — The mesh result carries the translucent quads and their centres
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a chunk holds translucent cells, the `sw_voxel` mesh
+  stage shall put the translucent quads and their centres in the mesh
+  result after the fluid quads.
+- **Rationale:** The vertices go from the result bytes to a GPU buffer, and
+  main reads only the 12 bytes of each centre for the sort (C5). On the
+  web, JS counts the centre bytes apart from the quad bytes, so the test
+  of C5 still proves that no quad goes into the wasm memory. A chunk with
+  no translucent block gives the payload bytes of protocol version 7.
+- **Verification:**
+  - Test — `examples/voxel/protocol_test.zig` › "protocol: a mesh Result
+    holds the translucent quads and their centres after the fluid quads
+    (REQ-VOXEL-030)"
+  - Test — `backends/wasm/worker-pool.test.ts` › "translucent: glass gives
+    a translucent stream from the held bytes, and main reads only the
+    centres (REQ-VOXEL-030)"
+- **Relations:**
+  - depends-on REQ-VOXEL-029
+  - depends-on REQ-VOXEL-027
+
+## REQ-VOXEL-031 — The demo draws translucent blocks with sw_render Translucent
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a chunk mesh has translucent quads, the voxel demo
+  shall draw them with a sw_render `TranslucentBatch`, sorted far to near
+  by the centres from the worker, after the opaque chunks.
+- **Rationale:** The demo has its own scene pass, so it uses the pipeline
+  and the batches of sw_render with no frame graph (REQ-GPU-040). Each
+  chunk has one batch. The chunks draw far to near, and in a chunk the
+  batch sorts its quads again only when the camera moves 1 block. The
+  generator places no glass, so the default terrain and its goldens do
+  not change. `--place-block=glass` places glass.
+- **Verification:**
+  - Demonstration — the `glass_blocks` golden of
+    `examples/voxel/scripts/run_headless_regressions.sh` (lavapipe, in
+    CI): two glass blocks on the grass.
+- **Relations:**
+  - depends-on REQ-VOXEL-030
+  - depends-on REQ-GPU-040
+  - depends-on REQ-GPU-023
+
+## REQ-VOXEL-032 — A merged quad has the shade of the 1×1 quads
+
+- **Status:** active
+- **Source:** agent:SWZ-17
+- **Origin:** #17
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The `sw_voxel` greedy mesher shall give each block face
+  the same block, tint, AO, sky light and block light at each point of the
+  face as a mesh with one quad for each block face (`max_merge = 1`). The
+  GPU split of each quad into 2 triangles applies to both meshes.
+- **Rationale:** Greedy meshing must change the quad count only, not the
+  image. The GPU interpolates the corner values in each triangle. A merged
+  quad has the values of one cell on its 4 corners, so it gives the 1×1
+  result only when each merged face has 4 equal corners
+  (REQ-VOXEL-010). On lavapipe, the regression scenes meshed with
+  `max_merge = 1` and with the default merge differ in at most 0.016% of
+  the pixels, as single pixels on the edges of quads, with RMS at most
+  0.7/255.
+- **Verification:** Test — `libs/sw_voxel/src/mesher.zig` › "merged quads
+  give each block face the shade of 1x1 quads (REQ-VOXEL-032)"
+- **Relations:**
+  - refines REQ-VOXEL-010
+
+## REQ-VOXEL-033 — An init error of the demo frees each allocation of init
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** quality
+- **Priority:** P3
+- **Statement:** When the init of the voxel demo fails, for example on a
+  TAS script that does not parse, the demo shall free each allocation of
+  init before it exits.
+- **Rationale:** The debug build gives the allocations to the debug
+  allocator of sw_app, and the allocator reports each leak at exit. A
+  leak report on a bad TAS script hides a real leak in the same log. The
+  errdefers of `voxelInit` stop the chunk workers, then free the
+  scheduler, the world, the copies of the path flags and the overlay.
+- **Verification:** Test — `examples/voxel/tests/tas_parse_fail.sh` ›
+  "a TAS parse error stops voxel with no memory leak"
+- **Relations:** none
+
+## REQ-VOXEL-034 — The web build takes the world seed from the page URL
+
+- **Status:** active
+- **Source:** agent:SWZ-8
+- **Origin:** #8
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the page URL of the voxel web build has a `seed`
+  parameter with a u64 value, the web build shall generate the terrain of
+  that seed, on the main thread and in each chunk worker. A value that
+  is not a u64 gives seed 0 and one warning.
+- **Rationale:** The native build takes `--seed=<u64>`, and a seed must
+  give the same terrain on each platform. The loader reads the seed one
+  time (`backends/wasm/seed.ts`) and gives it to app.wasm as a BigInt
+  before init. The workers get it in the Hello. No parameter gives seed
+  0, so the goldens do not change.
+- **Verification:**
+  - Test — `backends/wasm/seed.test.ts` › "a value that is not a u64
+    gives seed 0 and a warning"
+  - Test — `examples/voxel/tests/seed_web_native.sh` › "seed 12345,
+    worker pool"
+- **Relations:** none
+
+## REQ-VOXEL-035 — The voxel demo keeps the edits of a world after a restart
+
+- **Status:** active
+- **Source:** agent:SWZ-11
+- **Origin:** #11
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the save is on, the voxel demo shall load the saved
+  edit log of the world (its preset and its seed) before the loading
+  screen, and give each edit to the World and to each chunk worker.
+- **Rationale:** The world is the seed plus the edit log. The demo saves
+  the log with sw_platform storage (localStorage on the web, a file
+  natively), at most one time each second and at exit. The save keeps
+  the last edit of each cell. A TAS, `--headless`, `--dump-frame` and
+  `--compare-golden` turn the save off by default, so the goldens and the
+  TAS tests do not depend on earlier runs. Settings > New World deletes
+  the saved log.
+- **Verification:**
+  - Test — `examples/voxel/tests/save_reload.sh` › "the second run read 4
+    edits"
+  - Test — `backends/wasm/save.test.ts` › "an edit stays after a reload,
+    through localStorage"
+  - Test — `examples/voxel/edit_save.zig` › "edit_save: compaction keeps
+    the last edit of each cell, in order"
+- **Relations:** none
+
+## REQ-VOXEL-036 — The saved edit log has a size limit and can fail
+
+- **Status:** active
+- **Source:** agent:SWZ-11
+- **Origin:** #11
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** When the storage is not available, or the saved data is
+  damaged, the voxel demo shall continue with an empty edit log and log
+  one warning.
+- **Rationale:** localStorage can be blocked or full, and a file can be
+  cut. The saved data of one world is at most 1 MiB
+  (`edit_save.MAX_BYTES`): a larger log keeps the newest edits, with one
+  warning. The format has a version byte and a CRC-32, so damaged data
+  does not give wrong blocks.
+- **Verification:**
+  - Test — `examples/voxel/edit_save.zig` › "edit_save: corrupt data and
+    unavailable storage give an empty log and one warning"
+  - Test — `examples/voxel/edit_save.zig` › "edit_save: the save keeps
+    the newest edits within the size limit"
+  - Test — `backends/wasm/save.test.ts` › "corrupt saved data gives an
+    empty world and one warning"
+- **Relations:**
+  - refines REQ-VOXEL-035
+
+## REQ-VOXEL-037 — A block edit shows on the screen within 2 frames
+
+- **Status:** active
+- **Source:** agent:SWZ-13
+- **Origin:** #13
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** In the web build at 60 frames each second, a block edit
+  inside a chunk shall show on the screen 2 frames after the frame of the
+  edit.
+- **Rationale:** An edit needs two worker jobs: the light of the 3 × 3
+  window, then the mesh. Each job comes back in the next frame. An edit
+  on a chunk border relights 6 chunks, and the pool has 4 workers. So
+  one worker can run two light jobs, and the mesh then waits one more
+  frame: a border edit can take 3 frames. The demo logs `[EDIT] ... after N frame(s), T us` when the mesh
+  of the edited chunk is on the GPU.
+- **Verification:** Demonstration — `examples/voxel/tests/browser_baseline.sh`
+  (a Mac with a monitor and a GPU): result.json gives the frames of 30
+  edits, and the main-thread chunk time of a 10 s sprint. See the browser
+  measurements in `examples/voxel/docs/chunk-pipeline.md`.
+- **Relations:**
+  - refines REQ-VOXEL-017

@@ -1,7 +1,6 @@
 # swindowzig
 
-**A thin WebGPU wrapper for game development.**
-Write once, run anywhere: web browsers (WASM) and native desktops (Windows/macOS/Linux).
+A Zig game engine for the browser (WebGPU, wasm) and the desktop. One codebase.
 
 <!-- progress:start -->
 ![engine progress](https://img.shields.io/badge/engine-95.3%25-1D76DB)
@@ -21,363 +20,52 @@ A GitHub workflow writes this block from the
 Do not edit it. `scripts/progress.mjs` gives the rules.
 <!-- progress:end -->
 
----
+| ![cow](docs/media/cow.webp) | ![shooter](docs/media/shooter.webp) | ![menu](docs/media/menu.webp) |
+|---|---|---|
+| Cow: settings change as it turns | Shooter: a snowy shootout | Menu: settings, rebinding, RTL text |
 
-## What It Is
-
-**Imperative infrastructure for 3D games, not a framework.**
-
-You get:
-- Window management (SDL2 on native, canvas on web)
-- Input handling (keyboard, mouse)
-- Fixed timestep game loop (deterministic)
-- Full WebGPU API access
-- Event recording/replay
-
-You decide everything else.
-
----
-
-## Quick Example
-
-```zig
-const sw = @import("sw_app");
-
-pub fn main() !void {
-    try sw.run(.{
-        .title = "My Game",
-        .size = .{ .w = 1280, .h = 720 },
-        .tick_hz = 60,
-    }, GameCallbacks);
-}
-
-const GameCallbacks = struct {
-    pub fn init(ctx: *sw.Context) !void { ... }
-    pub fn tick(ctx: *sw.Context) !void { ... }
-    pub fn render(ctx: *sw.Context) !void { ... }
-    pub fn shutdown(ctx: *sw.Context) !void { ... }
-};
-```
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- **Zig 0.17.x**: the version in `build.zig.zon` (`minimum_zig_version`). The build stops on any other major.minor.
-- **SDL2**
-- **wgpu-native** v22.1.0.5 (bindings are pinned to this version's header; re-diff when upgrading)
-- **Bun** for the web build and the dev server
-
-### Install Dependencies
-
-**Linux / WSL:**
-```bash
-sudo apt install libsdl2-dev
-
-mkdir -p ~/.local/lib ~/.local/include/webgpu && cd /tmp
-wget https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
-unzip wgpu-linux-x86_64-release.zip
-cp lib/libwgpu_native.a ~/.local/lib/
-cp include/webgpu/webgpu.h ~/.local/include/webgpu/
-
-curl -fsSL https://bun.sh/install | bash
-```
-
-On WSL, `which bun` must show `~/.bun/bin/bun`. A Windows bun on the PATH
-(for example `/mnt/c/.../bun`) runs through `cmd.exe`, which cannot use a
-`\\wsl.localhost` working directory. The scripts then fail with
-`Script not found`. Put `~/.bun/bin` before the Windows entries in PATH:
+## Try it
 
 ```bash
-export PATH="$HOME/.bun/bin:$PATH"
+zig build run -Ddemo=shooter      # desktop
+yarn dev:demo shooter             # browser
 ```
 
-**macOS (arm64):**
-```bash
-brew install sdl2
-
-mkdir -p ~/.local/lib ~/.local/include/webgpu && cd /tmp
-wget https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-macos-aarch64-release.zip
-unzip wgpu-macos-aarch64-release.zip
-cp lib/libwgpu_native.a ~/.local/lib/
-cp include/webgpu/webgpu.h ~/.local/include/webgpu/
-```
-
-**macOS (x86_64):**
-```bash
-brew install sdl2
-
-mkdir -p ~/.local/lib ~/.local/include/webgpu && cd /tmp
-wget https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-macos-x86_64-release.zip
-unzip wgpu-macos-x86_64-release.zip
-cp lib/libwgpu_native.a ~/.local/lib/
-cp include/webgpu/webgpu.h ~/.local/include/webgpu/
-```
-
-### Run
+## Use it
 
 ```bash
-zig build run                      # justabox (default) — spinning colored box
-zig build run -Dexample=voxel     # voxel chunk demo
-zig build run -Dexample=windows   # triangle with mouse drag
-zig build run -Dexample=flat2d    # 2D renderer: rectangles, outline, textured quad
-zig build run -Dexample=mipmaps   # GPU mip levels, texture array, anisotropy (Space: sampler)
-zig build run -Dexample=atlas     # sw_render texture atlas with animated sprites
-zig build run -Dexample=sky       # sw_render sky, fog, day-night cycle, clouds and weather (C: cube map, G: fog, K: clouds, R: weather)
-zig build run -Dexample=models    # sw_render instanced box models (Space: animation, D: first-person depth range)
-```
-
-### Voxel Demo — CLI Flags
-
-All flags below apply to the voxel example binary (`./zig-out/bin/voxel`).
-Build first with `zig build native -Dexample=voxel`.
-
-| Flag | Description |
-|------|-------------|
-| `--tas <path>` | Load and play a TAS script. Physical input is blocked during playback. |
-| `--headless` | No window, no GPU. Ticks as fast as possible. Exits when TAS finishes. |
-| `--tas-step` | Frame-by-frame TAS mode. Press Right arrow to advance one TAS tick. Implies `--gpu-debug`. |
-| `--gpu-debug` | Highlight freshly rebuilt mesh faces with an orange tint that fades over ~0.5s. |
-
-### Useful Setups
-
-```bash
-# Normal play
-./zig-out/bin/voxel
-
-# TAS playback — watch a script run in real time
-./zig-out/bin/voxel --tas examples/voxel/framespike.tas
-
-# Headless TAS — deterministic simulation, no rendering, exits on completion
-./zig-out/bin/voxel --headless --tas examples/voxel/framespike.tas
-
-# Frame-by-frame TAS debugging — step with Right arrow, GPU debug auto-enabled
-./zig-out/bin/voxel --tas examples/voxel/framespike.tas --tas-step
-
-# GPU debug in normal play — see mesh rebuild blast radius when placing/removing blocks
-./zig-out/bin/voxel --gpu-debug
-
-# Build + run (one-liner)
-zig build native -Dexample=voxel && ./zig-out/bin/voxel --tas examples/voxel/framespike.tas --tas-step
-```
-
-### Runtime Keyboard Shortcuts (Voxel Demo)
-
-| Shortcut | Action |
-|----------|--------|
-| WASD | Move (when mouse captured) |
-| Mouse | Look (when mouse captured) |
-| Left click | Capture mouse / destroy block |
-| Right click | Place block |
-| Space | Jump / fly up (in fly mode) |
-| Space (double-tap) | Toggle fly mode |
-| Shift | Sprint / fly down (in fly mode) |
-| Escape | Pause menu |
-| Cmd+D / Ctrl+D | Toggle debug mode (hitbox cylinder, keyboard HUD) |
-| Cmd+G / Ctrl+G | Toggle GPU debug (highlight rebuilt faces) |
-| Cmd+V / Ctrl+V | Cycle camera view: first-person → back → front |
-| Right arrow | Advance one TAS tick (in `--tas-step` mode) |
-
----
-
-## Use it as a Zig package
-
-swindowzig publishes tagged releases. A dependent repo pins one release by URL
-and hash:
-
-```bash
-zig fetch --save https://github.com/seanmizen/swindowzig/releases/download/v<version>/swindowzig.tar.gz
+zig fetch --save https://github.com/seanmizen/swindowzig/releases/download/v0.3.0/swindowzig.tar.gz
 ```
 
 ```zig
-// build.zig
-const swindowzig = b.dependency("swindowzig", .{});
-exe.root_module.addImport("sw_app", swindowzig.module("sw_app"));
+const sw = b.dependency("swindowzig", .{ .platform = .native });
+exe.root_module.addImport("sw_app", sw.module("sw_app"));
 ```
 
-The package exports `sw_core`, `sw_platform`, `sw_gpu`, `sw_audio`, `sw_math`,
-`sw_gfx2d`, `sw_net`, `sw_jobs` and `sw_app`. The `platform` option picks the platform of these modules:
-`web` (the default, no SDL) or `native` (SDL2 from `addTranslateC`):
+## What is inside
 
-```zig
-const swindowzig = b.dependency("swindowzig", .{ .platform = .native });
-```
+| Library | What it does |
+|---|---|
+| `sw_core` | Fixed timestep, events, input, record and replay |
+| `sw_platform` | The window: SDL2 on the desktop, a canvas on the web |
+| `sw_app` | `run()` and the context of each callback |
+| `sw_gpu` | The WebGPU API on wgpu-native and on the browser |
+| `sw_math` | Vectors, matrices, quaternions, boxes, rays, the camera |
+| `sw_gfx2d` | 2D rectangles, outlines and textured quads in batches |
+| `sw_text` | TTF and bitmap fonts, bidi text, measure, wrap, draw |
+| `sw_ui` | Layout, focus, widgets, screens, a semantic tree for screen readers |
+| `sw_render` | Frame graph, post effects, sky, shadows, lights, weather, particles |
+| `sw_audio` | WAV and Ogg Vorbis, a mixer, 3D sound, streams |
+| `sw_assets` | File loads, PNG, zip, player files, a cache |
+| `sw_net` | A WebSocket client on the web and the desktop |
+| `sw_jobs` | Worker pools: threads on the desktop, Web Workers on the web |
+| `sw_voxel` | Voxel chunks: light, meshes, a chunk pipeline, LOD, culling, collision |
 
-### Local engine work
-
-To build a dependent repo against a local checkout of swindowzig, use `--fork`.
-It replaces the pinned release with the local path:
+## Make the videos
 
 ```bash
-zig build --fork=<path to local swindowzig>
+yarn demos:record   # every demo × every preset, from TAS scripts
 ```
 
-### Cut a release
-
-1. Set `.version` in `build.zig.zon` (for example `0.2.0`).
-2. Merge that change to `main`.
-3. Push a tag that matches the version: `git tag v0.2.0 && git push origin v0.2.0`.
-
-`.github/workflows/swindowzig-release.yml` runs on the tag. It makes
-`swindowzig.tar.gz` from the `.paths` in `build.zig.zon`, and builds a small
-consumer project against the archive. If that build fails, nothing publishes.
-If it passes, the workflow attaches the archive to a GitHub Release with the
-same tag name. The release notes give the `zig fetch --save` command.
-
----
-
-## Status (Apr 2026)
-
-### Working
-- Window management (SDL2)
-- WebGPU rendering — native (Metal/Vulkan) + web (WASM)
-- Fixed timestep game loop
-- Input (keyboard, mouse)
-- Event recording/replay
-- 3D math (Vec3, Mat4, perspective, lookAt)
-- Indexed drawing with back-face culling
-- Hardware depth testing (`depth24plus`)
-
-### Not Yet
-- Text rendering
-- Texture loading
-- Mesh loading (.obj / .gltf)
-- Lighting
-
----
-
-## Examples
-
-| Example | Command | Description |
-|---------|---------|-------------|
-| `justabox` | `zig build run` | Single colored box, slowly spinning. Default. |
-| `windows` | `zig build run -Dexample=windows` | Colored triangle, mouse-drag rotation. |
-| `voxel` | `zig build run -Dexample=voxel` | 16x16x16 voxel chunk, Minecraft creative mode. |
-
----
-
-## Architecture
-
-```
-Your Game Code  (init / tick / render / shutdown)
-      ↓
-swindowzig
-  sw_core      — timeline, events, input, record/replay
-  sw_platform  — SDL2 (native) | canvas (web)
-  sw_gpu       — WebGPU wrapper
-  sw_math      — Vec3, Mat4, transforms
-  sw_gfx2d     — 2D rectangles, outlines, textured quads (batched)
-      ↓
-WebGPU
-  Native → wgpu-native (Metal / Vulkan / DX12)
-  Web    → navigator.gpu
-```
-
----
-
-## Philosophy
-
-Call functions, things happen. No ECS. No magic. Never hide the GPU.
-
----
-
-## Docs
-
-Heavy reference material lives in [`docs/`](docs/) — not in CLAUDE.md — so
-agents only pay for what they open.
-
-| File | Contents |
-|------|----------|
-| [`docs/antialiasing.md`](docs/antialiasing.md) | MSAA vs FXAA for voxel worlds; olive-edge explanation; FXAA impl architecture; embedded pixel-diff PNGs; regeneration commands |
-
-Regression runners live under [`examples/voxel/tests/`](examples/voxel/tests/).
-Current:
-
-- [`aa_regression.sh`](examples/voxel/tests/aa_regression.sh) — captures
-  none/fxaa/msaa4 on `msaa_flatland.tas`, emits normalized + amplified diffs,
-  prints coverage stats.
-
----
-
-## TODOs
-
-### Rendering bugs
-
-- [ ] **MSAA edge surface bleed-through.** 4× MSAA currently shows unwanted
-  colour bleed across block-on-block silhouette edges (neighbouring surface
-  colour leaks into the foreground sample). FXAA does not exhibit this.
-  Investigate: sample-shading, depth-resolve interaction, and whether
-  bgra8unorm MSAA resolve is averaging
-  samples from behind the silhouette. Tracked as a defect against `--aa=msaa`;
-  see [`docs/antialiasing.md`](docs/antialiasing.md) for context.
-- [ ] **AO shadows lookthrough.** If you're above a voxel looking down
-  diagonally, and there's a shadow on the far side, the shadowed face bleeds
-  through the roof — it appears "above" the roof on screen, when the roof
-  should be occluding it. AO compositing order bug.
-- [ ] **Camera clipping exploit.** The purple-block-view-when-inside-a-voxel
-  overlay currently only fires when the camera is centrally inside a voxel.
-  If the 3PV camera partially clips into a voxel (off-center), the clipped
-  portion of the block becomes see-through — an exploit you can use to peek
-  through walls. Seek a low-cost fix: sample the camera near-plane corners
-  for occlusion, or push the camera back along the view vector until it's
-  fully outside any solid block.
-- [ ] **FXAA over UI is blurry.** FXAA looks great on terrain and blocks but
-  smears menu text and HUD glyphs. Treat UI as a separate render layer that
-  isn't FXAA'd — either a second render pass after FXAA that writes UI
-  directly to the swapchain, or a UI-to-texture composite. Pick whichever
-  is cheaper and cleaner.
-
-### Lighting
-
-- [ ] **Glowstone should produce light.** Block is placed and scattered in
-  world gen, but doesn't actually emit visible light into the world yet.
-  Hook into block-light BFS so nearby blocks are actually illuminated.
-- [ ] **Ambient occlusion depth.** Current per-vertex AO feels shallow —
-  likely only sampling von Neumann / face-plane neighbours. Investigate
-  Moore-neighbourhood sampling, chunk-level updates, or per-chunk light
-  propagation at distance N. Add a configurable shadow strategy (CLI flag
-  now, in-game settings menu later).
-
-### UI & settings
-
-- [ ] **Settings menu tidy-up.** Expand the esc menu into Resume / Settings /
-  Exit. Settings probably needs Game / Video / Audio tabs. Make the settings
-  items actually clickable again. Gateway for AA method, AO strategy, render
-  distance, and tunables currently buried in CLI flags. Exit shows a confirm
-  prompt. Needs a multi-screen menu state machine rather than the current
-  single-pane pause overlay.
-- [ ] **Configurable fog distance.** The current fog cutoff is too short —
-  want to go much much much further out. Expose as a settings slider (and
-  CLI flag in the interim).
-- [ ] **Web: cursor not visible when paused.** Even when the game is paused,
-  the cursor stays hidden in the web build. Should be visible whenever the
-  mouse isn't captured.
-
-### World gen & simulation
-
-- [ ] **Water.** Spawn rivers, then let flow work. This introduces the concept
-  of simulation — if outside simulation distance, water should not flow.
-- [ ] **Biomes.** Hills, grassland, ocean, river (maybe). Do it the Minecraft
-  way — biome map first, then terrain shaped per-biome.
-- [ ] **Caves.** Underground cave systems. Carver pass after heightmap gen.
-- [ ] **Trees.** Just Oak for now. Place at world gen time above surface.
-- [ ] **First-spawn flow in non-flatland worlds.** Today we spawn into rock
-  until first input nudges the player free. Fix the order: (a) generate at
-  least the first chunk while showing the existing purple loading screen +
-  "WORLD LOADING!!!" text, (b) then spawn the player. The first-ever spawn
-  resets to the overworld Y. Subsequent spawns keep the stored location
-  unless it's blocked — if blocked, scan upward for the lowest available
-  1×1×2 air column above the stored spawn point.
-
-### CI / infra
-
-- [ ] **Headless AA regression.** `aa_regression.sh` requires a display + GPU and
-  so is not yet part of the mandatory pre-handback checklist. Resolve by
-  finding a headless GPU path (offscreen surface creation without a platform
-  window) so it can run in CI.
-
----
-
-**See [CLAUDE.md](CLAUDE.md) for build instructions, known bugs, and technical details.**
+MIT. Third-party credits: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+More: [docs/overview.md](docs/overview.md), [demos/README.md](demos/README.md).

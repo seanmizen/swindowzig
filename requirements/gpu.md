@@ -573,7 +573,8 @@ Textures, samplers and other resources of `sw_gpu`.
     face the camera and go from far to near (REQ-GPU-024)"
   - Demonstration — `models --check` (native, in CI) gives two particles,
     near particle first. The pixel through them has the CPU blend of the
-    far particle, then the near particle, and the pass uses one draw call.
+    far particle, then the near particle. The particles draw through
+    `SortedBlend` (REQ-GPU-041), with one draw call for each run.
 - **Relations:** depends-on REQ-GPU-022
 
 ## REQ-GPU-025 — A full particle system drops its oldest particle
@@ -602,11 +603,15 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Priority:** P3
 - **Statement:** When the game selects a quality preset, `sw_render`
   shall give a `GraphicsSettings` with the render distance, the
-  anti-aliasing, the mip levels, the shadows and vsync of that preset.
+  anti-aliasing, the mip levels, the shadows, the lighting mode and vsync
+  of that preset.
 - **Rationale:** A settings menu changes one struct, and a preset is a
   fast start for a slow or a fast machine. The game gives each value to
   the part that uses it, for example the anti-aliasing to
-  `GPU.configureMSAA` and vsync to `GPU.setVsync`.
+  `GPU.configureMSAA` and vsync to `GPU.setVsync`. The voxel demo keeps
+  its anti-aliasing, vsync and lighting mode in this struct, and its
+  flags and its settings menu change the struct. The demo has no texture
+  atlas, so it does not read `mip_levels`.
 - **Verification:**
   - Test — `libs/sw_render/src/settings.zig` › "settings: each preset is
     better than or equal to the preset below it (REQ-GPU-026)"
@@ -803,9 +808,16 @@ Textures, samplers and other resources of `sw_gpu`.
   and the web bridge start at "no dimension" = 0, then `1d` = 1. A raw enum
   number gives the dimension before the correct one, so a `2d` view becomes
   a `1d` view. `types.viewDimensionCode` is the one map that both paths use.
+  `createBindGroupLayout` uses the same map for its texture and storage
+  texture view dimensions, and `webgpu.ts` has one map (`VIEW_DIMENSIONS`)
+  for the two calls.
 - **Verification:**
   - Test — `libs/sw_gpu/src/types.zig` › "texture view: each explicit
     dimension has its webgpu.h number (REQ-GPU-034)"
+  - Test — `libs/sw_gpu/src/types.zig` › "texture view: each code is the
+    native dimension of the same name (REQ-GPU-034)"
+  - Test — `backends/wasm/webgpu.test.ts` › "each code of viewDimensionCode
+    gives its WebGPU dimension"
   - Demonstration — `mipmaps --check` (native) draws one layer of the atlas
     through a `2d-array` view and through a `2d` view. Each result has the
     texels of level 0.
@@ -905,3 +917,60 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Relations:**
   - depends-on REQ-GPU-036
   - depends-on REQ-GPU-038
+
+## REQ-GPU-040 — Translucent quads draw in a render pass of the game with no frame graph
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** The sw_render `TranslucentPipeline` shall draw the quads
+  of a `TranslucentBatch` far to near in a render pass of the game, with
+  the frame uniforms of a `FrameBinding`.
+- **Rationale:** A game with its own scene pass, for example the voxel
+  demo, has many sets of translucent quads: one for each chunk. Each
+  batch has its own buffers and its own sort. The game can write the
+  vertices to the batch buffer from bytes that it does not hold, and give
+  only the centres (`setCenters`). The pipeline takes the sample count of
+  the pass (MSAA). `Translucent` with a frame graph does not change.
+- **Verification:**
+  - Test — `libs/sw_render/src/translucent_plan.zig` › "translucent: the
+    sort puts the furthest quad first, and ties keep their order
+    (REQ-GPU-023)"
+  - Demonstration — the `glass_blocks` golden of the voxel demo
+    (`examples/voxel/scripts/run_headless_regressions.sh`, lavapipe, in
+    CI) draws two batches in the scene pass of the demo.
+- **Relations:** refines REQ-GPU-022
+
+## REQ-GPU-041 — Particles and translucent quads draw in one far-to-near order
+
+- **Status:** active
+- **Source:** agent:SWZ-112
+- **Origin:** #112
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When a game draws a `Translucent` and a `Particles`
+  through a `SortedBlend`, sw_render shall draw their quads in one order
+  from far to near, so that a translucent quad blends over a particle
+  behind it.
+- **Rationale:** Two passes in a row draw each particle over each
+  translucent quad, also a particle behind the quad. Each object already
+  sorts its own quads. `blend_plan.mergeRuns` merges the two sorted lists
+  by the distance from the camera into runs of one kind, and one pass
+  draws the runs with the pipeline of each kind. The particles of a run
+  draw in one draw call. `Translucent` and `Particles` keep their API and
+  their own passes for a game with no blend.
+- **Verification:**
+  - Test — `libs/sw_render/src/blend_plan.zig` › "blend: a particle behind
+    a translucent quad draws before it (REQ-GPU-041)"
+  - Test — `libs/sw_render/src/blend_plan.zig` › "blend: the runs keep the
+    order of each kind and join neighbours of one kind (REQ-GPU-041)"
+  - Demonstration — `models --check` (native, in CI) puts a yellow
+    particle behind the red and the blue translucent quads. The pixel
+    through them has the CPU blend of the particle, then the red quad,
+    then the blue quad. With the two passes of the objects, the check
+    fails.
+- **Relations:**
+  - refines REQ-GPU-023
+  - refines REQ-GPU-024

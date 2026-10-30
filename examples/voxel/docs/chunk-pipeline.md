@@ -132,7 +132,9 @@ Hello, 56 bytes
   0  u64   build hash
   8  u64   seed
   16 u64   cache limit in bytes
-  24 u8    preset, then 3 bytes of 0
+  24 u8    preset
+  25 u8    flags: bit 0 = water (REQ-VOXEL-028)
+  26 u16   0
   28 i32   sea level
   32 i32   terrain height min
   36 i32   terrain height max
@@ -174,13 +176,17 @@ Result, 48 + SECTIONS_LEN + RANGES_LEN bytes (144 in the demo), then the payload
   24 u32   quad count (mesh), or payload length (generate)
   28 u32   job time in µs
   32 u64   mesh hash (mesh), else 0
-  40 u64   0
+  40 u32   fluid quad count (mesh, REQ-VOXEL-027), else 0
+  44 u32   translucent quad count (mesh, REQ-VOXEL-030), else 0
   48 u16×n the face connections of each section (mesh), else 0, then 0
            to a multiple of 16 bytes (SECTIONS_LEN: 32 in the demo)
   80 u32×n the draw range of each section (mesh): the end in bits 0-23,
            the highest section in bits 24-31 (mesher.SectionRange), else
            0, then 0 to a multiple of 16 bytes (RANGES_LEN: 64 in the demo)
-  144 ...  payload (demo: 16 sections)
+  144 ...  payload (demo: 16 sections). Mesh: PackedQuad × quad
+           count, then fluid.Vertex (24 bytes) × 4 × fluid quad count,
+           then translucent.Vertex (28 bytes) × 4 × translucent quad
+           count, then the centre (3 f32) of each translucent quad
 
 Error, 16 bytes, then the text
   0  u16   code
@@ -196,7 +202,11 @@ Error, 16 bytes, then the text
 Protocol version 4 added the section connections for cave culling
 (REQ-VOXEL-019). Protocol version 5 added the level of detail of a mesh
 job (REQ-VOXEL-021). Protocol version 6 added the draw range of each
-section (REQ-VOXEL-023). The Result payload starts at byte 160 of the message in the
+section (REQ-VOXEL-023). Protocol version 7 added the fluid quads after
+the packed quads (REQ-VOXEL-027). A mesh with no fluid has the payload of
+version 6. Protocol version 8 added the translucent quads and their
+centres after the fluid quads (REQ-VOXEL-030). Main reads only the
+centres, for the sort. The Result payload starts at byte 160 of the message in the
 demo (`protocol.PAYLOAD_OFFSET`, byte 96 in versions 4 and 5, byte 64 before version 4), so the PackedQuad
 bytes of a mesh are 16-byte aligned, ready for upload (C5). The mesh hash
 is `protocol.meshHash` of the payload. The worker calculates it, so main
@@ -471,7 +481,7 @@ Production files have content-hashed names (`bundle.sh`):
 |------|------|
 | `chunks.wasm` | `chunks-<16 hex digits of SHA-256>.wasm` |
 | The worker bundle | `chunk-worker-<16 hex digits>.js` |
-| `boot.js` | the same name. It holds the two names above (`bun build --define`). |
+| `boot.js` | the same name. It holds the two names above (the RSBuild `source.define`). |
 
 `serve.json` gives the hashed files `Cache-Control: public,
 max-age=31536000, immutable`, and each other file `no-cache`. An old
@@ -684,3 +694,29 @@ R = 12, then a walk of 30 chunks):
 | At the start | 16.4 MB | 16.4 MB |
 | R = 12 loaded (441 meshes) | 24.0 MB | 18.7 MB |
 | After the walk | 24.9 MB | 18.9 MB |
+
+## Measurements in a browser (2026-10-30, Apple M1, Metal)
+
+`examples/voxel/tests/browser_baseline.sh` gives these values. The page is
+the ReleaseFast web build with info logs (`-Dweb-log=info`), in the
+Chromium of Playwright 1.64.1 with WebGPU on Metal, at 1280 × 720 and 60
+frames each second. The world is the default hilly preset, seed 0, with
+render distance 12 and 4 workers. Three runs:
+
+| Value | Result |
+|-------|--------|
+| Load to "World ready" (local server) | 535 to 571 ms |
+| Sprint: frames with chunk work (10 s, fly mode) | 21 |
+| Sprint: chunk time on main in a frame (`main_us`), p50 / p99 / max | 1.1 / 1.3 / 1.3 ms |
+| Install budget during play (`PLAY_BUDGET_NS`) | 4 ms |
+| Edits that show after 2 frames (about 34 ms) | 24 of 26 |
+| Edits that show after 3 frames (about 52 ms) | 2 of 26, both on a chunk border |
+
+The p99 of the chunk time on main is one third of the install budget. The
+log lines cost some main-thread time too, so the true value is smaller.
+
+An edit on a chunk border relights 6 chunks. With 4 workers, one worker
+runs two light jobs, and the mesh of the edited chunk waits one more frame
+(REQ-VOXEL-037). The script writes the two traces (`trace-load.json` and
+`trace-sprint.json`, about 20 and 33 MB). They are not in the repo: run the
+script again to get them.

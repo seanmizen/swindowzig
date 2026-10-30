@@ -3,7 +3,7 @@
 # of debug mode.
 #
 # Debug mode draws the 12 edges of the chunk of the player. The 4 corner
-# lines go from the bottom of the world to the top. Each TAS run turns
+# lines go from the bottom of the world to the top. Each TAS run turned
 # debug mode on. When the border pipeline had no depth test, the lines
 # drew through the ground, from the top of the frame to the bottom, and
 # they looked like a thin dark crack in the far terrain.
