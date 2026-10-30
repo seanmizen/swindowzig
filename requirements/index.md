@@ -139,6 +139,7 @@
 | [`REQ-VOXEL-034`](voxel.md#req-voxel-034--the-web-build-takes-the-world-seed-from-the-page-url) | The web build takes the world seed from the page URL | active | functional | P2 | agent:SWZ-8 |
 | [`REQ-VOXEL-035`](voxel.md#req-voxel-035--the-voxel-demo-keeps-the-edits-of-a-world-after-a-restart) | The voxel demo keeps the edits of a world after a restart | active | functional | P2 | agent:SWZ-11 |
 | [`REQ-VOXEL-036`](voxel.md#req-voxel-036--the-saved-edit-log-has-a-size-limit-and-can-fail) | The saved edit log has a size limit and can fail | active | quality | P2 | agent:SWZ-11 |
+| [`REQ-VOXEL-037`](voxel.md#req-voxel-037--a-block-edit-shows-on-the-screen-within-2-frames) | A block edit shows on the screen within 2 frames | active | quality | P2 | agent:SWZ-13 |
 
 ## Dependency graph
 
@@ -278,6 +279,7 @@ graph TD
   REQ_VOXEL_034["REQ-VOXEL-034<br/>The web build takes the world seed from the page URL"]
   REQ_VOXEL_035["REQ-VOXEL-035<br/>The voxel demo keeps the edits of a world after a restart"]
   REQ_VOXEL_036["REQ-VOXEL-036<br/>The saved edit log has a size limit and can fail"]
+  REQ_VOXEL_037["REQ-VOXEL-037<br/>A block edit shows on the screen within 2 frames"]
   REQ_A11Y_002 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_003 -->|depends-on| REQ_A11Y_001
   REQ_A11Y_004 -->|depends-on| REQ_A11Y_001
@@ -355,6 +357,7 @@ graph TD
   REQ_VOXEL_031 -->|depends-on| REQ_GPU_023
   REQ_VOXEL_032 -->|refines| REQ_VOXEL_010
   REQ_VOXEL_036 -->|refines| REQ_VOXEL_035
+  REQ_VOXEL_037 -->|refines| REQ_VOXEL_017
 ```
 
 ## Derived reverse links
@@ -397,6 +400,7 @@ graph TD
 - `REQ-VOXEL-010` — refined-by REQ-VOXEL-032
 - `REQ-VOXEL-011` — required-by REQ-VOXEL-012, required-by REQ-VOXEL-013
 - `REQ-VOXEL-014` — refined-by REQ-VOXEL-015, refined-by REQ-VOXEL-016, required-by REQ-VOXEL-027
+- `REQ-VOXEL-017` — refined-by REQ-VOXEL-037
 - `REQ-VOXEL-019` — required-by REQ-VOXEL-020
 - `REQ-VOXEL-020` — required-by REQ-VOXEL-024, required-by REQ-VOXEL-026
 - `REQ-VOXEL-021` — required-by REQ-VOXEL-022

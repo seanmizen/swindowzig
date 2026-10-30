@@ -225,8 +225,18 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", run_step_desc);
     run_step.dependOn(&run_cmd.step);
 
-    // Test step
-    const test_step = b.step("test", "Run all tests");
+    // Test step. `-Dtest-shards=N -Dtest-shard=I` runs one part of the
+    // tests: CI runs each part in its own job, at the same time.
+    const test_shards = b.option(u32, "test-shards", "Split the tests into this number of parts (default 1)") orelse 1;
+    const test_shard = b.option(u32, "test-shard", "The part of the tests to run, 0 to test-shards - 1 (default 0)") orelse 0;
+    if (test_shards == 0 or test_shard >= test_shards) {
+        std.debug.panic("-Dtest-shard={} must be less than -Dtest-shards={}", .{ test_shard, test_shards });
+    }
+    var test_step: TestShards = .{
+        .step = b.step("test", "Run all tests"),
+        .shards = test_shards,
+        .shard = test_shard,
+    };
 
     const test_files = [_][]const u8{
         "libs/sw_core/src/event.zig",
@@ -784,7 +794,9 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"scheduler: "},
     });
     addVoxelDemo(scheduler_tests.root_module, web_voxel);
-    test_step.dependOn(&b.addRunArtifact(scheduler_tests).step);
+    // The two slowest test runs (scheduler and exec, about 50 s each in
+    // a debug build) go to different parts.
+    test_step.dependOnPart(&b.addRunArtifact(scheduler_tests).step, 0);
     // Chunk protocol tests (pipeline/protocol.zig): round trip, layout and
     // fuzz (P6).
     const protocol_tests = b.addTest(.{
@@ -810,7 +822,7 @@ pub fn build(b: *std.Build) void {
     });
     addVoxelDemo(exec_tests.root_module, web_voxel);
     const run_exec_tests = b.addRunArtifact(exec_tests);
-    test_step.dependOn(&run_exec_tests.step);
+    test_step.dependOnPart(&run_exec_tests.step, 1);
     const exec_test_step = b.step("test-exec", "Run the chunk executor tests only (no cache: run it again to look for races)");
     const run_exec_again = b.addRunArtifact(exec_tests);
     run_exec_again.has_side_effects = true;
@@ -838,6 +850,27 @@ const NativeDeps = struct {
 /// Linux and macOS: wgpu-native from ~/.local, SDL2 from the system (and
 /// Homebrew on macOS). Windows: all from `windows_deps`, or from
 /// ~/.local/windows (scripts/windows-deps.sh fills the folder).
+/// The `test` step, split into parts. Each test run goes to one part, in
+/// turn. `dependOn` has the name of `Step.dependOn`, so each call site
+/// reads the same as for a plain step.
+const TestShards = struct {
+    step: *std.Build.Step,
+    shards: u32,
+    shard: u32,
+    index: u32 = 0,
+
+    fn dependOn(self: *TestShards, other: *std.Build.Step) void {
+        defer self.index += 1;
+        if (self.index % self.shards == self.shard) self.step.dependOn(other);
+    }
+
+    /// A slow test run: it goes to the given part (modulo the number of
+    /// parts), not to the next part in turn.
+    fn dependOnPart(self: *TestShards, other: *std.Build.Step, part: u32) void {
+        if (part % self.shards == self.shard) self.step.dependOn(other);
+    }
+};
+
 fn nativeDeps(b: *std.Build, os: std.Target.Os.Tag, windows_deps: ?[]const u8) NativeDeps {
     const home = b.graph.environ_map.get("HOME") orelse b.graph.environ_map.get("USERPROFILE") orelse "";
     if (os == .windows) {
@@ -959,6 +992,11 @@ fn webExample(b: *std.Build, web_libs: Libs, example_path: []const u8, optimize:
     // export it, and the worker pool starts only when the two are equal.
     const chunk_build = b.addOptions();
     chunk_build.addOption(u64, "id", voxelBuildId(b));
+    // -Dweb-log=info: the web build logs at the info level (the [PIPE] and
+    // [EDIT] lines), for examples/voxel/tests/browser_baseline.sh. The
+    // default is warn.
+    const web_log_info = std.mem.eql(u8, b.option([]const u8, "web-log", "Log level of the voxel web build: warn (default) or info") orelse "warn", "info");
+    chunk_build.addOption(bool, "web_log_info", web_log_info);
     example.root_module.addOptions("chunk_build", chunk_build);
 
     // chunks.wasm: the chunk worker of the Web Worker pool (C9). Its only

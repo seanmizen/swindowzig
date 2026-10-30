@@ -694,3 +694,29 @@ R = 12, then a walk of 30 chunks):
 | At the start | 16.4 MB | 16.4 MB |
 | R = 12 loaded (441 meshes) | 24.0 MB | 18.7 MB |
 | After the walk | 24.9 MB | 18.9 MB |
+
+## Measurements in a browser (2026-10-30, Apple M1, Metal)
+
+`examples/voxel/tests/browser_baseline.sh` gives these values. The page is
+the ReleaseFast web build with info logs (`-Dweb-log=info`), in the
+Chromium of Playwright 1.64.1 with WebGPU on Metal, at 1280 × 720 and 60
+frames each second. The world is the default hilly preset, seed 0, with
+render distance 12 and 4 workers. Three runs:
+
+| Value | Result |
+|-------|--------|
+| Load to "World ready" (local server) | 535 to 571 ms |
+| Sprint: frames with chunk work (10 s, fly mode) | 21 |
+| Sprint: chunk time on main in a frame (`main_us`), p50 / p99 / max | 1.1 / 1.3 / 1.3 ms |
+| Install budget during play (`PLAY_BUDGET_NS`) | 4 ms |
+| Edits that show after 2 frames (about 34 ms) | 24 of 26 |
+| Edits that show after 3 frames (about 52 ms) | 2 of 26, both on a chunk border |
+
+The p99 of the chunk time on main is one third of the install budget. The
+log lines cost some main-thread time too, so the true value is smaller.
+
+An edit on a chunk border relights 6 chunks. With 4 workers, one worker
+runs two light jobs, and the mesh of the edited chunk waits one more frame
+(REQ-VOXEL-037). The script writes the two traces (`trace-load.json` and
+`trace-sprint.json`, about 20 and 33 MB). They are not in the repo: run the
+script again to get them.

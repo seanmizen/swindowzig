@@ -23,7 +23,7 @@ const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 // the TAS tools read its info lines.
 pub const std_options: std.Options = .{
     .logFn = swindowzigLogFn,
-    .log_level = if (is_wasm) .warn else std.log.default_level,
+    .log_level = if (is_wasm) (if (chunk_build.web_log_info) .info else .warn) else std.log.default_level,
 };
 
 extern fn jsLog(ptr: [*]const u8, len: u32) void;
@@ -1058,9 +1058,15 @@ const State = struct {
     save_limit_warned: bool = false,
     save_key_buf: [64]u8 = undefined,
     save_key: []const u8 = "",
+    /// Frames since the start, 1 more for each frame callback.
+    frame_seq: u64 = 0,
+    /// The last block edit, until its chunk uploads a mesh that has it.
+    /// Then `[EDIT]` logs the number of frames to the screen.
+    edit_watch: ?EditWatch = null,
     /// Water in the generator (REQ-VOXEL-028). Parsed from --water=on|off.
-    /// Off by default, so the default terrain does not change.
-    world_water: bool = false,
+    /// On by default. `--water=off` gives the terrain of the generator with
+    /// no water.
+    world_water: bool = true,
     /// Frustum-cull strategy parsed from --frustum=<none|sphere|cone>.
     /// Default is `.none` so the feature is opt-in — see frustum.zig header
     /// for the rationale and the cone-vs-sphere math notes.
@@ -1298,6 +1304,8 @@ fn voxelInit(ctx: *sw.Context) !void {
     state.occlusion_culled = 0;
     state.occ_stable_frames = 0;
     state.idle_frames = 0;
+    state.frame_seq = 0;
+    state.edit_watch = null;
     state.entities_culled = 0;
     state.fps_window_ns = @splat(0);
     state.fps_window_idx = 0;
@@ -1317,7 +1325,7 @@ fn voxelInit(ctx: *sw.Context) !void {
     // Hotbar defaults: slot 1 = stone, slot 2 = grass, slot 3 = dirt,
     // slot 4 = glowstone (block-light BFS is live), slot 5 = the half block
     // (a block with a baked model). Slots 6-10 empty.
-    state.hotbar_slots = .{ .stone, .grass, .dirt, .glowstone, .slab, .air, .air, .air, .air, .air };
+    state.hotbar_slots = .{ .stone, .grass, .dirt, .glowstone, .slab, .water, .glass, .air, .air, .air };
     state.hotbar_selected = 0;
     state.hotbar_visible = true;
 
@@ -2056,8 +2064,28 @@ fn restoreEdits() !void {
 }
 
 /// Set a block (a dig or a place) and add it to the saved log.
+/// A block edit that is not on the screen yet (see `State.edit_watch`).
+const EditWatch = struct {
+    cx: i32,
+    cz: i32,
+    /// The block version of the chunk after the edit.
+    block_ver: stages.Version,
+    /// The number of the frame of the edit. An edit runs in a tick, before
+    /// `voxelFrame` counts its frame, so this is `State.frame_seq + 1`.
+    frame: u64,
+    /// `clock.frameNowNs()` at the edit.
+    ns: u64,
+};
+
 fn editBlock(wx: i32, wy: i32, wz: i32, block: chunk_mod.BlockType) !bool {
     const ok = try state.scheduler.editBlock(&state.world, wx, wy, wz, block);
+    if (ok) {
+        const cx = @divFloor(wx, chunk_mod.CHUNK_W);
+        const cz = @divFloor(wz, chunk_mod.CHUNK_W);
+        if (state.world.get(cx, cz)) |lc| {
+            state.edit_watch = .{ .cx = cx, .cz = cz, .block_ver = lc.block_ver, .frame = state.frame_seq + 1, .ns = clock.frameNowNs() };
+        }
+    }
     if (ok and state.save_enabled) {
         if (edit_save.SavedEdit.fromWorld(wx, wy, wz, block)) |e| {
             try state.save_log.append(state.allocator, e);
@@ -2376,6 +2404,7 @@ fn ensureSimRadius() !void {
 }
 
 fn voxelFrame(ctx: *sw.Context) !void {
+    state.frame_seq += 1;
     const cx, const cz = playerChunk();
     state.scheduler.setCenter(cx, cz);
     const view = captureFrustum();
@@ -3748,10 +3777,12 @@ fn voxelRender(ctx: *sw.Context) !void {
     // the frustum or in no visible section.
     const entity_keep = cullEntities(cave, &live_frustum);
     // =========================================================================
-    // Player hitbox cylinder (drawn after voxels; no face culling, so the
-    // inside shows in first person). The terrain in front of it hides it.
+    // Player hitbox cylinder (drawn after voxels, no face culling). The
+    // terrain in front of it hides it. Only the third-person views draw it:
+    // in first person the camera is inside the cylinder, and its walls tint
+    // the whole view.
     // =========================================================================
-    if (state.debug_mode and entity_keep[@backingInt(DebugEntity.player)] and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
+    if (state.debug_mode and state.camera_view != .first_person and entity_keep[@backingInt(DebugEntity.player)] and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
         player_mod.buildCylinderMesh(
             state.player.feet_pos,
             100, // cyan
@@ -3777,8 +3808,9 @@ fn voxelRender(ctx: *sw.Context) !void {
     // =========================================================================
     // Spawn point debug marker (debug mode; flat red disc plate on the ground,
     // hidden by the terrain in front of it)
-    // Reuses the same scratch buffers and GPU buffers as the player hitbox —
-    // they're drawn sequentially so there's no overlap.
+    // Reuses the CPU scratch lists of the player hitbox. On the GPU it has
+    // its own range after the hitbox: each writeBuffer runs before the
+    // pass, so one shared range gave both draws the data of the last write.
     // =========================================================================
     if (state.debug_mode and entity_keep[@backingInt(DebugEntity.spawn_marker)] and state.cylinder_pipeline != null and state.cylinder_vertex_buffer != null) {
         player_mod.buildDiscMesh(
@@ -3792,13 +3824,15 @@ fn voxelRender(ctx: *sw.Context) !void {
         };
 
         if (state.cylinder_verts.items.len > 0) {
-            g.writeBuffer(state.cylinder_vertex_buffer.?, 0, std.mem.sliceAsBytes(state.cylinder_verts.items));
-            g.writeBuffer(state.cylinder_index_buffer.?, 0, std.mem.sliceAsBytes(state.cylinder_indices.items));
+            const vert_off = player_mod.CYLINDER_VERT_COUNT * @sizeOf(VoxelVertex);
+            const idx_off = player_mod.CYLINDER_IDX_COUNT * @sizeOf(u32);
+            g.writeBuffer(state.cylinder_vertex_buffer.?, vert_off, std.mem.sliceAsBytes(state.cylinder_verts.items));
+            g.writeBuffer(state.cylinder_index_buffer.?, idx_off, std.mem.sliceAsBytes(state.cylinder_indices.items));
 
             pass.setPipeline(state.cylinder_pipeline.?);
             pass.setBindGroup(0, state.bind_group.?);
-            pass.setVertexBuffer(0, state.cylinder_vertex_buffer.?, 0, state.cylinder_verts.items.len * @sizeOf(VoxelVertex));
-            pass.setIndexBuffer(state.cylinder_index_buffer.?, .uint32, 0, state.cylinder_indices.items.len * @sizeOf(u32));
+            pass.setVertexBuffer(0, state.cylinder_vertex_buffer.?, vert_off, state.cylinder_verts.items.len * @sizeOf(VoxelVertex));
+            pass.setIndexBuffer(state.cylinder_index_buffer.?, .uint32, idx_off, state.cylinder_indices.items.len * @sizeOf(u32));
             pass.drawIndexed(@intCast(state.cylinder_indices.items.len), 1, 0, 0, 0);
         }
     }
@@ -4836,13 +4870,14 @@ fn setupGPUResources(g: *gpu_mod.GPU, width: u32, height: u32) !void {
         };
     }
 
-    // Pre-allocate fixed-size cylinder GPU buffers (size never changes)
+    // Pre-allocate fixed-size GPU buffers for the debug entities: the hitbox
+    // cylinder first, then the spawn disc (size never changes)
     state.cylinder_vertex_buffer = try g.createBuffer(.{
-        .size = player_mod.CYLINDER_VERT_COUNT * @sizeOf(VoxelVertex),
+        .size = (player_mod.CYLINDER_VERT_COUNT + player_mod.DISC_VERT_COUNT) * @sizeOf(VoxelVertex),
         .usage = .{ .vertex = true, .copy_dst = true },
     });
     state.cylinder_index_buffer = try g.createBuffer(.{
-        .size = player_mod.CYLINDER_IDX_COUNT * @sizeOf(u32),
+        .size = (player_mod.CYLINDER_IDX_COUNT + player_mod.DISC_IDX_COUNT) * @sizeOf(u32),
         .usage = .{ .index = true, .copy_dst = true },
     });
 
@@ -4945,6 +4980,14 @@ fn uploadNewMeshes(g: *gpu_mod.GPU) void {
         const dt = perfNowNs() - t0;
         upload_us += @divTrunc(dt, 1000);
         upload_chunks += 1;
+        if (state.edit_watch) |w| if (lc.cx == w.cx and lc.cz == w.cz) {
+            // The installed mesh read the edited blocks: the edit is in
+            // this frame. A block edit shows within 2 frames (REQ-VOXEL-037).
+            if (lc.mesh_inputs) |in| if (in.blocks[stages.CENTER] >= w.block_ver) {
+                std.log.info("[EDIT] chunk ({},{}): the edit shows after {} frame(s), {} us", .{ w.cx, w.cz, state.frame_seq - w.frame, (clock.frameNowNs() -| w.ns) / 1000 });
+                state.edit_watch = null;
+            };
+        };
         if (state.profile_csv_file != null) {
             state.upload_ns +%= @intCast(dt);
             state.upload_count +%= 1;

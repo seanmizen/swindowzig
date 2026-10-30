@@ -616,8 +616,9 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
 - **Rationale:** Water is translucent: the ground under it must show
   through, and a water surface must not hide the terrain behind it from
   the depth test. The chunks draw far to near. The demo generator puts
-  water in the low columns only with `--water=on`, so the default terrain
-  and its goldens do not change. `--place-block=water` places water.
+  water in the low columns by default. `--water=off` gives the terrain
+  with no water. `--place-block=water` places water, and the hotbar has
+  water and glass.
 - **Verification:**
   - Demonstration — the `water_pool` golden of
     `examples/voxel/scripts/run_headless_regressions.sh` (lavapipe, in
@@ -819,3 +820,26 @@ Chunk storage, meshing and the chunk pipeline of `sw_voxel`.
     empty world and one warning"
 - **Relations:**
   - refines REQ-VOXEL-035
+
+## REQ-VOXEL-037 — A block edit shows on the screen within 2 frames
+
+- **Status:** active
+- **Source:** agent:SWZ-13
+- **Origin:** #13
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** In the web build at 60 frames each second, a block edit
+  inside a chunk shall show on the screen 2 frames after the frame of the
+  edit.
+- **Rationale:** An edit needs two worker jobs: the light of the 3 × 3
+  window, then the mesh. Each job comes back in the next frame. An edit
+  on a chunk border relights 6 chunks, and the pool has 4 workers. So
+  one worker can run two light jobs, and the mesh then waits one more
+  frame: a border edit can take 3 frames. The demo logs `[EDIT] ... after N frame(s), T us` when the mesh
+  of the edited chunk is on the GPU.
+- **Verification:** Demonstration — `examples/voxel/tests/browser_baseline.sh`
+  (a Mac with a monitor and a GPU): result.json gives the frames of 30
+  edits, and the main-thread chunk time of a 10 s sprint. See the browser
+  measurements in `examples/voxel/docs/chunk-pipeline.md`.
+- **Relations:**
+  - refines REQ-VOXEL-017
