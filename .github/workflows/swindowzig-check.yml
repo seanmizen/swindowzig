@@ -371,18 +371,17 @@ jobs:
         # The debug build reports each leak at exit (REQ-VOXEL-033).
         run: ./examples/voxel/tests/tas_parse_fail.sh
 
-      - name: The ground hides the chunk border lines of debug mode
-        # --debug=on and --debug=off must give the same near ground. This
-        # also fails when a debug entity tints the first-person view.
-        run: ./examples/voxel/tests/chunk_border.sh
-
   cull:
-    # A separate job, so that the cull frames run at the same time as the
-    # TAS scripts. The frames compare with each other only, so a
-    # ReleaseSafe build gives the same result as a debug build, faster.
-    name: voxel cave, section and occlusion cull (lavapipe)
+    # The frame tests that render each frame of a TAS on lavapipe. Each
+    # one has its own job, so that they run at the same time: the 5 scenes
+    # of cave_cull.sh, and chunk_border.sh.
+    name: voxel frames ${{ matrix.test }} (lavapipe)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        test: [surface, shaft, dig, terrain, hills, chunk_border]
     env:
       VK_LOADER_DRIVERS_SELECT: '*lvp*'
       LD_LIBRARY_PATH: /home/runner/.local/lib
@@ -413,14 +412,22 @@ jobs:
           mkdir -p ~/.local
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
-      - name: Native build (ReleaseSafe)
-        run: zig build native -Dexample=voxel -Doptimize=ReleaseSafe
+      - name: Native build
+        run: zig build native -Dexample=voxel
 
-      - name: Cave cull, section cull and occlusion cull
+      - name: Cave cull, section cull and occlusion cull (${{ matrix.test }})
         # Each cull must give the same frame as the frustum cull only
         # (REQ-VOXEL-020, REQ-VOXEL-024, REQ-VOXEL-025).
+        if: matrix.test != 'chunk_border'
         timeout-minutes: 15
-        run: ./examples/voxel/tests/cave_cull.sh --skip-build
+        run: ./examples/voxel/tests/cave_cull.sh --skip-build --only ${{ matrix.test }}
+
+      - name: The ground hides the chunk border lines of debug mode
+        # --debug=on and --debug=off must give the same near ground. This
+        # also fails when a debug entity tints the first-person view.
+        if: matrix.test == 'chunk_border'
+        timeout-minutes: 15
+        run: ./examples/voxel/tests/chunk_border.sh
 
   goldens:
     name: voxel goldens (lavapipe)

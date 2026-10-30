@@ -12,14 +12,19 @@
 # Usage (from the repo root):
 #   ./examples/voxel/tests/cave_cull.sh
 #   ./examples/voxel/tests/cave_cull.sh --skip-build
+#   ./examples/voxel/tests/cave_cull.sh --skip-build --only shaft,dig
+#
+# --only runs the named scenes only. CI runs each scene in its own job.
 #
 # Requires: zig, cmp
 set -euo pipefail
 
 SKIP_BUILD=0
+ONLY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
+    --only) ONLY=",${2:?--only needs a list of scene names},"; shift 2 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -55,8 +60,11 @@ field() { sed -E "s/.* $1=([0-9]+).*/\\1/" <<< "$2"; }
 
 FAIL=0
 printf "%-8s %-6s %-6s %-6s %-6s %-6s %-9s %s\n" "RUN" "FRAME" "DRAWN" "CAVE" "ALL" "CAVE_C" "SECTION_C" "OCCLUSION_C"
+MATCHED=0
 for entry in "${RUNS[@]}"; do
   IFS='|' read -r name tas args <<< "$entry"
+  if [[ -n $ONLY && $ONLY != *",$name,"* ]]; then continue; fi
+  MATCHED=$((MATCHED + 1))
   for m in "${MODES[@]}"; do
     IFS='|' read -r mode flags <<< "$m"
     # shellcheck disable=SC2086
@@ -75,6 +83,10 @@ for entry in "${RUNS[@]}"; do
     "$(field cave_culled "$line_all")" "$(field sections_culled "$line_all")" "$(field occlusion_culled "$line_all")"
 done
 
+if [[ $MATCHED -eq 0 ]]; then
+  echo "FAIL: --only names no scene" >&2
+  exit 2
+fi
 if [[ $FAIL -ne 0 ]]; then
   echo "FAIL: a cull changed a frame. The frames are in $OUT" >&2
   exit 1
