@@ -3,16 +3,16 @@
 A Zig game engine for the browser (WebGPU, wasm) and the desktop. One codebase.
 
 <!-- progress:start -->
-![engine progress](https://img.shields.io/badge/engine-95.3%25-1D76DB)
+![engine progress](https://img.shields.io/badge/engine-100.0%25-1D76DB)
 
-**Engine: 95.3% complete** `███████████████████░` (41 of 43 issues)
+**Engine: 100.0% complete** `████████████████████` (43 of 43 issues)
 
 | State | Issues |
 |---|---|
-| done | 41 |
+| done | 43 |
 | in-review | 0 |
 | in-progress | 0 |
-| ready | 2 |
+| ready | 0 |
 | backlog | 0 |
 
 A GitHub workflow writes this block from the
