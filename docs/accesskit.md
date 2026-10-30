@@ -56,7 +56,10 @@ The static library needs these system libraries (`accesskit-config.cmake`):
 - Linux: `m` and the GCC runtime. The Linux adapter speaks D-Bus with zbus, a
   Rust library, so it needs no `libdbus`.
 - Windows: `bcrypt ntdll propsys runtimeobject uiautomationcore userenv
-  ws2_32`.
+  ws2_32`. The MinGW of Zig has no `runtimeobject`, so `build.zig` links
+  the API sets `api-ms-win-core-winrt-l1-1-0` and
+  `api-ms-win-core-winrt-error-l1-1-0` and `ole32`. These have the same
+  functions. The Rust code also needs the libunwind of Zig.
 
 ## Install and build
 
@@ -66,6 +69,13 @@ The static library needs these system libraries (`accesskit-config.cmake`):
    wgpu-native. For example, on an Apple silicon Mac:
    `cp accesskit-c-0.23.1/lib/macos/arm64/static/libaccesskit.a ~/.local/lib/`.
 3. Build with the option: `zig build run -Dexample=flat2d -Daccesskit=true`.
+
+Windows (cross-compile from WSL or Linux): copy
+`lib/windows/x86_64/mingw/static/libaccesskit.a` to `~/.local/windows/lib`
+(the folder of `scripts/windows-deps.sh`). Then build with
+`zig build native -Dexample=flat2d -Daccesskit=true -Dtarget=x86_64-windows-gnu`.
+The Windows adapter must subclass the window before the window shows. So
+on Windows the window shows after the init callback (REQ-PLATFORM-004).
 
 `build.zig` links `accesskit` (static first) and the system libraries above
 only when the option is on. For a package that uses swindowzig with
@@ -213,8 +223,10 @@ AccessKit while it holds that lock.
 
 ## Limits
 
-- The Windows and macOS paths compile for their targets, but nobody ran
-  them with a screen reader yet.
+- Windows: checked with Narrator. The macOS path compiles, but nobody ran
+  it with VoiceOver yet.
+- A slider value text that the app makes in the build gives the old value
+  after a change. Use `SliderOpts.format` (REQ-A11Y-009).
 - A text field gives its text as the value only. AccessKit text runs (caret,
   selection, text navigation by the screen reader) are not sent.
 - The scroll offset of a scroll list is not sent. A screen reader that moves

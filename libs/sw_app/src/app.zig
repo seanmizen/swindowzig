@@ -160,6 +160,9 @@ fn runNative(config: Config, comptime callbacks: type, allocator: std.mem.Alloca
     if (@hasDecl(callbacks, "init")) {
         try callbacks.init(&ctx);
     }
+    // The init callback can attach to the native window before the window
+    // is visible, for example the AccessKit adapter (REQ-PLATFORM-004).
+    if (!config.headless) backend.showWindow();
 
     // 9. Main loop
     var running = true;

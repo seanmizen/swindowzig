@@ -191,7 +191,10 @@ pub fn build(b: *std.Build) void {
                 native_exe.root_module.linkFramework("CoreFoundation", .{});
                 native_exe.root_module.linkSystemLibrary("objc", .{});
             },
-            .windows => for ([_][]const u8{ "bcrypt", "ntdll", "propsys", "runtimeobject", "uiautomationcore", "userenv", "ws2_32" }) |lib| {
+            // Zig's MinGW has no runtimeobject import library. Its
+            // functions (RoGetActivationFactory, RoOriginateErrorW,
+            // RoGetAgileReference) come from these API sets and ole32.
+            .windows => for ([_][]const u8{ "bcrypt", "ntdll", "propsys", "api-ms-win-core-winrt-l1-1-0", "api-ms-win-core-winrt-error-l1-1-0", "ole32", "uiautomationcore", "userenv", "ws2_32" }) |lib| {
                 native_exe.root_module.linkSystemLibrary(lib, .{});
             },
             else => native_exe.root_module.linkSystemLibrary("m", .{}),
@@ -209,8 +212,9 @@ pub fn build(b: *std.Build) void {
 
     // libwgpu_native.a is a Rust static library and needs the _Unwind_*
     // symbols. libSystem supplies them on macOS. On Linux, libc++ brings
-    // the libunwind that Zig bundles.
-    if (target.result.os.tag == .linux) {
+    // the libunwind that Zig bundles. On Windows, the static accesskit-c
+    // (MinGW) needs them too.
+    if (target.result.os.tag == .linux or (target.result.os.tag == .windows and accesskit)) {
         native_exe.root_module.link_libcpp = true;
     }
 
