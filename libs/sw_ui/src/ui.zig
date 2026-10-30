@@ -133,8 +133,14 @@ pub const SliderOpts = struct {
     /// steps from `min`. 0 gives a hundredth of the range and no snapping.
     step: f32 = 0.1,
     /// The value as text for assistive technology, for example "50%". Empty
-    /// gives the number.
+    /// gives the number. The app makes this text before `finish` applies the
+    /// input, so after a key press it gives the old value. Use `format` for a
+    /// text that follows the value.
     text: []const u8 = "",
+    /// Writes the value as text into `buf` and returns the text. sw_ui calls
+    /// it after it applies the input, so the text has the new value
+    /// (REQ-A11Y-009). It replaces `text`.
+    format: ?*const fn (value: f32, buf: []u8) []const u8 = null,
 };
 
 /// Sizes of the UI, in logical pixels.
@@ -1764,6 +1770,11 @@ pub const Ui = struct {
     /// The value of a slider as text, in the per-frame buffer. The number of
     /// decimals comes from the step.
     fn sliderText(self: *Ui, n: *const Node) []const u8 {
+        if (n.slider.format) |format| {
+            const v = if (n.number) |p| p.* else n.slider.min;
+            var buf: [64]u8 = undefined;
+            return self.print("{s}", .{format(v, &buf)}) catch "";
+        }
         if (n.slider.text.len > 0) return n.slider.text;
         const v = if (n.number) |p| p.* else return "";
         var decimals: u8 = 0;
@@ -2427,6 +2438,25 @@ test "slider: the semantic tree has its value, range and description" {
     try std.testing.expectEqualStrings("Sound level", n.description);
     try std.testing.expectApproxEqAbs(@as(f32, 0.3), n.range.?.value, 1e-6);
     try std.testing.expectEqual(@as(f32, 1), n.range.?.max);
+}
+
+fn testPercent(value: f32, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "{d:.0}%", .{value * 100}) catch "";
+}
+
+fn buildPercentSlider(u: *Ui) anyerror!void {
+    try u.beginColumn(1, .{});
+    try u.addSlider(2, "Volume", &test_volume, .{ .min = 0, .max = 1, .step = 0.1, .format = testPercent }, .{});
+    u.endContainer();
+}
+
+test "slider: the format text has the value after the key press (REQ-A11Y-009)" {
+    var u = testUi();
+    defer u.deinit();
+    test_volume = 0.5;
+    u.setFocus(2);
+    try runFrame(&u, .{ .keys = .{ .right = true } }, buildPercentSlider);
+    try std.testing.expectEqualStrings("60%", u.semanticTree().find(2).?.value);
 }
 
 test "TextValue: caret, selection, insert and delete" {

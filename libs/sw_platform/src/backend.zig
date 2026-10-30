@@ -33,6 +33,7 @@ pub const Backend = struct {
         clipboardText: *const fn (ptr: *anyopaque) []const u8 = defaults.clipboardText,
         setPasteAsText: *const fn (ptr: *anyopaque, on: bool) void = defaults.setPasteAsText,
         getNativeWindow: *const fn (ptr: *anyopaque) NativeWindow = defaults.getNativeWindow,
+        showWindow: *const fn (ptr: *anyopaque) void = defaults.showWindow,
     };
 
     const defaults = struct {
@@ -53,6 +54,7 @@ pub const Backend = struct {
         fn getNativeWindow(_: *anyopaque) NativeWindow {
             return .{};
         }
+        fn showWindow(_: *anyopaque) void {}
     };
 
     pub fn init(self: Backend) !void {
@@ -134,6 +136,12 @@ pub const Backend = struct {
     /// only the `clipboard` event of kind `paste`.
     pub fn setPasteAsText(self: Backend, on: bool) void {
         self.vtable.setPasteAsText(self.ptr, on);
+    }
+
+    /// Shows a window that the backend made hidden. sw_app calls it after
+    /// the init callback (REQ-PLATFORM-004).
+    pub fn showWindow(self: Backend) void {
+        self.vtable.showWindow(self.ptr);
     }
 
     /// The native window handle, its focus and its place on the screen.

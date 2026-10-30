@@ -65,3 +65,19 @@ The window, the cursor and the clipboard that the platform backends
   - Test — `libs/sw_platform/src/platform.zig` › "a move to a monitor with
     another DPI scale is a change (REQ-PLATFORM-003)"
 - **Relations:** none
+
+## REQ-PLATFORM-004 — The native window shows after the init callback
+
+- **Status:** active
+- **Source:** sean
+- **Origin:** #14
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** On Windows, the native window shall become visible only
+  after the init callback of the game returns.
+- **Rationale:** The AccessKit Windows adapter subclasses the window. It
+  stops the program if the window was visible before the adapter starts.
+  The game starts the adapter in its init callback.
+- **Verification:** Inspection — `flat2d.exe` with `-Daccesskit=true` on
+  Windows starts, and Narrator reads the focused widget.
+- **Relations:** none
