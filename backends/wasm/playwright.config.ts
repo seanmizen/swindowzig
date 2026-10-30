@@ -4,14 +4,16 @@
 //   yarn test:browser
 //
 // Three web servers build three programs for the web and serve them with
-// the dev server: flat2d on port 3020 (the other tests), justabox on port
+// the dev server: flat2d on port 3023 (the other tests), justabox on port
 // 3021 (the frame graph on the canvas, canvas.pw.ts), and the menu demo on
 // port 3022 (menu.pw.ts). Each program has its own install prefix, so the
-// builds do not write the same app.wasm.
+// builds do not write the same app.wasm. No test port is 3020, the port of
+// `yarn dev`: away from CI, Playwright uses a server that already runs on
+// a port, and a dev server there serves another program.
 
 import { defineConfig } from '@playwright/test';
 
-const flat2dPort = 3020;
+const flat2dPort = 3023;
 const canvasPort = 3021;
 const menuPort = 3022;
 
@@ -82,8 +84,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command:
-        'zig build web -Dexample=flat2d && bun backends/wasm/dev-server.ts --example flat2d --no-build',
+      command: `zig build web -Dexample=flat2d -p zig-out/flat2d && bun backends/wasm/dev-server.ts --example flat2d --no-build --port ${flat2dPort} --out zig-out/flat2d`,
       cwd: '../..',
       port: flat2dPort,
       timeout: 300_000,
