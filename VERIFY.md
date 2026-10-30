@@ -10,26 +10,60 @@ This file is the checklist for the batch that the cloud agent built on one branc
 - Setup: ziglang.org gave 403, so Zig 0.17.0 came from the `ziglang` wheel on PyPI. Lavapipe, ffmpeg, Docker, Playwright with Chromium 1243 (the repo pins 1248, so the browser runs here used a local config that is not committed) and xvfb worked. Docker Hub gave 429, so no Docker build ran. The container restarted one time and the disk filled one time. No work was lost.
 - Version: `.version` is `0.3.0` in `build.zig.zon` and `package.json`. You tag `v0.3.0`.
 
-## Your checks on the Mac (a person at a window)
+## Mac verification (2026-10-30, Apple M1, Metal)
 
-From #112:
-1. `GPU.setVsync` on a real window: the present mode changes with no error (the voxel demo has `--vsync=on|off` now).
-2. `models`: the F key (frame limit) and the T key (pass times) work.
-3. `sky`: the H, J and O keys work.
-4. A voxel play test: with the upload limit, chunks near the player show with no long holes.
-5. The occlusion cull: turn on the spot and walk in caves. No chunk shows late.
+The Mac session ran each CI step on Metal, in a real Chromium, with a
+gate script: 73 steps, all pass. The steps are the static checks, the unit
+tests (also as 2 shards), the web build and each Bun test, `--check` for
+mipmaps, atlas, justabox, sky and models, the voxel gate, each voxel TAS,
+each voxel test script, the native and web builds of each demo,
+`yarn test:browser`, and the flat2d tests 10 times with no retry.
 
-From this batch:
-6. The three demos on a real GPU: `zig build run -Ddemo=cow`, `-Ddemo=menu`, `-Ddemo=shooter`, and `yarn dev:demo <name>` in a browser. The shooter web picture was not seen here (see its entry).
-7. The menu with VoiceOver, a gamepad and sound (see #79 part 2).
-8. The shooter feel, gamepad and sound (see #79 part 3).
-9. Water and glass in the voxel demo: `--water=on`, `--place-block=water`, `--place-block=glass`.
-10. The URL seed and the saved edits in a browser (see #8 and #11).
-11. AccessKit with VoiceOver: 9 steps in the #14 entry.
-12. #13: the browser Performance trace and the two section 12 checks (see #13).
-13. #17 on the M1: look for the wall triangle in a voxel play test.
+Found and fixed:
+- `chunk_border.sh` failed on `main` too. Its frames with `--debug=on`
+  had a cyan tint on the whole view. The player hitbox and the spawn disc
+  used one range of one GPU buffer, and each `writeBuffer` runs before the
+  pass. So the hitbox draw used the disc vertices and was not visible.
+  When the entity cull (REQ-VOXEL-026) hid the disc, the real cylinder
+  drew around the camera. Now the hitbox draws only in the third-person
+  views, and the disc has its own buffer range. With the depth test of the
+  border lines removed, the script fails (1757 pixels), so it still finds
+  the bug. CI runs it now.
 
-On Windows: the #9 entry has 4 steps.
+Checked here:
+- The window checks: the voxel demo in a real window with `--vsync=on`
+  (the default) and `--vsync=off`, 5 s each, with no error.
+- The three web demos in Chromium on Metal: each draws at 60 frames each
+  second with no console error. The shooter web picture is correct: the
+  arena, the snow, the bots, the gun and the HUD.
+- Water and glass (`--place-block=water`, `--place-block=glass`): the
+  ground shows through both, and the water is blue.
+- The URL seed and the saved edits in Chromium: `?seed=12345` gives seed
+  12345. 4 edits stay after a reload. `?seed=not-a-seed` gives one warning
+  and seed 0.
+- #13: the browser baseline (`examples/voxel/tests/browser_baseline.sh`,
+  REQ-VOXEL-037). The chunk time on main during a sprint has a p99 of
+  1.3 ms (the budget is 4 ms). 24 of 26 edits show after 2 frames. 2 edits
+  on a chunk border show after 3 frames. The values are in
+  `examples/voxel/docs/chunk-pipeline.md`.
+
+Not checked here (they need a person):
+- The F and T keys of `models`, and the H, J and O keys of `sky`.
+  macOS stopped the keystrokes of the session for a permission prompt.
+- The occlusion cull when you turn on the spot in a cave.
+- VoiceOver (the menu demo and AccessKit, #14), a gamepad, the sound, and
+  the feel of the shooter.
+- #17: a look for the wall triangle in a voxel play test.
+- #9 on Windows.
+
+Decisions of Sean:
+- `keyPressCount` stays.
+- Water is on by default, and the hotbar has water (slot 6) and glass
+  (slot 7). The goldens change.
+- CI is shorter: the unit tests run in 2 shards (the scheduler and exec
+  tests go to different shards), each example has its own job, the cull
+  frames have a ReleaseSafe job, and the flat2d tests run 10 times only
+  on a push to main.
 
 ## Decisions for you
 
