@@ -50,6 +50,15 @@ pub const Face = union(enum) {
 
     /// The pixel box of a glyph at `size` (device pixels), relative to the
     /// pen on the baseline.
+    /// Device pixels for each logical pixel. Only a bitmap font with
+    /// `integer_scale` uses it.
+    pub fn setPixelRatio(self: *Face, ratio: f32) void {
+        switch (self.*) {
+            .truetype => {},
+            .bitmap => |*f| f.pixel_ratio = ratio,
+        }
+    }
+
     pub fn bitmapBox(self: *const Face, glyph: u32, size: f32) BitmapBox {
         return switch (self.*) {
             .truetype => |f| f.bitmapBox(glyph, f.scale(size)),

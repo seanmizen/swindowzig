@@ -87,6 +87,7 @@
 | [`REQ-INPUT-008`](input.md#req-input-008--the-wheel-snapshot-is-in-lines) | The wheel snapshot is in lines | active | functional | P2 | agent:SWZ-77 |
 | [`REQ-INPUT-009`](input.md#req-input-009--the-snapshot-counts-the-presses-of-one-key-in-one-tick) | The snapshot counts the presses of one key in one tick | active | functional | P3 | agent:SWZ-112 |
 | [`REQ-INPUT-010`](input.md#req-input-010--a-recording-with-a-bad-wheel-mode-gives-an-error) | A recording with a bad wheel mode gives an error | active | functional | P2 | agent:SWZ-112 |
+| [`REQ-INPUT-011`](input.md#req-input-011--a-click-shorter-than-one-tick-is-not-lost) | A click shorter than one tick is not lost | active | functional | P2 | agent:SWZ-114 |
 | [`REQ-JOBS-001`](jobs.md#req-jobs-001--a-native-worker-runs-its-messages-in-order-and-can-stop) | A native worker runs its messages in order, and can stop | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-JOBS-002`](jobs.md#req-jobs-002--native-threads-and-web-workers-have-one-transport-api) | Native threads and Web Workers have one Transport API | active | functional | P2 | agent:SWZ-26 |
 | [`REQ-JOBS-003`](jobs.md#req-jobs-003--the-web-worker-pool-starts-again-a-worker-that-stops-with-no-event) | The Web Worker pool starts again a worker that stops with no event | active | functional | P3 | agent:SWZ-5 |
@@ -227,6 +228,7 @@ graph TD
   REQ_INPUT_008["REQ-INPUT-008<br/>The wheel snapshot is in lines"]
   REQ_INPUT_009["REQ-INPUT-009<br/>The snapshot counts the presses of one key in one tick"]
   REQ_INPUT_010["REQ-INPUT-010<br/>A recording with a bad wheel mode gives an error"]
+  REQ_INPUT_011["REQ-INPUT-011<br/>A click shorter than one tick is not lost"]
   REQ_JOBS_001["REQ-JOBS-001<br/>A native worker runs its messages in order, and can stop"]
   REQ_JOBS_002["REQ-JOBS-002<br/>Native threads and Web Workers have one Transport API"]
   REQ_JOBS_003["REQ-JOBS-003<br/>The Web Worker pool starts again a worker that stops with no event"]
@@ -324,6 +326,7 @@ graph TD
   REQ_GPU_041 -->|refines| REQ_GPU_023
   REQ_GPU_041 -->|refines| REQ_GPU_024
   REQ_INPUT_009 -->|refines| REQ_INPUT_007
+  REQ_INPUT_011 -->|refines| REQ_INPUT_007
   REQ_JOBS_003 -->|depends-on| REQ_JOBS_002
   REQ_TEXT_002 -->|refines| REQ_TEXT_001
   REQ_TEXT_003 -->|depends-on| REQ_TEXT_001
@@ -388,7 +391,7 @@ graph TD
 - `REQ-GPU-038` — required-by REQ-GPU-039
 - `REQ-GPU-039` — required-by REQ-VOXEL-025
 - `REQ-GPU-040` — required-by REQ-VOXEL-031
-- `REQ-INPUT-007` — refined-by REQ-INPUT-009
+- `REQ-INPUT-007` — refined-by REQ-INPUT-009, refined-by REQ-INPUT-011
 - `REQ-JOBS-002` — required-by REQ-JOBS-003
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
 - `REQ-TEXT-002` — required-by REQ-TEXT-005

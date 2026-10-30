@@ -29,6 +29,7 @@ const demo = @import("demo_common");
 const sw_render = @import("sw_render");
 const sw_ui = @import("sw_ui");
 const sw_text = @import("sw_text");
+const pixel_font = @import("pixel_font.zig");
 const gfx = @import("sw_gfx2d");
 const core = @import("sw_core");
 const audio = demo.audio;
@@ -491,62 +492,23 @@ fn text() *sw_text.TextRenderer {
 
 // ---- The bitmap font --------------------------------------------------------
 
-const bitmap_first: u21 = 32;
-const bitmap_count = 95;
-const bitmap_columns = 16;
-const bitmap_rows = 6;
-
-/// Make a bitmap font of the printable ASCII characters: Lato drawn small,
-/// with each pixel on or off. The sheet is a grid of equal cells, as an
-/// artist draws a pixel font. Hebrew and other characters come from the
+/// Make the bitmap font: the hand-drawn pixel font of `pixel_font.zig`,
+/// drawn at a whole number scale. Hebrew and other characters come from the
 /// next fonts of the chain.
 fn makeBitmapFont(allocator: std.mem.Allocator) !sw_text.TextRenderer {
-    var font = try sw_text.Font.init(allocator, demo.font_ttf);
-    defer font.deinit();
-    const size: f32 = 10;
-    const scale = font.scale(size);
-    const vm = font.vmetrics(size);
-    const baseline: u32 = @intFromFloat(@ceil(vm.ascent));
-    const cell_h: u32 = baseline + @as(u32, @intFromFloat(@ceil(-vm.descent)));
-    const cell_w: u32 = 10;
-    const sheet_w = cell_w * bitmap_columns;
-    const sheet_h = cell_h * bitmap_rows;
-    const pixels = try allocator.alloc(u8, sheet_w * sheet_h);
-    defer allocator.free(pixels);
-    @memset(pixels, 0);
-    var codepoints: [bitmap_count]u21 = undefined;
-    var widths: [bitmap_count]u8 = undefined;
-    var glyph_buf: [64 * 64]u8 = undefined;
-    for (0..bitmap_count) |i| {
-        const cp: u21 = bitmap_first + @as(u21, @intCast(i));
-        codepoints[i] = cp;
-        const g = font.glyphIndex(cp);
-        widths[i] = @intCast(std.math.clamp(@as(i32, @intFromFloat(@round(font.advance(g, size)))), 1, cell_w));
-        const box = font.bitmapBox(g, scale);
-        const w = box.width();
-        const h = box.height();
-        if (w == 0 or h == 0 or w * h > glyph_buf.len) continue;
-        font.render(g, scale, box, glyph_buf[0 .. w * h]);
-        const cx = (i % bitmap_columns) * cell_w;
-        const cy = (i / bitmap_columns) * cell_h;
-        for (0..h) |y| {
-            const ty = @as(i32, @intCast(baseline)) + box.y0 + @as(i32, @intCast(y));
-            if (ty < 0 or ty >= cell_h) continue;
-            for (0..w) |x| {
-                const tx = box.x0 + @as(i32, @intCast(x));
-                if (tx < 0 or tx >= cell_w) continue;
-                const on = glyph_buf[y * w + x] >= 64;
-                pixels[(cy + @as(usize, @intCast(ty))) * sheet_w + cx + @as(usize, @intCast(tx))] = if (on) 255 else 0;
-            }
-        }
-    }
+    const pixels = try allocator.create([pixel_font.sheet_width * pixel_font.sheet_height]u8);
+    defer allocator.destroy(pixels);
+    var codepoints: [pixel_font.glyphs.len]u21 = undefined;
+    var widths: [pixel_font.glyphs.len]u8 = undefined;
+    pixel_font.fill(pixels, &codepoints, &widths);
     var t = try sw_text.TextRenderer.initBitmap(allocator, .{
-        .sheet = .{ .pixels = pixels, .width = sheet_w, .height = sheet_h, .format = .alpha8 },
-        .cell_width = cell_w,
-        .cell_height = cell_h,
+        .sheet = .{ .pixels = pixels, .width = pixel_font.sheet_width, .height = pixel_font.sheet_height, .format = .alpha8 },
+        .cell_width = pixel_font.cell_width,
+        .cell_height = pixel_font.cell_height,
         .codepoints = &codepoints,
         .widths = &widths,
-        .baseline = baseline,
+        .baseline = pixel_font.baseline,
+        .integer_scale = true,
     });
     errdefer t.deinit();
     try t.addFont(hebrew_ttf);
@@ -763,6 +725,17 @@ fn wide(tip: []const u8) sw_ui.Opts {
     return .{ .w = .fill, .tooltip = tip };
 }
 
+/// A button that cycles a value with Left and Right. The screen shows the
+/// value between arrows. A screen reader gets the name with no arrows, and
+/// the keys as the description.
+fn cycleButton(id: u32, label: S, value: []const u8) !void {
+    try ui.addButton(id, try ui.print("{s}:  \u{2039} {s} \u{203A}", .{ tr(label), value }), .{
+        .w = .fill,
+        .label = try ui.print("{s}: {s}", .{ tr(label), value }),
+        .description = tr(.preset_tip),
+    });
+}
+
 /// A row: a label, a slider and its value as text. Right to left, the
 /// label is on the right.
 fn sliderRow(base: u32, label: []const u8, value: *f32, opts: sw_ui.SliderOpts, value_text: []const u8, tip: []const u8) !void {
@@ -825,14 +798,14 @@ fn presetName(p: Preset) []const u8 {
 
 fn buildGraphics() !void {
     try beginPanel(301, tr(.graphics));
-    try ui.addButton(ids.preset, try ui.print("{s}: {s}", .{ tr(.preset), presetName(ms.preset) }), wide(tr(.preset_tip)));
+    try cycleButton(ids.preset, .preset, presetName(ms.preset));
     const aa_name = switch (cow.aa) {
         .off => tr(.off),
         .fxaa => "FXAA",
         .msaa => "MSAA 4x",
     };
-    try ui.addButton(ids.aa, try ui.print("{s}: {s}", .{ tr(.anti_aliasing), aa_name }), wide(tr(.preset_tip)));
-    try ui.addButton(ids.coat, try ui.print("{s}: {s}", .{ tr(.coat), @tagName(cow.palette) }), wide(tr(.preset_tip)));
+    try cycleButton(ids.aa, .anti_aliasing, aa_name);
+    try cycleButton(ids.coat, .coat, @tagName(cow.palette));
     try sliderRow(ids.exposure, tr(.exposure), &cow.exposure, .{ .min = 0.2, .max = 2.5, .step = 0.1 }, try ui.print("{d:.1}", .{cow.exposure}), "");
     try sliderRow(ids.time, tr(.time_of_day), &cow.time, .{ .min = 0, .max = 1, .step = 0.02 }, try ui.print("{d:0>2}:{d:0>2}", .{ hourOf(cow.time), minuteOf(cow.time) }), "");
     try sliderRow(ids.spin, tr(.spin), &cow.spin, .{ .min = 0, .max = 2, .step = 0.1 }, try ui.print("{d:.1}", .{cow.spin}), "");

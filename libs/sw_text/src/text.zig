@@ -121,6 +121,7 @@ pub const TextRenderer = struct {
     /// Add a face to the end of the chain. The renderer owns it from now on.
     pub fn addFace(self: *TextRenderer, face: face_mod.Face) !void {
         var f = face;
+        f.setPixelRatio(self.dpi_scale);
         self.faces.append(self.alloc, f) catch |err| {
             f.deinit();
             return err;
@@ -139,6 +140,7 @@ pub const TextRenderer = struct {
 
     pub fn setDpiScale(self: *TextRenderer, dpi_scale: f32) void {
         self.dpi_scale = if (dpi_scale > 0) dpi_scale else 1;
+        for (self.faces.items) |*f| f.setPixelRatio(self.dpi_scale);
     }
 
     /// Number of glyphs in the atlas.

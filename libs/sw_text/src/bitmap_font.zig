@@ -39,6 +39,10 @@ pub const BitmapFont = struct {
         /// The rows from the top of a cell to the baseline. Null puts the
         /// baseline at the bottom of the cell.
         baseline: ?u32 = null,
+        /// A pixel font: draw each sheet pixel as a whole number of screen
+        /// pixels, the nearest to `size` (at least 1). Then each stroke has
+        /// the same width. False scales a cell to exactly `size`.
+        integer_scale: bool = false,
     };
 
     alloc: std.mem.Allocator,
@@ -49,6 +53,11 @@ pub const BitmapFont = struct {
     cell_height: u32,
     columns: u32,
     baseline: u32,
+    integer_scale: bool,
+    /// Device pixels for each logical pixel (`TextRenderer.setDpiScale`).
+    /// With `integer_scale`, the metrics use the whole number scale of the
+    /// device pixels, so that the advance fits the glyph on the screen.
+    pixel_ratio: f32 = 1,
     widths: []u8,
     /// Code point to glyph index. A glyph index is the cell index plus 1.
     glyphs: std.AutoHashMapUnmanaged(u21, u32) = .empty,
@@ -91,6 +100,7 @@ pub const BitmapFont = struct {
             .cell_height = desc.cell_height,
             .columns = columns,
             .baseline = baseline,
+            .integer_scale = desc.integer_scale,
             .widths = widths,
         };
         errdefer font.glyphs.deinit(alloc);
@@ -114,15 +124,26 @@ pub const BitmapFont = struct {
         return self.glyphs.get(codepoint) orelse 0;
     }
 
-    /// Pixels for each sheet pixel when a cell is `size` pixels high.
+    /// Pixels for each sheet pixel when a cell is `size` pixels high. With
+    /// `integer_scale`, the nearest whole number, at least 1.
     pub fn scale(self: *const BitmapFont, size: f32) f32 {
-        return size / @as(f32, @floatFromInt(self.cell_height));
+        const s = size / @as(f32, @floatFromInt(self.cell_height));
+        return if (self.integer_scale) @max(1, @round(s)) else s;
+    }
+
+    /// Logical pixels for each sheet pixel at a logical `size`. With
+    /// `integer_scale`, it is the whole number scale of `size` in device
+    /// pixels, divided by `pixel_ratio`. The glyph box at the device size
+    /// then has the same scale as the advance.
+    pub fn metricScale(self: *const BitmapFont, size: f32) f32 {
+        if (!self.integer_scale) return self.scale(size);
+        return self.scale(size * self.pixel_ratio) / self.pixel_ratio;
     }
 
     /// The vertical metrics at `size`. A cell is `size` pixels high, from
     /// the ascent to the descent, with no line gap.
     pub fn vmetrics(self: *const BitmapFont, size: f32) VMetrics {
-        const s = self.scale(size);
+        const s = self.metricScale(size);
         return .{
             .ascent = @as(f32, @floatFromInt(self.baseline)) * s,
             .descent = -@as(f32, @floatFromInt(self.cell_height - self.baseline)) * s,
@@ -133,7 +154,7 @@ pub const BitmapFont = struct {
     /// Pen movement after a glyph, in pixels.
     pub fn advance(self: *const BitmapFont, glyph: u32, size: f32) f32 {
         if (glyph == 0 or glyph > self.widths.len) return 0;
-        return @as(f32, @floatFromInt(self.widths[glyph - 1])) * self.scale(size);
+        return @as(f32, @floatFromInt(self.widths[glyph - 1])) * self.metricScale(size);
     }
 
     /// The pixel box of a glyph at `size`, relative to the pen on the
@@ -214,6 +235,35 @@ test "a bitmap font scales the width table and the metrics with the size" {
     const v = font.vmetrics(8);
     try testing.expectEqual(@as(f32, 6), v.ascent);
     try testing.expectEqual(@as(f32, -2), v.descent);
+}
+
+test "a pixel font scales by a whole number (integer_scale)" {
+    const px = testSheet();
+    var font = try BitmapFont.init(testing.allocator, .{
+        .sheet = .{ .pixels = &px, .width = 6, .height = 4, .format = .alpha8 },
+        .cell_width = 3,
+        .cell_height = 4,
+        .codepoints = &.{ 'A', 'B' },
+        .widths = &.{ 3, 2 },
+        .baseline = 3,
+        .integer_scale = true,
+    });
+    defer font.deinit();
+    // Size 10 on a cell 4 high is 2.5, and 2.5 rounds to 3.
+    try testing.expectEqual(@as(f32, 3), font.scale(10));
+    try testing.expectEqual(@as(f32, 9), font.advance(1, 10));
+    const box = font.bitmapBox(1, 10);
+    try testing.expectEqual(@as(u32, 9), box.width());
+    try testing.expectEqual(@as(u32, 12), box.height());
+    // A size smaller than one cell still draws each sheet pixel as 1 pixel.
+    try testing.expectEqual(@as(f32, 1), font.scale(1));
+
+    // At a pixel ratio of 1.5, size 6 is 9 device pixels: a scale of 2
+    // (9 / 4 rounds to 2). The glyph box at the device size is 6 pixels
+    // wide, and the advance is 6 device pixels, 4 logical pixels.
+    font.pixel_ratio = 1.5;
+    try testing.expectEqual(@as(u32, 6), font.bitmapBox(1, 6 * 1.5).width());
+    try testing.expectApproxEqAbs(@as(f32, 4), font.advance(1, 6), 1e-5);
 }
 
 test "a bitmap glyph renders with the nearest sheet pixel" {
