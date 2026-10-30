@@ -1,13 +1,13 @@
 # menu: frame hashes at the checkpoints of the script, preset medium, lavapipe (REQ-DEMO-003)
 main_tooltip a4b21ddab09a0b5d
-preset_low 8750d1940b8cc5e9
-preset_high 8c988193840805bc
-coat c97361cea61e3957
-exposure e00832b033a01185
-sunset 50b93455cfc40c10
-shadows_off 09acd093812eecf4
-sky_off 3779c195fc3391dd
-wireframe 6a864fe21ada5431
+preset_low b54d9a6fc2444543
+preset_high eb43980fca580b2a
+coat 1962c3533b5e73b6
+exposure d6975fe0625c31a1
+sunset 919af116d939d9ed
+shadows_off b30ed8c6e12324e5
+sky_off 08f600b08957b4c5
+wireframe 2ebc37ec331010d9
 audio 3ebf8276f034e432
 press_key 85d5c48198e8b3dd
 conflict faf6657b53205f63
@@ -16,7 +16,7 @@ drag f568c96be2429cb8
 invert_y becb3a43d057911a
 stick_turn 099b43a4b460869f
 dead_zone eaaaaa1a14c400ab
-bitmap_font 944be171c5aa817b
+bitmap_font 63bb33778714b351
 hebrew f8128593a86c94c2
 name 27b469ee70bb0cdb
 keyboard bfe6e75e3a1aff35
