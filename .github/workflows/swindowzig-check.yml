@@ -527,6 +527,20 @@ jobs:
           echo "--- voxel files after the build"
           find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
 
+      - name: TEMP environment experiment
+        run: |
+          b() { /usr/bin/time -f "took %e s" zig build native -Dexample=voxel --summary all 2>&1 | grep -E "compile exe|translate-c|options|took"; }
+          echo "--- again"
+          b
+          echo "--- with FOO=1"
+          FOO=1 b
+          echo "--- with a new GITHUB_RUN_ID"
+          GITHUB_RUN_ID=1 b
+          echo "--- with a new RUNNER_NAME and GITHUB_JOB"
+          RUNNER_NAME=x GITHUB_JOB=y b
+          echo "--- again with the job environment"
+          b
+
       - name: Compare with the goldens
         # The step takes about 1.5 minutes. The script stops a run after
         # 120 s and shows each golden before it starts. The step limit
