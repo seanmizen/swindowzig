@@ -131,6 +131,31 @@ test('Escape pauses the shooter, and the mirror shows the pause menu', async ({
     1,
   );
 
+  // Map changes the map at once, with no restart (REQ-DEMO-030).
+  await page.waitForTimeout(300);
+  await press(page, 'Escape');
+  await expect.poll(focus).toBe('button: Mouse');
+  await press(page, 'ArrowDown');
+  await press(page, 'ArrowDown');
+  await expect.poll(focus).toBe('button: Map: Snowy arena');
+  await press(page, 'ArrowRight');
+  await expect.poll(focus).toBe('button: Map: Indoor room');
+
+  // In the room, Graphics has the room light slider (REQ-DEMO-033). The
+  // mirror gives its value, also after a key press (REQ-A11Y-009).
+  for (let i = 0; i < 3; i++) await press(page, 'ArrowUp');
+  await expect.poll(focus).toBe('button: Graphics');
+  await press(page, 'Enter');
+  const light = graphics.getByRole('slider', { name: 'Room light' });
+  await expect(light).toHaveAttribute('aria-valuetext', '4%');
+  for (let i = 0; i < 8 && (await focus()) !== 'slider: Room light'; i++) {
+    await press(page, 'ArrowDown');
+  }
+  await expect.poll(focus).toBe('slider: Room light');
+  await press(page, 'ArrowRight');
+  await expect(light).toHaveAttribute('aria-valuetext', '5%');
+  await expect.poll(saved).toContain('indoor_ambient 0.05');
+
   // A new page loads the saved settings.
   await page.reload();
   await expect(mirror).toBeAttached({ timeout: 45_000 });

@@ -13,6 +13,11 @@
 //   from the player or step out to fire (`cover_points`).
 // - The snow: a white cap on the top of each box (not solid), and the
 //   height map that stops the falling snow (`heightAt`).
+//
+// The shooter has two maps (REQ-DEMO-030). `build(.arena)` makes the snowy
+// arena. `build(.indoor)` makes a closed room: a floor, four walls, a
+// ceiling and crates, with no snow and no bot spawns. `room` gives the
+// places of its two lamps and of the rail of the second lamp.
 const std = @import("std");
 const sw_math = @import("sw_math");
 const vec = @import("vec.zig");
@@ -20,7 +25,10 @@ const Surface = @import("audio/impact.zig").Material;
 const V3 = vec.V3;
 const v3 = vec.v3;
 
-pub const Kind = enum { ground, wall, crate, barrier, block, container };
+pub const Kind = enum { ground, wall, crate, barrier, block, container, ceiling, button };
+
+/// The maps of the shooter (REQ-DEMO-030).
+pub const Map = enum { arena, indoor };
 
 pub const Box = struct {
     min: V3,
@@ -41,16 +49,63 @@ pub const snow_color = v3(0.86, 0.89, 0.94);
 
 pub const Spawn = struct { pos: V3, yaw: f32 };
 /// The player starts at the south and looks north (-Z).
-pub const player_spawn: Spawn = .{ .pos = v3(0, 0, 19), .yaw = 0 };
+const arena_spawn: Spawn = .{ .pos = v3(0, 0, 19), .yaw = 0 };
 /// The bots start at the north.
-pub const bot_spawns = [_]V3{ v3(-9, 0, -19), v3(0.5, 0, -20.5), v3(10, 0, -18) };
+const arena_bots = [_]V3{ v3(-9, 0, -19), v3(0.5, 0, -20.5), v3(10, 0, -18) };
+
+/// The map of the last `build`.
+pub var map: Map = .arena;
+/// The start of the player on the map.
+pub var player_spawn: Spawn = arena_spawn;
+/// The bot spawns of the map. The room has none.
+pub var bot_spawns: []const V3 = &arena_bots;
+/// The tops of the boxes have snow.
+pub var snowy: bool = true;
+
+/// The closed room of the `indoor` map (REQ-DEMO-030). The inside is
+/// 2 * half_x by 2 * half_z, and `height` high. Light 1 hangs at the
+/// centre. Light 2 moves on a rail near the ceiling, from x = -rail_x to
+/// x = rail_x at z = rail_z.
+pub const room = struct {
+    pub const half_x: f32 = 8;
+    pub const half_z: f32 = 6;
+    pub const height: f32 = 4;
+    /// The thickness of the walls, the floor and the ceiling. The walls
+    /// go into the floor and the ceiling, so no light goes through a
+    /// corner.
+    pub const wall_t: f32 = 0.4;
+    /// The point of light 1, at the bottom of the lamp.
+    pub const chandelier = v3(0, 2.95, 0);
+    pub const rail_x: f32 = 6.5;
+    pub const rail_z: f32 = -2.5;
+    /// The bottom of the rail.
+    pub const rail_y: f32 = 3.7;
+    /// The height of the point of light 2.
+    pub const lamp_y: f32 = 3.3;
+    /// The player starts at the south wall and looks north (-Z), at the
+    /// crates and the rail.
+    pub const spawn: Spawn = .{ .pos = v3(0, 0, 5.2), .yaw = 0 };
+    /// The centre of the button on the north wall (REQ-DEMO-032), at the
+    /// face of the wall. A shot that hits it moves light 2.
+    pub const button = v3(0, 1.45, -half_z);
+    /// The half size of the button face, and how far it stands out of
+    /// the wall.
+    pub const button_half: f32 = 0.2;
+    pub const button_out: f32 = 0.08;
+
+    /// The point of light 2 at `t` on the rail: 0 at the west end, 1 at
+    /// the east end.
+    pub fn railPoint(t: f32) V3 {
+        return v3(-rail_x + 2 * rail_x * t, lamp_y, rail_z);
+    }
+};
 
 pub const max_boxes = 64;
 pub var boxes: [max_boxes]Box = undefined;
 pub var box_count: usize = 0;
 
 fn add(min: V3, max: V3, color: V3, surface: Surface, kind: Kind) void {
-    const tall = max[1] - min[1] >= 1.9 and kind != .ground and kind != .wall;
+    const tall = max[1] - min[1] >= 1.9 and kind != .ground and kind != .wall and kind != .ceiling;
     boxes[box_count] = .{ .min = min, .max = max, .color = color, .surface = surface, .kind = kind, .tall = tall };
     box_count += 1;
 }
@@ -62,14 +117,73 @@ fn put(x: f32, z: f32, sx: f32, sy: f32, sz: f32, kind: Kind) void {
         .barrier => .{ v3(0.55, 0.55, 0.53), .concrete },
         .block => .{ v3(0.5, 0.49, 0.47), .concrete },
         .container => .{ v3(0.52, 0.16, 0.12), .sheet_metal },
-        .wall, .ground => .{ v3(0.45, 0.45, 0.45), .concrete },
+        .wall, .ground, .ceiling, .button => .{ v3(0.45, 0.45, 0.45), .concrete },
     };
     add(v3(x - sx / 2, 0, z - sz / 2), v3(x + sx / 2, sy, z + sz / 2), look[0], look[1], kind);
 }
 
-/// Build the arena. Call it once before the other functions.
-pub fn build() void {
+/// Build map `m`. Call it before the other functions, and again to change
+/// the map.
+pub fn build(m: Map) void {
+    map = m;
+    switch (m) {
+        .arena => buildArena(),
+        .indoor => buildRoom(),
+    }
+    buildCoverPoints();
+    buildHeights();
+}
+
+/// The closed room (REQ-DEMO-030): a wood floor, plaster walls, a ceiling,
+/// and crates of different sizes between the two lamps.
+fn buildRoom() void {
     box_count = 0;
+    player_spawn = room.spawn;
+    bot_spawns = &.{};
+    snowy = false;
+    const hx = room.half_x;
+    const hz = room.half_z;
+    const h = room.height;
+    const t = room.wall_t;
+    // The floor and the ceiling are larger than the walls. Each wall goes
+    // into both, so the room has no gap at an edge.
+    // A grey floor: the warm lamp and the cool lamp show their colours.
+    add(v3(-hx - t, -t, -hz - t), v3(hx + t, 0, hz + t), v3(0.46, 0.45, 0.43), .concrete, .ground);
+    add(v3(-hx - t, h, -hz - t), v3(hx + t, h + t, hz + t), v3(0.55, 0.54, 0.52), .concrete, .ceiling);
+    const wc = v3(0.6, 0.57, 0.52);
+    add(v3(-hx - t, -t, -hz - t), v3(hx + t, h + t, -hz), wc, .concrete, .wall);
+    add(v3(-hx - t, -t, hz), v3(hx + t, h + t, hz + t), wc, .concrete, .wall);
+    add(v3(-hx - t, -t, -hz), v3(-hx, h + t, hz), wc, .concrete, .wall);
+    add(v3(hx, -t, -hz), v3(hx + t, h + t, hz), wc, .concrete, .wall);
+    // The crates: each one casts a shadow from each lamp. Both lamps are
+    // north of the crates, so both shadows fall to the south, toward the
+    // player.
+    put(-4.5, 1.2, 1.0, 1.0, 1.0, .crate);
+    put(-1.8, 1.8, 0.6, 1.4, 0.6, .crate);
+    put(1.4, 1.0, 1.2, 0.7, 0.9, .crate);
+    put(4.0, 1.7, 0.6, 0.6, 0.6, .crate);
+    put(5.6, -1.2, 1.1, 2.0, 1.1, .crate);
+    // The button (REQ-DEMO-032): a solid box, so a shot stops on it. A box
+    // model draws it, not the static triangles.
+    const b = room.button;
+    const bh = room.button_half;
+    add(v3(b[0] - bh, b[1] - bh, b[2]), v3(b[0] + bh, b[1] + bh, b[2] + room.button_out), v3(0.7, 0.08, 0.06), .metal, .button);
+}
+
+/// The index of the button box in `boxes`, or null on a map with no button.
+pub fn buttonBox() ?usize {
+    for (boxes[0..box_count], 0..) |b, i| {
+        if (b.kind == .button) return i;
+    }
+    return null;
+}
+
+/// The snowy arena.
+fn buildArena() void {
+    box_count = 0;
+    player_spawn = arena_spawn;
+    bot_spawns = &arena_bots;
+    snowy = true;
     // The ground: snow on earth.
     add(v3(-half - 2, -1, -half - 2), v3(half + 2, 0, half + 2), snow_color, .earth, .ground);
     // The outer wall.
@@ -99,8 +213,6 @@ pub fn build() void {
     put(0, -14, 2.4, 1.05, 0.5, .barrier);
     put(-15, 9, 1.2, 2.4, 1.2, .crate);
     put(16, 8, 3.0, 1.05, 0.5, .barrier);
-    buildCoverPoints();
-    buildHeights();
 }
 
 // ---- Queries ---------------------------------------------------------------
@@ -169,13 +281,14 @@ pub fn floorTop(min: V3, max: V3) ?f32 {
 /// The surface of box `bi`. The top of a box has snow on it.
 pub fn surfaceAt(p: V3, bi: usize) Surface {
     const b = boxes[bi];
-    if (p[1] >= b.max[1] - 0.02) return .earth;
+    if (snowy and p[1] >= b.max[1] - 0.02) return .earth;
     return b.surface;
 }
 
 /// True when a hit at p on box `bi` lands in snow: the ground, or the
-/// snow cap on the top of a box.
+/// snow cap on the top of a box. The room has no snow.
 pub fn snowAt(p: V3, bi: usize) bool {
+    if (!snowy) return false;
     const b = boxes[bi];
     return b.kind == .ground or p[1] >= b.max[1] - 0.02;
 }
@@ -249,7 +362,7 @@ fn buildHeights() void {
             const wz = map_origin + (@as(f32, @floatFromInt(z)) + 0.5) * map_cell;
             var h: f32 = 0;
             for (boxes[0..box_count]) |b| {
-                if (b.kind == .ground) continue;
+                if (b.kind == .ground or b.kind == .ceiling) continue;
                 if (wx >= b.min[0] and wx <= b.max[0] and wz >= b.min[2] and wz <= b.max[2]) h = @max(h, b.max[1]);
             }
             heights[z * map_cells + x] = h;
@@ -269,10 +382,11 @@ pub fn heightAt(x: f32, z: f32) f32 {
 }
 
 test "arena: the spawns are free, and each cover point is beside a tall box (REQ-DEMO-020)" {
-    build();
+    build(.arena);
     const r: f32 = 0.34;
     const p = player_spawn.pos;
     try std.testing.expect(!overlaps(p - v3(r, -0.05, r), p + v3(r, 1.75, r)));
+    try std.testing.expectEqual(@as(usize, 3), bot_spawns.len);
     for (bot_spawns) |s| try std.testing.expect(!overlaps(s - v3(r, -0.05, r), s + v3(r, 1.75, r)));
     try std.testing.expect(cover_count > 40);
     for (cover_points[0..cover_count]) |c| try std.testing.expect(boxes[c.box].tall);
@@ -280,4 +394,29 @@ test "arena: the spawns are free, and each cover point is beside a tall box (REQ
     const h = raycast(v3(3, 5, 3), v3(0, -1, 0), 10).?;
     try std.testing.expectApproxEqAbs(@as(f32, 5), h.t, 1e-4);
     try std.testing.expectEqual(@as(?f32, 0), floorTop(v3(2.6, -0.4, 2.6), v3(3.4, 0.4, 3.4)));
+}
+
+test "arena: the room is closed, has no bots and no snow, and the lamps are inside (REQ-DEMO-030)" {
+    defer build(.arena);
+    build(.indoor);
+    try std.testing.expectEqual(Map.indoor, map);
+    try std.testing.expectEqual(@as(usize, 0), bot_spawns.len);
+    const r: f32 = 0.34;
+    const p = player_spawn.pos;
+    try std.testing.expect(!overlaps(p - v3(r, -0.05, r), p + v3(r, 1.75, r)));
+    // From each lamp, a ray in each of 26 directions hits the room: no
+    // gap at an edge or a corner. No box holds a lamp.
+    const lamps = [_]V3{ room.chandelier, room.railPoint(0), room.railPoint(0.5), room.railPoint(1) };
+    for (lamps) |l| {
+        try std.testing.expect(!overlaps(l - vec.s(0.05), l + vec.s(0.05)));
+        for (0..3) |xi| for (0..3) |yi| for (0..3) |zi| {
+            if (xi == 1 and yi == 1 and zi == 1) continue;
+            const d = vec.norm(v3(@as(f32, @floatFromInt(xi)) - 1, @as(f32, @floatFromInt(yi)) - 1, @as(f32, @floatFromInt(zi)) - 1));
+            try std.testing.expect(raycast(l, d, 30) != null);
+        };
+    }
+    // The crates stand between the lamps: no snow on them.
+    try std.testing.expect(!snowAt(v3(-4.6, 1.0, -0.6), 6));
+    try std.testing.expectEqual(Surface.wood, surfaceAt(v3(-4.6, 1.0, -0.6), 6));
+    try std.testing.expectEqual(Kind.crate, boxes[6].kind);
 }

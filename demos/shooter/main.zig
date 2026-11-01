@@ -19,7 +19,8 @@
 // Controls: WASD move, mouse or arrow keys look, left button fire, right
 // button aim, R reload, Space jump, Q and E lean. Gamepad: left stick
 // move, right stick look, right trigger fire, left trigger aim, south
-// jump, west reload, shoulders lean. The mouse works only while the
+// jump, west reload, shoulders lean. In the room, L or the gamepad north
+// button moves light 2. The mouse works only while the
 // pointer is locked. A click in the window locks it (REQ-DEMO-025).
 //
 // Escape or the gamepad Start button pauses the fight and opens the pause
@@ -28,8 +29,19 @@
 // storage (REQ-DEMO-028). The menu is the shared game menu of the demos
 // (demos/common/game_menu.zig, REQ-DEMO-026).
 //
+// The second map, `indoor` (REQ-DEMO-030), is a closed room with no sun
+// and no bots. Two point lights with cube shadow maps light it: light 1
+// hangs still at the centre, light 2 moves on a rail near the ceiling. L
+// or the gamepad north button sends light 2 to the other end of the rail
+// (REQ-DEMO-031). A shot on the button on the north wall does the same
+// (REQ-DEMO-032). `--map indoor` starts on it and plays indoor.tas. In
+// the pause menu, the Map button changes the map with no restart, and
+// Graphics has the Room light slider in the room (REQ-DEMO-033).
+//
 //   zig build run -Ddemo=shooter
+//   zig build run -Ddemo=shooter -- --map indoor      # the room
 //   ./zig-out/bin/shooter --check                     # the frame hashes
+//   ./zig-out/bin/shooter --check --map indoor        # the hashes of the room
 //   zig build web -Ddemo=shooter && yarn dev:demo shooter
 const std = @import("std");
 const builtin = @import("builtin");
@@ -62,7 +74,7 @@ comptime {
 }
 
 /// The input actions of the player (REQ-INPUT-003, REQ-INPUT-005).
-const Action = enum { forward, back, left, right, look_left, look_right, look_up, look_down, fire, aim, jump, reload, lean_left, lean_right };
+const Action = enum { forward, back, left, right, look_left, look_right, look_up, look_down, fire, aim, jump, reload, lean_left, lean_right, move_light };
 const Actions = sw_core.ActionMap(Action);
 const Bind = sw_core.Binding;
 
@@ -81,6 +93,8 @@ const bindings: Actions.Defaults = .{
     .reload = &.{ Bind.key(.R), Bind.gamepadButton(.west) },
     .lean_left = &.{ Bind.key(.Q), Bind.gamepadButton(.left_shoulder) },
     .lean_right = &.{ Bind.key(.E), Bind.gamepadButton(.right_shoulder) },
+    // Light 2 of the room (REQ-DEMO-031).
+    .move_light = &.{ Bind.key(.L), Bind.gamepadButton(.north) },
 };
 
 /// Radians of turn for each pixel of mouse move.
@@ -94,6 +108,18 @@ const App = struct {
     pub const script = @embedFile("shooter.tas");
     /// A key, a click or a gamepad button takes the control from the script.
     pub const interactive = true;
+    /// The maps, in the order of `arena.Map` (REQ-DEMO-029, REQ-DEMO-030).
+    pub const maps = [_]demo.Map{
+        .{ .name = "arena", .script = script },
+        .{ .name = "indoor", .script = @embedFile("indoor.tas") },
+    };
+
+    comptime {
+        for (maps, std.enums.values(arena.Map)) |m, e| std.debug.assert(std.mem.eql(u8, m.name, @tagName(e)));
+    }
+
+    /// The map now. The pause menu changes it.
+    var current_map: arena.Map = .arena;
 
     var scene: scene_mod.Scene = undefined;
     var g: game_mod.Game = undefined;
@@ -122,7 +148,8 @@ const App = struct {
 
     pub fn init(host: *demo.Host) !void {
         try weapon.loadModels(host.allocator);
-        arena.build();
+        current_map = startMap(host);
+        arena.build(current_map);
         const gr = host.graphics;
         scene = try scene_mod.Scene.init(host.allocator, &host.graph, &host.post, .{
             .shadow_map_size = gr.shadow_map_size,
@@ -145,7 +172,26 @@ const App = struct {
         prefs = saved;
     }
 
+    /// The map of `--map`.
+    fn startMap(host: *const demo.Host) arena.Map {
+        return std.enums.values(arena.Map)[host.map];
+    }
+
+    /// Put the player on map `m` with no restart (REQ-DEMO-030): a new
+    /// fight on the new boxes, and the world, the sky and the lights of
+    /// that map.
+    fn switchMap(m: arena.Map) !void {
+        current_map = m;
+        arena.build(m);
+        try scene.setMap();
+        g = game_mod.Game.init(seed, g.settings);
+        particles.clear();
+        fx_rng = .init(seed);
+    }
+
     pub fn reset(host: *demo.Host) !void {
+        // A script plays one map.
+        if (current_map != startMap(host)) try switchMap(startMap(host));
         g = game_mod.Game.init(seed, g.settings);
         particles.clear();
         fx_rng = .init(seed);
@@ -159,13 +205,17 @@ const App = struct {
     pub fn set(host: *demo.Host, setting: []const u8, value: []const u8) !void {
         var s = scene.settings();
         if (demo.reflect.setField(scene_mod.Settings, &s, setting, value)) {
-            // In a window the shadows of the player stay. A capture or
-            // check run follows the script.
+            // In a window the shadows and the room light of the player
+            // stay. A capture or check run follows the script.
             if (host.deterministic()) {
                 prefs.shadows = s.shadows;
+                prefs.indoor_ambient = s.indoor_ambient;
                 prefs.preset = prefs.matchingPreset();
                 saved = prefs;
-            } else s.shadows = prefs.shadows;
+            } else {
+                s.shadows = prefs.shadows;
+                s.indoor_ambient = prefs.indoor_ambient;
+            }
             try scene.apply(s);
             return;
         } else |err| if (err != error.UnknownSetting) return err;
@@ -206,8 +256,10 @@ const App = struct {
     /// size or cascade count makes new maps (REQ-GPU-043), with no restart.
     fn applyPrefs(host: *demo.Host) !void {
         var s = scene.settings();
-        if (s.shadows != prefs.shadows) {
+        if (s.shadows != prefs.shadows or s.indoor_ambient != prefs.indoor_ambient) {
             s.shadows = prefs.shadows;
+            // The ambient light slider of the room (REQ-DEMO-033).
+            s.indoor_ambient = prefs.indoor_ambient;
             try scene.apply(s);
         }
         const map = prefs.shadowMap();
@@ -243,6 +295,7 @@ const App = struct {
             .jump = actions.pressed(.jump),
             .reload = actions.pressed(.reload),
             .lean = (if (actions.down(.lean_right)) @as(f32, 1) else 0) - (if (actions.down(.lean_left)) @as(f32, 1) else 0),
+            .move_light = actions.pressed(.move_light),
         };
     }
 
@@ -296,7 +349,10 @@ const App = struct {
         }
         if (ps.closed) resumeFight(host);
         if (pause.open) {
-            const r = try menu.tick(host, snap, &prefs, ps.escape);
+            // The script plays one map, so the Map button shows only when
+            // the player has control (REQ-DEMO-030).
+            const r = try menu.tick(host, snap, &prefs, ps.escape, current_map, host.user_control);
+            if (r.map) |m| try switchMap(m);
             if (r.changed) {
                 try applyPrefs(host);
                 // The script does not change the save.
@@ -372,7 +428,12 @@ const App = struct {
 
     pub fn statLines(_: *demo.Host, bufs: [][128]u8, out: [][]const u8) usize {
         const st = scene.stats();
-        out[0] = std.fmt.bufPrint(&bufs[0], "wave {d}  |  bots {d}/{d}  |  kills {d}  |  particles {d}", .{ g.wave, g.liveBots(), g.bot_n, g.kills, st.particles }) catch "";
+        if (current_map == .indoor) {
+            // The cube map of a lamp is drawn again only while it moves
+            // (REQ-DEMO-031).
+            const rail = if (g.rail.moving()) "moves (cube map drawn each frame)" else if (g.rail.pos == 0) "at the west end" else "at the east end";
+            out[0] = std.fmt.bufPrint(&bufs[0], "indoor room  |  light 1 still  |  light 2 {s}  |  particles {d}", .{ rail, st.particles }) catch "";
+        } else out[0] = std.fmt.bufPrint(&bufs[0], "wave {d}  |  bots {d}/{d}  |  kills {d}  |  particles {d}", .{ g.wave, g.liveBots(), g.bot_n, g.kills, st.particles }) catch "";
         const ms = scene.modelStats();
         out[1] = std.fmt.bufPrint(&bufs[1], "box models: {d} draws, {d} shadow draws, {d} instances, {d} records", .{ ms.draw_calls, ms.shadow_draw_calls, ms.instances, ms.records }) catch "";
         return 2;
@@ -476,10 +537,18 @@ const App = struct {
             try r.fillRect(.{ .x = p[0] - ww / 2 - 1, .y = p[1] - 1, .w = ww + 2, .h = 6 * k + 2 }, rgba(0, 0, 0, 0.6));
             try r.fillRect(.{ .x = p[0] - ww / 2, .y = p[1], .w = ww * bk, .h = 6 * k }, rgba(235, 70, 55, 0.95));
         }
+        var hint_y = 14 * k;
         if (!host.deterministic() and !host.user_control) {
             const s = "Press a key, click or press a gamepad button to play";
             const m = o.text.measure(s, 14 * k);
-            try shadowed(o, s, w - m.w - 16 * k, 14 * k, 14 * k, rgba(255, 244, 214, 0.9));
+            try shadowed(o, s, w - m.w - 16 * k, hint_y, 14 * k, rgba(255, 244, 214, 0.9));
+            hint_y += 20 * k;
+        }
+        if (current_map == .indoor) {
+            // The key of light 2 (REQ-DEMO-031).
+            const s = "L or gamepad north (Y): move light 2";
+            const m = o.text.measure(s, 14 * k);
+            try shadowed(o, s, w - m.w - 16 * k, hint_y, 14 * k, rgba(214, 230, 255, 0.9));
         }
     }
 

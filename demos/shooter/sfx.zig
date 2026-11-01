@@ -35,6 +35,8 @@ pub const Sfx = struct {
     impacts: [std.enums.values(Material).len]sw_audio.Sample,
     crack: sw_audio.Sample,
     click: sw_audio.Sample,
+    /// The button of the room (REQ-DEMO-032).
+    button: sw_audio.Sample,
     listener_pos: V3 = v3(0, 0, 0),
 
     pub fn init(allocator: std.mem.Allocator) !Sfx {
@@ -45,6 +47,7 @@ pub const Sfx = struct {
             .impacts = undefined,
             .crack = undefined,
             .click = undefined,
+            .button = undefined,
         };
         var rng = dsp.Rng.init(24);
         for (std.enums.values(Report), 0..) |r, i| self.reports[i] = try makeReport(allocator, r, &rng);
@@ -55,6 +58,7 @@ pub const Sfx = struct {
         }
         self.crack = try makeCrack(allocator, &rng);
         self.click = try makeClick(allocator, &rng);
+        self.button = try makeButton(allocator, &rng);
         return self;
     }
 
@@ -64,6 +68,7 @@ pub const Sfx = struct {
         for (&self.impacts) |*s| s.deinit(self.allocator);
         self.crack.deinit(self.allocator);
         self.click.deinit(self.allocator);
+        self.button.deinit(self.allocator);
     }
 
     /// The ears follow the camera.
@@ -110,6 +115,8 @@ pub const Sfx = struct {
                 self.at(&self.impacts[@backingInt(m)], s.e, vol, flight, 60);
             }
         }
+        // The button of the room: the click plays at the button.
+        if (events.button) |p| self.at(&self.button, p, 0.8, 0, 30);
         switch (events.hands) {
             .mag_out, .mag_in, .racked, .empty => self.at(&self.click, self.listener_pos + v3(0, -0.2, 0), 0.5, 0, 10),
             else => {},
@@ -153,6 +160,21 @@ fn makeCrack(allocator: std.mem.Allocator, rng: *dsp.Rng) !sw_audio.Sample {
     near_miss.addNWave(buf, 0.001, 0.0004, 1);
     dsp.addNoise(buf, rng, dsp.at(0.0015), .{ .kind = .highpass, .freq = 3000 }, 0.0002, 0.03, 0.25);
     dsp.normalise(buf, 0.9);
+    return .{ .data = buf, .channels = 1, .rate = rate };
+}
+
+/// The click of the button of the room (REQ-DEMO-032): a click when the
+/// cap goes in, and a softer one when it comes out 0.3 s later.
+fn makeButton(allocator: std.mem.Allocator, rng: *dsp.Rng) !sw_audio.Sample {
+    const buf = try allocator.alloc(f32, dsp.at(0.4));
+    @memset(buf, 0);
+    for ([_]struct { t: f32, amp: f32 }{ .{ .t = 0, .amp = 1 }, .{ .t = 0.3, .amp = 0.5 } }) |c| {
+        const start = dsp.at(c.t);
+        dsp.addNoise(buf, rng, start, .{ .kind = .bandpass, .freq = 2600, .q = 1.5 }, 0.0002, 0.015, c.amp);
+        dsp.addMode(buf, start, 1700, 0.04, 0.4 * c.amp, 0);
+        dsp.addMode(buf, start, 420, 0.06, 0.25 * c.amp, 0);
+    }
+    dsp.normalise(buf, 0.7);
     return .{ .data = buf, .channels = 1, .rate = rate };
 }
 

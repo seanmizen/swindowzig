@@ -2,10 +2,12 @@
 //! shared game menu of the demos (demos/common/game_menu.zig,
 //! REQ-DEMO-026).
 //!
-//! - The main screen: Resume, Graphics, Mouse, Audio, and Quit (native
-//!   only).
+//! - The main screen: Resume, Graphics, Mouse, Audio, Map, and Quit
+//!   (native only). Map changes the map at once (REQ-DEMO-030). It shows
+//!   only when the player has control: a script plays one map.
 //! - Graphics: the preset, the shadows, the shadow quality, the
-//!   anti-aliasing, vsync and the frame limit.
+//!   anti-aliasing, vsync and the frame limit. On the `indoor` map, also
+//!   the ambient light of the room (REQ-DEMO-033).
 //! - Mouse: the sensitivity and invert Y.
 //! - Audio: the volume of the game and of the shots.
 //!
@@ -19,6 +21,7 @@ const sw_core = @import("sw_core");
 const sw_render = @import("sw_render");
 const gfx = @import("sw_gfx2d");
 const prefs_mod = @import("prefs.zig");
+const Map = @import("arena.zig").Map;
 const gm = demo.game_menu;
 const ids = gm.ids;
 const Prefs = prefs_mod.Prefs;
@@ -37,6 +40,8 @@ pub const Result = struct {
     quit: bool = false,
     /// A setting changed: apply and save the settings.
     changed: bool = false,
+    /// The player chose this map: put the player on it.
+    map: ?Map = null,
 };
 
 pub const PauseMenu = struct {
@@ -85,8 +90,10 @@ pub const PauseMenu = struct {
     }
 
     /// One tick of the open menu. `escape`: the menu can read Escape (see
-    /// `Pause.Step.escape`).
-    pub fn tick(self: *PauseMenu, host: *demo.Host, snap: *const sw_core.InputSnapshot, prefs: *Prefs, escape: bool) !Result {
+    /// `Pause.Step.escape`). `now`: the map now. `choose_map`: show the
+    /// Map button.
+    pub fn tick(self: *PauseMenu, host: *demo.Host, snap: *const sw_core.InputSnapshot, prefs: *Prefs, escape: bool, now: Map, choose_map: bool) !Result {
+        const map: ?Map = if (choose_map) now else null;
         const m = &self.m;
         m.setLayout(host.gpu.getSurfaceWidth(), host.gpu.getSurfaceHeight(), host.ctx.window());
         m.nav.update(snap);
@@ -94,13 +101,13 @@ pub const PauseMenu = struct {
         if (!escape) input.keys.escape = false;
         try m.ui.begin(input, m.layout_w, gm.layout_height);
         if (self.screens.top()) |top| switch (top) {
-            .graphics => try self.buildGraphics(prefs),
+            .graphics => try self.buildGraphics(prefs, now),
             .mouse => try self.buildMouse(prefs),
             .sound => try m.audioScreen(screenId(.sound), &.{
                 .{ .base = ids.master, .label = .master, .value = &prefs.volume },
                 .{ .base = ids.effects, .label = .shots, .value = &prefs.shots },
             }),
-        } else try self.buildMain();
+        } else try self.buildMain(map);
         try m.ui.finish();
 
         var r: Result = .{};
@@ -108,10 +115,15 @@ pub const PauseMenu = struct {
         if (input.keys.left or input.keys.right) {
             if (m.ui.focused()) |f| {
                 if (step(prefs, f, input.keys.right)) r.changed = true;
+                if (f == ids.map) r.map = nextMap(map, input.keys.right);
             }
         }
         for (m.ui.frameEvents()) |e| switch (e.kind) {
             .activate => {
+                if (e.id == ids.map) {
+                    r.map = nextMap(map, true);
+                    continue;
+                }
                 if (step(prefs, e.id, true)) {
                     r.changed = true;
                     continue;
@@ -130,7 +142,7 @@ pub const PauseMenu = struct {
                 if (self.screens.pop(&m.ui) == null) r.resume_game = true;
             },
             .changed => switch (e.id) {
-                ids.sensitivity + 2, ids.master + 2, ids.effects + 2 => r.changed = true,
+                ids.sensitivity + 2, ids.master + 2, ids.effects + 2, ids.room_light + 2 => r.changed = true,
                 else => {},
             },
             .submit => {},
@@ -138,20 +150,24 @@ pub const PauseMenu = struct {
         return r;
     }
 
-    fn buildMain(self: *PauseMenu) !void {
+    fn buildMain(self: *PauseMenu, map: ?Map) !void {
         const m = &self.m;
         try m.beginPanel(null, m.tr(.paused));
         try m.ui.addButton(ids.resume_game, m.tr(.resume_game), gm.Menu.wide(m.tr(.fight_tip)));
         try m.ui.addButton(ids.graphics, m.tr(.graphics), gm.Menu.wide(m.tr(.shooter_graphics_tip)));
         try m.ui.addButton(ids.mouse, m.tr(.mouse), gm.Menu.wide(m.tr(.mouse_tip)));
         try m.ui.addButton(ids.sound, m.tr(.sound), gm.Menu.wide(m.tr(.shooter_sound_tip)));
+        if (map) |now| try m.cycleButton(ids.map, .map, m.tr(switch (now) {
+            .arena => .map_arena,
+            .indoor => .map_indoor,
+        }));
         // The browser closes a page, not the game.
         if (!builtin.cpu.arch.isWasm()) try m.ui.addButton(ids.quit, m.tr(.quit), gm.Menu.wide(m.tr(.quit_tip)));
         try m.ui.addText(ids.hint, m.tr(.paused_hint), .{});
         m.endPanel();
     }
 
-    fn buildGraphics(self: *PauseMenu, p: *Prefs) !void {
+    fn buildGraphics(self: *PauseMenu, p: *Prefs, now: Map) !void {
         const m = &self.m;
         try m.beginPanel(screenId(.graphics), m.tr(.graphics));
         try m.cycleButton(ids.preset, .preset, m.qualityName(switch (p.preset) {
@@ -176,6 +192,15 @@ pub const PauseMenu = struct {
         });
         try m.toggleButton(ids.vsync, .vsync, p.vsync);
         try m.cycleButton(ids.frame_limit, .frame_limit, if (p.fps()) |f| try m.ui.print("{d} fps", .{f}) else m.tr(.no_limit));
+        // The ambient light of the room (REQ-DEMO-033). It changes only
+        // the room, so it shows only there. The format text gives the
+        // screen reader the new value after a key press (REQ-A11Y-009).
+        if (now == .indoor) try m.sliderRow(ids.room_light, m.tr(.room_light), &p.indoor_ambient, .{
+            .min = 0,
+            .max = prefs_mod.max_indoor_ambient,
+            .step = 0.01,
+            .format = ambientText,
+        }, try m.ui.print("{d:.0}%", .{p.indoor_ambient * 100}), m.tr(.room_light_tip));
         try m.back();
         m.endPanel();
     }
@@ -194,6 +219,16 @@ pub const PauseMenu = struct {
         try self.m.drawEnd(pass);
     }
 };
+
+/// The room light as text: a percent of full light, "4%".
+fn ambientText(v: f32, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "{d:.0}%", .{v * 100}) catch "";
+}
+
+/// The map after `now` in the Map button, or null with no Map button.
+fn nextMap(now: ?Map, forward: bool) ?Map {
+    return gm.cycle(Map, now orelse return null, forward);
+}
 
 /// Change the value of a cycle or toggle button. True when the ID is one.
 fn step(p: *Prefs, id: u32, forward: bool) bool {

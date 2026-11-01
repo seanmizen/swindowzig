@@ -22,6 +22,16 @@
 //
 // The scene reads no clock. The caller gives the time of each frame from
 // the tick count (REQ-DEMO-004).
+//
+// The `indoor` map (REQ-DEMO-030) is a closed room with no sun: no sun
+// light, no sun shadows, no fog, no snow and no clouds. Two point lights
+// with cube shadow maps light it (REQ-GPU-044). Light 1 hangs still at the
+// centre. Light 2 moves on a rail (REQ-DEMO-031). The lamps are box models
+// in `glow`: they glow, and they cast no shadow, so a lamp does not block
+// its own light. The player has no body in the world, and the gun in the
+// hands is not a caster. Thus nothing that moves casts into the cube map
+// of light 1: the lighting draws it one time and keeps it. The cube map of
+// light 2 is drawn again in each frame of a move only.
 const std = @import("std");
 const gpu_mod = @import("sw_gpu");
 const sw_math = @import("sw_math");
@@ -48,7 +58,58 @@ pub const Settings = struct {
     fog: bool = true,
     shadows: bool = true,
     exposure: f32 = 0.8,
+    /// The ambient light in the room of the `indoor` map (REQ-DEMO-030).
+    /// It is low, so the shadows of the two lamps are easy to see.
+    indoor_ambient: f32 = 0.04,
 };
+
+/// The two lamps of the room (REQ-DEMO-030). Light 1 is warm, light 2 is
+/// cool: where a crate blocks one lamp, the colour of the other shows.
+const chandelier_color = [3]f32{ 1.0, 0.62, 0.28 };
+const rail_color = [3]f32{ 0.32, 0.58, 1.0 };
+const lamp_intensity: f32 = 10;
+const lamp_radius: f32 = 16;
+/// The glow models have no direct light. This ambient level makes the
+/// bulbs glow.
+const glow_level: f32 = 3;
+
+const dark = [3]f32{ 0.05, 0.05, 0.055 };
+const bulb = [3]f32{ 1, 1, 1 };
+
+/// The rail of light 2 and its two hangers, in world space. It is lit and
+/// it casts shadows. It does not move.
+const rail_parts = [_]sw_render.BoxModelPart{.{ .boxes = &.{
+    .{ .min = .{ -arena.room.rail_x - 0.25, arena.room.rail_y, arena.room.rail_z - 0.04 }, .max = .{ arena.room.rail_x + 0.25, arena.room.rail_y + 0.07, arena.room.rail_z + 0.04 }, .color = .{ 0.3, 0.3, 0.32 } },
+    .{ .min = .{ -arena.room.rail_x - 0.17, arena.room.rail_y + 0.07, arena.room.rail_z - 0.02 }, .max = .{ -arena.room.rail_x - 0.13, arena.room.height, arena.room.rail_z + 0.02 }, .color = .{ 0.3, 0.3, 0.32 } },
+    .{ .min = .{ arena.room.rail_x + 0.13, arena.room.rail_y + 0.07, arena.room.rail_z - 0.02 }, .max = .{ arena.room.rail_x + 0.17, arena.room.height, arena.room.rail_z + 0.02 }, .color = .{ 0.3, 0.3, 0.32 } },
+} }};
+
+/// The lamp of light 2, about its point of light: a housing that hangs
+/// from the rail and a bulb.
+const rail_lamp_parts = [_]sw_render.BoxModelPart{.{ .boxes = &.{
+    .{ .min = .{ -0.12, 0.08, -0.1 }, .max = .{ 0.12, arena.room.rail_y - arena.room.lamp_y, 0.1 }, .color = dark },
+    .{ .min = .{ -0.08, -0.05, -0.07 }, .max = .{ 0.08, 0.08, 0.07 }, .color = bulb },
+} }};
+
+/// The plate of the button on the wall (REQ-DEMO-032), about the centre
+/// of the button at the face of the wall. +Z is out of the wall.
+const button_plate_parts = [_]sw_render.BoxModelPart{.{ .boxes = &.{
+    .{ .min = .{ -arena.room.button_half - 0.06, -arena.room.button_half - 0.06, 0 }, .max = .{ arena.room.button_half + 0.06, arena.room.button_half + 0.06, 0.02 }, .color = .{ 0.16, 0.16, 0.17 } },
+} }};
+
+/// The cap of the button. A hit moves it into the wall and out again.
+const button_cap_parts = [_]sw_render.BoxModelPart{.{ .boxes = &.{
+    .{ .min = .{ -arena.room.button_half, -arena.room.button_half, 0.02 }, .max = .{ arena.room.button_half, arena.room.button_half, arena.room.button_out }, .color = .{ 0.7, 0.08, 0.06 } },
+} }};
+
+/// The lamp of light 1, about its point of light: a plate on the ceiling,
+/// a rod, a shade and a bulb.
+const chandelier_parts = [_]sw_render.BoxModelPart{.{ .boxes = &.{
+    .{ .min = .{ -0.15, arena.room.height - arena.room.chandelier[1] - 0.04, -0.15 }, .max = .{ 0.15, arena.room.height - arena.room.chandelier[1], 0.15 }, .color = dark },
+    .{ .min = .{ -0.015, 0.16, -0.015 }, .max = .{ 0.015, arena.room.height - arena.room.chandelier[1] - 0.04, 0.015 }, .color = dark },
+    .{ .min = .{ -0.22, 0.08, -0.22 }, .max = .{ 0.22, 0.16, 0.22 }, .color = .{ 0.12, 0.1, 0.08 } },
+    .{ .min = .{ -0.07, -0.06, -0.07 }, .max = .{ 0.07, 0.08, 0.07 }, .color = bulb },
+} }};
 
 pub const Options = struct {
     shadow_map_size: u32 = 2048,
@@ -152,6 +213,13 @@ pub const Stats = struct {
 };
 
 const shape_size = 64;
+const map_count = std.enums.values(arena.Map).len;
+
+/// The vertex buffer of the static triangles of one map.
+const World = struct {
+    buffer: gpu_mod.Buffer,
+    count: u32,
+};
 
 const State = struct {
     allocator: std.mem.Allocator,
@@ -165,6 +233,22 @@ const State = struct {
     snow: sw_render.Precipitation,
     models: sw_render.BoxModels,
     bot_model: sw_render.BoxModelId,
+    /// The rail of light 2: in `models`, so it is lit and casts shadows.
+    rail_model: sw_render.BoxModelId,
+    /// The lamps: no lighting and no shadow cast (REQ-DEMO-030).
+    glow: sw_render.BoxModels,
+    rail_lamp_model: sw_render.BoxModelId,
+    chandelier_model: sw_render.BoxModelId,
+    /// The button of the room: lit, but no shadow cast, so its move does
+    /// not make the lighting draw the cube map of light 1 again
+    /// (REQ-DEMO-032).
+    fixtures: sw_render.BoxModels,
+    button_plate_model: sw_render.BoxModelId,
+    button_cap_model: sw_render.BoxModelId,
+    /// The map of the world buffer.
+    map: arena.Map,
+    /// The static triangles of each map, made at the first use.
+    worlds: [map_count]?World = @splat(null),
     particles: sw_render.Particles,
     soft: gpu_mod.Texture,
     soft_view: gpu_mod.TextureView,
@@ -215,6 +299,29 @@ const State = struct {
         try self.drawRange(pass, self.world_buffer, 0, self.world_count, self.frame_view_proj);
         try self.drawRange(pass, self.dyn_buffer, 0, self.dyn_world, self.frame_view_proj);
         try self.models.draw(pass, .world, .{});
+        try self.fixtures.draw(pass, .world, .{});
+        try self.glow.draw(pass, .world, .{ .fog = false });
+    }
+
+    /// Make the world buffer of the map of the last `arena.build`, or use
+    /// the buffer of an earlier frame. No buffer is destroyed while the
+    /// game runs.
+    fn useWorld(self: *State) !void {
+        const i = @backingInt(arena.map);
+        if (self.worlds[i] == null) {
+            const gpu = self.graph.gpu;
+            var world = mesh_mod.Mesh.init(self.allocator);
+            defer world.verts.deinit(self.allocator);
+            buildWorld(&world);
+            const wbytes = std.mem.sliceAsBytes(world.verts.items);
+            const buffer = try gpu.createBuffer(.{ .label = "shooter_world", .size = wbytes.len, .usage = .{ .vertex = true, .copy_dst = true } });
+            gpu.writeBuffer(buffer, 0, wbytes);
+            self.worlds[i] = .{ .buffer = buffer, .count = @intCast(world.verts.items.len) };
+        }
+        const w = self.worlds[i].?;
+        self.world_buffer = w.buffer;
+        self.world_count = w.count;
+        self.map = arena.map;
     }
 
     fn runView(self: *State, pass: *Pass) anyerror!void {
@@ -235,6 +342,15 @@ const State = struct {
 
     /// The light colours from the sky state.
     fn updateLight(self: *State) void {
+        self.glow.setLight(.{ .color = .{ 0, 0, 0 }, .ambient = @splat(glow_level) });
+        if (self.map == .indoor) {
+            // The room: no sun and no sky light (REQ-DEMO-030).
+            self.light = @splat(0);
+            self.ambient = @splat(self.current.indoor_ambient);
+            self.models.setLight(.{ .color = self.light, .ambient = self.ambient });
+            self.fixtures.setLight(.{ .color = self.light, .ambient = self.ambient });
+            return;
+        }
         const s = self.sky.state();
         const day = s.daylight;
         const tw = s.twilight;
@@ -283,16 +399,20 @@ fn valueNoise(x: f32, y: f32, period: i32) f32 {
     return (a * (1 - sx) + b * sx) * (1 - sy) + (c * (1 - sx) + d * sx) * sy;
 }
 
-/// The static triangles of the arena: each box, with a snow cap on top.
+/// The static triangles of the map: each box. In the arena each box has a
+/// snow cap on top.
 fn buildWorld(out: *mesh_mod.Mesh) void {
     for (arena.boxes[0..arena.box_count]) |b| {
+        // A box model draws the button (REQ-DEMO-032).
+        if (b.kind == .button) continue;
         out.box(b.min, b.max, b.color, 0);
-        if (b.kind != .ground) {
+        if (b.kind != .ground and arena.snowy) {
             // The snow cap: a little larger than the top, and not solid.
             const lip: f32 = if (b.kind == .wall) 0 else 0.03;
             out.box(v3(b.min[0] - lip, b.max[1], b.min[2] - lip), v3(b.max[0] + lip, b.max[1] + 0.06, b.max[2] + lip), arena.snow_color, 0);
         }
     }
+    if (!arena.snowy) return;
     // Drifts of snow along the foot of the outer wall.
     const h = arena.half;
     for ([_][2]V3{
@@ -363,19 +483,23 @@ pub const Scene = struct {
             .multisample = .{ .count = 1 },
         });
 
-        // The static arena.
-        var world = mesh_mod.Mesh.init(allocator);
-        defer world.verts.deinit(allocator);
-        buildWorld(&world);
-        const wbytes = std.mem.sliceAsBytes(world.verts.items);
-        const world_buffer = try gpu.createBuffer(.{ .label = "shooter_world", .size = wbytes.len, .usage = .{ .vertex = true, .copy_dst = true } });
-        gpu.writeBuffer(world_buffer, 0, wbytes);
         const dyn_buffer = try gpu.createBuffer(.{ .label = "shooter_dynamic", .size = max_dyn_vertices * @sizeOf(mesh_mod.Vertex), .usage = .{ .vertex = true, .copy_dst = true } });
 
-        // The bots.
+        // The bots, and the rail of the room.
         var models = try sw_render.BoxModels.init(allocator, graph, .{ .color_format = post.hdr_format, .lighting = lighting });
         errdefer models.deinit();
         const bot_model = try models.addModel(.{ .parts = &body_model.parts });
+        const rail_model = try models.addModel(.{ .parts = &rail_parts });
+        // The lamps of the room: no lighting, no shadow cast.
+        var glow = try sw_render.BoxModels.init(allocator, graph, .{ .color_format = post.hdr_format, .max_records = 64, .cast_shadows = false });
+        errdefer glow.deinit();
+        const rail_lamp_model = try glow.addModel(.{ .parts = &rail_lamp_parts });
+        const chandelier_model = try glow.addModel(.{ .parts = &chandelier_parts });
+        // The button of the room: lit, no shadow cast.
+        var fixtures = try sw_render.BoxModels.init(allocator, graph, .{ .color_format = post.hdr_format, .max_records = 64, .lighting = lighting, .cast_shadows = false });
+        errdefer fixtures.deinit();
+        const button_plate_model = try fixtures.addModel(.{ .parts = &button_plate_parts });
+        const button_cap_model = try fixtures.addModel(.{ .parts = &button_cap_parts });
 
         // A soft round sprite for the particles.
         const soft_size = 32;
@@ -411,6 +535,14 @@ pub const Scene = struct {
             .snow = undefined,
             .models = models,
             .bot_model = bot_model,
+            .rail_model = rail_model,
+            .glow = glow,
+            .rail_lamp_model = rail_lamp_model,
+            .chandelier_model = chandelier_model,
+            .fixtures = fixtures,
+            .button_plate_model = button_plate_model,
+            .button_cap_model = button_cap_model,
+            .map = arena.map,
             .particles = undefined,
             .soft = soft,
             .soft_view = soft_view,
@@ -418,11 +550,13 @@ pub const Scene = struct {
             .draw_group = draw_group,
             .lit = lit,
             .shadow = shadow,
-            .world_buffer = world_buffer,
-            .world_count = @intCast(world.verts.items.len),
+            .world_buffer = undefined,
+            .world_count = 0,
             .dyn_buffer = dyn_buffer,
             .dyn = mesh_mod.Mesh.init(allocator),
         };
+        // The static triangles of the map of the last `arena.build`.
+        try s.useWorld();
         try s.dyn.verts.ensureTotalCapacity(allocator, max_dyn_vertices);
         s.particles = try sw_render.Particles.init(allocator, graph, .{ .color_format = post.hdr_format, .capacity = particle_capacity, .texture = &s.soft_view });
         try s.particles.addPass(.{ .color = post.hdr, .depth = depth });
@@ -482,8 +616,10 @@ pub const Scene = struct {
         s.particles.deinit();
         s.soft_view.release();
         s.soft.destroy();
+        s.glow.deinit();
+        s.fixtures.deinit();
         s.models.deinit();
-        s.world_buffer.destroy();
+        for (s.worlds) |w| if (w) |x| x.buffer.destroy();
         s.dyn_buffer.destroy();
         s.dyn.verts.deinit(s.allocator);
         s.draw_group.release();
@@ -500,12 +636,34 @@ pub const Scene = struct {
     pub fn apply(self: *Scene, new: Settings) !void {
         const s = self.state;
         s.current = new;
+        // The room has no sun, no sky, no snow and no clouds
+        // (REQ-DEMO-030). The shadows setting turns the shadows of its
+        // lamps on and off.
+        const outdoor = s.map != .indoor;
         s.sky.setTime(new.time);
-        s.sky.fog = if (new.fog) fog else null;
-        s.lighting.setShadowsEnabled(new.shadows);
-        s.clouds.setEnabled(new.clouds);
-        s.snow.setEnabled(new.snow);
+        s.sky.fog = if (new.fog and outdoor) fog else null;
+        s.lighting.setShadowsEnabled(new.shadows and outdoor);
+        s.lighting.setPointShadowsEnabled(new.shadows);
+        s.clouds.setEnabled(new.clouds and outdoor);
+        s.snow.setEnabled(new.snow and outdoor);
         s.post.setTonemap(.{ .curve = .aces, .exposure = new.exposure });
+    }
+
+    /// Show the map of the last `arena.build` (REQ-DEMO-030), with no
+    /// restart. The first change to a map makes its vertex buffer.
+    pub fn setMap(self: *Scene) !void {
+        const s = self.state;
+        try s.useWorld();
+        try s.snow.setHeightMap(.{
+            .origin = .{ arena.map_origin, arena.map_origin },
+            .cell_size = arena.map_cell,
+            .width = arena.map_cells,
+            .depth = arena.map_cells,
+            .heights = &arena.heights,
+        });
+        // The casters changed: draw each cube map again.
+        s.lighting.invalidatePointShadows();
+        try self.apply(s.current);
     }
 
     /// Change the shadow map size and the cascade count while the game
@@ -519,6 +677,8 @@ pub const Scene = struct {
     /// The colour of the light on the dust of the particles.
     pub fn dustLight(self: *const Scene) V3 {
         const s = self.state;
+        // The room: about the light of the lamps at the middle of the room.
+        if (s.map == .indoor) return v3(0.5, 0.45, 0.4);
         return v3(
             std.math.clamp(s.ambient[0] * 1.6 + s.light[0] * 0.35, 0, 1.4),
             std.math.clamp(s.ambient[1] * 1.6 + s.light[1] * 0.35, 0, 1.4),
@@ -557,10 +717,34 @@ pub const Scene = struct {
 
         // The bots and their guns.
         s.models.clear();
+        s.glow.clear();
+        s.fixtures.clear();
         s.dyn.clear();
-        var lights: [game_mod.max_bots + 1]sw_render.PointLight = undefined;
+        // The two lamps of the room, the muzzle flash of each bot and of
+        // the gun in the hands.
+        var lights: [2 + game_mod.max_bots + 1]sw_render.PointLight = undefined;
         var light_n: usize = 0;
         var bots: u32 = 0;
+        if (s.map == .indoor) {
+            // The lamps get the cube maps in list order: keep light 1
+            // first and light 2 second in each frame (REQ-GPU-044). Light
+            // 1 does not move and no caster near it moves, so its cube map
+            // is drawn one time. A move of light 2 draws its cube map
+            // again (REQ-DEMO-031).
+            const c = arena.room.chandelier;
+            const r = arena.room.railPoint(g.rail.pos);
+            lights[0] = .{ .position = .{ c[0], c[1], c[2] }, .color = chandelier_color, .intensity = lamp_intensity, .radius = lamp_radius, .shadow = true };
+            lights[1] = .{ .position = .{ r[0], r[1], r[2] }, .color = rail_color, .intensity = lamp_intensity, .radius = lamp_radius, .shadow = true };
+            light_n = 2;
+            try s.models.add(.world, s.rail_model, .{});
+            try s.glow.add(.world, s.chandelier_model, .{ .transform = Mat4.translation(c[0], c[1], c[2]), .tint = chandelier_color });
+            try s.glow.add(.world, s.rail_lamp_model, .{ .transform = Mat4.translation(r[0], r[1], r[2]), .tint = rail_color });
+            // The button on the north wall: the cap goes into the wall
+            // when a shot hits it (REQ-DEMO-032).
+            const b = arena.room.button;
+            try s.fixtures.add(.world, s.button_plate_model, .{ .transform = Mat4.translation(b[0], b[1], b[2]) });
+            try s.fixtures.add(.world, s.button_cap_model, .{ .transform = Mat4.translation(b[0], b[1], b[2] - g.buttonDepth()) });
+        }
         for (g.bots[0..g.bot_n], 0..) |*b, i| {
             const sk = b.skeleton();
             s.posed[i] = body_model.pose(sk);

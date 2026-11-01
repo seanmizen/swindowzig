@@ -4,7 +4,7 @@
 //! The graphics: the preset, the shadows, the shadow quality (the map size
 //! and the cascade count), the anti-aliasing (FXAA), vsync and the frame
 //! limit. The mouse: the sensitivity and invert Y. The volume of the game
-//! and of the shots.
+//! and of the shots. The ambient light of the indoor room.
 //!
 //! The text has one setting on each line: `<name> <value>`. A line that
 //! the demo cannot read keeps the value before it, so an old or a damaged
@@ -17,6 +17,8 @@ const FxaaQuality = @import("sw_gpu").FxaaQuality;
 pub const key = "shooter-settings";
 
 pub const Preset = enum { low, medium, high, custom };
+/// The top of the ambient light slider of the room (REQ-DEMO-033).
+pub const max_indoor_ambient: f32 = 0.3;
 pub const ShadowQuality = enum { low, medium, high, ultra };
 pub const AntiAliasing = enum { off, fxaa_low, fxaa_medium, fxaa_high };
 pub const FrameLimit = enum { none, fps30, fps60, fps120, fps144 };
@@ -32,6 +34,9 @@ pub const Prefs = struct {
     invert_y: bool = false,
     volume: f32 = 1.0,
     shots: f32 = 1.0,
+    /// The ambient light of the indoor room (REQ-DEMO-033). The default
+    /// is the default of `scene.Settings.indoor_ambient`.
+    indoor_ambient: f32 = 0.04,
 
     /// The settings that the scene has after `Scene.init` with the
     /// graphics settings `g` of a `--preset`, and the shadows on.
@@ -147,6 +152,7 @@ pub const Prefs = struct {
         self.sensitivity = std.math.clamp(self.sensitivity, 0.1, 3);
         self.volume = std.math.clamp(self.volume, 0, 1);
         self.shots = std.math.clamp(self.shots, 0, 1);
+        self.indoor_ambient = std.math.clamp(self.indoor_ambient, 0, max_indoor_ambient);
     }
 };
 
@@ -182,6 +188,7 @@ test "prefs: the text form gives the same settings back (REQ-DEMO-028)" {
     p.sensitivity = 1.7;
     p.invert_y = true;
     p.volume = 0.35;
+    p.indoor_ambient = 0.12;
     p.preset = p.matchingPreset();
     var buf: [512]u8 = undefined;
     const text = try p.encode(&buf);
@@ -193,7 +200,9 @@ test "prefs: the text form gives the same settings back (REQ-DEMO-028)" {
 
 test "prefs: a bad line keeps the value before it (REQ-DEMO-028)" {
     var q: Prefs = .{};
-    q.decode("shadows maybe\nvolume nan\nshadow_quality huge\nnot_a_setting 3\nsensitivity 99\n\ninvert_y on");
+    q.decode("shadows maybe\nvolume nan\nshadow_quality huge\nnot_a_setting 3\nsensitivity 99\n\ninvert_y on\nindoor_ambient 5");
+    // A value out of the range of the slider goes to its end (REQ-DEMO-033).
+    try std.testing.expectEqual(max_indoor_ambient, q.indoor_ambient);
     try std.testing.expect(q.shadows);
     try std.testing.expectEqual(@as(f32, 1.0), q.volume);
     try std.testing.expectEqual(ShadowQuality.medium, q.shadow_quality);

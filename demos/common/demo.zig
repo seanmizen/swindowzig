@@ -27,8 +27,17 @@
 //!     pub fn deinit(host: *demo.Host) void {}
 //!     // Optional: the demo takes input (a menu). See `Host.input`.
 //!     pub const interactive = true;
+//!     // Optional: more than one map (REQ-DEMO-029). See `Map`.
+//!     pub const maps = [_]demo.Map{ .{ .name = "arena", .script = script }, ... };
 //! };
 //! ```
+//!
+//! A demo with `maps` starts on the map of `--map` (default: the first).
+//! `host.map` is its index. Each map has its own script and its own hash
+//! files: `demos/<name>/hashes/lavapipe-<preset>.txt` for the first map,
+//! `demos/<name>/hashes/<map>-lavapipe-<preset>.txt` for the others.
+//! `--list-maps` writes the names, so `scripts/demos-check.sh` checks each
+//! map.
 //!
 //! The input commands of the script (`key`, `text`, `pad`, `axis`, `mouse`,
 //! `wheel`) go to `host.script_input` (REQ-DEMO-008). `host.input()` gives
@@ -111,6 +120,15 @@ pub fn presetGraphics(p: Preset) sw_render.GraphicsSettings {
     });
 }
 
+/// One map of a demo with more than one map (REQ-DEMO-029). The first map
+/// of `App.maps` is the default. Its script must be `App.script`.
+pub const Map = struct {
+    /// The name for `--map`, and the prefix of its hash files.
+    name: []const u8,
+    /// The script of the map.
+    script: []const u8,
+};
+
 /// What a demo gets from the host.
 pub const Host = struct {
     allocator: std.mem.Allocator,
@@ -137,6 +155,9 @@ pub const Host = struct {
     /// browser draws one frame for each display refresh. A capture or
     /// check run does not wait.
     frame_limiter: sw_render.FrameLimiter = .{},
+    /// The index of the start map in `App.maps` (REQ-DEMO-029). 0 for a
+    /// demo with no maps.
+    map: usize = 0,
 
     /// The input of this tick: the script input, or the input of the
     /// player after the player took control.
@@ -174,6 +195,47 @@ pub fn Demo(comptime App: type) type {
         var frame_times: sw_render.FrameTimes = .{};
         var last_frame_ns: ?u64 = null;
         var line_bufs: [overlay.max_stat_lines][128]u8 = undefined;
+        /// The maps of the demo (REQ-DEMO-029), and the index of the start map.
+        /// A demo with no `maps` has one map: its own script.
+        const has_maps = @hasDecl(App, "maps");
+        const app_maps: []const Map = if (has_maps) &App.maps else &.{.{ .name = App.name, .script = App.script }};
+        var map_index: usize = 0;
+
+        comptime {
+            if (app_maps[0].script.ptr != App.script.ptr)
+                @compileError(App.name ++ ": the first map must play App.script");
+        }
+
+        /// The name of the start map in the file names, or null for the
+        /// first map: its files keep the names of a demo with one map.
+        fn mapPrefix() ?[]const u8 {
+            if (map_index == 0) return null;
+            return app_maps[map_index].name;
+        }
+
+        /// Find the map of `--map`, and play its script. False: no map has
+        /// that name.
+        fn selectMap(name: []const u8) bool {
+            if (!has_maps) return false;
+            for (app_maps, 0..) |m, i| {
+                if (std.mem.eql(u8, m.name, name)) {
+                    map_index = i;
+                    source = m.script;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// Write the names of the maps to stdout, one on each line. A demo
+        /// with no `maps` writes nothing.
+        fn listMaps(io: std.Io) !void {
+            if (!has_maps) return;
+            var buf: [256]u8 = undefined;
+            var out = std.Io.File.stdout().writer(io, &buf);
+            for (app_maps) |m| try out.interface.print("{s}\n", .{m.name});
+            try out.interface.flush();
+        }
 
         pub const main = if (is_wasm) mainWasm else mainNative;
 
@@ -193,6 +255,16 @@ pub fn Demo(comptime App: type) type {
                 std.log.err("{s}: bad command line ({s})\n{s}", .{ App.name, @errorName(err), cli.usage });
                 std.process.exit(2);
             };
+            if (options.list_maps) {
+                try listMaps(init.io);
+                return;
+            }
+            if (options.map) |name| {
+                if (!selectMap(name)) {
+                    std.log.err("{s}: no map named {s}. Run with --list-maps for the names.", .{ App.name, name });
+                    std.process.exit(2);
+                }
+            }
             var c = config;
             c.io = init.io;
             const size = presetSize(options.preset);
@@ -240,6 +312,7 @@ pub fn Demo(comptime App: type) type {
                     .graph = try sw_render.FrameGraph.init(allocator, gpu, .{}),
                     .post = undefined,
                     .overlay = undefined,
+                    .map = map_index,
                 };
                 host.post = try sw_render.PostChain.init(allocator, &host.graph, .{});
                 host.overlay = try Overlay.init(allocator, gpu);
@@ -417,6 +490,7 @@ pub fn Demo(comptime App: type) type {
 
         fn hashPath(buf: []u8) []const u8 {
             if (options.hashes_path) |p| return p;
+            if (mapPrefix()) |m| return std.fmt.bufPrint(buf, "demos/{s}/hashes/{s}-lavapipe-{s}.txt", .{ App.name, m, @tagName(options.preset) }) catch unreachable;
             return std.fmt.bufPrint(buf, "demos/{s}/hashes/lavapipe-{s}.txt", .{ App.name, @tagName(options.preset) }) catch unreachable;
         }
 
@@ -439,7 +513,11 @@ pub fn Demo(comptime App: type) type {
             const path = hashPath(&path_buf);
             var out_buf: [16 * 1024]u8 = undefined;
             var w: std.Io.Writer = .fixed(&out_buf);
-            try w.print("# {s}: frame hashes at the checkpoints of the script, preset {s}, lavapipe (REQ-DEMO-003)\n", .{ App.name, @tagName(options.preset) });
+            if (mapPrefix()) |m| {
+                try w.print("# {s}, map {s}: frame hashes at the checkpoints of the script, preset {s}, lavapipe (REQ-DEMO-003, REQ-DEMO-029)\n", .{ App.name, m, @tagName(options.preset) });
+            } else {
+                try w.print("# {s}: frame hashes at the checkpoints of the script, preset {s}, lavapipe (REQ-DEMO-003)\n", .{ App.name, @tagName(options.preset) });
+            }
             try hashes.format(records.items, &w);
             const text = w.buffered();
             if (options.update) {
@@ -468,7 +546,11 @@ pub fn Demo(comptime App: type) type {
             }
             // Keep the new hashes, so a deliberate change is easy to accept.
             var got_buf: [256]u8 = undefined;
-            const got_path = try std.fmt.bufPrint(&got_buf, "zig-out/demo-hashes/{s}-lavapipe-{s}.txt", .{ App.name, @tagName(options.preset) });
+            // The name is `<demo>-` and the name of the committed file.
+            const got_path = if (mapPrefix()) |m|
+                try std.fmt.bufPrint(&got_buf, "zig-out/demo-hashes/{s}-{s}-lavapipe-{s}.txt", .{ App.name, m, @tagName(options.preset) })
+            else
+                try std.fmt.bufPrint(&got_buf, "zig-out/demo-hashes/{s}-lavapipe-{s}.txt", .{ App.name, @tagName(options.preset) });
             try std.Io.Dir.cwd().createDirPath(io, "zig-out/demo-hashes");
             const f = try std.Io.Dir.cwd().createFile(io, got_path, .{ .truncate = true });
             defer f.close(io);
