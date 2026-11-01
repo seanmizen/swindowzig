@@ -510,27 +510,23 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
-        run: zig build native -Dexample=voxel --summary all
+        run: |
+          touch "$RUNNER_TEMP/marker"
+          sleep 1
+          zig build native -Dexample=voxel --summary all
+          echo "--- files written outside the workspace"
+          sudo find / -xdev \( -path /proc -o -path /sys -o -path "$GITHUB_WORKSPACE" -o -path /home/runner/runners -o -path /home/runner/work/_temp/_runner_file_commands \) -prune -o -type f -newer "$RUNNER_TEMP/marker" -print 2>/dev/null | head -50
+          echo "--- ~/.cache"
+          ls -la ~/.cache ~/.cache/zig 2>&1 | head -20
 
       - name: TEMP cache experiment
         run: |
           b() { /usr/bin/time -f "took %e s" zig build native -Dexample=voxel --summary all 2>&1 | grep -E "compile exe|translate-c|took"; }
           echo "--- again"
           b
-          echo "--- the Zig cache through tar (like actions/cache)"
-          tar -cf "$RUNNER_TEMP/zc.tar" .zig-cache
-          rm -rf .zig-cache
-          tar -xf "$RUNNER_TEMP/zc.tar"
-          b
-          echo "--- touch of each tracked file"
-          git ls-files -z | xargs -0 touch
-          b
-          echo "--- a new inode for each tracked file"
-          git ls-files -z | while IFS= read -r -d '' f; do cp -p "$f" "$f.tmp"; mv "$f.tmp" "$f"; done
-          b
-          echo "--- SDL2 headers and libraries touched"
-          sudo find /usr/lib/x86_64-linux-gnu -maxdepth 1 -name '*SDL2*' -exec touch {} +
-          sudo find /usr/include/SDL2 -type f -exec touch {} +
+          echo "--- ~/.cache and /tmp removed"
+          rm -rf ~/.cache/zig
+          sudo find /tmp -mindepth 1 -maxdepth 1 -newer "$RUNNER_TEMP/marker" -exec rm -rf {} + || true
           b
 
       - name: Compare with the goldens
