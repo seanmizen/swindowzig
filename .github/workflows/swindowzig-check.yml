@@ -21,6 +21,8 @@ name: Check (swindowzig)
 # job. The comment in that action says why the path and the CPU change the
 # cache. The jobs that build the same programs share a cache group:
 # unit-tests, web, examples and voxel (headless, cull and goldens). The
+# voxel jobs also keep the voxel binary in a cache with a key of its
+# inputs (.github/actions/voxel-native-build). The
 # apt packages come from a cache of the .deb files (cache-apt-pkgs-action).
 # The Playwright browser comes from a cache with the Playwright version of
 # yarn.lock in its key.
@@ -38,6 +40,11 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # The same version as the bindings in libs/sw_gpu/src/native_webgpu.zig.
+  # The key of the voxel binary cache holds it too.
+  WGPU_NATIVE_VERSION: v22.1.0.5
 
 jobs:
   zig:
@@ -289,10 +296,9 @@ jobs:
           part: ${{ matrix.example }}
 
       - name: Install wgpu-native
-        # The same version as the bindings in libs/sw_gpu/src/native_webgpu.zig.
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
-            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+            https://github.com/gfx-rs/wgpu-native/releases/download/$WGPU_NATIVE_VERSION/wgpu-linux-x86_64-release.zip
           mkdir -p ~/.local
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
@@ -348,17 +354,12 @@ jobs:
       - name: Install wgpu-native
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
-            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+            https://github.com/gfx-rs/wgpu-native/releases/download/$WGPU_NATIVE_VERSION/wgpu-linux-x86_64-release.zip
           mkdir -p ~/.local
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
-      - name: Native build
-        run: |
-          echo "--- voxel files in the restored cache"
-          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
-          zig build native -Dexample=voxel --summary all
-          echo "--- voxel files after the build"
-          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
+      - name: Native build (or the binary of the same inputs)
+        uses: ./.github/actions/voxel-native-build
 
       - name: Each voxel TAS script runs headless
         # A TAS script that does not parse stops voxel with an error. Each
@@ -453,18 +454,14 @@ jobs:
         if: env.RUN_TEST == 'true'
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
-            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+            https://github.com/gfx-rs/wgpu-native/releases/download/$WGPU_NATIVE_VERSION/wgpu-linux-x86_64-release.zip
           mkdir -p ~/.local
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
-      - name: Native build
+      - name: Native build (or the binary of the same inputs)
+        id: voxel
         if: env.RUN_TEST == 'true'
-        run: |
-          echo "--- voxel files in the restored cache"
-          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
-          zig build native -Dexample=voxel --summary all
-          echo "--- voxel files after the build"
-          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
+        uses: ./.github/actions/voxel-native-build
 
       - name: Cave cull, section cull and occlusion cull (${{ matrix.test }})
         # Each cull must give the same frame as the frustum cull only
@@ -481,7 +478,8 @@ jobs:
         run: ./examples/voxel/tests/chunk_border.sh
 
       - name: Save the Zig cache
-        if: ${{ !cancelled() && env.RUN_TEST == 'true' }}
+        # With the binary from the cache, no build changed the Zig cache.
+        if: ${{ !cancelled() && env.RUN_TEST == 'true' && steps.voxel.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/save-zig-cache
 
   goldens:
@@ -515,31 +513,13 @@ jobs:
       - name: Install wgpu-native
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
-            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+            https://github.com/gfx-rs/wgpu-native/releases/download/$WGPU_NATIVE_VERSION/wgpu-linux-x86_64-release.zip
           mkdir -p ~/.local
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
-      - name: Native build
-        run: |
-          echo "--- voxel files in the restored cache"
-          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
-          zig build native -Dexample=voxel --summary all
-          echo "--- voxel files after the build"
-          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
-
-      - name: TEMP environment experiment
-        run: |
-          b() { /usr/bin/time -f "took %e s" zig build native -Dexample=voxel --summary all 2>&1 | grep -E "compile exe|translate-c|options|took"; }
-          echo "--- again"
-          b
-          echo "--- with FOO=1"
-          FOO=1 b
-          echo "--- with a new GITHUB_RUN_ID"
-          GITHUB_RUN_ID=1 b
-          echo "--- with a new RUNNER_NAME and GITHUB_JOB"
-          RUNNER_NAME=x GITHUB_JOB=y b
-          echo "--- again with the job environment"
-          b
+      - name: Native build (or the binary of the same inputs)
+        id: voxel
+        uses: ./.github/actions/voxel-native-build
 
       - name: Compare with the goldens
         # The step takes about 1.5 minutes. The script stops a run after
@@ -583,9 +563,6 @@ jobs:
           echo "If not, the frames and logs are in the voxel-frames artifact."
 
       - name: Save the Zig cache
-        if: ${{ !cancelled() }}
+        # With the binary from the cache, no build changed the Zig cache.
+        if: ${{ !cancelled() && steps.voxel.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/save-zig-cache
-
-      - name: TEMP voxel files in the cache at the end
-        if: ${{ !cancelled() }}
-        run: find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
