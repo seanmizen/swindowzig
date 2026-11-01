@@ -356,17 +356,24 @@ jobs:
 
       - name: TEMP cache experiment
         run: |
+          b() { /usr/bin/time -f "took %e s" zig build native -Dexample=voxel --summary all 2>&1 | grep -E "compile exe|translate-c|took"; }
           echo "--- again, no change"
-          zig build native -Dexample=voxel --summary all
-          echo "--- after touch of each .zig file"
-          git ls-files '*.zig' | xargs touch
-          time zig build native -Dexample=voxel --summary all
-          echo "--- after touch of each .c and .h file"
-          git ls-files '*.c' '*.h' | xargs touch
-          time zig build native -Dexample=voxel --summary all
-          echo "--- after a new inode for each .zig file"
-          for f in $(git ls-files '*.zig'); do cp -p "$f" "$f.tmp"; mv "$f.tmp" "$f"; done
-          time zig build native -Dexample=voxel --summary all
+          b
+          echo "--- Zig at a new path"
+          zdir=$(dirname "$(command -v zig)")
+          cp -a "$zdir" "$RUNNER_TEMP/zig-copy"
+          PATH="$RUNNER_TEMP/zig-copy:$PATH" b
+          echo "--- wgpu-native unzipped again"
+          unzip -o -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
+          b
+          echo "--- the Zig cache with new inodes"
+          cp -a .zig-cache ../zc2
+          rm -rf .zig-cache
+          mv ../zc2 .zig-cache
+          b
+          echo "--- each tracked file with a new inode and mtime"
+          for f in $(git ls-files); do cp "$f" "$f.tmp"; mv "$f.tmp" "$f"; done
+          b
 
       - name: Each voxel TAS script runs headless
         # A TAS script that does not parse stops voxel with an error. Each
