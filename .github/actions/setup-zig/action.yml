@@ -18,8 +18,9 @@ description: >
 #    the translate-c tool and each native artifact are thus compiled for the
 #    CPU of the runner, and the CPU is part of their cache hash. GitHub gives
 #    runners with different CPUs (Zig finds znver3, znver4, znver5,
-#    emeraldrapids and graniterapids). A cache entry of another CPU has none
-#    of these artifacts, and the voxel build takes 125 s to 210 s.
+#    icelake_server, emeraldrapids and graniterapids). A cache entry of
+#    another CPU has none of these artifacts, and the voxel build takes
+#    125 s to 210 s.
 #
 # The key uses the native target that Zig finds (zig targets): the CPU
 # name, and a hash of the triple, the CPU name and the CPU features. Thus
