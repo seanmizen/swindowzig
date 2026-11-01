@@ -18,7 +18,8 @@ name: Check (swindowzig)
 # Caches: .github/actions/setup-zig installs Zig at a fixed path and
 # restores the Zig cache of the same native target (the CPU that Zig
 # finds). .github/actions/save-zig-cache saves the cache at the end of the
-# job. That action says why the path and the CPU change the cache. The jobs that build the same programs share a cache group:
+# job. The comment in that action says why the path and the CPU change the
+# cache. The jobs that build the same programs share a cache group:
 # unit-tests, web, examples and voxel (headless, cull and goldens). The
 # apt packages come from a cache of the .deb files (cache-apt-pkgs-action).
 # The Playwright browser comes from a cache with the Playwright version of
