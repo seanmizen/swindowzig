@@ -19,9 +19,10 @@ name: Check (swindowzig)
 # model, and .github/actions/save-zig-cache saves it at the end of the job.
 # Zig compiles for the native CPU, so the cache of another CPU model does
 # not help. The jobs that build the same programs share a cache group:
-# unit-tests, web, examples and voxel. The apt packages come from
-# a cache of the .deb files (cache-apt-pkgs-action). The Playwright browser
-# comes from a cache with the Playwright version of yarn.lock in its key.
+# unit-tests, web, examples and voxel (headless, cull and goldens). The
+# apt packages come from a cache of the .deb files (cache-apt-pkgs-action).
+# The Playwright browser comes from a cache with the Playwright version of
+# yarn.lock in its key.
 #
 # A failed comparison is either a regression or a deliberate visual change.
 # For a deliberate change, the goldens job uploads new goldens and prints
