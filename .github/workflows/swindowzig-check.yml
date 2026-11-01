@@ -353,7 +353,12 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
-        run: zig build native -Dexample=voxel --summary all
+        run: |
+          echo "--- voxel files in the restored cache"
+          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
+          zig build native -Dexample=voxel --summary all
+          echo "--- voxel files after the build"
+          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
 
       - name: Each voxel TAS script runs headless
         # A TAS script that does not parse stops voxel with an error. Each
@@ -454,7 +459,12 @@ jobs:
 
       - name: Native build
         if: env.RUN_TEST == 'true'
-        run: zig build native -Dexample=voxel --summary all
+        run: |
+          echo "--- voxel files in the restored cache"
+          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
+          zig build native -Dexample=voxel --summary all
+          echo "--- voxel files after the build"
+          find .zig-cache/o -maxdepth 2 -name 'voxel*' -exec ls -la {} + || true
 
       - name: Cave cull, section cull and occlusion cull (${{ matrix.test }})
         # Each cull must give the same frame as the frustum cull only
