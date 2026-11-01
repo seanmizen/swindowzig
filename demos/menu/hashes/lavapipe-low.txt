@@ -1,10 +1,10 @@
 # menu: frame hashes at the checkpoints of the script, preset low, lavapipe (REQ-DEMO-003)
-main_tooltip b8fab96bd28bb760
+main_tooltip 7759a7607fa5db6a
 preset_low 3545d7ad9a109c2a
-preset_high 5114ae413089a1e9
-coat 402227cde9058fd4
-exposure 50a60553749264a8
-sunset 4f29b5112b8ed5b3
+preset_high fd627a2e3cc0bff2
+coat c8bfdc724e6f4b8e
+exposure f718bc60f94cf525
+sunset 3e6815fc517a5fa6
 shadows_off e01300869deee537
 sky_off 10e9f2458e9e8f7d
 wireframe bb9604e30db1fbc3

@@ -14,7 +14,8 @@
 //! A scene shader puts `include(group)` after the shared prefix and calls:
 //!
 //! - `sw_shadow(world_pos, normal)`: 1 in light, 0 in full shadow. It
-//!   samples the depth map of the cascade with a 3 x 3 PCF filter.
+//!   samples the depth map of the cascade with a PCF filter of 16 taps on
+//!   a disk. Before a split, it blends the two cascades (REQ-GPU-042).
 //! - `sw_point_lights(world_pos, normal)`: the sum of the point lights.
 //!   Multiply it by the albedo.
 //! - `sw_light_dir()`: the unit vector to the shadow light.
@@ -58,11 +59,33 @@ pub const ShadowSettings = struct {
     /// How far, in world units, a caster can be in front of a cascade
     /// toward the light and still cast into it.
     caster_distance: f32 = 50,
-    /// The receiver moves along its normal by this number of texels before
-    /// the depth compare. This stops a surface from shadowing itself.
+    /// Before the depth compare, the receiver moves along its normal by
+    /// this number of texels of cascade 0, or by the PCF radius plus 1
+    /// texel if that is more. The distance is times the sine of the angle
+    /// between the normal and the light. This stops a surface from
+    /// shadowing itself. The distance is the same in world units in each
+    /// cascade, so the shadow edge is at the same place in each cascade
+    /// (REQ-GPU-042).
     normal_bias: f32 = 2.0,
-    /// The receiver moves toward the light by this number of texels.
+    /// The receiver moves toward the light by this number of texels of
+    /// its cascade. In a cascade where the PCF disk plus 1 texel is more
+    /// than the normal bias, the receiver also moves toward the light by
+    /// the difference times the tangent of the angle between the normal
+    /// and the light. This bias does not move the shadow edge.
     depth_bias: f32 = 1.0,
+    /// The tangent in the slope depth bias stops at this value. A larger
+    /// value stops more self-shadow on a surface at a steep angle to the
+    /// light. A smaller value keeps more of the shadow in a corner.
+    max_slope: f32 = 2.0,
+    /// The radius of the PCF disk, in texels of cascade 0. The disk has
+    /// the same world size in each cascade, but it is 1 texel of the
+    /// cascade or more. A wider disk gives a softer edge with smaller
+    /// texel steps (REQ-GPU-042).
+    filter_radius: f32 = 2.5,
+    /// The blend zone before each split, as a fraction of the depth range
+    /// of the cascade. In the zone, the two cascades blend, so the shadow
+    /// edge has no step at the split (REQ-GPU-042). 0: a hard change.
+    blend: f32 = 0.25,
     /// 1: full shadow. 0: no shadow.
     strength: f32 = 1.0,
 };
@@ -91,9 +114,17 @@ pub const LightingUniforms = extern struct {
     texel: [4]f32 = @splat(0),
     /// xyz: the unit vector to the light. w: 1 when the shadows are on.
     light_dir: [4]f32 = .{ 0, 1, 0, 0 },
-    /// x: 1 / map size. y: the normal bias in texels. z: the depth bias in
-    /// texels. w: the strength.
+    /// x: 1 / map size. y: the blend zone, a fraction of the depth range
+    /// of a cascade. z: the depth bias in texels. w: the strength.
     params: [4]f32 = .{ 1, 0, 0, 1 },
+    /// The world radius of the PCF disk of each cascade.
+    radius: [4]f32 = @splat(0),
+    /// The world depth bias of each cascade for each unit of the tangent
+    /// of the angle between the normal and the light.
+    slope: [4]f32 = @splat(0),
+    /// x: the world distance of the normal bias, the same in each cascade.
+    /// y: the largest tangent for `slope`. z, w: not used.
+    bias: [4]f32 = .{ 0, 0, 0, 0 },
     /// x: the cascade count. y: the point light count.
     counts: [4]u32 = @splat(0),
     points: [max_point_lights]PointLightUniforms = @splat(.{}),
@@ -111,6 +142,9 @@ pub const structs =
     \\    texel: vec4<f32>,
     \\    light_dir: vec4<f32>,
     \\    params: vec4<f32>,
+    \\    radius: vec4<f32>,
+    \\    slope: vec4<f32>,
+    \\    bias: vec4<f32>,
     \\    counts: vec4<u32>,
     \\    points: array<SwPointLight, 16>,
     \\}
@@ -146,32 +180,70 @@ pub const helpers =
     \\    }
     \\}
     \\
+    \\// The PCF taps. They are on a golden-angle spiral, so they fill the
+    \\// disk with no grid that lines up with the texels.
+    \\const SW_SHADOW_TAPS = 16u;
+    \\
+    \\// The filtered shadow of cascade `c`: 1 in light. The normal bias has
+    \\// the same world size in each cascade, so the shadow edge is at the
+    \\// same place in each cascade. A cascade with larger texels gets more
+    \\// depth bias. The depth bias does not move the shadow edge.
+    \\fn sw_shadow_pcf(c: u32, world_pos: vec3<f32>, normal: vec3<f32>) -> f32 {
+    \\    let l = sw_lighting.light_dir.xyz;
+    \\    let n_dot_l = clamp(dot(normal, l), -1.0, 1.0);
+    \\    let sine = sqrt(1.0 - n_dot_l * n_dot_l);
+    \\    let tangent = min(sine / max(abs(n_dot_l), 1e-4), sw_lighting.bias.y);
+    \\    let depth_bias = sw_lighting.texel[c] * sw_lighting.params.z + sw_lighting.slope[c] * tangent;
+    \\    let q = world_pos + normal * (sw_lighting.bias.x * sine) + l * depth_bias;
+    \\    let p = sw_lighting.cascades[c] * vec4<f32>(q, 1.0);
+    \\    let uv = vec2<f32>(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
+    \\    if (p.z > 1.0 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+    \\        return 1.0;
+    \\    }
+    \\    // Each tap turns by the golden angle.
+    \\    let turn = mat2x2<f32>(-0.73736888, 0.67549029, -0.67549029, -0.73736888);
+    \\    var dir = vec2<f32>(sw_lighting.radius[c] / sw_lighting.texel[c] * sw_lighting.params.x, 0.0);
+    \\    var sum = 0.0;
+    \\    for (var i = 0u; i < SW_SHADOW_TAPS; i += 1u) {
+    \\        let k = sqrt((f32(i) + 0.5) / f32(SW_SHADOW_TAPS));
+    \\        sum += sw_shadow_tap(c, uv + dir * k, p.z);
+    \\        dir = turn * dir;
+    \\    }
+    \\    return sum / f32(SW_SHADOW_TAPS);
+    \\}
+    \\
+    \\// The blend weight of the cascade after `c` at the view depth `depth`:
+    \\// 0 before the blend zone at the end of cascade `c`, 1 at its split.
+    \\// The last cascade gives 0.
+    \\fn sw_shadow_blend(c: u32, depth: f32) -> f32 {
+    \\    let zone = sw_lighting.params.y;
+    \\    if (c + 1u >= sw_lighting.counts.x || zone <= 0.0) {
+    \\        return 0.0;
+    \\    }
+    \\    let split = sw_lighting.splits[c];
+    \\    let start = select(0.0, sw_lighting.splits[max(c, 1u) - 1u], c > 0u);
+    \\    let f = (depth - start) / max(split - start, 1e-6);
+    \\    return clamp((f - (1.0 - zone)) / zone, 0.0, 1.0);
+    \\}
+    \\
     \\// 1 in light, 0 in full shadow. `normal` is the unit surface normal.
-    \\// A 3 x 3 PCF filter of linear compares softens the edge.
+    \\// In the blend zone before a split, the two cascades blend. Thus the
+    \\// shadow edge has no step at the split.
     \\fn sw_shadow(world_pos: vec3<f32>, normal: vec3<f32>) -> f32 {
-    \\    let l = sw_lighting.light_dir;
-    \\    if (l.w == 0.0) {
+    \\    if (sw_lighting.light_dir.w == 0.0) {
     \\        return 1.0;
     \\    }
     \\    let c = sw_shadow_cascade(world_pos);
     \\    if (c >= sw_lighting.counts.x) {
     \\        return 1.0;
     \\    }
-    \\    let t = sw_lighting.texel[c];
-    \\    let q = world_pos + normal * (t * sw_lighting.params.y) + l.xyz * (t * sw_lighting.params.z);
-    \\    let p = sw_lighting.cascades[c] * vec4<f32>(q, 1.0);
-    \\    let uv = vec2<f32>(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
-    \\    if (p.z > 1.0 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
-    \\        return 1.0;
+    \\    let depth = -(sw_frame.view * vec4<f32>(world_pos, 1.0)).z;
+    \\    let b = sw_shadow_blend(c, depth);
+    \\    var s = sw_shadow_pcf(c, world_pos, normal);
+    \\    if (b > 0.0) {
+    \\        s = mix(s, sw_shadow_pcf(c + 1u, world_pos, normal), b);
     \\    }
-    \\    let s = sw_lighting.params.x;
-    \\    var sum = 0.0;
-    \\    for (var y = -1; y <= 1; y += 1) {
-    \\        for (var x = -1; x <= 1; x += 1) {
-    \\            sum += sw_shadow_tap(c, uv + vec2<f32>(f32(x), f32(y)) * s, p.z);
-    \\        }
-    \\    }
-    \\    return mix(1.0, sum / 9.0, sw_lighting.params.w);
+    \\    return mix(1.0, s, sw_lighting.params.w);
     \\}
     \\
     \\// The light of point light `i` on a surface. Multiply it by the albedo.
@@ -376,13 +448,58 @@ pub fn fitCascades(view: [16]f32, proj: [16]f32, light_dir: [3]f32, settings: Sh
     const far = @max(@min(range[1], settings.distance), near * 1.001);
     var splits: [max_cascades]f32 = undefined;
     splitDistances(near, far, settings.split_lambda, splits[0..out.len]);
-    var d0 = near;
+    // A cascade also holds the blend zone at the end of the cascade before
+    // it (REQ-GPU-042). The zone of cascade 0 is a fraction of 0 to its
+    // split, as in `sw_shadow_blend`.
+    const zone = blendZone(settings);
+    var d0: f32 = 0;
+    var start = near;
     for (out, splits[0..out.len]) |*c, d1| {
-        const corners = sliceCorners(view, proj, d0, d1);
+        const corners = sliceCorners(view, proj, start, d1);
         const fit = fitCascade(&corners, light_dir, map_size, settings.caster_distance);
         c.* = .{ .view_proj = fit.view_proj, .split = d1, .texel = fit.texel };
+        start = d1 - zone * (d1 - d0);
         d0 = d1;
     }
+}
+
+/// The blend zone of the settings, clamped to 0 to 1.
+fn blendZone(settings: ShadowSettings) f32 {
+    return std.math.clamp(settings.blend, 0, 1);
+}
+
+/// The bias of a cascade in world units (REQ-GPU-042).
+pub const CascadeBias = struct {
+    /// The radius of the PCF disk.
+    radius: f32,
+    /// The normal bias. It is the same in each cascade.
+    normal: f32,
+    /// The depth bias for each unit of the tangent of the angle between
+    /// the normal and the light.
+    slope: f32,
+};
+
+/// The bias of a cascade with texels of world size `texel`. `first` is
+/// the texel of cascade 0.
+///
+/// A PCF tap at the distance `d` from the receiver, on the plane of the
+/// receiver, is `d` times the tangent nearer to the light. The normal
+/// bias times the sine covers `d` times the tangent when `d` is the
+/// normal bias. A tap reads up to 1 texel more with the linear compare.
+/// Thus the bias must cover the PCF radius plus 1 texel. A cascade with
+/// larger texels gets the difference as depth bias, because a depth
+/// bias does not move the shadow edge.
+pub fn cascadeBias(settings: ShadowSettings, first: f32, texel: f32) CascadeBias {
+    const want = @max(settings.filter_radius, 0);
+    // The radius in texels of this cascade: the world radius of cascade 0,
+    // but 1 texel or more (or `want`, if it is less than 1).
+    const texels = if (texel > 0) @max(want * first / texel, @min(want, 1)) else want;
+    const normal = @max(settings.normal_bias, want + 1) * first;
+    return .{
+        .radius = texels * texel,
+        .normal = normal,
+        .slope = @max((texels + 1) * texel - normal, 0),
+    };
 }
 
 /// The lighting uniforms of a frame.
@@ -392,13 +509,18 @@ pub fn uniforms(cascades: []const Cascade, light_dir: [3]f32, settings: ShadowSe
     const l = normalize3(light_dir);
     var u: LightingUniforms = .{
         .light_dir = .{ l[0], l[1], l[2], if (settings.enabled) 1 else 0 },
-        .params = .{ 1 / @as(f32, @floatFromInt(map_size)), settings.normal_bias, settings.depth_bias, std.math.clamp(settings.strength, 0, 1) },
+        .params = .{ 1 / @as(f32, @floatFromInt(map_size)), blendZone(settings), settings.depth_bias, std.math.clamp(settings.strength, 0, 1) },
+        .bias = .{ 0, @max(settings.max_slope, 0), 0, 0 },
         .counts = .{ @intCast(cascades.len), @intCast(points.len), 0, 0 },
     };
     for (cascades, 0..) |c, i| {
         u.cascades[i] = c.view_proj.data;
         u.splits[i] = c.split;
         u.texel[i] = c.texel;
+        const b = cascadeBias(settings, cascades[0].texel, c.texel);
+        u.radius[i] = b.radius;
+        u.slope[i] = b.slope;
+        u.bias[0] = b.normal;
     }
     for (points, 0..) |p, i| {
         u.points[i] = .{
@@ -480,27 +602,71 @@ pub const DepthMap = struct {
     }
 };
 
-/// The CPU reference of `sw_shadow` for cascade `cascade`, with the CPU
-/// depth map of that cascade.
-pub fn shadow(u: LightingUniforms, cascade: u32, map: DepthMap, world_pos: [3]f32, normal: [3]f32) f32 {
-    if (u.light_dir[3] == 0) return 1;
-    if (cascade >= u.counts[0]) return 1;
-    const t = u.texel[cascade];
+/// The number of PCF taps: `SW_SHADOW_TAPS` in the include.
+pub const pcf_taps = 16;
+/// The golden angle, as the cosine and the sine of the turn from one PCF
+/// tap to the next.
+const golden_turn: [2]f32 = .{ -0.73736888, 0.67549029 };
+
+/// The offset of each PCF tap, in units of the PCF radius. Tap `i` is at
+/// the distance `sqrt((i + 0.5) / pcf_taps)` from the centre, and turns
+/// by the golden angle from the tap before it. The CPU reference of the
+/// loop of `sw_shadow_pcf`.
+pub fn pcfOffsets() [pcf_taps][2]f32 {
+    var out: [pcf_taps][2]f32 = undefined;
+    var dir: [2]f32 = .{ 1, 0 };
+    for (&out, 0..) |*o, i| {
+        const k = @sqrt((@as(f32, @floatFromInt(i)) + 0.5) / @as(f32, pcf_taps));
+        o.* = .{ dir[0] * k, dir[1] * k };
+        const x = golden_turn[0] * dir[0] - golden_turn[1] * dir[1];
+        const y = golden_turn[1] * dir[0] + golden_turn[0] * dir[1];
+        dir = .{ x, y };
+    }
+    return out;
+}
+
+/// The CPU reference of `sw_shadow_pcf`: the filtered shadow of cascade
+/// `cascade` with its CPU depth map, 1 in light.
+pub fn shadowPcf(u: LightingUniforms, cascade: u32, map: DepthMap, world_pos: [3]f32, normal: [3]f32) f32 {
+    const l: [3]f32 = .{ u.light_dir[0], u.light_dir[1], u.light_dir[2] };
+    const n_dot_l = std.math.clamp(dot3(normal, l), -1, 1);
+    const sine = @sqrt(1 - n_dot_l * n_dot_l);
+    const tangent = @min(sine / @max(@abs(n_dot_l), 1e-4), u.bias[1]);
+    const depth_bias = u.texel[cascade] * u.params[2] + u.slope[cascade] * tangent;
     var q: [3]f32 = undefined;
-    for (0..3) |i| q[i] = world_pos[i] + normal[i] * (t * u.params[1]) + u.light_dir[i] * (t * u.params[2]);
+    for (0..3) |i| q[i] = world_pos[i] + normal[i] * (u.bias[0] * sine) + l[i] * depth_bias;
     const p = (Mat4{ .data = u.cascades[cascade] }).mulVec4(.{ .x = q[0], .y = q[1], .z = q[2], .w = 1 });
     const uv: [2]f32 = .{ p.x * 0.5 + 0.5, 0.5 - p.y * 0.5 };
     if (p.z > 1 or uv[0] < 0 or uv[1] < 0 or uv[0] > 1 or uv[1] > 1) return 1;
-    const s = u.params[0];
+    const r = u.radius[cascade] / u.texel[cascade] * u.params[0];
     var sum: f32 = 0;
-    var y: i32 = -1;
-    while (y <= 1) : (y += 1) {
-        var x: i32 = -1;
-        while (x <= 1) : (x += 1) {
-            sum += map.compare(.{ uv[0] + @as(f32, @floatFromInt(x)) * s, uv[1] + @as(f32, @floatFromInt(y)) * s }, p.z);
-        }
-    }
-    return 1 + (sum / 9 - 1) * u.params[3];
+    for (pcfOffsets()) |o| sum += map.compare(.{ uv[0] + o[0] * r, uv[1] + o[1] * r }, p.z);
+    return sum / pcf_taps;
+}
+
+/// The CPU reference of `sw_shadow_blend`: the blend weight of the
+/// cascade after `cascade` at the view depth `depth`. 0 before the blend
+/// zone, 1 at the split.
+pub fn blendWeight(u: LightingUniforms, cascade: u32, depth: f32) f32 {
+    const zone = u.params[1];
+    if (cascade + 1 >= u.counts[0] or zone <= 0) return 0;
+    const split = u.splits[cascade];
+    const start: f32 = if (cascade > 0) u.splits[cascade - 1] else 0;
+    const f = (depth - start) / @max(split - start, 1e-6);
+    return std.math.clamp((f - (1 - zone)) / zone, 0, 1);
+}
+
+/// The CPU reference of `sw_shadow`. `view` is the camera view of
+/// `sw_frame`. `maps[i]` is the CPU depth map of cascade `i`.
+pub fn shadow(u: LightingUniforms, view: [16]f32, maps: []const DepthMap, world_pos: [3]f32, normal: [3]f32) f32 {
+    if (u.light_dir[3] == 0) return 1;
+    const c = cascadeOf(u, view, world_pos);
+    if (c >= u.counts[0]) return 1;
+    const v = (Mat4{ .data = view }).mulVec4(.{ .x = world_pos[0], .y = world_pos[1], .z = world_pos[2], .w = 1 });
+    const b = blendWeight(u, c, -v.z);
+    var s = shadowPcf(u, c, maps[c], world_pos, normal);
+    if (b > 0) s += (shadowPcf(u, c + 1, maps[c + 1], world_pos, normal) - s) * b;
+    return 1 + (s - 1) * u.params[3];
 }
 
 /// True when the ray from `p` toward the light `light_dir` hits the box
@@ -619,6 +785,21 @@ test "lighting: the shadow light follows the sun, and the moon at night (REQ-GPU
     try testing.expectEqual([3]f32{ 0, 1, 0 }, lightFromSky(.{}));
 }
 
+/// A cascade for the tests that maps world x and z (0 to `side`) to the
+/// map, with depth 1 - y.
+fn flatCascade(side: f32) Mat4 {
+    var vp = Mat4.identity();
+    vp.data[0] = 2 / side;
+    vp.data[12] = -1;
+    vp.data[5] = 0;
+    vp.data[9] = -2 / side;
+    vp.data[13] = 1;
+    vp.data[10] = 0;
+    vp.data[6] = -1;
+    vp.data[14] = 1;
+    return vp;
+}
+
 test "lighting: the CPU PCF gives 0 in a cast shadow, 1 in light, and a soft edge (REQ-GPU-016)" {
     // A map of 16 x 16 texels. The left half has an occluder at depth 0.3.
     // The right half is empty (depth 1).
@@ -629,15 +810,7 @@ test "lighting: the CPU PCF gives 0 in a cast shadow, 1 in light, and a soft edg
     }
     const map: DepthMap = .{ .size = size, .depth = &depth };
     // A cascade that maps world x and z (in 0 to 1) straight to the map.
-    var vp = Mat4.identity();
-    vp.data[0] = 2;
-    vp.data[12] = -1;
-    vp.data[5] = 0;
-    vp.data[9] = -2;
-    vp.data[13] = 1;
-    vp.data[10] = 0;
-    vp.data[6] = -1;
-    vp.data[14] = 1;
+    const vp = flatCascade(1);
     var u: LightingUniforms = .{
         .light_dir = .{ 0, 1, 0, 1 },
         .params = .{ 1.0 / @as(f32, size), 0, 0, 1 },
@@ -646,30 +819,246 @@ test "lighting: the CPU PCF gives 0 in a cast shadow, 1 in light, and a soft edg
     u.cascades[0] = vp.data;
     u.splits[0] = 100;
     u.texel[0] = 1.0 / @as(f32, size);
+    u.radius[0] = 1.5 / @as(f32, size);
     const up: [3]f32 = .{ 0, 1, 0 };
+    const maps = [_]DepthMap{map};
+    const view = wgsl.identity;
     // The receiver at y = 0.5 has depth 0.5.
     try testing.expectApproxEqAbs(@as(f32, 0.5), transform(vp, .{ 0.2, 0.5, 0.5 })[2], 1e-6);
-    try testing.expectEqual(@as(f32, 0), shadow(u, 0, map, .{ 0.2, 0.5, 0.5 }, up));
-    try testing.expectEqual(@as(f32, 1), shadow(u, 0, map, .{ 0.8, 0.5, 0.5 }, up));
-    const edge = shadow(u, 0, map, .{ 0.5, 0.5, 0.5 }, up);
+    try testing.expectEqual(@as(f32, 0), shadow(u, view, &maps, .{ 0.2, 0.5, 0.5 }, up));
+    try testing.expectEqual(@as(f32, 1), shadow(u, view, &maps, .{ 0.8, 0.5, 0.5 }, up));
+    const edge = shadow(u, view, &maps, .{ 0.5, 0.5, 0.5 }, up);
     try testing.expect(edge > 0.2 and edge < 0.8);
     // A receiver in front of the occluder is in light.
-    try testing.expectEqual(@as(f32, 1), shadow(u, 0, map, .{ 0.2, 0.8, 0.5 }, up));
+    try testing.expectEqual(@as(f32, 1), shadow(u, view, &maps, .{ 0.2, 0.8, 0.5 }, up));
     // Half strength gives half shadow.
     u.params[3] = 0.5;
-    try testing.expectEqual(@as(f32, 0.5), shadow(u, 0, map, .{ 0.2, 0.5, 0.5 }, up));
+    try testing.expectEqual(@as(f32, 0.5), shadow(u, view, &maps, .{ 0.2, 0.5, 0.5 }, up));
+}
+
+test "lighting: the PCF taps fill the disk round its centre (REQ-GPU-042)" {
+    const taps = pcfOffsets();
+    var mean: [2]f32 = .{ 0, 0 };
+    for (taps, 0..) |o, i| {
+        const r = @sqrt(o[0] * o[0] + o[1] * o[1]);
+        try testing.expectApproxEqAbs(@sqrt((@as(f32, @floatFromInt(i)) + 0.5) / pcf_taps), r, 1e-5);
+        mean[0] += o[0] / pcf_taps;
+        mean[1] += o[1] / pcf_taps;
+    }
+    try testing.expect(@abs(mean[0]) < 0.05 and @abs(mean[1]) < 0.05);
+    // The WGSL loop has the same count and the same turn.
+    try testing.expect(std.mem.indexOf(u8, helpers, std.fmt.comptimePrint("const SW_SHADOW_TAPS = {d}u;", .{pcf_taps})) != null);
+    try testing.expect(std.mem.indexOf(u8, helpers, "mat2x2<f32>(-0.73736888, 0.67549029, -0.67549029, -0.73736888)") != null);
+}
+
+/// The largest distance, in texels, of the 0.5 line of the shadow from
+/// the true edge, on a map where the edge goes `slope` texels to the
+/// side for each row: a stair of texels. `radius` is the PCF radius in
+/// texels.
+fn stairError(radius: f32, slope: f32) f32 {
+    const size = 64;
+    var depth: [size * size]f32 = undefined;
+    for (0..size) |y| {
+        for (0..size) |x| {
+            const edge = 20 + slope * (@as(f32, @floatFromInt(y)) + 0.5);
+            depth[y * size + x] = if (@as(f32, @floatFromInt(x)) + 0.5 < edge) 0.3 else 1.0;
+        }
+    }
+    const map: DepthMap = .{ .size = size, .depth = &depth };
+    var u: LightingUniforms = .{
+        .light_dir = .{ 0, 1, 0, 1 },
+        .params = .{ 1.0 / @as(f32, size), 0, 0, 1 },
+        .counts = .{ 1, 0, 0, 0 },
+    };
+    u.cascades[0] = flatCascade(1).data;
+    u.splits[0] = 100;
+    u.texel[0] = 1.0 / @as(f32, size);
+    u.radius[0] = radius / @as(f32, size);
+    // In each row, find the x of the 0.5 line, and its offset from the
+    // edge line.
+    var offsets: [120]f32 = undefined;
+    for (&offsets, 0..) |*o, i| {
+        const ty = 20 + @as(f32, @floatFromInt(i)) * 0.2;
+        const line = 20 + slope * ty;
+        var lo: f32 = line - 8;
+        var hi: f32 = line + 8;
+        for (0..30) |_| {
+            const mid = (lo + hi) / 2;
+            const s = shadowPcf(u, 0, map, .{ mid / size, 0.5, ty / size }, .{ 0, 1, 0 });
+            if (s < 0.5) lo = mid else hi = mid;
+        }
+        o.* = lo - line;
+    }
+    var mean: f32 = 0;
+    for (offsets) |o| mean += o / offsets.len;
+    var worst: f32 = 0;
+    for (offsets) |o| worst = @max(worst, @abs(o - mean));
+    return worst;
+}
+
+test "lighting: the PCF disk makes the texel steps of an edge small (REQ-GPU-042)" {
+    const radius = (ShadowSettings{}).filter_radius;
+    for ([_]f32{ 0.15, 0.22, 0.3, 0.4 }) |slope| {
+        // One linear compare follows each texel step.
+        const one_tap = stairError(0, slope);
+        // The disk of the default radius follows the straight edge.
+        const disk = stairError(radius, slope);
+        try testing.expect(one_tap > 0.35);
+        try testing.expect(disk < 0.2 and disk < 0.45 * one_tap);
+    }
+}
+
+test "lighting: the PCF radius and the normal bias have one world size in each cascade (REQ-GPU-042)" {
+    const s: ShadowSettings = .{};
+    // Cascade 0: the radius of the settings in texels, and a normal bias
+    // of 1 texel more than the radius. No slope bias.
+    const b0 = cascadeBias(s, 0.03, 0.03);
+    try testing.expectApproxEqAbs(s.filter_radius * 0.03, b0.radius, 1e-6);
+    try testing.expectApproxEqAbs((s.filter_radius + 1) * 0.03, b0.normal, 1e-6);
+    try testing.expectEqual(@as(f32, 0), b0.slope);
+    // Texels 2 times larger: the same world radius and normal bias. The
+    // slope bias covers the 1 texel of the linear compare that is larger.
+    const b1 = cascadeBias(s, 0.03, 0.06);
+    try testing.expectApproxEqAbs(b0.radius, b1.radius, 1e-6);
+    try testing.expectEqual(b0.normal, b1.normal);
+    try testing.expectApproxEqAbs(b0.radius + 0.06 - b0.normal, b1.slope, 1e-6);
+    // Texels 5 times larger: a radius of 1 texel.
+    const b2 = cascadeBias(s, 0.03, 0.15);
+    try testing.expectApproxEqAbs(@as(f32, 0.15), b2.radius, 1e-6);
+    try testing.expectEqual(b0.normal, b2.normal);
+    try testing.expectApproxEqAbs(2 * 0.15 - b0.normal, b2.slope, 1e-6);
+    // A normal bias in the settings that is more than the radius plus 1.
+    try testing.expectApproxEqAbs(6 * 0.03, cascadeBias(.{ .normal_bias = 6 }, 0.03, 0.03).normal, 1e-6);
+
+    const c: [3]Cascade = .{
+        .{ .view_proj = Mat4.identity(), .split = 5, .texel = 0.03 },
+        .{ .view_proj = Mat4.identity(), .split = 20, .texel = 0.06 },
+        .{ .view_proj = Mat4.identity(), .split = 60, .texel = 0.15 },
+    };
+    const u = try uniforms(&c, .{ 0, 1, 0 }, s, 1024, &.{});
+    try testing.expectEqual(b0.normal, u.bias[0]);
+    try testing.expectEqual(s.max_slope, u.bias[1]);
+    try testing.expectEqual([4]f32{ b0.radius, b1.radius, b2.radius, 0 }, u.radius);
+    try testing.expectEqual([4]f32{ b0.slope, b1.slope, b2.slope, 0 }, u.slope);
+    try testing.expectEqual(s.blend, u.params[1]);
+    try testing.expectEqual(s.depth_bias, u.params[2]);
+}
+
+/// Two maps of 64 texels for the tests. Cascade 0 covers the world square
+/// 0 to 1, and cascade 1 the square 0 to 4: its texels are 4 times
+/// larger. The occluder covers x < 0.5 at the depth 0.3. The view depth
+/// is 10 - z, and the split is at the depth 9.5 (z = 0.5).
+const TwoCascades = struct {
+    d0: [64 * 64]f32,
+    d1: [64 * 64]f32,
+    view: [16]f32,
+    cascades: [2]Cascade,
+
+    fn init(self: *TwoCascades) void {
+        for (0..64 * 64) |i| self.d0[i] = if (i % 64 < 32) 0.3 else 1.0;
+        for (0..64 * 64) |i| self.d1[i] = if (i % 64 < 8) 0.3 else 1.0;
+        var view = Mat4.identity();
+        view.data[14] = -10;
+        self.view = view.data;
+        self.cascades = .{
+            .{ .view_proj = flatCascade(1), .split = 9.5, .texel = 1.0 / 64.0 },
+            .{ .view_proj = flatCascade(4), .split = 100, .texel = 4.0 / 64.0 },
+        };
+    }
+
+    fn maps(self: *const TwoCascades) [2]DepthMap {
+        return .{ .{ .size = 64, .depth = &self.d0 }, .{ .size = 64, .depth = &self.d1 } };
+    }
+};
+
+test "lighting: the shadow edge is at the same place in each cascade (REQ-GPU-042)" {
+    var t: TwoCascades = undefined;
+    t.init();
+    const maps = t.maps();
+    const u = try uniforms(&t.cascades, .{ 0, 1, 0 }, .{}, 64, &.{});
+    // A sloped receiver: the normal bias moves its shadow edge.
+    const n = normalize3(.{ -0.6, 0.8, 0 });
+    var edges: [2]f32 = undefined;
+    for (&edges, 0..) |*e, c| {
+        var lo: f32 = 0.3;
+        var hi: f32 = 0.9;
+        for (0..30) |_| {
+            const mid = (lo + hi) / 2;
+            if (shadowPcf(u, @intCast(c), maps[c], .{ mid, 0.5, 0.25 }, n) < 0.5) lo = mid else hi = mid;
+        }
+        e.* = lo;
+    }
+    // The normal bias moves the edge away from the occluder.
+    try testing.expect(edges[0] > 0.5 + 0.5 * u.bias[0] * 0.6);
+    // The two edges are less than a quarter texel of cascade 1 apart.
+    try testing.expectApproxEqAbs(edges[0], edges[1], 0.25 * t.cascades[1].texel);
+}
+
+test "lighting: the blend zone keeps the shadow with no step at the split (REQ-GPU-042)" {
+    var t: TwoCascades = undefined;
+    t.init();
+    const maps = t.maps();
+    const u = try uniforms(&t.cascades, .{ 0, 1, 0 }, .{ .blend = 0.05 }, 64, &.{});
+    var hard = u;
+    hard.params[1] = 0;
+    const n = normalize3(.{ -0.6, 0.8, 0 });
+    // A point in the soft edge, from z = 0 (cascade 1) to z = 1 (cascade
+    // 0). Cascade 1 has the wider soft edge.
+    var worst_blend: f32 = 0;
+    var worst_hard: f32 = 0;
+    var last_blend = shadow(u, t.view, &maps, .{ 0.56, 0.5, 0 }, n);
+    var last_hard = shadow(hard, t.view, &maps, .{ 0.56, 0.5, 0 }, n);
+    var z: f32 = 0.002;
+    while (z < 1) : (z += 0.002) {
+        const b = shadow(u, t.view, &maps, .{ 0.56, 0.5, z }, n);
+        const h = shadow(hard, t.view, &maps, .{ 0.56, 0.5, z }, n);
+        worst_blend = @max(worst_blend, @abs(b - last_blend));
+        worst_hard = @max(worst_hard, @abs(h - last_hard));
+        last_blend = b;
+        last_hard = h;
+    }
+    // With no blend zone, the soft edge changes in one step at the split.
+    try testing.expect(worst_hard > 0.1);
+    try testing.expect(worst_blend < 0.01);
+    // The blend weight goes from 0 to 1 in the last 5 % of the cascade.
+    try testing.expectEqual(@as(f32, 0), blendWeight(u, 0, 9.0));
+    try testing.expectApproxEqAbs(@as(f32, 0.5), blendWeight(u, 0, 0.975 * 9.5), 1e-4);
+    try testing.expectEqual(@as(f32, 1), blendWeight(u, 0, 9.5));
+    // The last cascade has no zone.
+    try testing.expectEqual(@as(f32, 0), blendWeight(u, 1, 50));
+    try testing.expectEqual(@as(f32, 0), blendWeight(hard, 0, 9.5));
+}
+
+test "lighting: a cascade holds the blend zone of the cascade before it (REQ-GPU-042)" {
+    const light = normalize3(.{ 0.7, 0.66, 0.24 });
+    const settings: ShadowSettings = .{ .distance = 45, .blend = 0.25 };
+    for ([_]f32{ 0, 0.8, 2.5 }) |yaw| {
+        const view = testView(.{ 3, 1.6, 6 }, yaw);
+        var cascades: [3]Cascade = undefined;
+        try fitCascades(view.data, test_proj.data, light, settings, 2048, &cascades);
+        var prev: f32 = 0;
+        for (cascades[0..2], cascades[1..]) |c, next| {
+            const zone_start = c.split - settings.blend * (c.split - prev);
+            for (sliceCorners(view.data, test_proj.data, zone_start, c.split)) |w| {
+                const p = transform(next.view_proj, w);
+                try testing.expect(@abs(p[0]) <= 1.0001 and @abs(p[1]) <= 1.0001);
+                try testing.expect(p[2] >= 0 and p[2] <= 1);
+            }
+            prev = c.split;
+        }
+    }
 }
 
 test "lighting: with the shadows off, a shadowed point gets the full light (REQ-GPU-018)" {
     const size = 4;
     const depth: [size * size]f32 = @splat(0);
-    const map: DepthMap = .{ .size = size, .depth = &depth };
+    const maps = [_]DepthMap{.{ .size = size, .depth = &depth }};
     var c: [1]Cascade = .{.{ .view_proj = Mat4.identity(), .split = 100, .texel = 0.1 }};
     var u = try uniforms(&c, .{ 0, 1, 0 }, .{}, size, &.{});
-    try testing.expectEqual(@as(f32, 0), shadow(u, 0, map, .{ 0, 0, 0.5 }, .{ 0, 1, 0 }));
+    try testing.expectEqual(@as(f32, 0), shadow(u, wgsl.identity, &maps, .{ 0, 0, 0.5 }, .{ 0, 1, 0 }));
     u = try uniforms(&c, .{ 0, 1, 0 }, .{ .enabled = false }, size, &.{});
     try testing.expectEqual(@as(f32, 0), u.light_dir[3]);
-    try testing.expectEqual(@as(f32, 1), shadow(u, 0, map, .{ 0, 0, 0.5 }, .{ 0, 1, 0 }));
+    try testing.expectEqual(@as(f32, 1), shadow(u, wgsl.identity, &maps, .{ 0, 0, 0.5 }, .{ 0, 1, 0 }));
     u.splits[0] = 1;
     try testing.expectEqual(@as(u32, 1), cascadeOf(u, wgsl.identity, .{ 0, 0, -5 }));
     try testing.expectEqual(@as(u32, 0), cascadeOf(u, wgsl.identity, .{ 0, 0, -0.5 }));
@@ -714,11 +1103,12 @@ test "lighting: a ray to the light finds the box that casts the shadow (REQ-GPU-
 test "lighting: SwLighting in the include has the layout of LightingUniforms (REQ-GPU-016)" {
     try testing.expectEqual(@as(usize, 32), @sizeOf(PointLightUniforms));
     const offsets = [_]struct { []const u8, usize }{
-        .{ "cascades", 0 }, .{ "splits", 256 }, .{ "texel", 272 },  .{ "light_dir", 288 },
-        .{ "params", 304 }, .{ "counts", 320 }, .{ "points", 336 },
+        .{ "cascades", 0 }, .{ "splits", 256 }, .{ "texel", 272 }, .{ "light_dir", 288 },
+        .{ "params", 304 }, .{ "radius", 320 }, .{ "slope", 336 }, .{ "bias", 352 },
+        .{ "counts", 368 }, .{ "points", 384 },
     };
     inline for (offsets) |o| try testing.expectEqual(o[1], @offsetOf(LightingUniforms, o[0]));
-    try testing.expectEqual(@as(usize, 336 + 32 * max_point_lights), @sizeOf(LightingUniforms));
+    try testing.expectEqual(@as(usize, 384 + 32 * max_point_lights), @sizeOf(LightingUniforms));
     try testing.expectEqual(@as(usize, 0), @sizeOf(LightingUniforms) % 16);
     // The WGSL members are in the same order, with the same counts.
     var at: usize = 0;
