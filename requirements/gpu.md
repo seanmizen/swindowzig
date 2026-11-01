@@ -384,6 +384,7 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Relations:**
   - refines REQ-GPU-005
   - refines REQ-GPU-014
+  - amended-by REQ-GPU-042
 
 ## REQ-GPU-017 — The lit passes add the point lights of the frame
 
@@ -974,6 +975,47 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Relations:**
   - refines REQ-GPU-023
   - refines REQ-GPU-024
+
+## REQ-GPU-042 — The shadow edge has no step at a cascade split and no texel steps near the camera
+
+- **Status:** active
+- **Source:** agent:SWZ-119
+- **Origin:** #119
+- **Type:** quality
+- **Priority:** P2
+- **Statement:** While the shadows of a `Lighting` are on, `sw_shadow`
+  shall give a shadow edge that stays at the same place and changes
+  softness gradually where a cascade changes to the next cascade.
+- **Rationale:** Before this requirement, the normal bias and the depth
+  bias were in texels of each cascade. The texels of the next cascade
+  are about 4 times larger, so the shadow edge moved to the side by a
+  step at the split. The change of cascade was also hard. The 3 x 3 PCF
+  filter was 1 texel wide, so the edge in cascade 0 showed each texel as
+  a step. Now the normal bias has one world size in each cascade. A
+  cascade with larger texels gets the remainder as a slope depth bias,
+  and a depth bias does not move the edge. The two cascades blend over
+  a zone at the end of each cascade, and the next cascade holds that
+  zone. The PCF filter is a disk of 16 taps with one world radius (2.5
+  texels of cascade 0 by default, 1 texel of a cascade or more), so the
+  texel steps of cascade 0 are small.
+- **Verification:**
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: the shadow
+    edge is at the same place in each cascade (REQ-GPU-042)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: the blend
+    zone keeps the shadow with no step at the split (REQ-GPU-042)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: a cascade
+    holds the blend zone of the cascade before it (REQ-GPU-042)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: the PCF
+    disk makes the texel steps of an edge small (REQ-GPU-042)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: the PCF
+    taps fill the disk round its centre (REQ-GPU-042)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: the PCF
+    radius and the normal bias have one world size in each cascade
+    (REQ-GPU-042)"
+  - Demonstration — the shooter demo (`demos/shooter`) with the camera
+    along the east wall of the arena: the wall shadow on the snow is one
+    straight line from near to far.
+- **Relations:** amends REQ-GPU-016
 
 ## REQ-GPU-043 — A new shadow map size or cascade count applies with no restart
 

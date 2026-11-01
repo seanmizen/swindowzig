@@ -83,6 +83,7 @@
 | [`REQ-GPU-039`](gpu.md#req-gpu-039--occlusion-queries-of-boxes-come-back-with-the-tag-of-their-frame) | Occlusion queries of boxes come back with the tag of their frame | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-040`](gpu.md#req-gpu-040--translucent-quads-draw-in-a-render-pass-of-the-game-with-no-frame-graph) | Translucent quads draw in a render pass of the game with no frame graph | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-GPU-041`](gpu.md#req-gpu-041--particles-and-translucent-quads-draw-in-one-far-to-near-order) | Particles and translucent quads draw in one far-to-near order | active | functional | P3 | agent:SWZ-112 |
+| [`REQ-GPU-042`](gpu.md#req-gpu-042--the-shadow-edge-has-no-step-at-a-cascade-split-and-no-texel-steps-near-the-camera) | The shadow edge has no step at a cascade split and no texel steps near the camera | active | quality | P2 | agent:SWZ-119 |
 | [`REQ-GPU-043`](gpu.md#req-gpu-043--a-new-shadow-map-size-or-cascade-count-applies-with-no-restart) | A new shadow map size or cascade count applies with no restart | active | functional | P2 | agent:SWZ-121 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
@@ -232,6 +233,7 @@ graph TD
   REQ_GPU_039["REQ-GPU-039<br/>Occlusion queries of boxes come back with the tag of their frame"]
   REQ_GPU_040["REQ-GPU-040<br/>Translucent quads draw in a render pass of the game with no frame graph"]
   REQ_GPU_041["REQ-GPU-041<br/>Particles and translucent quads draw in one far-to-near order"]
+  REQ_GPU_042["REQ-GPU-042<br/>The shadow edge has no step at a cascade split and no texel steps near the camera"]
   REQ_GPU_043["REQ-GPU-043<br/>A new shadow map size or cascade count applies with no restart"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
@@ -331,6 +333,7 @@ graph TD
   REQ_GPU_015 -->|refines| REQ_GPU_014
   REQ_GPU_016 -->|refines| REQ_GPU_005
   REQ_GPU_016 -->|refines| REQ_GPU_014
+  REQ_GPU_016 -->|amended-by| REQ_GPU_042
   REQ_GPU_017 -->|refines| REQ_GPU_006
   REQ_GPU_018 -->|refines| REQ_GPU_016
   REQ_GPU_020 -->|refines| REQ_GPU_011
@@ -348,6 +351,7 @@ graph TD
   REQ_GPU_040 -->|refines| REQ_GPU_022
   REQ_GPU_041 -->|refines| REQ_GPU_023
   REQ_GPU_041 -->|refines| REQ_GPU_024
+  REQ_GPU_042 -->|amends| REQ_GPU_016
   REQ_GPU_043 -->|refines| REQ_GPU_016
   REQ_INPUT_009 -->|refines| REQ_INPUT_007
   REQ_INPUT_011 -->|refines| REQ_INPUT_007
