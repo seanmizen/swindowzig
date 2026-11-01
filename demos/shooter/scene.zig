@@ -91,6 +91,17 @@ const rail_lamp_parts = [_]sw_render.BoxModelPart{.{ .boxes = &.{
     .{ .min = .{ -0.08, -0.05, -0.07 }, .max = .{ 0.08, 0.08, 0.07 }, .color = bulb },
 } }};
 
+/// The plate of the button on the wall (REQ-DEMO-032), about the centre
+/// of the button at the face of the wall. +Z is out of the wall.
+const button_plate_parts = [_]sw_render.BoxModelPart{.{ .boxes = &.{
+    .{ .min = .{ -arena.room.button_half - 0.06, -arena.room.button_half - 0.06, 0 }, .max = .{ arena.room.button_half + 0.06, arena.room.button_half + 0.06, 0.02 }, .color = .{ 0.16, 0.16, 0.17 } },
+} }};
+
+/// The cap of the button. A hit moves it into the wall and out again.
+const button_cap_parts = [_]sw_render.BoxModelPart{.{ .boxes = &.{
+    .{ .min = .{ -arena.room.button_half, -arena.room.button_half, 0.02 }, .max = .{ arena.room.button_half, arena.room.button_half, arena.room.button_out }, .color = .{ 0.7, 0.08, 0.06 } },
+} }};
+
 /// The lamp of light 1, about its point of light: a plate on the ceiling,
 /// a rod, a shade and a bulb.
 const chandelier_parts = [_]sw_render.BoxModelPart{.{ .boxes = &.{
@@ -228,6 +239,12 @@ const State = struct {
     glow: sw_render.BoxModels,
     rail_lamp_model: sw_render.BoxModelId,
     chandelier_model: sw_render.BoxModelId,
+    /// The button of the room: lit, but no shadow cast, so its move does
+    /// not make the lighting draw the cube map of light 1 again
+    /// (REQ-DEMO-032).
+    fixtures: sw_render.BoxModels,
+    button_plate_model: sw_render.BoxModelId,
+    button_cap_model: sw_render.BoxModelId,
     /// The map of the world buffer.
     map: arena.Map,
     /// The static triangles of each map, made at the first use.
@@ -282,6 +299,7 @@ const State = struct {
         try self.drawRange(pass, self.world_buffer, 0, self.world_count, self.frame_view_proj);
         try self.drawRange(pass, self.dyn_buffer, 0, self.dyn_world, self.frame_view_proj);
         try self.models.draw(pass, .world, .{});
+        try self.fixtures.draw(pass, .world, .{});
         try self.glow.draw(pass, .world, .{ .fog = false });
     }
 
@@ -330,6 +348,7 @@ const State = struct {
             self.light = @splat(0);
             self.ambient = @splat(self.current.indoor_ambient);
             self.models.setLight(.{ .color = self.light, .ambient = self.ambient });
+            self.fixtures.setLight(.{ .color = self.light, .ambient = self.ambient });
             return;
         }
         const s = self.sky.state();
@@ -384,6 +403,8 @@ fn valueNoise(x: f32, y: f32, period: i32) f32 {
 /// snow cap on top.
 fn buildWorld(out: *mesh_mod.Mesh) void {
     for (arena.boxes[0..arena.box_count]) |b| {
+        // A box model draws the button (REQ-DEMO-032).
+        if (b.kind == .button) continue;
         out.box(b.min, b.max, b.color, 0);
         if (b.kind != .ground and arena.snowy) {
             // The snow cap: a little larger than the top, and not solid.
@@ -474,6 +495,11 @@ pub const Scene = struct {
         errdefer glow.deinit();
         const rail_lamp_model = try glow.addModel(.{ .parts = &rail_lamp_parts });
         const chandelier_model = try glow.addModel(.{ .parts = &chandelier_parts });
+        // The button of the room: lit, no shadow cast.
+        var fixtures = try sw_render.BoxModels.init(allocator, graph, .{ .color_format = post.hdr_format, .max_records = 64, .lighting = lighting, .cast_shadows = false });
+        errdefer fixtures.deinit();
+        const button_plate_model = try fixtures.addModel(.{ .parts = &button_plate_parts });
+        const button_cap_model = try fixtures.addModel(.{ .parts = &button_cap_parts });
 
         // A soft round sprite for the particles.
         const soft_size = 32;
@@ -513,6 +539,9 @@ pub const Scene = struct {
             .glow = glow,
             .rail_lamp_model = rail_lamp_model,
             .chandelier_model = chandelier_model,
+            .fixtures = fixtures,
+            .button_plate_model = button_plate_model,
+            .button_cap_model = button_cap_model,
             .map = arena.map,
             .particles = undefined,
             .soft = soft,
@@ -588,6 +617,7 @@ pub const Scene = struct {
         s.soft_view.release();
         s.soft.destroy();
         s.glow.deinit();
+        s.fixtures.deinit();
         s.models.deinit();
         for (s.worlds) |w| if (w) |x| x.buffer.destroy();
         s.dyn_buffer.destroy();
@@ -688,6 +718,7 @@ pub const Scene = struct {
         // The bots and their guns.
         s.models.clear();
         s.glow.clear();
+        s.fixtures.clear();
         s.dyn.clear();
         // The two lamps of the room, the muzzle flash of each bot and of
         // the gun in the hands.
@@ -708,6 +739,11 @@ pub const Scene = struct {
             try s.models.add(.world, s.rail_model, .{});
             try s.glow.add(.world, s.chandelier_model, .{ .transform = Mat4.translation(c[0], c[1], c[2]), .tint = chandelier_color });
             try s.glow.add(.world, s.rail_lamp_model, .{ .transform = Mat4.translation(r[0], r[1], r[2]), .tint = rail_color });
+            // The button on the north wall: the cap goes into the wall
+            // when a shot hits it (REQ-DEMO-032).
+            const b = arena.room.button;
+            try s.fixtures.add(.world, s.button_plate_model, .{ .transform = Mat4.translation(b[0], b[1], b[2]) });
+            try s.fixtures.add(.world, s.button_cap_model, .{ .transform = Mat4.translation(b[0], b[1], b[2] - g.buttonDepth()) });
         }
         for (g.bots[0..g.bot_n], 0..) |*b, i| {
             const sk = b.skeleton();

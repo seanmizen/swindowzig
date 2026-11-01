@@ -4,9 +4,10 @@
 //!
 //! - The main screen: Resume, Graphics, Mouse, Audio, Map, and Quit
 //!   (native only). Map changes the map at once (REQ-DEMO-030). It shows
-//!   only when the caller gives the map: the player has control.
+//!   only when the player has control: a script plays one map.
 //! - Graphics: the preset, the shadows, the shadow quality, the
-//!   anti-aliasing, vsync and the frame limit.
+//!   anti-aliasing, vsync and the frame limit. On the `indoor` map, also
+//!   the ambient light of the room (REQ-DEMO-033).
 //! - Mouse: the sensitivity and invert Y.
 //! - Audio: the volume of the game and of the shots.
 //!
@@ -89,8 +90,10 @@ pub const PauseMenu = struct {
     }
 
     /// One tick of the open menu. `escape`: the menu can read Escape (see
-    /// `Pause.Step.escape`). `map`: the map now, or null for no Map button.
-    pub fn tick(self: *PauseMenu, host: *demo.Host, snap: *const sw_core.InputSnapshot, prefs: *Prefs, escape: bool, map: ?Map) !Result {
+    /// `Pause.Step.escape`). `now`: the map now. `choose_map`: show the
+    /// Map button.
+    pub fn tick(self: *PauseMenu, host: *demo.Host, snap: *const sw_core.InputSnapshot, prefs: *Prefs, escape: bool, now: Map, choose_map: bool) !Result {
+        const map: ?Map = if (choose_map) now else null;
         const m = &self.m;
         m.setLayout(host.gpu.getSurfaceWidth(), host.gpu.getSurfaceHeight(), host.ctx.window());
         m.nav.update(snap);
@@ -98,7 +101,7 @@ pub const PauseMenu = struct {
         if (!escape) input.keys.escape = false;
         try m.ui.begin(input, m.layout_w, gm.layout_height);
         if (self.screens.top()) |top| switch (top) {
-            .graphics => try self.buildGraphics(prefs),
+            .graphics => try self.buildGraphics(prefs, now),
             .mouse => try self.buildMouse(prefs),
             .sound => try m.audioScreen(screenId(.sound), &.{
                 .{ .base = ids.master, .label = .master, .value = &prefs.volume },
@@ -139,7 +142,7 @@ pub const PauseMenu = struct {
                 if (self.screens.pop(&m.ui) == null) r.resume_game = true;
             },
             .changed => switch (e.id) {
-                ids.sensitivity + 2, ids.master + 2, ids.effects + 2 => r.changed = true,
+                ids.sensitivity + 2, ids.master + 2, ids.effects + 2, ids.room_light + 2 => r.changed = true,
                 else => {},
             },
             .submit => {},
@@ -164,7 +167,7 @@ pub const PauseMenu = struct {
         m.endPanel();
     }
 
-    fn buildGraphics(self: *PauseMenu, p: *Prefs) !void {
+    fn buildGraphics(self: *PauseMenu, p: *Prefs, now: Map) !void {
         const m = &self.m;
         try m.beginPanel(screenId(.graphics), m.tr(.graphics));
         try m.cycleButton(ids.preset, .preset, m.qualityName(switch (p.preset) {
@@ -189,6 +192,15 @@ pub const PauseMenu = struct {
         });
         try m.toggleButton(ids.vsync, .vsync, p.vsync);
         try m.cycleButton(ids.frame_limit, .frame_limit, if (p.fps()) |f| try m.ui.print("{d} fps", .{f}) else m.tr(.no_limit));
+        // The ambient light of the room (REQ-DEMO-033). It changes only
+        // the room, so it shows only there. The format text gives the
+        // screen reader the new value after a key press (REQ-A11Y-009).
+        if (now == .indoor) try m.sliderRow(ids.room_light, m.tr(.room_light), &p.indoor_ambient, .{
+            .min = 0,
+            .max = prefs_mod.max_indoor_ambient,
+            .step = 0.01,
+            .format = ambientText,
+        }, try m.ui.print("{d:.0}%", .{p.indoor_ambient * 100}), m.tr(.room_light_tip));
         try m.back();
         m.endPanel();
     }
@@ -207,6 +219,11 @@ pub const PauseMenu = struct {
         try self.m.drawEnd(pass);
     }
 };
+
+/// The room light as text: a percent of full light, "4%".
+fn ambientText(v: f32, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "{d:.0}%", .{v * 100}) catch "";
+}
 
 /// The map after `now` in the Map button, or null with no Map button.
 fn nextMap(now: ?Map, forward: bool) ?Map {

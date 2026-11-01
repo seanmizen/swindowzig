@@ -46,13 +46,29 @@
 495 pad north down
 500 pad north up
 540 checkpoint turned
-600 caption The player walks in the room with the gun
-600 key A down
-650 key A up
-650 key Right down
-665 key Right up
-720 checkpoint walk
-760 caption Shadows off: the light of each lamp reaches each place
-760 set shadows off
-800 checkpoint no_shadows
-820 end
+# The button on the north wall (REQ-DEMO-032). Light 2 stops at the east
+# end at tick 570. Look up at the button and fire one shot: the
+# button goes in, clicks, and sends light 2 back to the west end.
+580 caption A shot on the button on the wall moves light 2, as L does
+580 mouse move 0 86
+581 mouse move 0 76
+582 mouse move 0 66
+583 mouse move 0 56
+584 mouse move 0 46
+585 mouse move 0 36
+586 mouse move 0 26
+587 mouse move 0 16
+588 mouse move 0 6
+630 mouse left down
+631 mouse left up
+637 checkpoint button
+680 caption The player walks in the room with the gun
+680 key A down
+730 key A up
+730 key Right down
+745 key Right up
+800 checkpoint walk
+840 caption Shadows off: the light of each lamp reaches each place
+840 set shadows off
+880 checkpoint no_shadows
+900 end

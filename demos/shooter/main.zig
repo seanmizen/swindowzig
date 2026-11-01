@@ -33,8 +33,10 @@
 // and no bots. Two point lights with cube shadow maps light it: light 1
 // hangs still at the centre, light 2 moves on a rail near the ceiling. L
 // or the gamepad north button sends light 2 to the other end of the rail
-// (REQ-DEMO-031). `--map indoor` starts on it and plays indoor.tas. In
-// the pause menu, the Map button changes the map with no restart.
+// (REQ-DEMO-031). A shot on the button on the north wall does the same
+// (REQ-DEMO-032). `--map indoor` starts on it and plays indoor.tas. In
+// the pause menu, the Map button changes the map with no restart, and
+// Graphics has the Room light slider in the room (REQ-DEMO-033).
 //
 //   zig build run -Ddemo=shooter
 //   zig build run -Ddemo=shooter -- --map indoor      # the room
@@ -203,13 +205,17 @@ const App = struct {
     pub fn set(host: *demo.Host, setting: []const u8, value: []const u8) !void {
         var s = scene.settings();
         if (demo.reflect.setField(scene_mod.Settings, &s, setting, value)) {
-            // In a window the shadows of the player stay. A capture or
-            // check run follows the script.
+            // In a window the shadows and the room light of the player
+            // stay. A capture or check run follows the script.
             if (host.deterministic()) {
                 prefs.shadows = s.shadows;
+                prefs.indoor_ambient = s.indoor_ambient;
                 prefs.preset = prefs.matchingPreset();
                 saved = prefs;
-            } else s.shadows = prefs.shadows;
+            } else {
+                s.shadows = prefs.shadows;
+                s.indoor_ambient = prefs.indoor_ambient;
+            }
             try scene.apply(s);
             return;
         } else |err| if (err != error.UnknownSetting) return err;
@@ -250,8 +256,10 @@ const App = struct {
     /// size or cascade count makes new maps (REQ-GPU-043), with no restart.
     fn applyPrefs(host: *demo.Host) !void {
         var s = scene.settings();
-        if (s.shadows != prefs.shadows) {
+        if (s.shadows != prefs.shadows or s.indoor_ambient != prefs.indoor_ambient) {
             s.shadows = prefs.shadows;
+            // The ambient light slider of the room (REQ-DEMO-033).
+            s.indoor_ambient = prefs.indoor_ambient;
             try scene.apply(s);
         }
         const map = prefs.shadowMap();
@@ -343,7 +351,7 @@ const App = struct {
         if (pause.open) {
             // The script plays one map, so the Map button shows only when
             // the player has control (REQ-DEMO-030).
-            const r = try menu.tick(host, snap, &prefs, ps.escape, if (host.user_control) current_map else null);
+            const r = try menu.tick(host, snap, &prefs, ps.escape, current_map, host.user_control);
             if (r.map) |m| try switchMap(m);
             if (r.changed) {
                 try applyPrefs(host);

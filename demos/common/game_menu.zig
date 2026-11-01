@@ -131,6 +131,9 @@ pub const S = enum {
     map,
     map_arena,
     map_indoor,
+    // The ambient light slider of the shooter room (REQ-DEMO-033).
+    room_light,
+    room_light_tip,
 };
 
 pub const english = std.enums.EnumArray(S, []const u8).init(.{
@@ -223,6 +226,8 @@ pub const english = std.enums.EnumArray(S, []const u8).init(.{
     .map = "Map",
     .map_arena = "Snowy arena",
     .map_indoor = "Indoor room",
+    .room_light = "Room light",
+    .room_light_tip = "The ambient light of the indoor room",
 });
 
 // Hebrew needs no letter joining. The bidi algorithm of sw_text puts each
@@ -317,6 +322,8 @@ pub const hebrew = std.enums.EnumArray(S, []const u8).init(.{
     .map = "מפה",
     .map_arena = "זירה מושלגת",
     .map_indoor = "חדר סגור",
+    .room_light = "אור החדר",
+    .room_light_tip = "האור הכללי בחדר הסגור",
 });
 
 /// The Hebrew keys of the on-screen keyboard (the Israeli layout).
@@ -386,6 +393,8 @@ pub const ids = struct {
     pub const ui_sounds: u32 = 64;
     pub const sensitivity: u32 = 68;
     pub const dead_zone: u32 = 72;
+    /// The ambient light of the shooter room (REQ-DEMO-033).
+    pub const room_light: u32 = 76;
     // Controls.
     pub const conflict: u32 = 80;
     pub const reset_keys: u32 = 81;

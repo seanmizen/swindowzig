@@ -208,6 +208,9 @@ pub const Events = struct {
     /// The snow that the bots kick up, at the feet.
     steps: [max_bots]V3 = undefined,
     step_n: usize = 0,
+    /// A shot pressed the button of the room at this point (REQ-DEMO-032):
+    /// the click sound.
+    button: ?V3 = null,
 
     fn addShot(self: *Events, s: Shot) void {
         if (self.shot_n < self.shots.len) {
@@ -248,6 +251,9 @@ pub const Game = struct {
     ticks: u64 = 0,
     /// Light 2 of the room (REQ-DEMO-031). Only the `indoor` map moves it.
     rail: Rail = .{},
+    /// The time left in the move of the button of the room (REQ-DEMO-032).
+    /// A shot does not press the button again before it is out.
+    button: f32 = 0,
 
     /// Start the fight. weapon.loadModels and arena.build must have run.
     /// A map with no bot spawns (the room) has no bots and no waves.
@@ -303,6 +309,30 @@ pub const Game = struct {
         return n;
     }
 
+    /// The time of one move of the button: in, then out again.
+    pub const button_time: f32 = 0.35;
+    /// How far the button goes into the wall, in metres.
+    pub const button_travel: f32 = 0.05;
+
+    /// A shot hit the button at p (REQ-DEMO-032): the same as the L key.
+    /// The button ignores a shot while it moves, so a burst does not move
+    /// the lamp to and fro.
+    fn pressButton(self: *Game, p: V3) void {
+        if (self.button > 0) return;
+        self.rail.press();
+        self.button = button_time;
+        self.events.button = p;
+    }
+
+    /// How far the button is in the wall now: in at once, a short hold,
+    /// then out again.
+    pub fn buttonDepth(self: *const Game) f32 {
+        if (self.button <= 0) return 0;
+        const since = button_time - self.button;
+        const k = if (since < 0.05) since / 0.05 else if (self.button > 0.15) 1 else self.button / 0.15;
+        return button_travel * k;
+    }
+
     /// The camera roll of the lean.
     pub fn roll(self: *const Game) f32 {
         return self.you.lean * player_mod.lean_roll;
@@ -319,6 +349,7 @@ pub const Game = struct {
         if (arena.map == .indoor) {
             if (in.move_light) self.rail.press();
             self.rail.step(dt);
+            self.button = @max(0, self.button - dt);
         }
         for (self.bots[0..self.bot_n], 0..) |*b, i| self.stepBot(b, i, dt);
         if (self.settings.trace and self.ticks % 15 == 0) self.traceLog();
@@ -385,14 +416,18 @@ pub const Game = struct {
         var body_dmg: [max_bots]f32 = @splat(0);
         var head_dmg: [max_bots]f32 = @splat(0);
         var dirs: [max_bots]V3 = @splat(f);
+        const button_box = arena.buttonBox();
+        var button_hit: ?V3 = null;
         for (0..st.pellets) |k| {
             const r = cone * @sqrt(self.rand());
             const a = self.rand() * std.math.tau;
             const d = vec.norm(f + right * vec.s(@cos(a) * r) + up * vec.s(@sin(a) * r));
             var shot: Shot = .{ .o = o, .e = o + d * vec.s(st.range), .normal = -d, .surface = null, .bot = null, .model = self.item.model, .first = k == 0 };
             var t_best = st.range;
+            var wall_box: ?usize = null;
             if (arena.raycast(o, d, st.range)) |h| {
                 t_best = h.t;
+                wall_box = h.box;
                 shot.e = o + d * vec.s(h.t);
                 shot.normal = h.normal;
                 shot.surface = arena.surfaceAt(shot.e, h.box);
@@ -420,9 +455,14 @@ pub const Game = struct {
                 const dmg = st.damageAt(head, t_best);
                 if (head) head_dmg[i] += dmg else body_dmg[i] += dmg;
                 dirs[i] = d;
+            } else if (button_box != null and wall_box == button_box) {
+                button_hit = shot.e;
             }
             self.events.addShot(shot);
         }
+        // The button (REQ-DEMO-032): the pellets of one shotgun shot press
+        // it one time.
+        if (button_hit) |at| self.pressButton(at);
         for (self.bots[0..self.bot_n], 0..) |*b, i| {
             const total = body_dmg[i] + head_dmg[i];
             if (total <= 0) continue;
@@ -876,4 +916,39 @@ test "game: the room has no bots and no waves, and L moves light 2 (REQ-DEMO-030
     try std.testing.expectEqual(@as(usize, 0), g.bot_n);
     try std.testing.expectEqual(@as(u32, 1), g.wave);
     try std.testing.expectEqual(@as(f32, 1), g.rail.pos);
+}
+
+test "game: a shot on the button of the room moves light 2, as L does (REQ-DEMO-032)" {
+    try weapon.loadModels(std.testing.allocator);
+    defer {
+        for (weapon.models) |m| std.testing.allocator.free(m.verts);
+        std.testing.allocator.free(weapon.models);
+        weapon.models = &.{};
+    }
+    defer arena.build(.arena);
+    arena.build(.indoor);
+    var g = Game.init(3, .{});
+    const dt: f32 = 1.0 / 60.0;
+    // Stand 1.5 m from the button and look at its centre.
+    g.you.pos = v3(0, 0, arena.room.button[2] + 1.5);
+    for (0..40) |_| g.step(dt, .{});
+    const d = arena.room.button - g.eye();
+    g.you.yaw = 0;
+    g.you.pitch = std.math.atan2(d[1], -d[2]);
+    try std.testing.expect(!g.rail.moving());
+    g.step(dt, .{ .fire = true, .fire_pressed = true });
+    try std.testing.expect(g.events.button != null);
+    try std.testing.expect(g.rail.moving());
+    try std.testing.expectEqual(@as(f32, 1), g.rail.target);
+    try std.testing.expect(g.buttonDepth() > 0);
+    // The next shots of the burst hit the moving button: no new press.
+    for (0..6) |_| g.step(dt, .{ .fire = true });
+    try std.testing.expectEqual(@as(f32, 1), g.rail.target);
+    // The button comes out again. A new shot turns the lamp round.
+    for (0..40) |_| g.step(dt, .{});
+    try std.testing.expectEqual(@as(f32, 0), g.buttonDepth());
+    g.you.pitch = std.math.atan2(d[1], -d[2]);
+    g.you.yaw = 0;
+    g.step(dt, .{ .fire = true, .fire_pressed = true });
+    try std.testing.expectEqual(@as(f32, 0), g.rail.target);
 }

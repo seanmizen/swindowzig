@@ -46,6 +46,8 @@
 | [`REQ-DEMO-029`](demo.md#req-demo-029--a-demo-can-have-more-than-one-map-each-with-its-own-script-and-hashes) | A demo can have more than one map, each with its own script and hashes | active | functional | P2 | agent:SWZ-127 |
 | [`REQ-DEMO-030`](demo.md#req-demo-030--the-shooter-has-a-closed-room-lit-by-two-shadowed-lamps) | The shooter has a closed room lit by two shadowed lamps | active | functional | P2 | agent:SWZ-127 |
 | [`REQ-DEMO-031`](demo.md#req-demo-031--l-moves-the-rail-lamp-of-the-shooter-room) | L moves the rail lamp of the shooter room | active | functional | P2 | agent:SWZ-127 |
+| [`REQ-DEMO-032`](demo.md#req-demo-032--a-shot-on-the-button-of-the-shooter-room-moves-the-rail-lamp) | A shot on the button of the shooter room moves the rail lamp | active | functional | P2 | sean |
+| [`REQ-DEMO-033`](demo.md#req-demo-033--the-pause-menu-sets-the-ambient-light-of-the-shooter-room) | The pause menu sets the ambient light of the shooter room | active | functional | P3 | sean |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -200,6 +202,8 @@ graph TD
   REQ_DEMO_029["REQ-DEMO-029<br/>A demo can have more than one map, each with its own script and hashes"]
   REQ_DEMO_030["REQ-DEMO-030<br/>The shooter has a closed room lit by two shadowed lamps"]
   REQ_DEMO_031["REQ-DEMO-031<br/>L moves the rail lamp of the shooter room"]
+  REQ_DEMO_032["REQ-DEMO-032<br/>A shot on the button of the shooter room moves the rail lamp"]
+  REQ_DEMO_033["REQ-DEMO-033<br/>The pause menu sets the ambient light of the shooter room"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
@@ -334,6 +338,9 @@ graph TD
   REQ_DEMO_030 -->|depends-on| REQ_DEMO_027
   REQ_DEMO_030 -->|depends-on| REQ_DEMO_029
   REQ_DEMO_031 -->|depends-on| REQ_DEMO_030
+  REQ_DEMO_032 -->|depends-on| REQ_DEMO_031
+  REQ_DEMO_033 -->|depends-on| REQ_DEMO_028
+  REQ_DEMO_033 -->|depends-on| REQ_DEMO_030
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
@@ -424,8 +431,10 @@ graph TD
 - `REQ-DEMO-025` — required-by REQ-DEMO-027
 - `REQ-DEMO-026` — required-by REQ-DEMO-027
 - `REQ-DEMO-027` — required-by REQ-DEMO-028, required-by REQ-DEMO-030
+- `REQ-DEMO-028` — required-by REQ-DEMO-033
 - `REQ-DEMO-029` — required-by REQ-DEMO-030
-- `REQ-DEMO-030` — required-by REQ-DEMO-031
+- `REQ-DEMO-030` — required-by REQ-DEMO-031, required-by REQ-DEMO-033
+- `REQ-DEMO-031` — required-by REQ-DEMO-032
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016

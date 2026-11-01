@@ -466,3 +466,52 @@ scripts, the frame hashes and the recordings.
     `light2_middle`, `light2_east` and `turned` of
     `demos/shooter/indoor.tas`.
 - **Relations:** depends-on REQ-DEMO-030
+
+## REQ-DEMO-032 — A shot on the button of the shooter room moves the rail lamp
+
+- **Status:** active
+- **Source:** sean
+- **Origin:** #127
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a shot of the player hits the button on the wall of
+  the shooter room, the demo shall move light 2 as one press of the L key
+  does.
+- **Rationale:** Sean asked for a button in the world: the mouse and the
+  gamepad fire the gun, so the button needs no new binding. The button
+  is a box model. A hit moves it into the wall and out again, and it
+  makes a procedural click. The button ignores a hit while it moves, so a
+  burst does not move the lamp to and fro. The button casts no shadow, so
+  its move does not make the lighting draw the cube map of light 1 again.
+- **Verification:**
+  - Test — `demos/shooter/game.zig` › "game: a shot on the button of the
+    room moves light 2, as L does (REQ-DEMO-032)"
+  - Test — `scripts/demos-check.sh` › the checkpoint `button` of
+    `demos/shooter/indoor.tas`.
+  - Demonstration — Sean hears the click in the native build.
+- **Relations:** depends-on REQ-DEMO-031
+
+## REQ-DEMO-033 — The pause menu sets the ambient light of the shooter room
+
+- **Status:** active
+- **Source:** sean
+- **Origin:** #127
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When the player moves the Room light slider in the pause
+  menu of the shooter, the demo shall change the ambient light of the
+  indoor room at once and save the value with the other settings.
+- **Rationale:** Sean wants to try the ambient level that shows the two
+  shadows best. The slider is on the Graphics screen, and only in the
+  room: it changes nothing in the arena, and the frames of the arena
+  script stay the same. The screen reader reads the new value after a
+  key press (REQ-A11Y-009).
+- **Verification:**
+  - Test — `demos/shooter/prefs.zig` › "prefs: the text form gives the
+    same settings back (REQ-DEMO-028)"
+  - Test — `backends/wasm/tests/shooter.pw.ts` › "Escape pauses the
+    shooter, and the mirror shows the pause menu": the slider gives its
+    value, and the page saves it.
+- **Relations:**
+  - depends-on REQ-DEMO-028
+  - depends-on REQ-DEMO-030

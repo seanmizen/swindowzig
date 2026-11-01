@@ -25,7 +25,7 @@ const Surface = @import("audio/impact.zig").Material;
 const V3 = vec.V3;
 const v3 = vec.v3;
 
-pub const Kind = enum { ground, wall, crate, barrier, block, container, ceiling };
+pub const Kind = enum { ground, wall, crate, barrier, block, container, ceiling, button };
 
 /// The maps of the shooter (REQ-DEMO-030).
 pub const Map = enum { arena, indoor };
@@ -85,6 +85,13 @@ pub const room = struct {
     /// The player starts at the south wall and looks north (-Z), at the
     /// crates and the rail.
     pub const spawn: Spawn = .{ .pos = v3(0, 0, 5.2), .yaw = 0 };
+    /// The centre of the button on the north wall (REQ-DEMO-032), at the
+    /// face of the wall. A shot that hits it moves light 2.
+    pub const button = v3(0, 1.45, -half_z);
+    /// The half size of the button face, and how far it stands out of
+    /// the wall.
+    pub const button_half: f32 = 0.2;
+    pub const button_out: f32 = 0.08;
 
     /// The point of light 2 at `t` on the rail: 0 at the west end, 1 at
     /// the east end.
@@ -110,7 +117,7 @@ fn put(x: f32, z: f32, sx: f32, sy: f32, sz: f32, kind: Kind) void {
         .barrier => .{ v3(0.55, 0.55, 0.53), .concrete },
         .block => .{ v3(0.5, 0.49, 0.47), .concrete },
         .container => .{ v3(0.52, 0.16, 0.12), .sheet_metal },
-        .wall, .ground, .ceiling => .{ v3(0.45, 0.45, 0.45), .concrete },
+        .wall, .ground, .ceiling, .button => .{ v3(0.45, 0.45, 0.45), .concrete },
     };
     add(v3(x - sx / 2, 0, z - sz / 2), v3(x + sx / 2, sy, z + sz / 2), look[0], look[1], kind);
 }
@@ -156,6 +163,19 @@ fn buildRoom() void {
     put(1.4, 1.0, 1.2, 0.7, 0.9, .crate);
     put(4.0, 1.7, 0.6, 0.6, 0.6, .crate);
     put(5.6, -1.2, 1.1, 2.0, 1.1, .crate);
+    // The button (REQ-DEMO-032): a solid box, so a shot stops on it. A box
+    // model draws it, not the static triangles.
+    const b = room.button;
+    const bh = room.button_half;
+    add(v3(b[0] - bh, b[1] - bh, b[2]), v3(b[0] + bh, b[1] + bh, b[2] + room.button_out), v3(0.7, 0.08, 0.06), .metal, .button);
+}
+
+/// The index of the button box in `boxes`, or null on a map with no button.
+pub fn buttonBox() ?usize {
+    for (boxes[0..box_count], 0..) |b, i| {
+        if (b.kind == .button) return i;
+    }
+    return null;
 }
 
 /// The snowy arena.
