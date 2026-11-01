@@ -510,23 +510,23 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
-        run: |
-          touch "$RUNNER_TEMP/marker"
-          sleep 1
-          zig build native -Dexample=voxel --summary all
-          echo "--- files written outside the workspace"
-          sudo find / -xdev \( -path /proc -o -path /sys -o -path "$GITHUB_WORKSPACE" -o -path /home/runner/runners -o -path /home/runner/work/_temp/_runner_file_commands \) -prune -o -type f -newer "$RUNNER_TEMP/marker" -print 2>/dev/null | head -50
-          echo "--- ~/.cache"
-          ls -la ~/.cache ~/.cache/zig 2>&1 | head -20
+        run: zig build native -Dexample=voxel --summary all
 
       - name: TEMP cache experiment
         run: |
           b() { /usr/bin/time -f "took %e s" zig build native -Dexample=voxel --summary all 2>&1 | grep -E "compile exe|translate-c|took"; }
+          z=$(dirname "$(command -v zig)")
           echo "--- again"
           b
-          echo "--- ~/.cache and /tmp removed"
-          rm -rf ~/.cache/zig
-          sudo find /tmp -mindepth 1 -maxdepth 1 -newer "$RUNNER_TEMP/marker" -exec rm -rf {} + || true
+          echo "--- Zig copied again to the same path, same mtimes"
+          cp -a "$z" "$z.new"
+          rm -rf "$z"
+          mv "$z.new" "$z"
+          b
+          echo "--- Zig copied again to the same path, new mtimes"
+          cp -r "$z" "$z.new"
+          rm -rf "$z"
+          mv "$z.new" "$z"
           b
 
       - name: Compare with the goldens
