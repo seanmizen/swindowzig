@@ -8,4 +8,6 @@ test {
     _ = @import("game.zig");
     _ = @import("impact_fx.zig");
     _ = @import("mouse_gate.zig");
+    _ = @import("pause.zig");
+    _ = @import("prefs.zig");
 }

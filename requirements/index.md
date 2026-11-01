@@ -40,6 +40,9 @@
 | [`REQ-DEMO-023`](demo.md#req-demo-023--each-hit-throws-the-particles-of-its-material) | Each hit throws the particles of its material | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-DEMO-024`](demo.md#req-demo-024--the-shots-of-the-shooter-play-as-3d-sound) | The shots of the shooter play as 3D sound | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-DEMO-025`](demo.md#req-demo-025--a-click-in-the-shooter-locks-the-pointer-again) | A click in the shooter locks the pointer again | active | functional | P2 | agent:SWZ-120 |
+| [`REQ-DEMO-026`](demo.md#req-demo-026--the-menu-and-shooter-demos-share-one-game-menu) | The menu and shooter demos share one game menu | active | constraint | P2 | agent:SWZ-121 |
+| [`REQ-DEMO-027`](demo.md#req-demo-027--escape-or-start-pauses-the-shooter-and-opens-its-menu) | Escape or Start pauses the shooter and opens its menu | active | functional | P2 | agent:SWZ-121 |
+| [`REQ-DEMO-028`](demo.md#req-demo-028--the-shooter-keeps-the-settings-of-its-menu) | The shooter keeps the settings of its menu | active | functional | P3 | agent:SWZ-121 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -80,6 +83,7 @@
 | [`REQ-GPU-039`](gpu.md#req-gpu-039--occlusion-queries-of-boxes-come-back-with-the-tag-of-their-frame) | Occlusion queries of boxes come back with the tag of their frame | active | functional | P2 | agent:SWZ-40 |
 | [`REQ-GPU-040`](gpu.md#req-gpu-040--translucent-quads-draw-in-a-render-pass-of-the-game-with-no-frame-graph) | Translucent quads draw in a render pass of the game with no frame graph | active | functional | P2 | agent:SWZ-112 |
 | [`REQ-GPU-041`](gpu.md#req-gpu-041--particles-and-translucent-quads-draw-in-one-far-to-near-order) | Particles and translucent quads draw in one far-to-near order | active | functional | P3 | agent:SWZ-112 |
+| [`REQ-GPU-043`](gpu.md#req-gpu-043--a-new-shadow-map-size-or-cascade-count-applies-with-no-restart) | A new shadow map size or cascade count applies with no restart | active | functional | P2 | agent:SWZ-121 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -185,6 +189,9 @@ graph TD
   REQ_DEMO_023["REQ-DEMO-023<br/>Each hit throws the particles of its material"]
   REQ_DEMO_024["REQ-DEMO-024<br/>The shots of the shooter play as 3D sound"]
   REQ_DEMO_025["REQ-DEMO-025<br/>A click in the shooter locks the pointer again"]
+  REQ_DEMO_026["REQ-DEMO-026<br/>The menu and shooter demos share one game menu"]
+  REQ_DEMO_027["REQ-DEMO-027<br/>Escape or Start pauses the shooter and opens its menu"]
+  REQ_DEMO_028["REQ-DEMO-028<br/>The shooter keeps the settings of its menu"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
@@ -225,6 +232,7 @@ graph TD
   REQ_GPU_039["REQ-GPU-039<br/>Occlusion queries of boxes come back with the tag of their frame"]
   REQ_GPU_040["REQ-GPU-040<br/>Translucent quads draw in a render pass of the game with no frame graph"]
   REQ_GPU_041["REQ-GPU-041<br/>Particles and translucent quads draw in one far-to-near order"]
+  REQ_GPU_043["REQ-GPU-043<br/>A new shadow map size or cascade count applies with no restart"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -307,6 +315,10 @@ graph TD
   REQ_DEMO_021 -->|depends-on| REQ_DEMO_004
   REQ_DEMO_023 -->|depends-on| REQ_DEMO_021
   REQ_DEMO_025 -->|depends-on| REQ_DEMO_010
+  REQ_DEMO_026 -->|depends-on| REQ_DEMO_009
+  REQ_DEMO_027 -->|depends-on| REQ_DEMO_025
+  REQ_DEMO_027 -->|depends-on| REQ_DEMO_026
+  REQ_DEMO_028 -->|depends-on| REQ_DEMO_027
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
@@ -336,6 +348,7 @@ graph TD
   REQ_GPU_040 -->|refines| REQ_GPU_022
   REQ_GPU_041 -->|refines| REQ_GPU_023
   REQ_GPU_041 -->|refines| REQ_GPU_024
+  REQ_GPU_043 -->|refines| REQ_GPU_016
   REQ_INPUT_009 -->|refines| REQ_INPUT_007
   REQ_INPUT_011 -->|refines| REQ_INPUT_007
   REQ_JOBS_003 -->|depends-on| REQ_JOBS_002
@@ -384,8 +397,12 @@ graph TD
 - `REQ-DEMO-002` — required-by REQ-DEMO-008
 - `REQ-DEMO-004` — required-by REQ-DEMO-003, required-by REQ-DEMO-007, required-by REQ-DEMO-021
 - `REQ-DEMO-008` — required-by REQ-DEMO-009, required-by REQ-DEMO-010
+- `REQ-DEMO-009` — required-by REQ-DEMO-026
 - `REQ-DEMO-010` — required-by REQ-DEMO-025
 - `REQ-DEMO-021` — required-by REQ-DEMO-023
+- `REQ-DEMO-025` — required-by REQ-DEMO-027
+- `REQ-DEMO-026` — required-by REQ-DEMO-027
+- `REQ-DEMO-027` — required-by REQ-DEMO-028
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
@@ -394,7 +411,7 @@ graph TD
 - `REQ-GPU-010` — refined-by REQ-GPU-011
 - `REQ-GPU-011` — refined-by REQ-GPU-020, refined-by REQ-GPU-021, required-by REQ-GPU-030
 - `REQ-GPU-014` — refined-by REQ-GPU-015, refined-by REQ-GPU-016
-- `REQ-GPU-016` — refined-by REQ-GPU-018
+- `REQ-GPU-016` — refined-by REQ-GPU-018, refined-by REQ-GPU-043
 - `REQ-GPU-020` — required-by REQ-GPU-031, required-by REQ-GPU-032
 - `REQ-GPU-022` — required-by REQ-GPU-023, required-by REQ-GPU-024, refined-by REQ-GPU-040
 - `REQ-GPU-023` — refined-by REQ-GPU-041, required-by REQ-VOXEL-031

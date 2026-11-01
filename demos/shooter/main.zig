@@ -22,6 +22,12 @@
 // jump, west reload, shoulders lean. The mouse works only while the
 // pointer is locked. A click in the window locks it (REQ-DEMO-025).
 //
+// Escape or the gamepad Start button pauses the fight and opens the pause
+// menu (REQ-DEMO-027): the graphics, the mouse and the volume. A change
+// applies at once, and the demo saves the settings with sw_platform
+// storage (REQ-DEMO-028). The menu is the shared game menu of the demos
+// (demos/common/game_menu.zig, REQ-DEMO-026).
+//
 //   zig build run -Ddemo=shooter
 //   ./zig-out/bin/shooter --check                     # the frame hashes
 //   zig build web -Ddemo=shooter && yarn dev:demo shooter
@@ -39,6 +45,11 @@ const scene_mod = @import("scene.zig");
 const fx = @import("impact_fx.zig");
 const sfx_mod = @import("sfx.zig");
 const mouse_gate = @import("mouse_gate.zig");
+const pause_mod = @import("pause.zig");
+const prefs_mod = @import("prefs.zig");
+const pause_menu = @import("pause_menu.zig");
+const sw_platform = @import("sw_platform");
+const is_wasm = builtin.cpu.arch.isWasm();
 const V3 = vec.V3;
 const v3 = vec.v3;
 
@@ -97,6 +108,17 @@ const App = struct {
     /// the mouse.
     var no_mouse: sw_core.InputSnapshot = .{};
     var ticks: u64 = 0;
+    /// The pause menu (REQ-DEMO-027).
+    var menu: pause_menu.PauseMenu = undefined;
+    var pause: pause_mod.Pause = .{};
+    /// The settings of the menu now.
+    var prefs: prefs_mod.Prefs = .{};
+    /// The settings of the player: the save, or the settings of
+    /// `--preset`. Each loop of the script starts from them, and the
+    /// player gets them when the player takes control.
+    var saved: prefs_mod.Prefs = .{};
+    var was_user = false;
+    var save_warned = false;
 
     pub fn init(host: *demo.Host) !void {
         try weapon.loadModels(host.allocator);
@@ -112,22 +134,99 @@ const App = struct {
         actions = Actions.init(bindings);
         // No sound in a capture or a check run (REQ-DEMO-004).
         if (!host.deterministic()) sfx = sfx_mod.Sfx.init(host.allocator) catch null;
+        try menu.init(host.allocator, host);
+        saved = prefs_mod.Prefs.fromGraphics(host.graphics);
+        // A capture or check run does not read the save (REQ-DEMO-004).
+        if (!host.deterministic()) {
+            loadPrefs(host);
+            prefs = saved;
+            try applyPrefs(host);
+        }
+        prefs = saved;
     }
 
-    pub fn reset(_: *demo.Host) !void {
+    pub fn reset(host: *demo.Host) !void {
         g = game_mod.Game.init(seed, g.settings);
         particles.clear();
         fx_rng = .init(seed);
         ticks = 0;
+        pause.close();
+        menu.close();
+        prefs = saved;
+        try applyPrefs(host);
     }
 
-    pub fn set(_: *demo.Host, setting: []const u8, value: []const u8) !void {
+    pub fn set(host: *demo.Host, setting: []const u8, value: []const u8) !void {
         var s = scene.settings();
         if (demo.reflect.setField(scene_mod.Settings, &s, setting, value)) {
+            // In a window the shadows of the player stay. A capture or
+            // check run follows the script.
+            if (host.deterministic()) {
+                prefs.shadows = s.shadows;
+                prefs.preset = prefs.matchingPreset();
+                saved = prefs;
+            } else s.shadows = prefs.shadows;
             try scene.apply(s);
             return;
         } else |err| if (err != error.UnknownSetting) return err;
         try demo.reflect.setField(game_mod.Settings, &g.settings, setting, value);
+    }
+
+    /// Read the settings of the player from storage into `saved`.
+    fn loadPrefs(host: *demo.Host) void {
+        if (comptime !is_wasm) {
+            const io = host.ctx.io orelse return;
+            sw_platform.native_sdl.initStorage(io, "seanmizen", "shooter") catch |err| {
+                std.log.warn("shooter: no save folder ({s}). The settings are not saved.", .{@errorName(err)});
+                return;
+            };
+        }
+        const text = sw_platform.storageGet(host.allocator, prefs_mod.key) catch |err| {
+            std.log.warn("shooter: cannot read the settings ({s})", .{@errorName(err)});
+            return;
+        } orelse return;
+        defer host.allocator.free(text);
+        saved.decode(text);
+        saved.preset = saved.matchingPreset();
+        std.log.info("shooter: settings loaded", .{});
+    }
+
+    /// Write `prefs` to storage.
+    fn savePrefs() void {
+        var buf: [512]u8 = undefined;
+        const text = prefs.encode(&buf) catch return;
+        sw_platform.storageSet(prefs_mod.key, text) catch |err| {
+            if (!save_warned) std.log.warn("shooter: cannot save the settings ({s})", .{@errorName(err)});
+            save_warned = true;
+        };
+    }
+
+    /// Give the settings of the menu to the scene, the post chain, the
+    /// GPU, the frame limiter, the mouse and the sound. A new shadow map
+    /// size or cascade count makes new maps (REQ-GPU-043), with no restart.
+    fn applyPrefs(host: *demo.Host) !void {
+        var s = scene.settings();
+        if (s.shadows != prefs.shadows) {
+            s.shadows = prefs.shadows;
+            try scene.apply(s);
+        }
+        const map = prefs.shadowMap();
+        try scene.setShadowMap(map.size, map.cascades);
+        try host.post.setFxaa(prefs.fxaa());
+        if (host.gpu.vsync != prefs.vsync) host.gpu.setVsync(prefs.vsync);
+        if (host.frame_limiter.target_fps != prefs.fps()) host.frame_limiter.setTarget(prefs.fps());
+        mouse.setSensitivity(prefs.sensitivity);
+        mouse.invert_y = prefs.invert_y;
+        if (sfx) |*a| {
+            a.audio.setMasterVolume(prefs.volume);
+            // The shots play in group 0.
+            a.audio.setGroupVolume(0, prefs.shots);
+        }
+    }
+
+    fn startPressed(snap: *const sw_core.InputSnapshot) bool {
+        for (&snap.gamepads) |*pad| if (pad.buttonPressed(.start)) return true;
+        return false;
     }
 
     fn readInput(snap: *const sw_core.InputSnapshot, dt: f32) game_mod.Input {
@@ -151,23 +250,71 @@ const App = struct {
     /// The input of the player goes with the mouse only while the pointer
     /// is locked (REQ-DEMO-025). A capture or check run has no player, so
     /// its input and its frames do not change.
-    fn playerInput(host: *demo.Host) *const sw_core.InputSnapshot {
-        const snap = host.input();
+    fn playerInput(host: *demo.Host, snap: *const sw_core.InputSnapshot, locked: bool) *const sw_core.InputSnapshot {
         if (!host.user_control) return snap;
-        const ctx = host.ctx;
-        // SDL keeps the relative mode when the window loses the focus. End
-        // the lock, so a click locks it again as on the web.
-        if (mouse_gate.focusLost(ctx.bus().eventsForTick(ctx.tickId()))) ctx.setCursorMode(.normal);
-        const st = gate.step(ctx.isCursorLocked(), snap);
-        if (st.lock) ctx.setCursorMode(.locked);
+        const st = gate.step(locked, snap);
+        if (st.lock) host.ctx.setCursorMode(.locked);
         if (st.mouse) return snap;
         no_mouse = mouse_gate.withoutMouse(snap);
         return &no_mouse;
     }
 
+    /// Close the pause menu, and ask for the pointer lock again.
+    fn resumeFight(host: *demo.Host) void {
+        menu.close();
+        if (host.user_control) host.ctx.setCursorMode(.locked);
+    }
+
     pub fn tick(host: *demo.Host) !void {
         const dt = host.dt;
-        g.step(dt, readInput(playerInput(host), dt));
+        const ctx = host.ctx;
+        if (host.user_control and !was_user) {
+            // The script can change the settings in its menu part. The
+            // player gets the saved settings.
+            was_user = true;
+            prefs = saved;
+            try applyPrefs(host);
+        }
+        const snap = host.input();
+        var locked = false;
+        if (host.user_control) {
+            // SDL keeps the relative mode when the window loses the focus.
+            // End the lock, so a click locks it again as on the web.
+            if (mouse_gate.focusLost(ctx.bus().eventsForTick(ctx.tickId()))) ctx.setCursorMode(.normal);
+            locked = ctx.isCursorLocked();
+        }
+
+        // The pause menu (REQ-DEMO-027). Escape, Start, or the end of the
+        // pointer lock during the fight opens it.
+        const ps = pause.step(.{ .locked = locked, .escape = snap.keyPressed(.Escape), .start = startPressed(snap) });
+        if (ps.opened) {
+            if (host.user_control) ctx.setCursorMode(.normal);
+            // The mouse goes to the game again only after the lock and a
+            // release of each button (REQ-DEMO-025).
+            gate.on = false;
+            menu.open();
+        }
+        if (ps.closed) resumeFight(host);
+        if (pause.open) {
+            const r = try menu.tick(host, snap, &prefs, ps.escape);
+            if (r.changed) {
+                try applyPrefs(host);
+                // The script does not change the save.
+                if (host.user_control) {
+                    saved = prefs;
+                    savePrefs();
+                }
+            }
+            if (r.quit) ctx.requestShutdown();
+            if (r.resume_game) {
+                pause.close();
+                resumeFight(host);
+            }
+            return;
+        }
+        try menu.idle(host);
+
+        g.step(dt, readInput(playerInput(host, snap, locked), dt));
         ticks += 1;
 
         // The particles of the tick.
@@ -260,8 +407,9 @@ const App = struct {
             try r.fillRect(.{ .x = 0, .y = e, .w = e, .h = h - 2 * e }, rgba(200, 20, 10, a));
             try r.fillRect(.{ .x = w - e, .y = e, .w = e, .h = h - 2 * e }, rgba(200, 20, 10, a));
         }
-        // The camera follows a bot: no HUD of the player.
-        if (g.settings.follow >= 0) return;
+        // The camera follows a bot, or the pause menu is open: no HUD of
+        // the player.
+        if (g.settings.follow >= 0 or pause.open) return;
         if (!g.alive()) {
             try r.fillRect(.{ .x = 0, .y = 0, .w = w, .h = h }, rgba(60, 0, 0, 0.45));
             const s = "DOWN - BACK IN A MOMENT";
@@ -336,6 +484,7 @@ const App = struct {
     }
 
     pub fn deinit(host: *demo.Host) void {
+        menu.deinit();
         if (sfx) |*a| a.deinit();
         sfx = null;
         scene.deinit();

@@ -70,6 +70,8 @@ pub const cow_model = @import("cow_model.zig");
 pub const cow_scene = @import("cow_scene.zig");
 pub const overlay = @import("overlay.zig");
 pub const input_script = @import("input_script.zig");
+/// The game menu that the menu and shooter demos share (REQ-DEMO-026).
+pub const game_menu = @import("game_menu.zig");
 /// sw_audio, for a demo with sound. The demo wiring in build.zig does not
 /// give the demo itself this module.
 pub const audio = @import("sw_audio");
@@ -131,6 +133,10 @@ pub const Host = struct {
     /// True after the player of an `interactive` demo took control. The
     /// script then stops.
     user_control: bool = false,
+    /// The frame limit of a window run (REQ-GPU-027). Native only: the
+    /// browser draws one frame for each display refresh. A capture or
+    /// check run does not wait.
+    frame_limiter: sw_render.FrameLimiter = .{},
 
     /// The input of this tick: the script input, or the input of the
     /// player after the player took control.
@@ -308,6 +314,7 @@ pub fn Demo(comptime App: type) type {
                 }
                 pending_checkpoint = null;
                 if (!is_wasm and ending and host.deterministic()) finish(ctx);
+                pace(ctx);
                 measure(ctx);
             }
 
@@ -357,6 +364,16 @@ pub fn Demo(comptime App: type) type {
             n += 1;
             if (@hasDecl(App, "statLines")) n += App.statLines(&host, line_bufs[n..], lines[n..]);
             host.overlay.setStats(lines[0..n]);
+        }
+
+        /// Wait for the frame limit of `host.frame_limiter` (REQ-GPU-027).
+        fn pace(ctx: *sw.Context) void {
+            if (is_wasm or host.deterministic()) return;
+            if (host.frame_limiter.interval() == null) return;
+            const io = ctx.io orelse return;
+            const now: u64 = @intCast(@max(std.Io.Timestamp.now(io, .awake).toNanoseconds(), 0));
+            const wait_ns = host.frame_limiter.wait(now);
+            if (wait_ns > 0) io.sleep(.fromNanoseconds(wait_ns), .awake) catch {};
         }
 
         /// Keep the wall-clock frame time for the overlay. Capture and

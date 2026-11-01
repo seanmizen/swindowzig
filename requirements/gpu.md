@@ -974,3 +974,28 @@ Textures, samplers and other resources of `sw_gpu`.
 - **Relations:**
   - refines REQ-GPU-023
   - refines REQ-GPU-024
+
+## REQ-GPU-043 — A new shadow map size or cascade count applies with no restart
+
+- **Status:** active
+- **Source:** agent:SWZ-121
+- **Origin:** #121
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the game calls `Lighting.setShadowMap` with a new map
+  size or cascade count, the `sw_render` lighting shall draw the next frame
+  with shadow maps of that size and that number of cascades.
+- **Rationale:** A settings menu changes the shadow quality while the game
+  runs. Before this requirement, `Lighting.init` fixed the map size and the
+  cascade count, so a change needed a new `Lighting` and new pipelines.
+  `FrameGraph.setTargetSize` gives a cascade target a new size, and the
+  graph makes the new texture at the next `execute`. A new cascade gets a
+  new target and pass. The bind group layout does not change, so each lit
+  pipeline stays.
+- **Verification:**
+  - Test — `libs/sw_render/src/lighting.zig` › "lighting: a new cascade
+    count adds only the passes that are not in the graph (REQ-GPU-043)"
+  - Test — `scripts/demos-check.sh` › the checkpoints `pause_graphics`
+    and `resumed` of `demos/shooter/shooter.tas`: the shooter changes the
+    shadow quality in its pause menu.
+- **Relations:** refines REQ-GPU-016

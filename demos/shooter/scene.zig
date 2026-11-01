@@ -508,6 +508,14 @@ pub const Scene = struct {
         s.post.setTonemap(.{ .curve = .aces, .exposure = new.exposure });
     }
 
+    /// Change the shadow map size and the cascade count while the game
+    /// runs (REQ-GPU-043). The pause menu calls it.
+    pub fn setShadowMap(self: *Scene, map_size: u32, cascades: u32) !void {
+        const l = &self.state.lighting;
+        if (l.mapSize() == map_size and l.cascadeCount() == cascades) return;
+        try l.setShadowMap(map_size, cascades);
+    }
+
     /// The colour of the light on the dust of the particles.
     pub fn dustLight(self: *const Scene) V3 {
         const s = self.state;

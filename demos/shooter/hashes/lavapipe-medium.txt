@@ -10,3 +10,6 @@ third_kill 8532c2e902f2acbb
 reload 88fd78c8a5523f7c
 ragdoll ceb943a93cd9402b
 next_wave 43996dcf75fb0180
+pause_menu 7880fbca94540285
+pause_graphics 776325cb409aa8bb
+resumed d1f7d134dbfc91e8

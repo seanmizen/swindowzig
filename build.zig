@@ -507,6 +507,8 @@ pub fn build(b: *std.Build) void {
         "libs/sw_render/src/sky_plan.zig",
         "libs/sw_render/src/box_model_plan.zig",
         "libs/sw_render/src/lighting_plan.zig",
+        // The shadow map change of the lighting (REQ-GPU-043).
+        "libs/sw_render/src/lighting.zig",
         "libs/sw_render/src/weather_plan.zig",
         "libs/sw_render/src/translucent_plan.zig",
         "libs/sw_render/src/blend_plan.zig",
@@ -774,8 +776,9 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(demo_tests).step);
     }
     // The shooter demo without the GPU: the arena, the body model, the gun
-    // model, the bot fight (REQ-DEMO-020 to REQ-DEMO-023) and the mouse
-    // gate (REQ-DEMO-025).
+    // model, the bot fight (REQ-DEMO-020 to REQ-DEMO-023), the mouse
+    // gate (REQ-DEMO-025), the pause (REQ-DEMO-027) and the saved
+    // settings (REQ-DEMO-028).
     const shooter_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("demos/shooter/tests.zig"),
         .target = target,
@@ -784,6 +787,7 @@ pub fn build(b: *std.Build) void {
     shooter_tests.root_module.addImport("sw_math", web_libs.math);
     shooter_tests.root_module.addImport("sw_core", web_libs.core);
     shooter_tests.root_module.addImport("sw_render", web_libs.render);
+    shooter_tests.root_module.addImport("sw_gpu", web_libs.gpu);
     test_step.dependOn(&b.addRunArtifact(shooter_tests).step);
     // Chunk stage tests (pipeline/stages.zig): equivalence with World,
     // install order, and edits with versions (C2, C3, P3).
@@ -1118,6 +1122,8 @@ fn addDemoCommon(b: *std.Build, libs: Libs, options: std.Build.Module.CreateOpti
     m.addImport("sw_text", libs.text);
     m.addImport("sw_render", libs.render);
     m.addImport("sw_audio", libs.audio);
+    // The shared game menu (demos/common/game_menu.zig).
+    m.addImport("sw_ui", libs.ui);
     m.addAnonymousImport("demo_font", .{ .root_source_file = b.path("examples/flat2d/assets/Lato-Regular.ttf") });
     return m;
 }
