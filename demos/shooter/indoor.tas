@@ -42,8 +42,9 @@
 420 caption A press during a move turns the lamp round
 420 key L down
 425 key L up
-495 key L down
-500 key L up
+# The gamepad north button does the same as L.
+495 pad north down
+500 pad north up
 540 checkpoint turned
 600 caption The player walks in the room with the gun
 600 key A down
