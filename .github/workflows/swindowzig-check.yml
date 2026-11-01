@@ -15,10 +15,10 @@ name: Check (swindowzig)
 #   headless  Zig, lavapipe, SDL2, wgpu-native: each TAS script, cave cull.
 #   goldens   Zig, lavapipe, SDL2, wgpu-native: the golden comparison.
 #
-# Caches: .github/actions/setup-zig restores the Zig cache of the same CPU
-# model, and .github/actions/save-zig-cache saves it at the end of the job.
-# Zig compiles for the native CPU, so the cache of another CPU model does
-# not help. The jobs that build the same programs share a cache group:
+# Caches: .github/actions/setup-zig restores the Zig cache of the same
+# native target (the CPU that Zig finds), and .github/actions/save-zig-cache
+# saves it at the end of the job. Zig compiles for the native CPU, so the
+# cache of another CPU does not help. The jobs that build the same programs share a cache group:
 # unit-tests, web, examples and voxel (headless, cull and goldens). The
 # apt packages come from a cache of the .deb files (cache-apt-pkgs-action).
 # The Playwright browser comes from a cache with the Playwright version of
