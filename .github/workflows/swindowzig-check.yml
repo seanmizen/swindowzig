@@ -354,6 +354,20 @@ jobs:
       - name: Native build
         run: zig build native -Dexample=voxel --summary all
 
+      - name: TEMP cache experiment
+        run: |
+          echo "--- again, no change"
+          zig build native -Dexample=voxel --summary all
+          echo "--- after touch of each .zig file"
+          git ls-files '*.zig' | xargs touch
+          time zig build native -Dexample=voxel --summary all
+          echo "--- after touch of each .c and .h file"
+          git ls-files '*.c' '*.h' | xargs touch
+          time zig build native -Dexample=voxel --summary all
+          echo "--- after a new inode for each .zig file"
+          for f in $(git ls-files '*.zig'); do cp -p "$f" "$f.tmp"; mv "$f.tmp" "$f"; done
+          time zig build native -Dexample=voxel --summary all
+
       - name: Each voxel TAS script runs headless
         # A TAS script that does not parse stops voxel with an error. Each
         # script in examples/voxel/tests/ runs on the flatland world and
