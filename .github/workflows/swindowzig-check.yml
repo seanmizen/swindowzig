@@ -353,7 +353,47 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
-        run: zig build native -Dexample=voxel --summary all
+        run: |
+          mkdir -p .zig-cache/h .zig-cache/o
+          cp -a .zig-cache/h "$RUNNER_TEMP/h-old"
+          find .zig-cache/o -name sdl.zig -exec md5sum {} + > "$RUNNER_TEMP/sdl-old.txt"
+          cat "$RUNNER_TEMP/sdl-old.txt"
+          zig build native -Dexample=voxel --summary all
+          echo "--- sdl.zig after"
+          find .zig-cache/o -name sdl.zig -exec md5sum {} +
+          for f in $(find .zig-cache/o -name sdl.zig); do echo "$f"; grep -o '^// /[^:]*' "$f" | sed 's|/[^/]*$||' | sort | uniq -c; done
+          echo "--- changed manifests"
+          python3 - "$RUNNER_TEMP/h-old" .zig-cache/h <<'EOF'
+          import os, sys
+          def parse(path):
+              data = open(path, 'rb').read()
+              out = {}
+              i = 0
+              while i + 41 <= len(data):
+                  size = int.from_bytes(data[i:i + 8], 'little')
+                  digest = data[i + 24:i + 40].hex()
+                  flags = data[i + 40]
+                  j = data.index(b'\0', i + 41)
+                  p = data[i + 41:j].decode('utf-8', 'replace')
+                  out[(flags >> 2, p)] = (size, digest)
+                  i = j + 1
+              return out
+          old_dir, new_dir = sys.argv[1], sys.argv[2]
+          for name in sorted(os.listdir(new_dir)):
+              a, b = os.path.join(old_dir, name), os.path.join(new_dir, name)
+              if not os.path.exists(a):
+                  print(f'new manifest {name}: {len(parse(b))} files')
+                  continue
+              old, new = parse(a), parse(b)
+              changed = [k for k in new if k in old and old[k] != new[k]]
+              added = [k for k in new if k not in old]
+              removed = [k for k in old if k not in new]
+              if changed or added or removed:
+                  print(f'changed manifest {name}: {len(new)} files')
+                  for k in changed[:15]: print(f'  changed {k}')
+                  for k in added[:15]: print(f'  added {k}')
+                  for k in removed[:15]: print(f'  removed {k}')
+          EOF
 
       - name: Each voxel TAS script runs headless
         # A TAS script that does not parse stops voxel with an error. Each
@@ -454,7 +494,47 @@ jobs:
 
       - name: Native build
         if: env.RUN_TEST == 'true'
-        run: zig build native -Dexample=voxel --summary all
+        run: |
+          mkdir -p .zig-cache/h .zig-cache/o
+          cp -a .zig-cache/h "$RUNNER_TEMP/h-old"
+          find .zig-cache/o -name sdl.zig -exec md5sum {} + > "$RUNNER_TEMP/sdl-old.txt"
+          cat "$RUNNER_TEMP/sdl-old.txt"
+          zig build native -Dexample=voxel --summary all
+          echo "--- sdl.zig after"
+          find .zig-cache/o -name sdl.zig -exec md5sum {} +
+          for f in $(find .zig-cache/o -name sdl.zig); do echo "$f"; grep -o '^// /[^:]*' "$f" | sed 's|/[^/]*$||' | sort | uniq -c; done
+          echo "--- changed manifests"
+          python3 - "$RUNNER_TEMP/h-old" .zig-cache/h <<'EOF'
+          import os, sys
+          def parse(path):
+              data = open(path, 'rb').read()
+              out = {}
+              i = 0
+              while i + 41 <= len(data):
+                  size = int.from_bytes(data[i:i + 8], 'little')
+                  digest = data[i + 24:i + 40].hex()
+                  flags = data[i + 40]
+                  j = data.index(b'\0', i + 41)
+                  p = data[i + 41:j].decode('utf-8', 'replace')
+                  out[(flags >> 2, p)] = (size, digest)
+                  i = j + 1
+              return out
+          old_dir, new_dir = sys.argv[1], sys.argv[2]
+          for name in sorted(os.listdir(new_dir)):
+              a, b = os.path.join(old_dir, name), os.path.join(new_dir, name)
+              if not os.path.exists(a):
+                  print(f'new manifest {name}: {len(parse(b))} files')
+                  continue
+              old, new = parse(a), parse(b)
+              changed = [k for k in new if k in old and old[k] != new[k]]
+              added = [k for k in new if k not in old]
+              removed = [k for k in old if k not in new]
+              if changed or added or removed:
+                  print(f'changed manifest {name}: {len(new)} files')
+                  for k in changed[:15]: print(f'  changed {k}')
+                  for k in added[:15]: print(f'  added {k}')
+                  for k in removed[:15]: print(f'  removed {k}')
+          EOF
 
       - name: Cave cull, section cull and occlusion cull (${{ matrix.test }})
         # Each cull must give the same frame as the frustum cull only
@@ -510,7 +590,47 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
-        run: zig build native -Dexample=voxel --summary all
+        run: |
+          mkdir -p .zig-cache/h .zig-cache/o
+          cp -a .zig-cache/h "$RUNNER_TEMP/h-old"
+          find .zig-cache/o -name sdl.zig -exec md5sum {} + > "$RUNNER_TEMP/sdl-old.txt"
+          cat "$RUNNER_TEMP/sdl-old.txt"
+          zig build native -Dexample=voxel --summary all
+          echo "--- sdl.zig after"
+          find .zig-cache/o -name sdl.zig -exec md5sum {} +
+          for f in $(find .zig-cache/o -name sdl.zig); do echo "$f"; grep -o '^// /[^:]*' "$f" | sed 's|/[^/]*$||' | sort | uniq -c; done
+          echo "--- changed manifests"
+          python3 - "$RUNNER_TEMP/h-old" .zig-cache/h <<'EOF'
+          import os, sys
+          def parse(path):
+              data = open(path, 'rb').read()
+              out = {}
+              i = 0
+              while i + 41 <= len(data):
+                  size = int.from_bytes(data[i:i + 8], 'little')
+                  digest = data[i + 24:i + 40].hex()
+                  flags = data[i + 40]
+                  j = data.index(b'\0', i + 41)
+                  p = data[i + 41:j].decode('utf-8', 'replace')
+                  out[(flags >> 2, p)] = (size, digest)
+                  i = j + 1
+              return out
+          old_dir, new_dir = sys.argv[1], sys.argv[2]
+          for name in sorted(os.listdir(new_dir)):
+              a, b = os.path.join(old_dir, name), os.path.join(new_dir, name)
+              if not os.path.exists(a):
+                  print(f'new manifest {name}: {len(parse(b))} files')
+                  continue
+              old, new = parse(a), parse(b)
+              changed = [k for k in new if k in old and old[k] != new[k]]
+              added = [k for k in new if k not in old]
+              removed = [k for k in old if k not in new]
+              if changed or added or removed:
+                  print(f'changed manifest {name}: {len(new)} files')
+                  for k in changed[:15]: print(f'  changed {k}')
+                  for k in added[:15]: print(f'  added {k}')
+                  for k in removed[:15]: print(f'  removed {k}')
+          EOF
 
       - name: Compare with the goldens
         # The step takes about 1.5 minutes. The script stops a run after
