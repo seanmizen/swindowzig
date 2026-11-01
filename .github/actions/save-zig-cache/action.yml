@@ -1,0 +1,36 @@
+name: Save the Zig cache of this CPU model
+description: >
+  Saves .zig-cache under the key that the setup-zig action of this
+  repository made. Run it as the last step of the job.
+
+inputs:
+  size-limit:
+    description: >
+      The largest permitted size of .zig-cache, in MiB. Zig never removes
+      old cache files. When .zig-cache is larger, this action saves an
+      empty cache, and the next run starts again with no cache. This is
+      the rule of mlugg/setup-zig, with the same default.
+    default: '2048'
+
+runs:
+  using: composite
+  steps:
+    - name: Apply the size limit to the Zig cache
+      shell: bash
+      env:
+        LIMIT: ${{ inputs.size-limit }}
+      run: |
+        test -d .zig-cache || mkdir .zig-cache
+        size=$(du -sm .zig-cache | cut -f 1)
+        if [ "$size" -gt "$LIMIT" ]; then
+          echo "The Zig cache is $size MiB, more than $LIMIT MiB. It is removed."
+          find .zig-cache -mindepth 1 -delete
+        else
+          echo "The Zig cache is $size MiB, not more than $LIMIT MiB."
+        fi
+
+    - name: Save the Zig cache
+      uses: actions/cache/save@v4
+      with:
+        path: .zig-cache
+        key: ${{ env.ZIG_CACHE_KEY }}

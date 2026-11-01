@@ -1,0 +1,67 @@
+name: Set up Zig and the Zig cache of this CPU model
+description: >
+  Installs Zig with mlugg/setup-zig and restores .zig-cache from a cache
+  entry of the same CPU model. Run save-zig-cache as the last step of the
+  job.
+
+# Why a cache entry for each CPU model:
+#
+# Zig compiles for the native CPU by default. The build runner, the
+# translate-c tool and each native artifact are thus compiled for the CPU
+# model of the runner, and the CPU model is part of their Zig cache hash.
+# GitHub gives runners with different CPU models (AMD EPYC 7763, 9V45 and
+# 9V74, Intel Xeon 8370C). A cache entry from one model has none of these
+# artifacts for another model. The voxel native build then takes 125 s to
+# 210 s, although the restore says "Cache hit".
+#
+# The key of each entry is:
+#   zig-<zig version>-<CPU model>-<flags hash>-<group>-<part>-<run id>-<attempt>
+# The restore tries the newest entry of the same group and part first, and
+# then the newest entry of the same group. Jobs that build the same
+# programs use one group, so that each one can use an entry of the others.
+# setup-zig cannot do this: its key always contains the job name.
+
+inputs:
+  group:
+    description: The cache group. Jobs that build the same programs use the same group.
+    required: true
+  part:
+    description: The part of the job in the group, for example the matrix value.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Zig
+      # No version: setup-zig reads minimum_zig_version from build.zig.zon.
+      # setup-zig sets ZIG_GLOBAL_CACHE_DIR and ZIG_LOCAL_CACHE_DIR to
+      # .zig-cache also when use-cache is false.
+      uses: mlugg/setup-zig@v2
+      with:
+        use-cache: false
+
+    - name: Make the Zig cache key
+      shell: bash
+      env:
+        GROUP: ${{ inputs.group }}
+        PART: ${{ inputs.part }}
+      run: |
+        model=$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
+        flags=$(sed -n 's/^flags[[:space:]]*: //p' /proc/cpuinfo | head -n 1 | sha256sum | cut -c 1-8)
+        echo "CPU model: $model (flags hash $flags)"
+        cpu=$(printf '%s' "$model" | tr -cs 'A-Za-z0-9' '-')
+        base="zig-$(zig version)-$cpu-$flags-$GROUP-"
+        {
+          echo "ZIG_CACHE_GROUP=$base"
+          echo "ZIG_CACHE_PART=$base$PART-"
+          echo "ZIG_CACHE_KEY=$base$PART-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        } >> "$GITHUB_ENV"
+
+    - name: Restore the Zig cache
+      uses: actions/cache/restore@v4
+      with:
+        path: .zig-cache
+        key: ${{ env.ZIG_CACHE_KEY }}
+        restore-keys: |
+          ${{ env.ZIG_CACHE_PART }}
+          ${{ env.ZIG_CACHE_GROUP }}

@@ -15,8 +15,11 @@ name: Check (swindowzig)
 #   headless  Zig, lavapipe, SDL2, wgpu-native: each TAS script, cave cull.
 #   goldens   Zig, lavapipe, SDL2, wgpu-native: the golden comparison.
 #
-# Caches: setup-zig keeps the Zig cache of each job under a key with the job
-# name, so two jobs do not write the same cache. The apt packages come from
+# Caches: .github/actions/setup-zig restores the Zig cache of the same CPU
+# model, and .github/actions/save-zig-cache saves it at the end of the job.
+# Zig compiles for the native CPU, so the cache of another CPU model does
+# not help. The jobs that build the same programs share a cache group:
+# unit-tests, web, examples and voxel. The apt packages come from
 # a cache of the .deb files (cache-apt-pkgs-action). The Playwright browser
 # comes from a cache with the Playwright version of yarn.lock in its key.
 #
@@ -56,11 +59,11 @@ jobs:
           packages: libsdl2-dev
           version: 1
 
-      - name: Install Zig
-        # No version: setup-zig reads minimum_zig_version from build.zig.zon.
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}-${{ matrix.shard }}
+          group: unit-tests
+          part: ${{ matrix.shard }}
 
       - name: Format
         if: matrix.shard == 0
@@ -83,6 +86,10 @@ jobs:
           diff "$RUNNER_TEMP/terrain-native.txt" "$RUNNER_TEMP/terrain-wasm.txt"
           grep -qx '0 db5d8508a4c6cd54' "$RUNNER_TEMP/terrain-native.txt"
 
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
+
   web:
     name: web build + Bun tests
     runs-on: ubuntu-24.04
@@ -91,10 +98,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}
+          group: web
+          part: web
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -150,6 +158,10 @@ jobs:
         # binary and text messages, the close codes, and the reconnect.
         run: bun test backends/wasm/websocket.test.ts
 
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
+
   browser:
     name: tsc + browser tests in Chromium
     runs-on: ubuntu-24.04
@@ -158,11 +170,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Zig
+      - name: Install Zig and restore the Zig cache
         # The Playwright web servers build flat2d and justabox for the web.
-        uses: mlugg/setup-zig@v2
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}
+          group: web
+          part: browser
 
       - name: Set up Bun
         # The Playwright web servers run the Bun dev server.
@@ -234,6 +247,10 @@ jobs:
           yarn test:browser --project canvas
           yarn test:browser --project flat2d $FLAT2D_REPEAT
 
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
+
   examples:
     # One job for each example, so that the builds run at the same time.
     name: native examples (--check)
@@ -263,10 +280,11 @@ jobs:
           sudo ldconfig
           vulkaninfo --summary | grep -i llvmpipe
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}-${{ matrix.example }}
+          group: examples
+          part: ${{ matrix.example }}
 
       - name: Install wgpu-native
         # The same version as the bindings in libs/sw_gpu/src/native_webgpu.zig.
@@ -293,6 +311,10 @@ jobs:
         if: matrix.example != 'flat2d'
         run: ./zig-out/bin/${{ matrix.example }} --check
 
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
+
   headless:
     name: voxel TAS scripts (lavapipe)
     runs-on: ubuntu-24.04
@@ -315,10 +337,11 @@ jobs:
           sudo ldconfig
           vulkaninfo --summary | grep -i llvmpipe
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}
+          group: voxel
+          part: headless
 
       - name: Install wgpu-native
         run: |
@@ -328,9 +351,7 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
-        run: |
-          grep -m1 'model name' /proc/cpuinfo
-          zig build native -Dexample=voxel --summary all
+        run: zig build native -Dexample=voxel --summary all
 
       - name: Each voxel TAS script runs headless
         # A TAS script that does not parse stops voxel with an error. Each
@@ -373,6 +394,10 @@ jobs:
         # The debug build reports each leak at exit (REQ-VOXEL-033).
         run: ./examples/voxel/tests/tas_parse_fail.sh
 
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
+
   cull:
     # The frame tests that render each frame of a TAS on lavapipe. Each
     # one has its own job, so that they run at the same time: the 5 scenes
@@ -407,12 +432,15 @@ jobs:
           sudo ldconfig
           vulkaninfo --summary | grep -i llvmpipe
 
-      - name: Install Zig
+      - name: Install Zig and restore the Zig cache
         if: env.RUN_TEST == 'true'
-        # The same voxel build as the headless job, so the same Zig cache.
-        uses: mlugg/setup-zig@v2
+        # The same voxel build as the headless and goldens jobs, so the
+        # same cache group. The jobs of this matrix use one key: on each
+        # CPU model, the first job to stop saves the cache.
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: headless
+          group: voxel
+          part: cull
 
       - name: Install wgpu-native
         if: env.RUN_TEST == 'true'
@@ -424,9 +452,7 @@ jobs:
 
       - name: Native build
         if: env.RUN_TEST == 'true'
-        run: |
-          grep -m1 'model name' /proc/cpuinfo
-          zig build native -Dexample=voxel --summary all
+        run: zig build native -Dexample=voxel --summary all
 
       - name: Cave cull, section cull and occlusion cull (${{ matrix.test }})
         # Each cull must give the same frame as the frustum cull only
@@ -441,6 +467,10 @@ jobs:
         if: env.RUN_TEST == 'true' && matrix.test == 'chunk_border'
         timeout-minutes: 15
         run: ./examples/voxel/tests/chunk_border.sh
+
+      - name: Save the Zig cache
+        if: ${{ !cancelled() && env.RUN_TEST == 'true' }}
+        uses: ./.github/actions/save-zig-cache
 
   goldens:
     name: voxel goldens (lavapipe)
@@ -464,10 +494,11 @@ jobs:
           sudo ldconfig
           vulkaninfo --summary | grep -i llvmpipe
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}
+          group: voxel
+          part: goldens
 
       - name: Install wgpu-native
         run: |
@@ -477,9 +508,7 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
-        run: |
-          grep -m1 'model name' /proc/cpuinfo
-          zig build native -Dexample=voxel --summary all
+        run: zig build native -Dexample=voxel --summary all
 
       - name: Compare with the goldens
         # The step takes about 1.5 minutes. The script stops a run after
@@ -521,3 +550,7 @@ jobs:
           echo "(gh run download does not overwrite files, so remove the old goldens first.)"
           echo
           echo "If not, the frames and logs are in the voxel-frames artifact."
+
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
