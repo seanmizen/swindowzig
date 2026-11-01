@@ -15,10 +15,17 @@ name: Check (swindowzig)
 #   headless  Zig, lavapipe, SDL2, wgpu-native: each TAS script, cave cull.
 #   goldens   Zig, lavapipe, SDL2, wgpu-native: the golden comparison.
 #
-# Caches: setup-zig keeps the Zig cache of each job under a key with the job
-# name, so two jobs do not write the same cache. The apt packages come from
-# a cache of the .deb files (cache-apt-pkgs-action). The Playwright browser
-# comes from a cache with the Playwright version of yarn.lock in its key.
+# Caches: .github/actions/setup-zig installs Zig at a fixed path and
+# restores the Zig cache of the same native target (the CPU that Zig
+# finds). .github/actions/save-zig-cache saves the cache at the end of the
+# job. The comment in that action says why the path and the CPU change the
+# cache. The jobs that build the same programs share a cache group:
+# unit-tests, web, examples and voxel (headless, cull and goldens). The
+# voxel jobs also keep the voxel binary (for the baseline CPU) in a cache
+# with a key of its inputs (.github/actions/voxel-native-build). The
+# apt packages come from a cache of the .deb files (cache-apt-pkgs-action).
+# The Playwright browser comes from a cache with the Playwright version of
+# yarn.lock in its key.
 #
 # A failed comparison is either a regression or a deliberate visual change.
 # For a deliberate change, the goldens job uploads new goldens and prints
@@ -33,6 +40,11 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # The same version as the bindings in libs/sw_gpu/src/native_webgpu.zig.
+  # The key of the voxel binary cache holds it too.
+  WGPU_NATIVE_VERSION: v22.1.0.5
 
 jobs:
   zig:
@@ -56,11 +68,11 @@ jobs:
           packages: libsdl2-dev
           version: 1
 
-      - name: Install Zig
-        # No version: setup-zig reads minimum_zig_version from build.zig.zon.
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}-${{ matrix.shard }}
+          group: unit-tests
+          part: ${{ matrix.shard }}
 
       - name: Format
         if: matrix.shard == 0
@@ -83,6 +95,10 @@ jobs:
           diff "$RUNNER_TEMP/terrain-native.txt" "$RUNNER_TEMP/terrain-wasm.txt"
           grep -qx '0 db5d8508a4c6cd54' "$RUNNER_TEMP/terrain-native.txt"
 
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
+
   web:
     name: web build + Bun tests
     runs-on: ubuntu-24.04
@@ -91,10 +107,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}
+          group: web
+          part: web
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -150,6 +167,10 @@ jobs:
         # binary and text messages, the close codes, and the reconnect.
         run: bun test backends/wasm/websocket.test.ts
 
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
+
   browser:
     name: tsc + browser tests in Chromium
     runs-on: ubuntu-24.04
@@ -158,11 +179,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Zig
+      - name: Install Zig and restore the Zig cache
         # The Playwright web servers build flat2d and justabox for the web.
-        uses: mlugg/setup-zig@v2
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}
+          group: web
+          part: browser
 
       - name: Set up Bun
         # The Playwright web servers run the Bun dev server.
@@ -234,6 +256,10 @@ jobs:
           yarn test:browser --project canvas
           yarn test:browser --project flat2d $FLAT2D_REPEAT
 
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
+
   examples:
     # One job for each example, so that the builds run at the same time.
     name: native examples (--check)
@@ -263,16 +289,16 @@ jobs:
           sudo ldconfig
           vulkaninfo --summary | grep -i llvmpipe
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}-${{ matrix.example }}
+          group: examples
+          part: ${{ matrix.example }}
 
       - name: Install wgpu-native
-        # The same version as the bindings in libs/sw_gpu/src/native_webgpu.zig.
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
-            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+            https://github.com/gfx-rs/wgpu-native/releases/download/$WGPU_NATIVE_VERSION/wgpu-linux-x86_64-release.zip
           mkdir -p ~/.local
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
@@ -292,6 +318,10 @@ jobs:
         #   models    the box models and the first-person pass (REQ-GPU-014, REQ-GPU-015)
         if: matrix.example != 'flat2d'
         run: ./zig-out/bin/${{ matrix.example }} --check
+
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
 
   headless:
     name: voxel TAS scripts (lavapipe)
@@ -315,20 +345,22 @@ jobs:
           sudo ldconfig
           vulkaninfo --summary | grep -i llvmpipe
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}
+          group: voxel
+          part: headless
 
       - name: Install wgpu-native
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
-            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+            https://github.com/gfx-rs/wgpu-native/releases/download/$WGPU_NATIVE_VERSION/wgpu-linux-x86_64-release.zip
           mkdir -p ~/.local
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
-      - name: Native build
-        run: zig build native -Dexample=voxel
+      - name: Native build (or the binary of the same inputs)
+        # The cull and goldens jobs use the same binary key.
+        uses: ./.github/actions/voxel-native-build
 
       - name: Each voxel TAS script runs headless
         # A TAS script that does not parse stops voxel with an error. Each
@@ -371,11 +403,15 @@ jobs:
         # The debug build reports each leak at exit (REQ-VOXEL-033).
         run: ./examples/voxel/tests/tas_parse_fail.sh
 
+      - name: Save the Zig cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-zig-cache
+
   cull:
     # The frame tests that render each frame of a TAS on lavapipe. Each
     # one has its own job, so that they run at the same time: the 5 scenes
     # of cave_cull.sh, and chunk_border.sh. The two slowest (surface and
-    # chunk_border, about 100 s and 150 s after a 2 to 3 min build) run
+    # chunk_border, about 100 s and 150 s after the voxel build) run
     # only on a push to main, so that a pull request check stays short.
     name: voxel frames ${{ matrix.test }} (lavapipe)
     runs-on: ubuntu-24.04
@@ -405,24 +441,28 @@ jobs:
           sudo ldconfig
           vulkaninfo --summary | grep -i llvmpipe
 
-      - name: Install Zig
+      - name: Install Zig and restore the Zig cache
         if: env.RUN_TEST == 'true'
-        # The same voxel build as the headless job, so the same Zig cache.
-        uses: mlugg/setup-zig@v2
+        # The same voxel build as the headless and goldens jobs, so the
+        # same cache group. The jobs of this matrix use one key: on each
+        # CPU model, the first job to stop saves the cache.
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: headless
+          group: voxel
+          part: cull
 
       - name: Install wgpu-native
         if: env.RUN_TEST == 'true'
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
-            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+            https://github.com/gfx-rs/wgpu-native/releases/download/$WGPU_NATIVE_VERSION/wgpu-linux-x86_64-release.zip
           mkdir -p ~/.local
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
-      - name: Native build
+      - name: Native build (or the binary of the same inputs)
+        id: voxel
         if: env.RUN_TEST == 'true'
-        run: zig build native -Dexample=voxel
+        uses: ./.github/actions/voxel-native-build
 
       - name: Cave cull, section cull and occlusion cull (${{ matrix.test }})
         # Each cull must give the same frame as the frustum cull only
@@ -437,6 +477,11 @@ jobs:
         if: env.RUN_TEST == 'true' && matrix.test == 'chunk_border'
         timeout-minutes: 15
         run: ./examples/voxel/tests/chunk_border.sh
+
+      - name: Save the Zig cache
+        # With the binary from the cache, no build changed the Zig cache.
+        if: ${{ !cancelled() && env.RUN_TEST == 'true' && steps.voxel.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/save-zig-cache
 
   goldens:
     name: voxel goldens (lavapipe)
@@ -460,20 +505,22 @@ jobs:
           sudo ldconfig
           vulkaninfo --summary | grep -i llvmpipe
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Install Zig and restore the Zig cache
+        uses: ./.github/actions/setup-zig
         with:
-          cache-key: ${{ github.job }}
+          group: voxel
+          part: goldens
 
       - name: Install wgpu-native
         run: |
           curl -fsSL -o "$RUNNER_TEMP/wgpu.zip" \
-            https://github.com/gfx-rs/wgpu-native/releases/download/v22.1.0.5/wgpu-linux-x86_64-release.zip
+            https://github.com/gfx-rs/wgpu-native/releases/download/$WGPU_NATIVE_VERSION/wgpu-linux-x86_64-release.zip
           mkdir -p ~/.local
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
-      - name: Native build
-        run: zig build native -Dexample=voxel
+      - name: Native build (or the binary of the same inputs)
+        id: voxel
+        uses: ./.github/actions/voxel-native-build
 
       - name: Compare with the goldens
         # The step takes about 1.5 minutes. The script stops a run after
@@ -515,3 +562,8 @@ jobs:
           echo "(gh run download does not overwrite files, so remove the old goldens first.)"
           echo
           echo "If not, the frames and logs are in the voxel-frames artifact."
+
+      - name: Save the Zig cache
+        # With the binary from the cache, no build changed the Zig cache.
+        if: ${{ !cancelled() && steps.voxel.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/save-zig-cache

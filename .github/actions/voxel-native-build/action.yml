@@ -1,0 +1,64 @@
+name: Build voxel for native, or use the binary of the same inputs
+description: >
+  Restores zig-out/bin/voxel from the cache entry of the same inputs. When
+  there is no such entry, it runs zig build native -Dexample=voxel
+  -Dcpu=baseline and saves the binary. Run the setup-zig action of this
+  repository first.
+
+# Why a cache of the binary:
+#
+# The voxel jobs (headless, cull, goldens) build the same debug binary. A
+# fresh job compiles voxel again (30 s to 60 s) although setup-zig restores
+# the Zig cache of the same native target and the same sources. A runner
+# with a CPU that no earlier job had takes 125 s to 210 s. Thus a commit
+# that changes only a workflow file compiles voxel again in each job.
+#
+# The binary is for the baseline x86-64 CPU (-Dcpu=baseline), so it runs
+# on each runner. One entry thus serves each job of each later run.
+#
+# The key holds each input of the binary:
+#   - the Zig version (ZIG_VERSION, from setup-zig),
+#   - the wgpu-native version (WGPU_NATIVE_VERSION, from the workflow),
+#   - a hash of build.zig, build.zig.zon and each file under libs,
+#     examples and demos.
+# The same key thus gives the same binary. A change to any input gives a
+# new key, and the job builds voxel. The SDL2 headers and libraries come
+# from the runner image and the apt cache. They are not in the key.
+
+outputs:
+  cache-hit:
+    description: true when the binary came from the cache and no build ran.
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Make the key of the voxel binary
+      id: key
+      shell: bash
+      env:
+        SOURCES: ${{ hashFiles('build.zig', 'build.zig.zon', 'libs/**', 'examples/**', 'demos/**') }}
+      run: |
+        test -n "$ZIG_VERSION"
+        test -n "$WGPU_NATIVE_VERSION"
+        test -n "$SOURCES"
+        echo "key=voxel-bin-$ZIG_VERSION-baseline-wgpu-$WGPU_NATIVE_VERSION-$SOURCES" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the voxel binary
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: zig-out/bin/voxel
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Build voxel
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: zig build native -Dexample=voxel -Dcpu=baseline --summary all
+
+    - name: Save the voxel binary
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: zig-out/bin/voxel
+        key: ${{ steps.key.outputs.key }}
