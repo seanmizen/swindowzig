@@ -124,7 +124,7 @@ swindowzig/
 │   ├── models/         # sw_render instanced box models, the first-person pass, shadows and a point light. `--check` tests it
 │   └── voxel/          # Voxel demo on sw_voxel: content.zig, world_gen, renderer
 ├── demos/              # Showcase demos (-Ddemo=<name>): scripts, capture, frame hashes. See demos/README.md
-│   ├── common/         # Shared frame (demo.zig), CowScene, script, mesher
+│   ├── common/         # Shared frame (demo.zig), CowScene, script, mesher, game menu
 │   ├── cow/            # The turning cow; one setting at a time
 │   ├── menu/           # A full sw_ui game menu over the cow; script input commands
 │   └── shooter/        # Offline first-person fight in a snowy arena; seeded bots

@@ -310,3 +310,81 @@ scripts, the frame hashes and the recordings.
   - Demonstration — Sean clicks in another window, then in the shooter, in
     the native build on macOS and in the web build in Chromium.
 - **Relations:** depends-on REQ-DEMO-010
+
+## REQ-DEMO-026 — The menu and shooter demos share one game menu
+
+- **Status:** active
+- **Source:** agent:SWZ-121
+- **Origin:** #121
+- **Type:** constraint
+- **Priority:** P2
+- **Statement:** The menu demo and the shooter demo shall build their menu
+  screens with the shared game menu of `demos/common/game_menu.zig`.
+- **Rationale:** The two demos show one sw_ui game menu: the panel, the
+  cycle buttons, the sliders, the mouse rows, the audio screen, the text
+  of each language, the fonts and the gamepad navigation. One copy keeps
+  the look and the input the same. The menu demo did not change when its
+  screens moved: its frame hashes stay the same.
+- **Verification:**
+  - Inspection — `demos/common/game_menu.zig` › `Menu`.
+  - Test — `scripts/demos-check.sh` › the checkpoints of
+    `demos/menu/menu.tas` keep their hashes.
+- **Relations:** depends-on REQ-DEMO-009
+
+## REQ-DEMO-027 — Escape or Start pauses the shooter and opens its menu
+
+- **Status:** active
+- **Source:** agent:SWZ-121
+- **Origin:** #121
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the player presses Escape or the gamepad Start
+  button during the fight, or the pointer lock ends during the fight, the
+  shooter demo shall stop the fight, end the pointer lock and show the
+  pause menu.
+- **Rationale:** The browser ends the pointer lock on Escape, and the page
+  does not always get the key. So the end of the lock also opens the menu,
+  and the web build and the native build do the same thing. The menu has
+  Resume, the graphics, the mouse and the volume, and Quit in the native
+  build. Each change applies at once. Resume asks for the pointer lock
+  again. The menu does not read Escape for some ticks after it opens, so
+  the key that opens it does not also close it.
+- **Verification:**
+  - Test — `demos/shooter/pause.zig` › "Escape and Start open the menu,
+    and Start closes it (REQ-DEMO-027)"
+  - Test — `demos/shooter/pause.zig` › "the end of the pointer lock
+    during the fight opens the menu (REQ-DEMO-027)"
+  - Test — `backends/wasm/tests/shooter.pw.ts` › "Escape pauses the
+    shooter, and the mirror shows the pause menu"
+  - Test — `scripts/demos-check.sh` › the checkpoint `pause_menu` of
+    `demos/shooter/shooter.tas`.
+  - Demonstration — Sean presses Escape and Start in the native build on
+    macOS and in the web build in Chromium.
+- **Relations:**
+  - depends-on REQ-DEMO-025
+  - depends-on REQ-DEMO-026
+
+## REQ-DEMO-028 — The shooter keeps the settings of its menu
+
+- **Status:** active
+- **Source:** agent:SWZ-121
+- **Origin:** #121
+- **Type:** functional
+- **Priority:** P3
+- **Statement:** When the player changes a setting in the pause menu of
+  the shooter demo, the demo shall write the settings to `sw_platform`
+  storage, and read them when it starts again.
+- **Rationale:** The player sets the graphics, the mouse and the volume
+  one time. A capture or check run does not read the save, so the frames
+  do not depend on the machine (REQ-DEMO-004). The script of a window
+  run does not write the save. A line that the demo cannot read keeps
+  the value before it.
+- **Verification:**
+  - Test — `demos/shooter/prefs.zig` › "prefs: the text form gives the
+    same settings back (REQ-DEMO-028)"
+  - Test — `demos/shooter/prefs.zig` › "prefs: a bad line keeps the
+    value before it (REQ-DEMO-028)"
+  - Test — `backends/wasm/tests/shooter.pw.ts` › "Escape pauses the
+    shooter, and the mirror shows the pause menu": the page writes
+    localStorage, and a new page reads it.
+- **Relations:** depends-on REQ-DEMO-027

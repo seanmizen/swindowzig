@@ -414,4 +414,20 @@
 2092 set follow -1
 2100 caption The next wave comes. Press a key to play
 2190 checkpoint next_wave
-2280 end
+# The pause menu (REQ-DEMO-027): Escape pauses the fight. The shadow
+# quality makes new shadow maps with no restart (REQ-GPU-043).
+2200 caption Escape or the gamepad Start button pauses the fight
+2200 key Escape
+2240 checkpoint pause_menu
+2245 caption The graphics apply at once: new shadow maps, no restart
+2245 key Down
+2255 key Enter
+2265 key Down
+2275 key Down
+2285 key Right
+2330 checkpoint pause_graphics
+2335 caption Escape goes back, and Escape again resumes the fight
+2335 key Escape
+2350 key Escape
+2390 checkpoint resumed
+2400 end

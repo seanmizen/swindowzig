@@ -293,6 +293,13 @@ pub const FrameGraph = struct {
         self.unchecked = true;
     }
 
+    /// Give a target a new size (REQ-GPU-043). The graph makes the new
+    /// texture at the next `execute`, and `generation` then increases.
+    pub fn setTargetSize(self: *FrameGraph, id: TargetId, new_size: plan.Size) void {
+        self.targets[id.index()].desc.size = new_size;
+        self.unchecked = true;
+    }
+
     pub fn findTarget(self: *const FrameGraph, name: []const u8) ?TargetId {
         for (self.targets[0..self.target_count], 0..) |t, i| {
             if (std.mem.eql(u8, t.desc.name, name)) return TargetId.fromIndex(i);

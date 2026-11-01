@@ -19,6 +19,8 @@
 // - Player: a text field, the on-screen keyboard, and a scroll list.
 //
 // The web build mirrors the UI for a screen reader (backends/wasm/a11y.ts).
+// The menu frame, the text, the fonts and the shared screen parts are in
+// demos/common/game_menu.zig: the shooter uses them too (REQ-DEMO-026).
 //
 //   zig build run -Ddemo=menu                      # window: the script plays
 //                                                  # until you press a key
@@ -29,10 +31,15 @@ const demo = @import("demo_common");
 const sw_render = @import("sw_render");
 const sw_ui = @import("sw_ui");
 const sw_text = @import("sw_text");
-const pixel_font = @import("pixel_font.zig");
-const gfx = @import("sw_gfx2d");
 const core = @import("sw_core");
+const gfx = @import("sw_gfx2d");
 const audio = demo.audio;
+const gm = demo.game_menu;
+const S = gm.S;
+const ids = gm.ids;
+const Language = gm.Language;
+const FontKind = gm.FontKind;
+const layout_height = gm.layout_height;
 
 const D = demo.Demo(App);
 pub const std_options = demo.std_options;
@@ -41,249 +48,6 @@ pub const main = D.main;
 comptime {
     D.exportWeb();
 }
-
-/// Noto Sans Hebrew, under the SIL Open Font License
-/// (assets/NotoSansHebrew-OFL.txt).
-const hebrew_ttf = @embedFile("assets/NotoSansHebrew-Regular.ttf");
-
-/// The layout is this many units high at each surface size.
-const layout_height: f32 = 540;
-const panel_width: f32 = 370;
-
-// ---- Text -------------------------------------------------------------------
-
-const Language = enum { english, hebrew };
-const FontKind = enum { truetype, bitmap };
-
-const S = enum {
-    title,
-    player_line,
-    no_name,
-    hint,
-    resume_game,
-    resume_tip,
-    settings,
-    settings_tip,
-    player,
-    player_tip,
-    back,
-    open_menu,
-    open_menu_tip,
-    graphics,
-    graphics_tip,
-    sound,
-    sound_tip,
-    controls,
-    controls_tip,
-    gamepad,
-    gamepad_tip,
-    interface,
-    interface_tip,
-    preset,
-    preset_tip,
-    low,
-    medium,
-    high,
-    custom,
-    anti_aliasing,
-    off,
-    on,
-    coat,
-    exposure,
-    time_of_day,
-    spin,
-    shadows,
-    occlusion,
-    fog,
-    sky,
-    wireframe,
-    master,
-    music,
-    effects,
-    ui_sounds,
-    orbit_left,
-    orbit_right,
-    orbit_up,
-    orbit_down,
-    moo,
-    press_key,
-    conflict,
-    no_conflict,
-    reset_keys,
-    sensitivity,
-    invert_y,
-    dead_zone,
-    dead_zone_tip,
-    left_stick,
-    right_stick,
-    pad_hint,
-    no_pad,
-    language,
-    font,
-    font_truetype,
-    font_bitmap,
-    name,
-    keyboard,
-    keyboard_tip,
-    hours,
-    hours_tip,
-};
-
-const english = std.enums.EnumArray(S, []const u8).init(.{
-    .title = "Cow menu",
-    .player_line = "Player",
-    .no_name = "(no name)",
-    .hint = "Arrows, Tab, Enter, Esc. Drag to turn.",
-    .resume_game = "Resume",
-    .resume_tip = "Hide the menu. Esc shows it again.",
-    .settings = "Settings",
-    .settings_tip = "Graphics, audio, controls, gamepad, interface",
-    .player = "Player",
-    .player_tip = "Your name and the time of day",
-    .back = "Back",
-    .open_menu = "Menu",
-    .open_menu_tip = "Esc also opens the menu",
-    .graphics = "Graphics",
-    .graphics_tip = "The look of the cow scene",
-    .sound = "Audio",
-    .sound_tip = "A volume for each sound group",
-    .controls = "Controls",
-    .controls_tip = "Keys, mouse sensitivity, invert Y",
-    .gamepad = "Gamepad",
-    .gamepad_tip = "The stick dead zone",
-    .interface = "Interface",
-    .interface_tip = "Language and font",
-    .preset = "Preset",
-    .preset_tip = "Left and Right change it",
-    .low = "Low",
-    .medium = "Medium",
-    .high = "High",
-    .custom = "Custom",
-    .anti_aliasing = "Anti-aliasing",
-    .off = "off",
-    .on = "on",
-    .coat = "Coat",
-    .exposure = "Exposure",
-    .time_of_day = "Time of day",
-    .spin = "Turn speed",
-    .shadows = "Shadows",
-    .occlusion = "Occlusion",
-    .fog = "Fog",
-    .sky = "Sky",
-    .wireframe = "Wireframe",
-    .master = "Master",
-    .music = "Music",
-    .effects = "Effects",
-    .ui_sounds = "Interface",
-    .orbit_left = "Turn left",
-    .orbit_right = "Turn right",
-    .orbit_up = "Turn up",
-    .orbit_down = "Turn down",
-    .moo = "Moo",
-    .press_key = "Press a key (Esc cancels)",
-    .conflict = "is also bound to",
-    .no_conflict = "No conflicts",
-    .reset_keys = "Reset the keys",
-    .sensitivity = "Mouse sensitivity",
-    .invert_y = "Invert Y",
-    .dead_zone = "Dead zone",
-    .dead_zone_tip = "The stick is at the centre inside this distance",
-    .left_stick = "Left stick",
-    .right_stick = "Right stick",
-    .pad_hint = "The right stick turns the camera.",
-    .no_pad = "No gamepad: press a button on it",
-    .language = "Language",
-    .font = "Font",
-    .font_truetype = "Lato (TrueType)",
-    .font_bitmap = "Bitmap font",
-    .name = "Player name",
-    .keyboard = "On-screen keyboard",
-    .keyboard_tip = "Type with the arrow keys or a gamepad",
-    .hours = "Time of day",
-    .hours_tip = "Pick an hour for the sky",
-});
-
-// Hebrew needs no letter joining. The bidi algorithm of sw_text puts each
-// line in visual order.
-const hebrew = std.enums.EnumArray(S, []const u8).init(.{
-    .title = "תפריט הפרה",
-    .player_line = "שחקן",
-    .no_name = "(אין שם)",
-    .hint = "חצים, Tab, Enter, Esc. גררו כדי לסובב.",
-    .resume_game = "המשך",
-    .resume_tip = "הסתרת התפריט. Esc מציג אותו שוב.",
-    .settings = "הגדרות",
-    .settings_tip = "גרפיקה, שמע, שליטה, בקר, ממשק",
-    .player = "שחקן",
-    .player_tip = "השם שלך והשעה ביום",
-    .back = "חזרה",
-    .open_menu = "תפריט",
-    .open_menu_tip = "גם Esc פותח את התפריט",
-    .graphics = "גרפיקה",
-    .graphics_tip = "המראה של הפרה",
-    .sound = "שמע",
-    .sound_tip = "עוצמה לכל קבוצת צלילים",
-    .controls = "שליטה",
-    .controls_tip = "מקשים, רגישות עכבר, היפוך Y",
-    .gamepad = "בקר משחק",
-    .gamepad_tip = "האזור המת של הסטיק",
-    .interface = "ממשק",
-    .interface_tip = "שפה וגופן",
-    .preset = "רמת איכות",
-    .preset_tip = "ימינה ושמאלה משנים אותה",
-    .low = "נמוכה",
-    .medium = "בינונית",
-    .high = "גבוהה",
-    .custom = "מותאמת",
-    .anti_aliasing = "החלקת קצוות",
-    .off = "כבוי",
-    .on = "פועל",
-    .coat = "פרווה",
-    .exposure = "חשיפה",
-    .time_of_day = "שעה ביום",
-    .spin = "מהירות סיבוב",
-    .shadows = "צללים",
-    .occlusion = "הצללה",
-    .fog = "ערפל",
-    .sky = "שמיים",
-    .wireframe = "רשת קווים",
-    .master = "ראשי",
-    .music = "מוזיקה",
-    .effects = "אפקטים",
-    .ui_sounds = "ממשק",
-    .orbit_left = "סיבוב שמאלה",
-    .orbit_right = "סיבוב ימינה",
-    .orbit_up = "סיבוב למעלה",
-    .orbit_down = "סיבוב למטה",
-    .moo = "מו",
-    .press_key = "לחצו על מקש (Esc מבטל)",
-    .conflict = "מוקצה גם ל",
-    .no_conflict = "אין התנגשויות",
-    .reset_keys = "איפוס המקשים",
-    .sensitivity = "רגישות עכבר",
-    .invert_y = "היפוך Y",
-    .dead_zone = "אזור מת",
-    .dead_zone_tip = "הסטיק במרכז בתוך המרחק הזה",
-    .left_stick = "סטיק שמאלי",
-    .right_stick = "סטיק ימני",
-    .pad_hint = "הסטיק הימני מסובב את המצלמה.",
-    .no_pad = "אין בקר: לחצו על כפתור בבקר",
-    .language = "שפה",
-    .font = "גופן",
-    .font_truetype = "Lato (TrueType)",
-    .font_bitmap = "גופן מפת סיביות",
-    .name = "שם השחקן",
-    .keyboard = "מקלדת על המסך",
-    .keyboard_tip = "הקלדה בחצים או בבקר",
-    .hours = "שעה ביום",
-    .hours_tip = "בחרו שעה לשמיים",
-});
-
-/// The Hebrew keys of the on-screen keyboard (the Israeli layout).
-const hebrew_keys: sw_ui.osk.Layout = .{
-    .rows = &.{ "1234567890", "/'קראטוןםפ", "שדגכעיחלךף", "זסבהנמצתץ." },
-    .shifted = &.{ "1234567890", "/'קראטוןםפ", "שדגכעיחלךף", "זסבהנמצתץ." },
-};
 
 // ---- Settings ---------------------------------------------------------------
 
@@ -347,96 +111,15 @@ const act_defaults: core.ActionMap(Act).Defaults = .{
     .moo = &.{ Binding.key(.M), Binding.gamepadButton(.north) },
 };
 
-/// The gamepad navigation of the UI. The keyboard goes to the UI directly.
-const Nav = enum { up, down, left, right, activate, back, next, prev };
-const nav_defaults: core.ActionMap(Nav).Defaults = .{
-    .up = &.{ Binding.gamepadButton(.dpad_up), Binding.gamepadAxis(.left_y, false) },
-    .down = &.{ Binding.gamepadButton(.dpad_down), Binding.gamepadAxis(.left_y, true) },
-    .left = &.{ Binding.gamepadButton(.dpad_left), Binding.gamepadAxis(.left_x, false) },
-    .right = &.{ Binding.gamepadButton(.dpad_right), Binding.gamepadAxis(.left_x, true) },
-    .activate = &.{Binding.gamepadButton(.south)},
-    .back = &.{Binding.gamepadButton(.east)},
-    .next = &.{Binding.gamepadButton(.right_shoulder)},
-    .prev = &.{Binding.gamepadButton(.left_shoulder)},
-};
-
-// ---- IDs --------------------------------------------------------------------
-
 const Screen = enum { settings, player, keyboard, graphics, sound, controls, gamepad, interface };
-
-const ids = struct {
-    const area: u32 = 1;
-    const panel: u32 = 2;
-    const spacer: u32 = 16;
-    const title: u32 = 3;
-    const player_line: u32 = 4;
-    const hint: u32 = 5;
-    const resume_game: u32 = 6;
-    const settings: u32 = 7;
-    const player: u32 = 8;
-    const open_menu: u32 = 9;
-    const back: u32 = 10;
-    const graphics: u32 = 11;
-    const sound: u32 = 12;
-    const controls: u32 = 13;
-    const gamepad: u32 = 14;
-    const interface: u32 = 15;
-    // Graphics.
-    const preset: u32 = 20;
-    const aa: u32 = 21;
-    const coat: u32 = 22;
-    const shadows: u32 = 23;
-    const occlusion: u32 = 24;
-    const fog: u32 = 25;
-    const sky: u32 = 26;
-    const wireframe: u32 = 27;
-    const toggle_row_a: u32 = 28;
-    const toggle_row_b: u32 = 29;
-    // A slider row: row, label, slider, value (4 IDs from the base).
-    const exposure: u32 = 40;
-    const time: u32 = 44;
-    const spin: u32 = 48;
-    const master: u32 = 52;
-    const music: u32 = 56;
-    const effects: u32 = 60;
-    const ui_sounds: u32 = 64;
-    const sensitivity: u32 = 68;
-    const dead_zone: u32 = 72;
-    // Controls.
-    const conflict: u32 = 80;
-    const reset_keys: u32 = 81;
-    const invert_y: u32 = 82;
-    /// A binding row: row, label, button (3 IDs for each action).
-    const bind_rows: u32 = 90;
-    // Gamepad.
-    const left_stick: u32 = 120;
-    const right_stick: u32 = 121;
-    const pad_hint: u32 = 122;
-    // Interface.
-    const language_label: u32 = 130;
-    const language_list: u32 = 131;
-    const font_label: u32 = 132;
-    const font_list: u32 = 133;
-    const language_item: u32 = 140;
-    const font_item: u32 = 150;
-    // Player.
-    const name_field: u32 = 160;
-    const keyboard_button: u32 = 161;
-    const hours_list: u32 = 162;
-    const keyboard_field: u32 = 163;
-    const hour_item: u32 = 200;
-    /// The screens are 300 to 307.
-    /// The on-screen keyboard uses osk to osk + sw_ui.osk.id_span - 1.
-    const osk: u32 = 1000;
-};
 
 // ---- State ------------------------------------------------------------------
 
 var scene: demo.CowScene = undefined;
-var ui: sw_ui.Ui = undefined;
-var ttf: sw_text.TextRenderer = undefined;
-var bitmap: sw_text.TextRenderer = undefined;
-var r2d: gfx.Renderer = undefined;
+/// The menu frame (game_menu.zig).
+var m: gm.Menu = undefined;
+const ui = &m.ui;
+const nav = &m.nav;
 var ms: MenuSettings = .{};
 var cow: demo.CowSettings = .{};
 var screens: sw_ui.ScreenStack(Screen, 6) = .{};
@@ -444,7 +127,6 @@ var name_storage: [64]u8 = undefined;
 var name_value: sw_ui.TextValue = .{ .buffer = &name_storage };
 var keyboard: sw_ui.osk.Keyboard = .{ .key_size = 30 };
 var actions = core.ActionMap(Act).init(act_defaults);
-var nav = core.ActionMap(Nav).init(nav_defaults);
 var capture: core.BindingCapture = .{};
 var capturing: ?Act = null;
 var conflict_buf: [128]u8 = undefined;
@@ -453,8 +135,6 @@ var yaw: f32 = 0;
 var pitch: f32 = 0;
 var dragging = false;
 var last_pointer: [2]f32 = .{ 0, 0 };
-var layout_w: f32 = 960;
-var layout_scale: f32 = 1;
 var last_focus: u32 = 0;
 var moo_flash: u32 = 0;
 
@@ -471,49 +151,24 @@ var samples_made = false;
 var last_sound_tick: [3]u64 = @splat(0);
 var tick_count: u64 = 0;
 
+/// Give the menu frame the language and the font of the settings.
+fn sync() void {
+    m.language = ms.language;
+    m.font = ms.font;
+}
+
 fn tr(s: S) []const u8 {
-    return switch (ms.language) {
-        .english => english.get(s),
-        .hebrew => hebrew.get(s),
-    };
+    sync();
+    return m.tr(s);
 }
 
 fn rtl() bool {
     return ms.language == .hebrew;
 }
 
-fn onOff(v: bool) []const u8 {
-    return tr(if (v) .on else .off);
-}
-
 fn text() *sw_text.TextRenderer {
-    return if (ms.font == .bitmap) &bitmap else &ttf;
-}
-
-// ---- The bitmap font --------------------------------------------------------
-
-/// Make the bitmap font: the hand-drawn pixel font of `pixel_font.zig`,
-/// drawn at a whole number scale. Hebrew and other characters come from the
-/// next fonts of the chain.
-fn makeBitmapFont(allocator: std.mem.Allocator) !sw_text.TextRenderer {
-    const pixels = try allocator.create([pixel_font.sheet_width * pixel_font.sheet_height]u8);
-    defer allocator.destroy(pixels);
-    var codepoints: [pixel_font.glyphs.len]u21 = undefined;
-    var widths: [pixel_font.glyphs.len]u8 = undefined;
-    pixel_font.fill(pixels, &codepoints, &widths);
-    var t = try sw_text.TextRenderer.initBitmap(allocator, .{
-        .sheet = .{ .pixels = pixels, .width = pixel_font.sheet_width, .height = pixel_font.sheet_height, .format = .alpha8 },
-        .cell_width = pixel_font.cell_width,
-        .cell_height = pixel_font.cell_height,
-        .codepoints = &codepoints,
-        .widths = &widths,
-        .baseline = pixel_font.baseline,
-        .integer_scale = true,
-    });
-    errdefer t.deinit();
-    try t.addFont(hebrew_ttf);
-    try t.addFont(demo.font_ttf);
-    return t;
+    sync();
+    return m.text();
 }
 
 // ---- Sound ------------------------------------------------------------------
@@ -587,68 +242,12 @@ fn play(group: u8, pitch_scale: f32) void {
 
 // ---- Input ------------------------------------------------------------------
 
-/// True when the ID is a list item: the arrow keys move inside its list.
-fn listRange(id: u32) ?struct { first: u32, last: u32 } {
-    if (id >= ids.language_item and id < ids.language_item + 2) return .{ .first = ids.language_item, .last = ids.language_item + 1 };
-    if (id >= ids.font_item and id < ids.font_item + 2) return .{ .first = ids.font_item, .last = ids.font_item + 1 };
-    if (id >= ids.hour_item and id < ids.hour_item + 24) return .{ .first = ids.hour_item, .last = ids.hour_item + 23 };
-    return null;
-}
-
-/// The input of the UI. Up and Down move the focus to the previous and next
-/// control (as Shift+Tab and Tab), so a gamepad D-pad goes through each
-/// control. In a list, they move inside the list, then out at its ends.
-/// The on-screen keyboard keeps the arrow keys.
-fn uiInput(snap: *const core.InputSnapshot, from_player: bool) sw_ui.Input {
-    const shortcut = snap.mods.ctrl or snap.mods.super;
-    var keys: sw_ui.Keys = .{
-        .tab = snap.keyPressed(.Tab) or nav.pressed(.next) or nav.pressed(.prev),
-        .up = snap.keyPressed(.Up) or nav.pressed(.up),
-        .down = snap.keyPressed(.Down) or nav.pressed(.down),
-        .left = snap.keyPressed(.Left) or nav.pressed(.left),
-        .right = snap.keyPressed(.Right) or nav.pressed(.right),
-        .enter = snap.keyPressed(.Enter) or nav.pressed(.activate),
-        .space = snap.keyPressed(.Space),
-        .escape = snap.keyPressed(.Escape) or nav.pressed(.back),
-        .backspace = snap.keyPressed(.Backspace),
-        .home = snap.keyPressed(.Home),
-        .end = snap.keyPressed(.End),
-        .delete = snap.keyPressed(.Delete),
-        .select_all = shortcut and snap.keyPressed(.A),
-        .copy = shortcut and snap.keyPressed(.C),
-        .cut = snap.keyPressed(.X) and shortcut,
-        .paste = shortcut and snap.keyPressed(.V),
-    };
-    var shift = snap.mods.shift or nav.down(.prev);
-    const focus = ui.focused() orelse 0;
-    const in_osk = focus >= ids.osk and focus < ids.osk + sw_ui.osk.id_span;
-    if (!in_osk and (keys.up or keys.down)) {
-        var to_tab = true;
-        if (listRange(focus)) |range| {
-            to_tab = (keys.up and focus == range.first) or (keys.down and focus == range.last);
-        }
-        if (to_tab) {
-            shift = keys.up;
-            keys.tab = true;
-            keys.up = false;
-            keys.down = false;
-        }
-    }
-    // A pointer from the player is in window units. The layout is
-    // `layout_height` units high.
-    const k: f32 = if (from_player) layout_scale else 1;
-    return .{
-        .keys = keys,
-        .shift = shift,
-        .pointer_x = snap.mouse.x * k,
-        .pointer_y = snap.mouse.y * k,
-        .pointer_pressed = snap.buttonPressed(.left),
-        .pointer_down = snap.buttonDown(.left),
-        .wheel_y = snap.wheel.delta_y,
-        .text = snap.text.text(),
-        .composition = snap.composition.text(),
-    };
-}
+/// The lists of the menu: the arrow keys move inside each one.
+const lists = [_]gm.ListRange{
+    .{ .first = ids.language_item, .last = ids.language_item + 1 },
+    .{ .first = ids.font_item, .last = ids.font_item + 1 },
+    .{ .first = ids.hour_item, .last = ids.hour_item + 23 },
+};
 
 /// The label of a binding: "W", "Shift+J", "Pad north".
 fn bindingLabel(b: Binding, buf: []u8) []const u8 {
@@ -660,7 +259,7 @@ fn bindingLabel(b: Binding, buf: []u8) []const u8 {
     switch (b.source) {
         .none => w.writeAll("-") catch {},
         .key => |k| w.writeAll(@tagName(k)) catch {},
-        .mouse => |m| w.print("Mouse {s}", .{@tagName(m)}) catch {},
+        .mouse => |button| w.print("Mouse {s}", .{@tagName(button)}) catch {},
         .gamepad_button => |p| w.print("Pad {s}", .{@tagName(p)}) catch {},
         .gamepad_axis => |d| w.print("Pad {s}{s}", .{ @tagName(d.axis), if (d.positive) "+" else "-" }) catch {},
     }
@@ -690,105 +289,31 @@ fn updateCapture(snap: *const core.InputSnapshot) void {
 
 // ---- Building the UI --------------------------------------------------------
 
-/// Open the panel of a screen: on the right, or on the left in Hebrew.
-fn beginPanel(screen_id: ?u32, title: []const u8) !void {
-    const area: sw_ui.Opts = .{
-        .w = .fill,
-        .h = .fill,
-        .padding = 16,
-        .cross_align = if (rtl()) .start else .end,
-        .label = title,
-    };
-    if (screen_id) |id| try ui.beginScreen(id, title, area) else try ui.beginColumn(ids.area, area);
-    // Right to left, the panel is on the left: it starts under the stats.
-    if (rtl()) {
-        try ui.beginColumn(ids.spacer, .{ .h = .{ .fixed = 64 } });
-        ui.endContainer();
-    }
-    try ui.beginColumn(ids.panel, .{
-        .w = .{ .fixed = panel_width },
-        .padding = 12,
-        .gap = 5,
-        .panel = true,
-        .cross_align = if (rtl()) .end else .start,
-        .label = title,
-    });
-    try ui.addText(ids.title, title, .{});
-}
-
-fn endPanel() void {
-    ui.endContainer();
-    ui.endContainer();
-}
-
-fn wide(tip: []const u8) sw_ui.Opts {
-    return .{ .w = .fill, .tooltip = tip };
-}
-
-/// A button that cycles a value with Left and Right. The screen shows the
-/// value between arrows. A screen reader gets the name with no arrows, and
-/// the keys as the description.
-fn cycleButton(id: u32, label: S, value: []const u8) !void {
-    try ui.addButton(id, try ui.print("{s}:  \u{2039} {s} \u{203A}", .{ tr(label), value }), .{
-        .w = .fill,
-        .label = try ui.print("{s}: {s}", .{ tr(label), value }),
-        .description = tr(.preset_tip),
-    });
-}
-
-/// A row: a label, a slider and its value as text. Right to left, the
-/// label is on the right.
-fn sliderRow(base: u32, label: []const u8, value: *f32, opts: sw_ui.SliderOpts, value_text: []const u8, tip: []const u8) !void {
-    try ui.beginRow(base, .{ .w = .fill, .gap = 8, .cross_align = .center });
-    var o = opts;
-    o.text = value_text;
-    const parts = [_]u8{ 0, 1, 2 };
-    for (parts) |p0| {
-        const p = if (rtl()) 2 - p0 else p0;
-        switch (p) {
-            0 => try ui.addText(base + 1, label, .{ .w = .{ .fixed = 120 } }),
-            1 => try ui.addSlider(base + 2, label, value, o, .{ .w = .fill, .tooltip = tip }),
-            else => try ui.addText(base + 3, value_text, .{ .w = .{ .fixed = 48 } }),
-        }
-    }
-    ui.endContainer();
-}
-
-fn toggleRow(row_id: u32, a_id: u32, a_label: S, a: bool, b_id: u32, b_label: S, b: bool) !void {
-    try ui.beginRow(row_id, .{ .w = .fill, .gap = 6 });
-    const first = if (rtl()) b_id else a_id;
-    for ([_]u32{ first, if (first == a_id) b_id else a_id }) |id| {
-        const lbl = if (id == a_id) a_label else b_label;
-        const v = if (id == a_id) a else b;
-        try ui.addButton(id, try ui.print("{s}: {s}", .{ tr(lbl), onOff(v) }), .{ .w = .fill, .selected = v });
-    }
-    ui.endContainer();
-}
-
 fn buildMain() !void {
-    try beginPanel(null, tr(.title));
+    try m.beginPanel(null, tr(.title));
     const name = if (name_value.slice().len > 0) name_value.slice() else tr(.no_name);
     try ui.addText(ids.player_line, try ui.print("{s}: {s}", .{ tr(.player_line), name }), .{ .live = true });
-    try ui.addButton(ids.resume_game, tr(.resume_game), wide(tr(.resume_tip)));
-    try ui.addButton(ids.player, tr(.player), wide(tr(.player_tip)));
-    try ui.addButton(ids.settings, tr(.settings), wide(tr(.settings_tip)));
+    try ui.addButton(ids.resume_game, tr(.resume_game), gm.Menu.wide(tr(.resume_tip)));
+    try ui.addButton(ids.player, tr(.player), gm.Menu.wide(tr(.player_tip)));
+    try ui.addButton(ids.settings, tr(.settings), gm.Menu.wide(tr(.settings_tip)));
     try ui.addText(ids.hint, tr(.hint), .{});
-    endPanel();
+    m.endPanel();
 }
 
 fn buildSettings() !void {
-    try beginPanel(300, tr(.settings));
-    try ui.addButton(ids.graphics, tr(.graphics), wide(tr(.graphics_tip)));
-    try ui.addButton(ids.sound, tr(.sound), wide(tr(.sound_tip)));
-    try ui.addButton(ids.controls, tr(.controls), wide(tr(.controls_tip)));
-    try ui.addButton(ids.gamepad, tr(.gamepad), wide(tr(.gamepad_tip)));
-    try ui.addButton(ids.interface, tr(.interface), wide(tr(.interface_tip)));
-    try ui.addButton(ids.back, tr(.back), wide(""));
-    endPanel();
+    try m.beginPanel(300, tr(.settings));
+    try ui.addButton(ids.graphics, tr(.graphics), gm.Menu.wide(tr(.graphics_tip)));
+    try ui.addButton(ids.sound, tr(.sound), gm.Menu.wide(tr(.sound_tip)));
+    try ui.addButton(ids.controls, tr(.controls), gm.Menu.wide(tr(.controls_tip)));
+    try ui.addButton(ids.gamepad, tr(.gamepad), gm.Menu.wide(tr(.gamepad_tip)));
+    try ui.addButton(ids.interface, tr(.interface), gm.Menu.wide(tr(.interface_tip)));
+    try ui.addButton(ids.back, tr(.back), gm.Menu.wide(""));
+    m.endPanel();
 }
 
 fn presetName(p: Preset) []const u8 {
-    return tr(switch (p) {
+    sync();
+    return m.qualityName(switch (p) {
         .low => .low,
         .medium => .medium,
         .high => .high,
@@ -797,23 +322,23 @@ fn presetName(p: Preset) []const u8 {
 }
 
 fn buildGraphics() !void {
-    try beginPanel(301, tr(.graphics));
-    try cycleButton(ids.preset, .preset, presetName(ms.preset));
+    try m.beginPanel(301, tr(.graphics));
+    try m.cycleButton(ids.preset, .preset, presetName(ms.preset));
     const aa_name = switch (cow.aa) {
         .off => tr(.off),
         .fxaa => "FXAA",
         .msaa => "MSAA 4x",
     };
-    try cycleButton(ids.aa, .anti_aliasing, aa_name);
-    try cycleButton(ids.coat, .coat, @tagName(cow.palette));
-    try sliderRow(ids.exposure, tr(.exposure), &cow.exposure, .{ .min = 0.2, .max = 2.5, .step = 0.1 }, try ui.print("{d:.1}", .{cow.exposure}), "");
-    try sliderRow(ids.time, tr(.time_of_day), &cow.time, .{ .min = 0, .max = 1, .step = 0.02 }, try ui.print("{d:0>2}:{d:0>2}", .{ hourOf(cow.time), minuteOf(cow.time) }), "");
-    try sliderRow(ids.spin, tr(.spin), &cow.spin, .{ .min = 0, .max = 2, .step = 0.1 }, try ui.print("{d:.1}", .{cow.spin}), "");
-    try toggleRow(ids.toggle_row_a, ids.shadows, .shadows, cow.shadows, ids.occlusion, .occlusion, cow.ao);
-    try toggleRow(ids.toggle_row_b, ids.fog, .fog, cow.fog, ids.sky, .sky, cow.sky);
-    try ui.addButton(ids.wireframe, try ui.print("{s}: {s}", .{ tr(.wireframe), onOff(cow.wireframe) }), .{ .w = .fill, .selected = cow.wireframe });
-    try ui.addButton(ids.back, tr(.back), wide(""));
-    endPanel();
+    try m.cycleButton(ids.aa, .anti_aliasing, aa_name);
+    try m.cycleButton(ids.coat, .coat, @tagName(cow.palette));
+    try m.sliderRow(ids.exposure, tr(.exposure), &cow.exposure, .{ .min = 0.2, .max = 2.5, .step = 0.1 }, try ui.print("{d:.1}", .{cow.exposure}), "");
+    try m.sliderRow(ids.time, tr(.time_of_day), &cow.time, .{ .min = 0, .max = 1, .step = 0.02 }, try ui.print("{d:0>2}:{d:0>2}", .{ hourOf(cow.time), minuteOf(cow.time) }), "");
+    try m.sliderRow(ids.spin, tr(.spin), &cow.spin, .{ .min = 0, .max = 2, .step = 0.1 }, try ui.print("{d:.1}", .{cow.spin}), "");
+    try m.toggleRow(ids.toggle_row_a, ids.shadows, .shadows, cow.shadows, ids.occlusion, .occlusion, cow.ao);
+    try m.toggleRow(ids.toggle_row_b, ids.fog, .fog, cow.fog, ids.sky, .sky, cow.sky);
+    try m.toggleButton(ids.wireframe, .wireframe, cow.wireframe);
+    try m.back();
+    m.endPanel();
 }
 
 fn hourOf(t: f32) u32 {
@@ -826,23 +351,17 @@ fn minuteOf(t: f32) u32 {
     return minutes % 60;
 }
 
-fn percent(v: f32) ![]const u8 {
-    return ui.print("{d:.0}%", .{v * 100});
-}
-
 fn buildSound() !void {
-    try beginPanel(302, tr(.sound));
-    const vol: sw_ui.SliderOpts = .{ .min = 0, .max = 1, .step = 0.05 };
-    try sliderRow(ids.master, tr(.master), &ms.master, vol, try percent(ms.master), "");
-    try sliderRow(ids.music, tr(.music), &ms.music, vol, try percent(ms.music), "");
-    try sliderRow(ids.effects, tr(.effects), &ms.effects, vol, try percent(ms.effects), "");
-    try sliderRow(ids.ui_sounds, tr(.ui_sounds), &ms.interface, vol, try percent(ms.interface), "");
-    try ui.addButton(ids.back, tr(.back), wide(""));
-    endPanel();
+    try m.audioScreen(302, &.{
+        .{ .base = ids.master, .label = .master, .value = &ms.master },
+        .{ .base = ids.music, .label = .music, .value = &ms.music },
+        .{ .base = ids.effects, .label = .effects, .value = &ms.effects },
+        .{ .base = ids.ui_sounds, .label = .ui_sounds, .value = &ms.interface },
+    });
 }
 
 fn buildControls() !void {
-    try beginPanel(303, tr(.controls));
+    try m.beginPanel(303, tr(.controls));
     for (act_names, 0..) |label, i| {
         const a: Act = @fromBackingInt(@intCast(i));
         const base = ids.bind_rows + @as(u32, @intCast(i)) * 3;
@@ -860,16 +379,15 @@ fn buildControls() !void {
         ui.endContainer();
     }
     try ui.addText(ids.conflict, if (conflict_text.len > 0) conflict_text else tr(.no_conflict), .{ .live = true });
-    try sliderRow(ids.sensitivity, tr(.sensitivity), &ms.sensitivity, .{ .min = 0.1, .max = 3, .step = 0.1 }, try ui.print("{d:.1}x", .{ms.sensitivity}), "");
-    try ui.addButton(ids.invert_y, try ui.print("{s}: {s}", .{ tr(.invert_y), onOff(ms.invert_y) }), .{ .w = .fill, .selected = ms.invert_y });
-    try ui.addButton(ids.reset_keys, tr(.reset_keys), wide(""));
-    try ui.addButton(ids.back, tr(.back), wide(""));
-    endPanel();
+    try m.mouseRows(&ms.sensitivity, ms.invert_y);
+    try ui.addButton(ids.reset_keys, tr(.reset_keys), gm.Menu.wide(""));
+    try ui.addButton(ids.back, tr(.back), gm.Menu.wide(""));
+    m.endPanel();
 }
 
 fn buildGamepad(snap: *const core.InputSnapshot) !void {
-    try beginPanel(304, tr(.gamepad));
-    try sliderRow(ids.dead_zone, tr(.dead_zone), &ms.dead_zone, .{ .min = 0, .max = 0.9, .step = 0.05 }, try ui.print("{d:.2}", .{ms.dead_zone}), tr(.dead_zone_tip));
+    try m.beginPanel(304, tr(.gamepad));
+    try m.sliderRow(ids.dead_zone, tr(.dead_zone), &ms.dead_zone, .{ .min = 0, .max = 0.9, .step = 0.05 }, try ui.print("{d:.2}", .{ms.dead_zone}), tr(.dead_zone_tip));
     const g = &snap.gamepads[0];
     if (g.connected) {
         const l = g.stick(.left, nav.gamepad);
@@ -880,12 +398,12 @@ fn buildGamepad(snap: *const core.InputSnapshot) !void {
         try ui.addText(ids.left_stick, tr(.no_pad), .{});
     }
     try ui.addText(ids.pad_hint, tr(.pad_hint), .{});
-    try ui.addButton(ids.back, tr(.back), wide(""));
-    endPanel();
+    try ui.addButton(ids.back, tr(.back), gm.Menu.wide(""));
+    m.endPanel();
 }
 
 fn buildInterface() !void {
-    try beginPanel(305, tr(.interface));
+    try m.beginPanel(305, tr(.interface));
     try ui.addText(ids.language_label, tr(.language), .{});
     try ui.beginList(ids.language_list, tr(.language), .{ .w = .fill });
     try ui.addListItem(ids.language_item, "English", .{ .w = .fill, .selected = ms.language == .english });
@@ -896,34 +414,35 @@ fn buildInterface() !void {
     try ui.addListItem(ids.font_item, tr(.font_truetype), .{ .w = .fill, .selected = ms.font == .truetype });
     try ui.addListItem(ids.font_item + 1, tr(.font_bitmap), .{ .w = .fill, .selected = ms.font == .bitmap });
     ui.endContainer();
-    try ui.addButton(ids.back, tr(.back), wide(""));
-    endPanel();
+    try ui.addButton(ids.back, tr(.back), gm.Menu.wide(""));
+    m.endPanel();
 }
 
 fn buildPlayer() !void {
-    try beginPanel(306, tr(.player));
+    try m.beginPanel(306, tr(.player));
     try ui.addTextField(ids.name_field, tr(.name), &name_value, .{ .w = .fill });
-    try ui.addButton(ids.keyboard_button, tr(.keyboard), wide(tr(.keyboard_tip)));
+    try ui.addButton(ids.keyboard_button, tr(.keyboard), gm.Menu.wide(tr(.keyboard_tip)));
     try ui.beginScrollList(ids.hours_list, tr(.hours), .{ .w = .fill, .h = .{ .fixed = 170 }, .tooltip = tr(.hours_tip) });
     const current = hourOf(cow.time);
     for (0..24) |h| {
         try ui.addListItem(ids.hour_item + @as(u32, @intCast(h)), try ui.print("{d:0>2}:00", .{h}), .{ .w = .fill, .selected = h == current });
     }
     ui.endContainer();
-    try ui.addButton(ids.back, tr(.back), wide(""));
-    endPanel();
+    try ui.addButton(ids.back, tr(.back), gm.Menu.wide(""));
+    m.endPanel();
 }
 
 fn buildKeyboard() !void {
-    try beginPanel(307, tr(.keyboard));
+    try m.beginPanel(307, tr(.keyboard));
     try ui.addTextField(ids.keyboard_field, tr(.name), &name_value, .{ .w = .fill });
-    keyboard.letters_layout = if (rtl()) hebrew_keys else sw_ui.osk.letters;
-    try keyboard.build(&ui, ids.osk, .{ .label = tr(.keyboard) });
-    endPanel();
+    keyboard.letters_layout = if (rtl()) gm.hebrew_keys else sw_ui.osk.letters;
+    try keyboard.build(ui, ids.osk, .{ .label = tr(.keyboard) });
+    m.endPanel();
 }
 
 fn buildUi(input: sw_ui.Input, snap: *const core.InputSnapshot) !void {
-    try ui.begin(input, layout_w, layout_height);
+    sync();
+    try ui.begin(input, m.layout_w, layout_height);
     if (screens.top()) |top| switch (top) {
         .settings => try buildSettings(),
         .player => try buildPlayer(),
@@ -950,7 +469,7 @@ fn buildUi(input: sw_ui.Input, snap: *const core.InputSnapshot) !void {
 // ---- Events -----------------------------------------------------------------
 
 fn openScreen(s: Screen) void {
-    screens.push(&ui, s) catch {};
+    screens.push(ui, s) catch {};
     play(group_ui, 1.5);
 }
 
@@ -959,11 +478,7 @@ fn setMenu(open: bool) void {
     ui.setFocus(if (open) ids.resume_game else ids.open_menu);
 }
 
-fn cycle(comptime E: type, v: E, forward: bool) E {
-    const n = std.enums.values(E).len;
-    const i = @backingInt(v);
-    return @fromBackingInt(@intCast(if (forward) (i + 1) % n else (i + n - 1) % n));
-}
+const cycle = gm.cycle;
 
 /// Change the value of a cycle or toggle button. True when the ID is one.
 fn step(id: u32, forward: bool) !bool {
@@ -1005,12 +520,12 @@ fn step(id: u32, forward: bool) !bool {
 
 fn handleEvents(input: sw_ui.Input) !void {
     if (screens.top() == .keyboard) {
-        const r = keyboard.apply(&ui, ids.osk, &name_value);
+        const r = keyboard.apply(ui, ids.osk, &name_value);
         if (r.changed) {
             std.log.info("menu: name = \"{s}\"", .{name_value.slice()});
             play(group_ui, 1.0);
         }
-        if (r.done) _ = screens.pop(&ui);
+        if (r.done) _ = screens.pop(ui);
     }
     // Left and Right change a cycle or toggle button.
     if (input.keys.left or input.keys.right) {
@@ -1021,7 +536,7 @@ fn handleEvents(input: sw_ui.Input) !void {
     for (ui.frameEvents()) |e| switch (e.kind) {
         .activate => try activate(e.id),
         .cancel => {
-            if (screens.pop(&ui) != null) {
+            if (screens.pop(ui) != null) {
                 play(group_ui, 0.8);
             } else if (ui.focused() == ids.name_field) {
                 ui.clearFocus();
@@ -1074,7 +589,7 @@ fn activate(id: u32) !void {
             conflict_text = "";
         },
         ids.back => {
-            _ = screens.pop(&ui);
+            _ = screens.pop(ui);
             play(group_ui, 0.8);
         },
         else => {},
@@ -1111,7 +626,8 @@ fn applyAll() !void {
     actions.gamepad = nav.gamepad;
     capture.gamepad = nav.gamepad;
     applyVolumes();
-    ui.measurer = sw_ui.draw.measurer(text());
+    sync();
+    m.applyFont();
 }
 
 // ---- The camera -------------------------------------------------------------
@@ -1156,19 +672,14 @@ fn updateCamera(host: *demo.Host, input: sw_ui.Input, snap: *const core.InputSna
 // ---- The demo ---------------------------------------------------------------
 
 fn drawMenu(pass: *sw_render.Pass) !void {
-    const k = @as(f32, @floatFromInt(pass.height)) / layout_height;
-    r2d.beginFrame(pass.width, pass.height, k);
-    const t = text();
-    t.setDpiScale(k);
-    var palette: sw_ui.draw.Palette = .{};
-    palette.scrim = gfx.Color.rgba8(0, 0, 0, 0);
-    palette.panel = gfx.Color.rgba8(20, 22, 34, 215);
-    try sw_ui.draw.draw(&ui, &r2d, t, palette);
+    sync();
+    try m.drawUi(pass, gm.Menu.palette(), null);
     if (moo_flash > 0) {
+        const k = @as(f32, @floatFromInt(pass.height)) / layout_height;
         const lw = @as(f32, @floatFromInt(pass.width)) / k;
-        _ = try t.draw(&r2d, "Moo!", if (rtl()) lw - 120 else 40, 200, .{ .size = 40, .color = gfx.Color.rgba8(255, 240, 200, 255) });
+        _ = try m.text().draw(&m.r2d, "Moo!", if (rtl()) lw - 120 else 40, 200, .{ .size = 40, .color = gfx.Color.rgba8(255, 240, 200, 255) });
     }
-    try r2d.flush(pass.render.?);
+    try m.drawEnd(pass);
 }
 
 fn resetState() !void {
@@ -1202,11 +713,7 @@ const App = struct {
             .shadow_map_size = g.shadow_map_size,
             .shadow_cascades = @max(g.shadow_cascades, 1),
         });
-        ttf = try sw_text.TextRenderer.init(host.allocator, demo.font_ttf);
-        try ttf.addFont(hebrew_ttf);
-        bitmap = try makeBitmapFont(host.allocator);
-        r2d = try gfx.Renderer.init(host.allocator, host.gpu, .{});
-        ui = sw_ui.Ui.init(host.allocator, sw_ui.draw.measurer(&ttf), .{ .text_size = 15, .control_pad = 6, .field_width = 200 });
+        try m.init(host.allocator, host.gpu);
         if (!host.deterministic()) {
             ui.clipboard = sw_ui.Clipboard.platform(host.ctx);
             startSound(host.allocator) catch |err| std.log.warn("menu: no sound: {s}", .{@errorName(err)});
@@ -1236,13 +743,7 @@ const App = struct {
     pub fn tick(host: *demo.Host) !void {
         tick_count += 1;
         const snap = host.input();
-        const win = host.ctx.window();
-        const sw_h: f32 = @floatFromInt(@max(host.gpu.getSurfaceHeight(), 1));
-        const sw_w: f32 = @floatFromInt(@max(host.gpu.getSurfaceWidth(), 1));
-        layout_w = sw_w * layout_height / sw_h;
-        // Window units to layout units, for the pointer of the player.
-        const logical_h = @as(f32, @floatFromInt(@max(win.height, 1))) / @max(win.dpi_scale, 0.01);
-        layout_scale = layout_height / logical_h;
+        m.setLayout(host.gpu.getSurfaceWidth(), host.gpu.getSurfaceHeight(), host.ctx.window());
 
         nav.update(snap);
         var input: sw_ui.Input = undefined;
@@ -1252,7 +753,8 @@ const App = struct {
             input = .{ .pointer_x = snap.mouse.x, .pointer_y = snap.mouse.y };
         } else {
             actions.update(snap);
-            input = uiInput(snap, host.user_control);
+            sync();
+            input = m.input(snap, host.user_control, &lists);
         }
         try buildUi(input, snap);
         try handleEvents(input);
@@ -1291,10 +793,7 @@ const App = struct {
             for ([_]*audio.Sample{ &click_sample, &moo_sample, &music_sample }) |sm| host.allocator.free(sm.data);
             samples_made = false;
         }
-        ui.deinit();
-        r2d.deinit();
-        bitmap.deinit();
-        ttf.deinit();
+        m.deinit();
         scene.deinit();
     }
 };

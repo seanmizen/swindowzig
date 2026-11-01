@@ -3,10 +3,11 @@
 //
 //   yarn test:browser
 //
-// Three web servers build three programs for the web and serve them with
+// Four web servers build four programs for the web and serve them with
 // the dev server: flat2d on port 3023 (the other tests), justabox on port
-// 3021 (the frame graph on the canvas, canvas.pw.ts), and the menu demo on
-// port 3022 (menu.pw.ts). Each program has its own install prefix, so the
+// 3021 (the frame graph on the canvas, canvas.pw.ts), the menu demo on
+// port 3022 (menu.pw.ts), and the shooter demo on port 3024
+// (shooter.pw.ts). Each program has its own install prefix, so the
 // builds do not write the same app.wasm. No test port is 3020, the port of
 // `yarn dev`: away from CI, Playwright uses a server that already runs on
 // a port, and a dev server there serves another program.
@@ -16,6 +17,7 @@ import { defineConfig } from '@playwright/test';
 const flat2dPort = 3023;
 const canvasPort = 3021;
 const menuPort = 3022;
+const shooterPort = 3024;
 
 // WebGPU in headless Chromium. On Linux (CI) it uses the SwiftShader Vulkan
 // driver of Chromium. Do not set VK_LOADER_DRIVERS_SELECT for the browser: a
@@ -55,7 +57,7 @@ export default defineConfig({
     // such a press and its modifiers (REQ-INPUT-007).
     {
       name: 'flat2d',
-      testIgnore: ['canvas.pw.ts', 'menu.pw.ts'],
+      testIgnore: ['canvas.pw.ts', 'menu.pw.ts', 'shooter.pw.ts'],
       use: {
         baseURL: `http://localhost:${flat2dPort}`,
         launchOptions: { args: canvasArgs },
@@ -81,6 +83,18 @@ export default defineConfig({
         launchOptions: { args: canvasArgs },
       },
     },
+    // The shooter demo: the mirror of its pause menu. A small window, so
+    // SwiftShader draws more frames each second.
+    {
+      name: 'shooter',
+      testMatch: 'shooter.pw.ts',
+      timeout: 120_000,
+      use: {
+        baseURL: `http://localhost:${shooterPort}`,
+        viewport: { width: 640, height: 360 },
+        launchOptions: { args: canvasArgs },
+      },
+    },
   ],
   webServer: [
     {
@@ -101,6 +115,13 @@ export default defineConfig({
       command: `zig build web -Ddemo=menu -Doptimize=ReleaseFast -p zig-out/menu && bun backends/wasm/dev-server.ts --demo menu --no-build --port ${menuPort} --out zig-out/menu`,
       cwd: '../..',
       port: menuPort,
+      timeout: 300_000,
+      reuseExistingServer: !process.env.CI,
+    },
+    {
+      command: `zig build web -Ddemo=shooter -Doptimize=ReleaseFast -p zig-out/shooter && bun backends/wasm/dev-server.ts --demo shooter --no-build --port ${shooterPort} --out zig-out/shooter`,
+      cwd: '../..',
+      port: shooterPort,
       timeout: 300_000,
       reuseExistingServer: !process.env.CI,
     },

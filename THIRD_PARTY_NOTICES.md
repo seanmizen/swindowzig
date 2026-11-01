@@ -335,13 +335,14 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-## Noto Sans Hebrew (font in the menu demo)
+## Noto Sans Hebrew (font in the game menu of the demos)
 
-- Files: `demos/menu/assets/NotoSansHebrew-Regular.ttf`, and the licence in
-  `demos/menu/assets/NotoSansHebrew-OFL.txt`.
+- Files: `demos/common/assets/NotoSansHebrew-Regular.ttf`, and the licence in
+  `demos/common/assets/NotoSansHebrew-OFL.txt`.
 - Source: https://github.com/notofonts/hebrew (the Regular weight, as the
   npm package `@expo-google-fonts/noto-sans-hebrew` 0.4.1 ships it).
-- Used by: `demos/menu`. The menu draws its Hebrew text with this font. The
+- Used by: `demos/common/game_menu.zig`, the game menu of the menu and
+  shooter demos. The menu draws its Hebrew text with this font. The
   libraries do not include a font.
 - Licence: SIL Open Font License 1.1. The font is not changed. The full
   text follows.

@@ -1,9 +1,9 @@
-//! A pixel font for the menu demo: the printable ASCII characters, drawn by
-//! hand on a grid of 5 x 9 pixels. Rows 0 to 6 are above the baseline, and
-//! rows 7 and 8 are the descenders (g, j, p, q, y, the comma). Each glyph
-//! has its own advance, so i and l are narrow. Draw it only at a whole
-//! number scale (`BitmapFont.Desc.integer_scale`): then each stroke has the
-//! same width.
+//! A pixel font for the game menu of the demos: the printable ASCII
+//! characters, drawn by hand on a grid of 5 x 9 pixels. Rows 0 to 6 are
+//! above the baseline, and rows 7 and 8 are the descenders (g, j, p, q, y,
+//! the comma). Each glyph has its own advance, so i and l are narrow. Draw
+//! it only at a whole number scale (`BitmapFont.Desc.integer_scale`):
+//! then each stroke has the same width.
 //!
 //! The table comes from a list of rows of '#' and '.' (one glyph each), so
 //! each row here is a 5-bit number: the high bit is the left column.

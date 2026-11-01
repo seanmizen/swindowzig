@@ -2,7 +2,8 @@
 //! (REQ-GPU-016, REQ-GPU-017, REQ-GPU-018).
 //!
 //! `Lighting.init` adds one fixed-size depth target and one frame graph
-//! pass for each cascade. Each pass calls the shadow casters that the game
+//! pass for each cascade. `setShadowMap` changes the map size and the
+//! cascade count while the game runs (REQ-GPU-043). Each pass calls the shadow casters that the game
 //! added with `addCaster`. A caster draws its geometry with
 //! `CasterPass.view_proj` in a depth-only pipeline (`format`).
 //! `BoxModels` is a caster when the game sets its `Options.lighting`.
@@ -116,6 +117,9 @@ pub const State = struct {
     targets: [lighting_plan.max_cascades]TargetId = undefined,
     passes: [lighting_plan.max_cascades]PassId = undefined,
     runners: [lighting_plan.max_cascades]CascadeRunner = undefined,
+    /// The cascades that have a target and a pass in the graph. It is
+    /// `options.cascades` or more: `setShadowMap` does not remove a pass.
+    built: u32 = 0,
     cascades: [lighting_plan.max_cascades]lighting_plan.Cascade = @splat(.{ .view_proj = Mat4.identity(), .split = 0, .texel = 0 }),
     buffer: gpu_mod.Buffer,
     layout: gpu_mod.BindGroupLayout,
@@ -130,14 +134,38 @@ pub const State = struct {
     uniforms: lighting_plan.LightingUniforms = .{},
 
     fn deinit(self: *State) void {
-        for (self.passes[0..self.options.cascades]) |p| self.graph.setPassEnabled(p, false);
+        for (self.passes[0..self.built]) |p| self.graph.setPassEnabled(p, false);
         if (self.bind_group) |g| g.release();
         self.casters.deinit(self.allocator);
         self.buffer.destroy();
     }
 
     fn setPassesEnabled(self: *State) void {
-        for (self.passes[0..self.options.cascades]) |p| self.graph.setPassEnabled(p, self.settings.enabled);
+        for (self.passes[0..self.built], 0..) |p, i| self.graph.setPassEnabled(p, self.settings.enabled and i < self.options.cascades);
+    }
+
+    fn mapSize(self: *const State) plan.Size {
+        return .{ .fixed = .{ .width = self.options.map_size, .height = self.options.map_size } };
+    }
+
+    /// Add the target and the pass of cascade `built`.
+    fn addCascade(self: *State) !void {
+        const i = self.built;
+        const target = try self.graph.addTarget(.{
+            .name = target_names[i],
+            .format = State.format,
+            .size = self.mapSize(),
+        });
+        self.targets[i] = target;
+        self.runners[i] = .{ .state = self, .index = i };
+        try self.graph.addPass(.{
+            .name = pass_names[i],
+            .order = self.options.order + @as(i32, @intCast(i)),
+            .attachments = .{ .depth = .{ .target = target } },
+            .callback = .of(CascadeRunner, &self.runners[i], CascadeRunner.run),
+        });
+        self.passes[i] = self.graph.findPass(pass_names[i]).?;
+        self.built += 1;
     }
 };
 
@@ -197,22 +225,7 @@ pub const Lighting = struct {
             .layout = group_layout,
             .sampler = sampler,
         };
-        for (0..options.cascades) |i| {
-            const target = try graph.addTarget(.{
-                .name = target_names[i],
-                .format = State.format,
-                .size = .{ .fixed = .{ .width = options.map_size, .height = options.map_size } },
-            });
-            state.targets[i] = target;
-            state.runners[i] = .{ .state = state, .index = @intCast(i) };
-            try graph.addPass(.{
-                .name = pass_names[i],
-                .order = options.order + @as(i32, @intCast(i)),
-                .attachments = .{ .depth = .{ .target = target } },
-                .callback = .of(CascadeRunner, &state.runners[i], CascadeRunner.run),
-            });
-            state.passes[i] = graph.findPass(pass_names[i]).?;
-        }
+        for (0..options.cascades) |_| try state.addCascade();
         state.setPassesEnabled();
         return .{ .state = state };
     }
@@ -269,6 +282,34 @@ pub const Lighting = struct {
 
     pub fn shadowSettings(self: *const Lighting) ShadowSettings {
         return self.state.settings;
+    }
+
+    /// Change the size of each shadow map and the cascade count while the
+    /// game runs (REQ-GPU-043). The graph makes the new maps at the next
+    /// `execute`. A new cascade gets a new target and pass. A cascade
+    /// above the count keeps its pass, but the pass does not run. The
+    /// bind group layout does not change, so each lit pipeline stays.
+    pub fn setShadowMap(self: *Lighting, map_size: u32, cascade_count: u32) !void {
+        const s = self.state;
+        const change = try mapChange(s.built, cascade_count, map_size);
+        s.options.map_size = map_size;
+        s.options.cascades = cascade_count;
+        for (s.targets[0..s.built]) |t| s.graph.setTargetSize(t, s.mapSize());
+        for (0..change.add) |_| try s.addCascade();
+        s.setPassesEnabled();
+        // The maps of the unused bindings change with the count.
+        if (s.bind_group) |g| g.release();
+        s.bind_group = null;
+    }
+
+    /// The width and height of each shadow map, in texels.
+    pub fn mapSize(self: *const Lighting) u32 {
+        return self.state.options.map_size;
+    }
+
+    /// The number of cascades.
+    pub fn cascadeCount(self: *const Lighting) u32 {
+        return self.state.options.cascades;
     }
 
     /// Set the vector to the shadow light, in world space. Null: follow
@@ -339,3 +380,26 @@ pub const Lighting = struct {
         rp.setBindGroup(group, s.bind_group.?);
     }
 };
+
+/// What `setShadowMap` adds to the graph (REQ-GPU-043).
+pub const MapChange = struct {
+    /// The number of new cascade targets and passes.
+    add: u32,
+};
+
+/// Check a new map size and cascade count, and find the cascades to add.
+/// `built` is the number of cascades that have a pass in the graph.
+pub fn mapChange(built: u32, cascade_count: u32, map_size: u32) error{ BadCascadeCount, BadMapSize }!MapChange {
+    if (cascade_count == 0 or cascade_count > lighting_plan.max_cascades) return error.BadCascadeCount;
+    if (map_size == 0) return error.BadMapSize;
+    return .{ .add = cascade_count -| built };
+}
+
+test "lighting: a new cascade count adds only the passes that are not in the graph (REQ-GPU-043)" {
+    try std.testing.expectEqual(MapChange{ .add = 2 }, try mapChange(2, 4, 1024));
+    try std.testing.expectEqual(MapChange{ .add = 0 }, try mapChange(3, 1, 4096));
+    try std.testing.expectEqual(MapChange{ .add = 0 }, try mapChange(2, 2, 2048));
+    try std.testing.expectError(error.BadCascadeCount, mapChange(2, 0, 1024));
+    try std.testing.expectError(error.BadCascadeCount, mapChange(2, lighting_plan.max_cascades + 1, 1024));
+    try std.testing.expectError(error.BadMapSize, mapChange(2, 2, 0));
+}
