@@ -411,7 +411,9 @@ Textures, samplers and other resources of `sw_gpu`.
   - Demonstration — `models --check` (native) puts a point light near
     the ground. It compares the ground under the light with the CPU
     reference, and checks that the light makes the ground brighter.
-- **Relations:** refines REQ-GPU-006
+- **Relations:**
+  - refines REQ-GPU-006
+  - amended-by REQ-GPU-044
 
 ## REQ-GPU-018 — A setting turns the shadows off
 
@@ -1041,3 +1043,50 @@ Textures, samplers and other resources of `sw_gpu`.
     and `resumed` of `demos/shooter/shooter.tas`: the shooter changes the
     shadow quality in its pause menu.
 - **Relations:** refines REQ-GPU-016
+
+## REQ-GPU-044 — A point light casts shadows from a cube shadow map
+
+- **Status:** active
+- **Source:** agent:SWZ-126
+- **Origin:** #126
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the game gives a `Lighting` a point light with
+  `shadow = true`, `sw_point_lights` shall multiply the light of that
+  point light by its own shadow from a cube depth map. The `Lighting`
+  draws the 6 faces of that cube map again only in a frame where the
+  light moved, its radius changed, the game marked it as changed, or a
+  caster was added or removed.
+- **Rationale:** Before this requirement, only the sun had shadows. A
+  room with lamps and no sun had no shadows. A point light shines in all
+  directions, so its shadow map is a cube: 6 perspective depth renders.
+  Six renders cost much GPU time, so a cube map of a light that does not
+  move stays from frame to frame. Each face stores the perspective depth
+  of its camera, so a caster draws with the depth-only pipeline of the
+  cascades and the game code does not change. The perspective depth of a
+  face changes along the face axis, not along the ray. Thus each PCF tap
+  compares the depth of its own point on the disk, and the bias design
+  of the sun shadows applies (REQ-GPU-042). The sun shadows and the point
+  shadows turn off one at a time.
+- **Verification:**
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: each cube
+    face draws the directions that the WebGPU cube lookup reads
+    (REQ-GPU-044)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: a point
+    shadow has no acne on a floor, a wall and a crate (REQ-GPU-044)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: a point
+    shadow starts at the foot of the crate, with no gap (REQ-GPU-044)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: two point
+    lights give two shadows of one crate (REQ-GPU-044)"
+  - Test — `libs/sw_render/src/lighting_plan.zig` › "lighting: a light
+    with no cube map has no shadow (REQ-GPU-044)"
+  - Test — `libs/sw_render/src/lighting.zig` › "lighting: a cube map
+    draws again only when its light moved (REQ-GPU-044)"
+  - Demonstration — `models --check` (native) puts a crate between two
+    shadowed point lights. It compares the ground in the shadow of one
+    light with the CPU reference, with the sun shadows on and off. It
+    checks that no cube face draws when no light changed, and that 6 or
+    12 faces draw when the game marks one or two lights.
+- **Relations:**
+  - amends REQ-GPU-017
+  - depends-on REQ-GPU-042
