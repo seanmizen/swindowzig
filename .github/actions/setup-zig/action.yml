@@ -67,7 +67,7 @@ runs:
         echo "Zig native target: $triple, CPU $cpu (hash $hash)"
         base="zig-$(zig version)-$cpu-$hash-$GROUP-"
         {
-          echo "ZIG_NATIVE=$(zig version)-$cpu-$hash"
+          echo "ZIG_VERSION=$(zig version)"
           echo "ZIG_CACHE_GROUP=$base"
           echo "ZIG_CACHE_PART=$base$PART-"
           echo "ZIG_CACHE_KEY=$base$PART-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
