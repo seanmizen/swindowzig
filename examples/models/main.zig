@@ -11,10 +11,14 @@
 // The models draw into the HDR target of the post chain after the sky
 // pass, and use `sw_fog`, so far figures fade into the sky.
 //
-// `sw_render.Lighting` gives the shadows and a point light. The figures
+// `sw_render.Lighting` gives the shadows and two point lights. The figures
 // cast shadows into a cascaded shadow map. The light follows the sun of
-// the sky (REQ-GPU-016). A point light moves near the ground in front of
-// the figures (REQ-GPU-017).
+// the sky (REQ-GPU-016). Two point lights (REQ-GPU-017) are near the
+// ground in front of the figures, one on each side of a crate. Each one
+// casts shadows into a cube shadow map, so the crate has two shadows
+// (REQ-GPU-044). The warm light moves round the crate, so its cube map
+// draws again in each frame. The blue light does not move, so its cube
+// map draws one time.
 //
 // Two translucent quads float over the ground at the left, and a third
 // is under the ground. The translucent pass draws them after the opaque
@@ -35,22 +39,26 @@
 // second (REQ-GPU-027).
 //
 // Keys: Space stops or starts the animation. D turns the first-person
-// depth range on or off. L turns the shadows on or off (REQ-GPU-018). P
-// turns the point light on or off. Left and Right change the time of day.
+// depth range on or off. L turns the sun shadows on or off (REQ-GPU-018).
+// O turns the point light shadows on or off. P turns the point lights on
+// or off. Left and Right change the time of day.
 //
-// Native `--check`: no window. The example draws a fixed pose three times:
-// with the first-person depth range, with no depth range, and with the
-// shadows off. It reads each frame back and compares pixels with the CPU
-// reference of the shader after the CPU tonemap: the figures, the ground
-// in the shadow of a figure, the same ground in light, and the ground
-// under the point light. It checks the draw calls and the instance
-// counts. The pixel through the two translucent quads must be the CPU
-// blend of the particle behind them, then the far quad, then the near
-// quad, over the ground. The same test is done for two particles, with
-// one draw call for each run of the blend. The background of
-// the overlay must have its colour. When the device has GPU timestamps,
-// each render pass must have a time. It exits
-// with 0 (pass) or 1 (fail).
+// Native `--check`: no window. The example draws a fixed pose five times:
+// with the first-person depth range, with no depth range, with the sun
+// shadows off, with one point light marked as changed, and with two. It
+// reads each frame back and compares pixels with the CPU reference of the
+// shader after the CPU tonemap: the figures, the ground in the shadow of a
+// figure, the same ground in light, the ground under the warm point light
+// (in the blue shadow of the crate), and the ground in the warm shadow of
+// the crate. It checks the draw calls, the instance counts, and the cube
+// faces that draw: none when no light changed. The pixel through the two
+// translucent quads must be the CPU blend of the particle behind them,
+// then the far quad, then the near quad, over the ground. The same test
+// is done for two particles, with one draw call for each run of the
+// blend. The background of the overlay must have its colour. When the
+// device has GPU timestamps, each render pass must have a time, and the
+// log gives the time of the cube faces. It exits with 0 (pass) or 1
+// (fail).
 const std = @import("std");
 const sw = @import("sw_app");
 const builtin = @import("builtin");
@@ -178,13 +186,21 @@ const ground_tint: [3]f32 = .{ 0.25, 0.35, 0.2 };
 /// The time of day of the check: the sun is 45 degrees up, to +X.
 const check_time: f32 = 0.375;
 const cascade_count = 3;
-/// The point light of the check, near the ground in front of the figures.
-const check_point_light: sw_render.PointLight = .{
-    .position = .{ 0.6, 0.4, 2.5 },
-    .color = .{ 1.0, 0.6, 0.25 },
-    .intensity = 2.0,
-    .radius = 2.5,
+/// The crate between the two point lights (REQ-GPU-044).
+const crate_min: [3]f32 = .{ -0.25, 0, 1.8 };
+const crate_max: [3]f32 = .{ 0.25, 0.5, 2.2 };
+const crate_tint: [3]f32 = .{ 0.55, 0.4, 0.25 };
+/// The point lights of the check, near the ground in front of the
+/// figures, one on each side of the crate. Each one casts shadows. No
+/// figure is nearer to a light than its radius, so only the crate casts
+/// a point shadow on a checked point.
+const check_point_lights = [2]sw_render.PointLight{
+    .{ .position = .{ 0.6, 0.6, 2.0 }, .color = .{ 1.0, 0.6, 0.25 }, .intensity = 4.0, .radius = 1.8, .shadow = true },
+    .{ .position = .{ -0.6, 0.6, 2.0 }, .color = .{ 0.35, 0.55, 1.0 }, .intensity = 4.0, .radius = 1.8, .shadow = true },
 };
+/// The ground behind the crate, seen from the warm light. The crate
+/// blocks the warm light and the sun, and the blue light reaches it.
+const crate_shadow: [3]f32 = .{ -0.4, 0, 2.0 };
 
 var graph: ?sw_render.FrameGraph = null;
 var post: ?sw_render.PostChain = null;
@@ -238,7 +254,10 @@ var anim_time: f32 = 0;
 var anim_on = true;
 var depth_range_on = true;
 var shadows_on = true;
+var point_shadows_on = true;
 var point_light_on = true;
+/// The point lights that the check step marks as changed.
+var check_changed: u32 = 0;
 var time_of_day: f32 = check_time;
 
 const first_person_view: sw_render.BoxModelView = .{ .depth_range = .{ 0, 0.01 }, .fog = false };
@@ -351,6 +370,13 @@ fn addInstances(m: *sw_render.BoxModels) !void {
     }
     // The ground and the block.
     try m.add(.world, block, .{ .transform = placed(.{ 0, -0.05, -30 }, .{ 200, 0.1, 200 }), .tint = ground_tint });
+    var crate_centre: [3]f32 = undefined;
+    var crate_size: [3]f32 = undefined;
+    for (0..3) |i| {
+        crate_centre[i] = (crate_min[i] + crate_max[i]) / 2;
+        crate_size[i] = crate_max[i] - crate_min[i];
+    }
+    try m.add(.world, block, .{ .transform = placed(crate_centre, crate_size), .tint = crate_tint });
     const block_world: [3]f32 = .{ eye[0] + block_view_pos[0], eye[1] + block_view_pos[1], eye[2] + block_view_pos[2] };
     try m.add(.world, block, .{ .transform = placed(block_world, @splat(block_size)), .tint = block_tint });
     // The held object, in view space. It bobs while the animation runs.
@@ -430,7 +456,7 @@ const Callbacks = struct {
         } else {
             std.log.info("models: the device has no GPU timestamps. The pass timer is off.", .{});
         }
-        std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range. L: shadows. P: point light. Left/Right: time. T: pass times. F: frame limit.", .{figure_count});
+        std.log.info("models: GPU ready. {d} figures. Space: animation. D: first-person depth range. L: sun shadows. O: point light shadows. P: point lights. Left/Right: time. T: pass times. F: frame limit.", .{figure_count});
     }
 
     pub fn tick(ctx: *sw.Context) !void {
@@ -444,6 +470,10 @@ const Callbacks = struct {
         if (in.keyPressed(.L)) {
             shadows_on = !shadows_on;
             if (lighting) |*l| l.setShadowsEnabled(shadows_on);
+        }
+        if (in.keyPressed(.O)) {
+            point_shadows_on = !point_shadows_on;
+            if (lighting) |*l| l.setPointShadowsEnabled(point_shadows_on);
         }
         if (in.keyPressed(.P)) point_light_on = !point_light_on;
         if (in.keyPressed(.F)) limiter.setTarget(if (limiter.target_fps == null) 30 else null);
@@ -480,12 +510,17 @@ const Callbacks = struct {
         // The shadow light follows the sun of `f.sky`.
         const l = &lighting.?;
         if (point_light_on) {
-            var light = check_point_light;
-            if (!check_mode) {
+            var lights = check_point_lights;
+            if (check_mode) {
+                // A light marked as changed draws its cube map again.
+                for (lights[0..check_changed]) |*p| p.shadow_changed = true;
+            } else {
+                // The warm light moves round the crate: its cube map draws
+                // again in each frame. The blue light does not move.
                 const a = anim_time * 0.8;
-                light.position = .{ 2.0 * @sin(a), 0.4, 1.5 + 1.2 * @cos(a) };
+                lights[0].position = .{ 0.6 * @cos(a), 0.6, 2.0 + 0.6 * @sin(a) };
             }
-            try l.setPointLights(&.{light});
+            try l.setPointLights(&lights);
         } else {
             try l.setPointLights(&.{});
         }
@@ -575,13 +610,18 @@ fn drawScene(pass: *sw_render.Pass) !void {
 const Step = struct {
     name: []const u8,
     depth_range: bool,
+    /// The sun shadows. The point light shadows are always on.
     shadows: bool = true,
+    /// The point lights marked as changed: their cube maps draw again.
+    changed: u32 = 0,
 };
 
 const steps = [_]Step{
     .{ .name = "first-person depth range", .depth_range = true },
     .{ .name = "no depth range", .depth_range = false },
-    .{ .name = "shadows off", .depth_range = true, .shadows = false },
+    .{ .name = "sun shadows off", .depth_range = true, .shadows = false },
+    .{ .name = "one point light changed", .depth_range = true, .changed = 1 },
+    .{ .name = "two point lights changed", .depth_range = true, .changed = 2 },
 };
 
 var check_frame: u32 = 0;
@@ -592,6 +632,7 @@ fn setCheckStep() void {
     const step = steps[check_frame / 2];
     models.?.setFirstPersonView(if (step.depth_range) first_person_view else no_range_view);
     lighting.?.setShadowsEnabled(step.shadows);
+    check_changed = step.changed;
 }
 
 fn checkFrame(ctx: *sw.Context, frame: sw_render.FrameUniforms) !void {
@@ -648,6 +689,19 @@ fn pixelAt(pixels: []const u8, w: u32, xy: [2]u32) [3]u8 {
     return .{ pixels[i + 2], pixels[i + 1], pixels[i] };
 }
 
+/// The point shadow of each light at `world`: 0 when the crate is between
+/// the point and the light, else 1. Each checked point is far from the
+/// edge of a point shadow (REQ-GPU-044).
+fn crateShadows(world: [3]f32) [sw_render.lighting.max_point_lights]f32 {
+    var out: [sw_render.lighting.max_point_lights]f32 = @splat(1);
+    const u = lighting.?.uniforms();
+    for (u.points[0..u.counts[1]], 0..) |p, i| {
+        const pos: [3]f32 = .{ p.pos_radius[0], p.pos_radius[1], p.pos_radius[2] };
+        if (sw_render.lighting.segmentHitsBox(world, pos, crate_min, crate_max)) out[i] = 0;
+    }
+    return out;
+}
+
 /// The CPU colour of a box face with the normal `normal`, its albedo and
 /// tint, at the point `world`, with the shadow factor `shadow`.
 /// `fogged`: a world-space face, with the fog and the point lights. Else
@@ -655,7 +709,8 @@ fn pixelAt(pixels: []const u8, w: u32, xy: [2]u32) [3]u8 {
 fn litColor(frame: sw_render.FrameUniforms, albedo: [3]f32, tint: [3]f32, normal: [3]f32, world: [3]f32, shadow: f32, fogged: bool) [3]u8 {
     const light = models.?.getLight();
     const lt = lighting.?;
-    const points: [3]f32 = if (fogged) sw_render.lighting.pointLights(lt.uniforms(), world, normal) else .{ 0, 0, 0 };
+    const point_shadows = crateShadows(world);
+    const points: [3]f32 = if (fogged) sw_render.lighting.pointLightsWith(lt.uniforms(), world, normal, &point_shadows) else .{ 0, 0, 0 };
     var c = box_model.shadeLit(albedo, tint, normal, lt.lightDirection(), light, shadow, points);
     if (fogged) c = sw_render.sky.applyFog(frame.sky, c, distance(world, eye));
     return display(c);
@@ -688,8 +743,9 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
     // One draw call for each model and layer: the figures and the blocks
     // in the world, and the held object in the first-person pass.
     const s = models.?.stats();
-    const want_instances = figure_count + 2 + 1;
-    const want_records = figure_count * Fig.count + 2 + held_parts.len;
+    // The figures, the ground, the crate, the block and the held object.
+    const want_instances = figure_count + 3 + 1;
+    const want_records = figure_count * Fig.count + 3 + held_parts.len;
     std.log.info("models: {s}: {d} draw calls, {d} instances, {d} part records", .{ step.name, s.draw_calls, s.instances, s.records });
     if (s.draw_calls != 3 or s.instances != want_instances or s.records != want_records) {
         std.log.err("models: {s}: the counts must be 3 draw calls, {d} instances, {d} records", .{ step.name, want_instances, want_records });
@@ -697,10 +753,16 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
     }
     // The world layer (the figures and the blocks) draws into each
     // cascade with the shadows on, and into none with the shadows off.
-    const want_shadow_calls: u32 = if (step.shadows) 2 * cascade_count else 0;
-    std.log.info("models: {s}: {d} shadow draw calls", .{ step.name, s.shadow_draw_calls });
-    if (s.shadow_draw_calls != want_shadow_calls) {
-        std.log.err("models: {s}: the shadow draw calls must be {d}", .{ step.name, want_shadow_calls });
+    // It also draws into the 6 faces of each cube map that draws again.
+    // The point lights did not move since the first frame, so only a
+    // light marked as changed draws its cube map (REQ-GPU-044).
+    const faces = lighting.?.pointShadowFacesDrawn();
+    const want_faces = 6 * step.changed;
+    const cascade_calls: u32 = if (step.shadows) 2 * cascade_count else 0;
+    const want_shadow_calls = cascade_calls + 2 * want_faces;
+    std.log.info("models: {s}: {d} shadow draw calls, {d} cube faces", .{ step.name, s.shadow_draw_calls, faces });
+    if (s.shadow_draw_calls != want_shadow_calls or faces != want_faces) {
+        std.log.err("models: {s}: the shadow draw calls must be {d}, and the cube faces {d}", .{ step.name, want_shadow_calls, want_faces });
         ok = false;
     }
 
@@ -752,6 +814,7 @@ fn checkStep(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: 
         ok = expectPixel(step, "block in front of the held object", pixels, w, held_xy, faceColor(frame, .{ 1, 1, 1 }, block_tint, block_face, true)) and ok;
     }
     ok = checkShadows(step, frame, pixels, w, h) and ok;
+    ok = checkPointShadows(step, frame, pixels, w, h) and ok;
     ok = checkGlass(step, frame, pixels, w, h) and ok;
     ok = checkSparks(step, frame, pixels, w, h) and ok;
     ok = checkOverlay(step, pixels, w) and ok;
@@ -817,8 +880,14 @@ fn checkShadows(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, 
         ok = false;
     }
 
-    // The ground under the point light.
-    const under: [3]f32 = .{ check_point_light.position[0], 0, check_point_light.position[2] };
+    // The ground under the warm point light. The crate is between it and
+    // the blue light.
+    const warm = check_point_lights[0].position;
+    const under: [3]f32 = .{ warm[0], 0, warm[2] };
+    if (sw_render.lighting.rayHitsBox(under, l, crate_min, crate_max) or !sw_render.lighting.segmentHitsBox(under, check_point_lights[1].position, crate_min, crate_max)) {
+        std.log.err("models: the ground under the warm light {any} must be in the sun and in the blue shadow of the crate", .{under});
+        ok = false;
+    }
     const under_xy = project(vp, under, w, h);
     const want_under = litColor(frame, .{ 1, 1, 1 }, ground_tint, up, under, 1, true);
     ok = expectPixel(step, "ground under the point light", pixels, w, under_xy, want_under) and ok;
@@ -830,6 +899,62 @@ fn checkShadows(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, 
     if (gain < 60) {
         std.log.err("models: {s}: the point light must make the ground brighter", .{step.name});
         ok = false;
+    }
+    return ok;
+}
+
+/// The ground in the warm point shadow of the crate: the blue light
+/// reaches it, and the warm light does not (REQ-GPU-044). The crate also
+/// blocks the sun. The sun shadows can be off: the point shadows stay.
+/// With GPU timestamps, log the time of the cube faces that drew.
+fn checkPointShadows(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w: u32, h: u32) bool {
+    var ok = true;
+    const up: [3]f32 = .{ 0, 1, 0 };
+    const lt = lighting.?;
+    const l = lt.lightDirection();
+    const p = crate_shadow;
+    if (!sw_render.lighting.segmentHitsBox(p, check_point_lights[0].position, crate_min, crate_max) or
+        sw_render.lighting.segmentHitsBox(p, check_point_lights[1].position, crate_min, crate_max) or
+        !sw_render.lighting.rayHitsBox(p, l, crate_min, crate_max))
+    {
+        std.log.err("models: the point {any} must be in the warm shadow and the sun shadow of the crate, and in blue light", .{p});
+        ok = false;
+    }
+    const sun: f32 = if (step.shadows) 0 else 1;
+    for (0..2) |i| {
+        if (lt.pointShadowSlot(i) != @as(u32, @intCast(i))) {
+            std.log.err("models: {s}: point light {d} has the cube map {any}", .{ step.name, i, lt.pointShadowSlot(i) });
+            ok = false;
+        }
+    }
+    const xy = project(frame.view_proj, p, w, h);
+    const want = litColor(frame, .{ 1, 1, 1 }, ground_tint, up, p, sun, true);
+    ok = expectPixel(step, "ground in the warm point shadow of the crate", pixels, w, xy, want) and ok;
+    // With no point shadow, the warm light would make the ground brighter.
+    var c = box_model.shadeLit(.{ 1, 1, 1 }, ground_tint, up, l, models.?.getLight(), sun, sw_render.lighting.pointLights(lt.uniforms(), p, up));
+    c = sw_render.sky.applyFog(frame.sky, c, distance(p, eye));
+    const no_shadow = display(c);
+    const got = pixelAt(pixels, w, xy);
+    const drop = brightness(no_shadow) - brightness(got);
+    std.log.info("models: {s}: the point shadow is darker by {d} (the CPU reference: {d})", .{ step.name, drop, brightness(no_shadow) - brightness(want) });
+    if (drop < 12) {
+        std.log.err("models: {s}: the crate must block the warm light", .{step.name});
+        ok = false;
+    }
+    if (timer) |*t| {
+        var ms: f32 = 0;
+        var n: u32 = 0;
+        for (t.times()) |pt| {
+            if (std.mem.startsWith(u8, pt.name, "sw_point_shadow_")) {
+                ms += pt.ms;
+                n += 1;
+            }
+        }
+        std.log.info("models: {s}: {d} cube faces timed, {d:.3} ms on the GPU", .{ step.name, n, ms });
+        if (n != 6 * step.changed) {
+            std.log.err("models: {s}: the pass timer has {d} cube faces, not {d}", .{ step.name, n, 6 * step.changed });
+            ok = false;
+        }
     }
     return ok;
 }
@@ -849,7 +974,7 @@ fn checkGlass(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w:
             ok = false;
         }
     }
-    const points = sw_render.lighting.pointLights(lt.uniforms(), glass_ground, up);
+    const points = sw_render.lighting.pointLightsWith(lt.uniforms(), glass_ground, up, &crateShadows(glass_ground));
     var ground = box_model.shadeLit(.{ 1, 1, 1 }, ground_tint, up, l, light, 1, points);
     ground = sw_render.sky.applyFog(frame.sky, ground, distance(glass_ground, eye));
     const red_c: [3]f32 = .{ glass_color[0][0], glass_color[0][1], glass_color[0][2] };
@@ -888,7 +1013,7 @@ fn checkSparks(step: Step, frame: sw_render.FrameUniforms, pixels: []const u8, w
             ok = false;
         }
     }
-    const points = sw_render.lighting.pointLights(lt.uniforms(), spark_ground, up);
+    const points = sw_render.lighting.pointLightsWith(lt.uniforms(), spark_ground, up, &crateShadows(spark_ground));
     var ground = box_model.shadeLit(.{ 1, 1, 1 }, ground_tint, up, l, models.?.getLight(), 1, points);
     ground = sw_render.sky.applyFog(frame.sky, ground, distance(spark_ground, eye));
     const blend = sw_render.translucent.over;

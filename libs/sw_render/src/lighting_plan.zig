@@ -1,7 +1,7 @@
 //! Shadows and point lights with no GPU code: the cascade fit, the light
 //! direction from the sky, the uniform layout, the WGSL include and the
 //! CPU reference of each WGSL helper (REQ-GPU-016, REQ-GPU-017,
-//! REQ-GPU-018).
+//! REQ-GPU-018, REQ-GPU-044).
 //!
 //! One directional light casts shadows. The view frustum of the camera
 //! goes into `cascades` slices, from the near plane to
@@ -16,9 +16,18 @@
 //! - `sw_shadow(world_pos, normal)`: 1 in light, 0 in full shadow. It
 //!   samples the depth map of the cascade with a PCF filter of 16 taps on
 //!   a disk. Before a split, it blends the two cascades (REQ-GPU-042).
-//! - `sw_point_lights(world_pos, normal)`: the sum of the point lights.
-//!   Multiply it by the albedo.
+//! - `sw_point_lights(world_pos, normal)`: the sum of the point lights,
+//!   each one times its own shadow. Multiply it by the albedo.
 //! - `sw_light_dir()`: the unit vector to the shadow light.
+//!
+//! A point light can also cast shadows (REQ-GPU-044). Its shadow map is a
+//! cube of depth: one perspective render of 90 degrees for each face
+//! (`pointFaceViewProj`). A face holds the perspective depth of its
+//! camera. The shader gets the same depth from the major axis of the
+//! vector from the light (`pointDepth`). Thus a caster draws with the
+//! depth-only pipeline of the cascades. The bias and the PCF disk have the
+//! design of the sun shadows (REQ-GPU-042), in texels of the cube face at
+//! the receiver.
 //!
 //! `lighting.zig` makes the depth maps and the passes.
 
@@ -33,10 +42,13 @@ const Vec3 = sw_math.Vec3;
 pub const max_cascades = 4;
 /// The most point lights in one frame.
 pub const max_point_lights = 16;
+/// The most point lights with a shadow. The WGSL include declares one
+/// cube map for each (REQ-GPU-044).
+pub const max_point_shadows = 4;
 /// The bind group index of `include(default_group)`.
 pub const default_group: u32 = 2;
 
-/// One point light. The light has no shadow.
+/// One point light.
 pub const PointLight = struct {
     /// The position in world space.
     position: [3]f32,
@@ -46,10 +58,23 @@ pub const PointLight = struct {
     intensity: f32 = 1,
     /// The light is 0 at this distance and farther.
     radius: f32 = 8,
+    /// True: the light casts shadows into a cube shadow map
+    /// (REQ-GPU-044). The shadowed lights get the cube maps in the order
+    /// of the list. Thus keep them in the same order in each frame. A
+    /// shadowed light after the last cube map has no shadow.
+    shadow: bool = false,
+    /// True: draw the cube map of this light again in this frame. Set it
+    /// when a caster near the light moved. A change of `position` or
+    /// `radius` draws the cube map again with no mark.
+    shadow_changed: bool = false,
 };
 
+/// The settings of the sun shadows. The point light shadows use the bias,
+/// the PCF radius and the strength too, in texels of the cube face at the
+/// receiver (REQ-GPU-044).
 pub const ShadowSettings = struct {
-    /// False: `sw_shadow` gives 1 and the shadow passes do not run.
+    /// False: `sw_shadow` gives 1 and the cascade passes do not run. The
+    /// point light shadows do not change.
     enabled: bool = true,
     /// The distance from the camera where the shadows stop.
     distance: f32 = 60,
@@ -102,6 +127,10 @@ pub const PointLightUniforms = extern struct {
     pos_radius: [4]f32 = .{ 0, 0, 0, 1 },
     /// rgb: the colour. w: the intensity.
     color: [4]f32 = .{ 0, 0, 0, 0 },
+    /// x: the cube map of the shadow, or -1 for no shadow. y: far / (far -
+    /// near) of the cube faces. z: the near plane. w: not used. The far
+    /// plane is the radius (REQ-GPU-044).
+    shadow: [4]f32 = .{ -1, 0, 0, 0 },
 };
 
 /// The lighting of one frame: `SwLighting` in the include.
@@ -125,6 +154,11 @@ pub const LightingUniforms = extern struct {
     /// x: the world distance of the normal bias, the same in each cascade.
     /// y: the largest tangent for `slope`. z, w: not used.
     bias: [4]f32 = .{ 0, 0, 0, 0 },
+    /// The point light shadows (REQ-GPU-044). x: 2 / the face size, the
+    /// world size of one texel at the distance 1 on the major axis. y: the
+    /// normal bias in texels. z: the depth bias in texels. w: the PCF
+    /// radius in texels.
+    point_shadow: [4]f32 = .{ 0, 0, 0, 0 },
     /// x: the cascade count. y: the point light count.
     counts: [4]u32 = @splat(0),
     points: [max_point_lights]PointLightUniforms = @splat(.{}),
@@ -135,6 +169,7 @@ pub const structs =
     \\struct SwPointLight {
     \\    pos_radius: vec4<f32>,
     \\    color: vec4<f32>,
+    \\    shadow: vec4<f32>,
     \\}
     \\struct SwLighting {
     \\    cascades: array<mat4x4<f32>, 4>,
@@ -145,6 +180,7 @@ pub const structs =
     \\    radius: vec4<f32>,
     \\    slope: vec4<f32>,
     \\    bias: vec4<f32>,
+    \\    point_shadow: vec4<f32>,
     \\    counts: vec4<u32>,
     \\    points: array<SwPointLight, 16>,
     \\}
@@ -246,7 +282,64 @@ pub const helpers =
     \\    return mix(1.0, s, sw_lighting.params.w);
     \\}
     \\
-    \\// The light of point light `i` on a surface. Multiply it by the albedo.
+    \\// One filtered depth compare in the cube map `slot`.
+    \\fn sw_point_shadow_tap(slot: u32, dir: vec3<f32>, depth: f32) -> f32 {
+    \\    switch slot {
+    \\        case 0u: { return textureSampleCompareLevel(sw_point_shadow_map_0, sw_shadow_sampler, dir, depth); }
+    \\        case 1u: { return textureSampleCompareLevel(sw_point_shadow_map_1, sw_shadow_sampler, dir, depth); }
+    \\        case 2u: { return textureSampleCompareLevel(sw_point_shadow_map_2, sw_shadow_sampler, dir, depth); }
+    \\        default: { return textureSampleCompareLevel(sw_point_shadow_map_3, sw_shadow_sampler, dir, depth); }
+    \\    }
+    \\}
+    \\
+    \\// The shadow of point light `i`: 1 in light, 0 in full shadow. A light
+    \\// with no cube map gives 1. The bias has the design of
+    \\// `sw_shadow_pcf`, in texels of the cube face at the receiver. The
+    \\// depth is the perspective depth of the face: the major axis of the
+    \\// vector from the light gives it (REQ-GPU-044).
+    \\fn sw_point_shadow(i: u32, world_pos: vec3<f32>, normal: vec3<f32>) -> f32 {
+    \\    let pl = sw_lighting.points[i];
+    \\    if (pl.shadow.x < 0.0) {
+    \\        return 1.0;
+    \\    }
+    \\    let to_light = pl.pos_radius.xyz - world_pos;
+    \\    let l = to_light * inverseSqrt(max(dot(to_light, to_light), 1e-12));
+    \\    let n_dot_l = clamp(dot(normal, l), -1.0, 1.0);
+    \\    let sine = sqrt(max(1.0 - n_dot_l * n_dot_l, 0.0));
+    \\    let a = abs(to_light);
+    \\    let texel = max(a.x, max(a.y, a.z)) * sw_lighting.point_shadow.x;
+    \\    let q = world_pos + normal * (sw_lighting.point_shadow.y * texel * sine) + l * (sw_lighting.point_shadow.z * texel);
+    \\    let d = q - pl.pos_radius.xyz;
+    \\    let ad = abs(d);
+    \\    let m = max(ad.x, max(ad.y, ad.z));
+    \\    if (m >= pl.pos_radius.w || m <= pl.shadow.z) {
+    \\        return 1.0;
+    \\    }
+    \\    // The faces hold the directions with z turned (`pointLookup`).
+    \\    let dir = vec3<f32>(d.x, d.y, -d.z);
+    \\    let w = normalize(dir);
+    \\    let other = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(w.y) > 0.7);
+    \\    let tu = normalize(cross(w, other));
+    \\    let tv = cross(w, tu);
+    \\    let turn = mat2x2<f32>(-0.73736888, 0.67549029, -0.67549029, -0.73736888);
+    \\    var o = vec2<f32>(sw_lighting.point_shadow.w * texel, 0.0);
+    \\    let slot = u32(pl.shadow.x);
+    \\    var sum = 0.0;
+    \\    for (var k = 0u; k < SW_SHADOW_TAPS; k += 1u) {
+    \\        let r = sqrt((f32(k) + 0.5) / f32(SW_SHADOW_TAPS));
+    \\        let s = dir + (tu * o.x + tv * o.y) * r;
+    \\        // Each tap compares the depth of its own point on the disk. The
+    \\        // depth of a face changes along its axis, not along the ray.
+    \\        let sa = abs(s);
+    \\        let depth = pl.shadow.y * (1.0 - pl.shadow.z / max(max(sa.x, max(sa.y, sa.z)), pl.shadow.z));
+    \\        sum += sw_point_shadow_tap(slot, s, depth);
+    \\        o = turn * o;
+    \\    }
+    \\    return mix(1.0, sum / f32(SW_SHADOW_TAPS), sw_lighting.params.w);
+    \\}
+    \\
+    \\// The light of point light `i` on a surface, with no shadow. Multiply
+    \\// it by the albedo.
     \\fn sw_point_light(i: u32, world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     \\    let pl = sw_lighting.points[i];
     \\    let d = pl.pos_radius.xyz - world_pos;
@@ -259,11 +352,15 @@ pub const helpers =
     \\    return pl.color.rgb * (pl.color.w * falloff * n_dot_l);
     \\}
     \\
-    \\// The sum of the point lights on a surface. Multiply it by the albedo.
+    \\// The sum of the point lights on a surface, each one times its own
+    \\// shadow (REQ-GPU-044). Multiply it by the albedo.
     \\fn sw_point_lights(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     \\    var c = vec3<f32>(0.0);
     \\    for (var i = 0u; i < sw_lighting.counts.y; i += 1u) {
-    \\        c += sw_point_light(i, world_pos, normal);
+    \\        let p = sw_point_light(i, world_pos, normal);
+    \\        if (any(p > vec3<f32>(0.0))) {
+    \\            c += p * sw_point_shadow(i, world_pos, normal);
+    \\        }
     \\    }
     \\    return c;
     \\}
@@ -277,6 +374,9 @@ pub const sampler_binding: u32 = 1;
 /// The binding of the depth map of cascade 0. Cascade `i` is at
 /// `map_binding + i`.
 pub const map_binding: u32 = 2;
+/// The binding of the cube map of point shadow 0. Point shadow `i` is at
+/// `point_map_binding + i` (REQ-GPU-044).
+pub const point_map_binding: u32 = map_binding + max_cascades;
 
 /// The WGSL include for the bind group `group`. Put it after the shared
 /// prefix (`wgsl.prefix`).
@@ -288,7 +388,11 @@ pub fn include(comptime group: u32) []const u8 {
         "@group(" ++ g ++ ") @binding(2) var sw_shadow_map_0: texture_depth_2d;\n" ++
         "@group(" ++ g ++ ") @binding(3) var sw_shadow_map_1: texture_depth_2d;\n" ++
         "@group(" ++ g ++ ") @binding(4) var sw_shadow_map_2: texture_depth_2d;\n" ++
-        "@group(" ++ g ++ ") @binding(5) var sw_shadow_map_3: texture_depth_2d;\n\n" ++
+        "@group(" ++ g ++ ") @binding(5) var sw_shadow_map_3: texture_depth_2d;\n" ++
+        "@group(" ++ g ++ ") @binding(6) var sw_point_shadow_map_0: texture_depth_cube;\n" ++
+        "@group(" ++ g ++ ") @binding(7) var sw_point_shadow_map_1: texture_depth_cube;\n" ++
+        "@group(" ++ g ++ ") @binding(8) var sw_point_shadow_map_2: texture_depth_cube;\n" ++
+        "@group(" ++ g ++ ") @binding(9) var sw_point_shadow_map_3: texture_depth_cube;\n\n" ++
         helpers;
 }
 
@@ -532,6 +636,115 @@ pub fn uniforms(cascades: []const Cascade, light_dir: [3]f32, settings: ShadowSe
 }
 
 // =============================================================================
+// Point light shadows (REQ-GPU-044)
+// =============================================================================
+
+/// The near plane of the cube faces of a light with the radius `radius`:
+/// `near`, but not more than half the radius.
+pub fn pointNear(radius: f32, near: f32) f32 {
+    return @min(near, radius * 0.5);
+}
+
+/// True when a light with this radius can have a cube map: the far plane
+/// (the radius) is farther than the near plane.
+pub fn hasPointShadow(radius: f32, near: f32) bool {
+    return radius > 0 and near > 0 and pointNear(radius, near) < radius;
+}
+
+/// Put the point shadows into `u`. `slots[i]` is the cube map of point
+/// light `i`, or -1 for no shadow. `u.counts[1]` must be the point count.
+pub fn setPointShadows(u: *LightingUniforms, settings: ShadowSettings, map_size: u32, near: f32, slots: []const i32) void {
+    const radius = @max(settings.filter_radius, 0);
+    u.point_shadow = .{
+        2 / @as(f32, @floatFromInt(@max(map_size, 1))),
+        @max(settings.normal_bias, radius + 1),
+        settings.depth_bias,
+        radius,
+    };
+    for (u.points[0..u.counts[1]], 0..) |*p, i| {
+        const slot = if (i < slots.len) slots[i] else -1;
+        const far = p.pos_radius[3];
+        if (slot < 0 or !hasPointShadow(far, near)) {
+            p.shadow = .{ -1, 0, 0, 0 };
+            continue;
+        }
+        const n = pointNear(far, near);
+        p.shadow = .{ @floatFromInt(slot), far / (far - n), n, 0 };
+    }
+}
+
+/// The camera of one cube face: the direction it looks, and its up.
+pub const CubeFace = struct {
+    forward: [3]f32,
+    up: [3]f32,
+};
+
+/// The camera of each layer of a cube map. A layer holds the directions
+/// `d` where the cube lookup of `pointLookup(d)` selects that layer. The
+/// WebGPU cube faces are a mirror image of a camera view. The lookup turns
+/// z, and the two mirrors cancel. Thus each face has a usual right-handed
+/// camera (`lookAt`), with the winding of the cascades.
+pub const cube_faces = [6]CubeFace{
+    .{ .forward = .{ 1, 0, 0 }, .up = .{ 0, 1, 0 } },
+    .{ .forward = .{ -1, 0, 0 }, .up = .{ 0, 1, 0 } },
+    .{ .forward = .{ 0, 1, 0 }, .up = .{ 0, 0, 1 } },
+    .{ .forward = .{ 0, -1, 0 }, .up = .{ 0, 0, -1 } },
+    .{ .forward = .{ 0, 0, -1 }, .up = .{ 0, 1, 0 } },
+    .{ .forward = .{ 0, 0, 1 }, .up = .{ 0, 1, 0 } },
+};
+
+/// The lookup vector in the cube map of the vector `d` from the light.
+pub fn pointLookup(d: [3]f32) [3]f32 {
+    return .{ d[0], d[1], -d[2] };
+}
+
+/// World space to the clip space of cube face `face` of a light at
+/// `position`: a perspective of 90 degrees from `near` to `far`.
+pub fn pointFaceViewProj(position: [3]f32, near: f32, far: f32, face: u32) Mat4 {
+    const f = cube_faces[face];
+    const eye: Vec3 = .{ .x = position[0], .y = position[1], .z = position[2] };
+    const target: Vec3 = .{ .x = position[0] + f.forward[0], .y = position[1] + f.forward[1], .z = position[2] + f.forward[2] };
+    const up: Vec3 = .{ .x = f.up[0], .y = f.up[1], .z = f.up[2] };
+    return sw_math.perspective(std.math.pi / 2.0, 1, near, far).mul(sw_math.lookAt(eye, target, up));
+}
+
+/// The depth that a cube face stores for a point at the distance `m` on
+/// the major axis from the light. It is the perspective depth of
+/// `pointFaceViewProj`.
+pub fn pointDepth(near: f32, far: f32, m: f32) f32 {
+    return far / (far - near) * (1 - near / m);
+}
+
+/// The layer and the texture coordinates of the WebGPU cube lookup of the
+/// vector `dir`. Row 0 is at v = 0.
+pub fn cubeLookup(dir: [3]f32) struct { layer: u32, uv: [2]f32 } {
+    const ax = @abs(dir[0]);
+    const ay = @abs(dir[1]);
+    const az = @abs(dir[2]);
+    var layer: u32 = undefined;
+    var sc: f32 = undefined;
+    var tc: f32 = undefined;
+    var ma: f32 = undefined;
+    if (ax >= ay and ax >= az) {
+        ma = ax;
+        layer = if (dir[0] >= 0) 0 else 1;
+        sc = if (dir[0] >= 0) -dir[2] else dir[2];
+        tc = -dir[1];
+    } else if (ay >= az) {
+        ma = ay;
+        layer = if (dir[1] >= 0) 2 else 3;
+        sc = dir[0];
+        tc = if (dir[1] >= 0) dir[2] else -dir[2];
+    } else {
+        ma = az;
+        layer = if (dir[2] >= 0) 4 else 5;
+        sc = if (dir[2] >= 0) dir[0] else -dir[0];
+        tc = -dir[1];
+    }
+    return .{ .layer = layer, .uv = .{ (sc / ma + 1) * 0.5, (tc / ma + 1) * 0.5 } };
+}
+
+// =============================================================================
 // CPU reference of the WGSL helpers
 // =============================================================================
 
@@ -669,25 +882,169 @@ pub fn shadow(u: LightingUniforms, view: [16]f32, maps: []const DepthMap, world_
     return 1 + (s - 1) * u.params[3];
 }
 
-/// True when the ray from `p` toward the light `light_dir` hits the box
-/// from `min` to `max`. A test and an example use it to find a point in a
-/// cast shadow.
-pub fn rayHitsBox(p: [3]f32, light_dir: [3]f32, min: [3]f32, max: [3]f32) bool {
+/// A cube depth map on the CPU: 6 layers of `size` x `size` texels, in the
+/// layer order of `cube_faces`, row 0 at the top (REQ-GPU-044).
+pub const CubeDepthMap = struct {
+    size: u32,
+    depth: []const f32,
+
+    /// The depth of texel (x, y) of `layer`. A texel one step outside the
+    /// layer is the texel of the next layer in the same direction. The GPU
+    /// also filters across the edge of a layer.
+    fn at(self: CubeDepthMap, layer: u32, x: i32, y: i32) f32 {
+        const s: i32 = @intCast(self.size);
+        var l = layer;
+        var cx = x;
+        var cy = y;
+        if (x < 0 or y < 0 or x >= s or y >= s) {
+            const fs: f32 = @floatFromInt(self.size);
+            const sc = (@as(f32, @floatFromInt(x)) + 0.5) / fs * 2 - 1;
+            const tc = (@as(f32, @floatFromInt(y)) + 0.5) / fs * 2 - 1;
+            const c = cubeLookup(cubeDirection(layer, sc, tc));
+            l = c.layer;
+            cx = std.math.clamp(@as(i32, @intFromFloat(@floor(c.uv[0] * fs))), 0, s - 1);
+            cy = std.math.clamp(@as(i32, @intFromFloat(@floor(c.uv[1] * fs))), 0, s - 1);
+        }
+        return self.depth[l * self.size * self.size + @as(u32, @intCast(cy)) * self.size + @as(u32, @intCast(cx))];
+    }
+
+    /// The CPU reference of `textureSampleCompareLevel` on a cube with a
+    /// linear `less_equal` comparison sampler: four compares, then the
+    /// bilinear mix. A texel past the edge of a layer comes from the next
+    /// layer.
+    pub fn compare(self: CubeDepthMap, dir: [3]f32, ref: f32) f32 {
+        const c = cubeLookup(dir);
+        const s: f32 = @floatFromInt(self.size);
+        const tx = c.uv[0] * s - 0.5;
+        const ty = c.uv[1] * s - 0.5;
+        const x0: i32 = @intFromFloat(@floor(tx));
+        const y0: i32 = @intFromFloat(@floor(ty));
+        const fx = tx - @floor(tx);
+        const fy = ty - @floor(ty);
+        const c00: f32 = if (ref <= self.at(c.layer, x0, y0)) 1 else 0;
+        const c10: f32 = if (ref <= self.at(c.layer, x0 + 1, y0)) 1 else 0;
+        const c01: f32 = if (ref <= self.at(c.layer, x0, y0 + 1)) 1 else 0;
+        const c11: f32 = if (ref <= self.at(c.layer, x0 + 1, y0 + 1)) 1 else 0;
+        const top = c00 + (c10 - c00) * fx;
+        const bottom = c01 + (c11 - c01) * fx;
+        return top + (bottom - top) * fy;
+    }
+};
+
+/// The direction of the point (sc, tc) of `layer`, with sc and tc in -1
+/// to 1 on the layer: the inverse of `cubeLookup`.
+pub fn cubeDirection(layer: u32, sc: f32, tc: f32) [3]f32 {
+    return switch (layer) {
+        0 => .{ 1, -tc, -sc },
+        1 => .{ -1, -tc, sc },
+        2 => .{ sc, 1, tc },
+        3 => .{ sc, -1, -tc },
+        4 => .{ sc, -tc, 1 },
+        else => .{ -sc, -tc, -1 },
+    };
+}
+
+/// The CPU reference of `sw_point_shadow`: the shadow of point light `i`
+/// with its CPU cube map, 1 in light.
+pub fn pointShadow(u: LightingUniforms, i: u32, map: CubeDepthMap, world_pos: [3]f32, normal: [3]f32) f32 {
+    const pl = u.points[i];
+    if (pl.shadow[0] < 0) return 1;
+    const pos: [3]f32 = .{ pl.pos_radius[0], pl.pos_radius[1], pl.pos_radius[2] };
+    const to_light: [3]f32 = .{ pos[0] - world_pos[0], pos[1] - world_pos[1], pos[2] - world_pos[2] };
+    const l = normalize3(to_light);
+    const n_dot_l = std.math.clamp(dot3(normal, l), -1, 1);
+    const sine = @sqrt(@max(1 - n_dot_l * n_dot_l, 0));
+    const texel = majorAxis(to_light) * u.point_shadow[0];
+    var d: [3]f32 = undefined;
+    for (0..3) |a| d[a] = world_pos[a] + normal[a] * (u.point_shadow[1] * texel * sine) + l[a] * (u.point_shadow[2] * texel) - pos[a];
+    const m = majorAxis(d);
+    if (m >= pl.pos_radius[3] or m <= pl.shadow[2]) return 1;
+    const dir = pointLookup(d);
+    const w = normalize3(dir);
+    const other: [3]f32 = if (@abs(w[1]) > 0.7) .{ 1, 0, 0 } else .{ 0, 1, 0 };
+    const tu = normalize3(cross3(w, other));
+    const tv = cross3(w, tu);
+    const r = u.point_shadow[3] * texel;
+    var sum: f32 = 0;
+    for (pcfOffsets()) |o| {
+        var s: [3]f32 = undefined;
+        for (0..3) |a| s[a] = dir[a] + (tu[a] * o[0] + tv[a] * o[1]) * r;
+        // Each tap compares the depth of its own point on the disk.
+        const depth = pl.shadow[1] * (1 - pl.shadow[2] / @max(majorAxis(s), pl.shadow[2]));
+        sum += map.compare(s, depth);
+    }
+    return 1 + (sum / pcf_taps - 1) * u.params[3];
+}
+
+/// The CPU reference of `sw_point_lights` with shadows. `maps[k]` is the
+/// CPU cube map of shadow slot `k`.
+pub fn pointLightsShadowed(u: LightingUniforms, maps: []const CubeDepthMap, world_pos: [3]f32, normal: [3]f32) [3]f32 {
+    var c: [3]f32 = .{ 0, 0, 0 };
+    for (u.points[0..u.counts[1]], 0..) |p, i| {
+        const l = pointLight(p, world_pos, normal);
+        if (l[0] <= 0 and l[1] <= 0 and l[2] <= 0) continue;
+        const s = if (p.shadow[0] < 0) 1 else pointShadow(u, @intCast(i), maps[@intFromFloat(p.shadow[0])], world_pos, normal);
+        for (0..3) |k| c[k] += l[k] * s;
+    }
+    return c;
+}
+
+/// The CPU reference of `sw_point_lights` when the game knows the shadow
+/// of each light: `shadows[i]` is 1 where light `i` is not blocked, 0
+/// where it is. An example check uses it for a point far from each shadow
+/// edge.
+pub fn pointLightsWith(u: LightingUniforms, world_pos: [3]f32, normal: [3]f32, shadows: []const f32) [3]f32 {
+    var c: [3]f32 = .{ 0, 0, 0 };
+    for (u.points[0..u.counts[1]], 0..) |p, i| {
+        const l = pointLight(p, world_pos, normal);
+        const s = if (p.shadow[0] < 0) 1 else 1 + (shadows[i] - 1) * u.params[3];
+        for (0..3) |k| c[k] += l[k] * s;
+    }
+    return c;
+}
+
+fn majorAxis(v: [3]f32) f32 {
+    return @max(@abs(v[0]), @max(@abs(v[1]), @abs(v[2])));
+}
+
+fn cross3(a: [3]f32, b: [3]f32) [3]f32 {
+    return .{ a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
+}
+
+/// The distance along the ray from `p` in the direction `dir` to the box
+/// from `min` to `max`, or null when the ray does not hit it.
+pub fn rayBox(p: [3]f32, dir: [3]f32, min: [3]f32, max: [3]f32) ?f32 {
     var t0: f32 = 0;
     var t1: f32 = std.math.inf(f32);
     for (0..3) |a| {
-        if (light_dir[a] == 0) {
-            if (p[a] < min[a] or p[a] > max[a]) return false;
+        if (dir[a] == 0) {
+            if (p[a] < min[a] or p[a] > max[a]) return null;
             continue;
         }
-        const inv = 1 / light_dir[a];
+        const inv = 1 / dir[a];
         var ta = (min[a] - p[a]) * inv;
         var tb = (max[a] - p[a]) * inv;
         if (ta > tb) std.mem.swap(f32, &ta, &tb);
         t0 = @max(t0, ta);
         t1 = @min(t1, tb);
     }
-    return t0 <= t1;
+    return if (t0 <= t1) t0 else null;
+}
+
+/// True when the segment from `p` to `q` goes through the box from `min`
+/// to `max`. A check uses it to find a point in the shadow of a point
+/// light.
+pub fn segmentHitsBox(p: [3]f32, q: [3]f32, min: [3]f32, max: [3]f32) bool {
+    const d: [3]f32 = .{ q[0] - p[0], q[1] - p[1], q[2] - p[2] };
+    const t = rayBox(p, d, min, max) orelse return false;
+    return t <= 1;
+}
+
+/// True when the ray from `p` toward the light `light_dir` hits the box
+/// from `min` to `max`. A test and an example use it to find a point in a
+/// cast shadow.
+pub fn rayHitsBox(p: [3]f32, light_dir: [3]f32, min: [3]f32, max: [3]f32) bool {
+    return rayBox(p, light_dir, min, max) != null;
 }
 
 // =============================================================================
@@ -1101,14 +1458,14 @@ test "lighting: a ray to the light finds the box that casts the shadow (REQ-GPU-
 }
 
 test "lighting: SwLighting in the include has the layout of LightingUniforms (REQ-GPU-016)" {
-    try testing.expectEqual(@as(usize, 32), @sizeOf(PointLightUniforms));
+    try testing.expectEqual(@as(usize, 48), @sizeOf(PointLightUniforms));
     const offsets = [_]struct { []const u8, usize }{
-        .{ "cascades", 0 }, .{ "splits", 256 }, .{ "texel", 272 }, .{ "light_dir", 288 },
-        .{ "params", 304 }, .{ "radius", 320 }, .{ "slope", 336 }, .{ "bias", 352 },
-        .{ "counts", 368 }, .{ "points", 384 },
+        .{ "cascades", 0 },       .{ "splits", 256 }, .{ "texel", 272 },  .{ "light_dir", 288 },
+        .{ "params", 304 },       .{ "radius", 320 }, .{ "slope", 336 },  .{ "bias", 352 },
+        .{ "point_shadow", 368 }, .{ "counts", 384 }, .{ "points", 400 },
     };
     inline for (offsets) |o| try testing.expectEqual(o[1], @offsetOf(LightingUniforms, o[0]));
-    try testing.expectEqual(@as(usize, 384 + 32 * max_point_lights), @sizeOf(LightingUniforms));
+    try testing.expectEqual(@as(usize, 400 + 48 * max_point_lights), @sizeOf(LightingUniforms));
     try testing.expectEqual(@as(usize, 0), @sizeOf(LightingUniforms) % 16);
     // The WGSL members are in the same order, with the same counts.
     var at: usize = 0;
@@ -1125,8 +1482,301 @@ test "lighting: SwLighting in the include has the layout of LightingUniforms (RE
     const text = comptime include(3);
     try testing.expect(std.mem.indexOf(u8, text, "@group(3) @binding(0) var<uniform> sw_lighting: SwLighting;") != null);
     try testing.expect(std.mem.indexOf(u8, text, "@group(3) @binding(5) var sw_shadow_map_3: texture_depth_2d;") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "@group(3) @binding(6) var sw_point_shadow_map_0: texture_depth_cube;") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "@group(3) @binding(9) var sw_point_shadow_map_3: texture_depth_cube;") != null);
+    try testing.expectEqual(@as(u32, 6), point_map_binding);
+    try testing.expectEqual(@as(usize, 4), max_point_shadows);
+    // The struct member of the point shadows.
+    try testing.expect(std.mem.indexOf(u8, structs, "    shadow: vec4<f32>,\n") != null);
     const full = comptime shader(2, "@fragment fn fs() {}\n");
     try testing.expect(std.mem.startsWith(u8, full, wgsl.prefix));
     try testing.expect(std.mem.indexOf(u8, full, "fn sw_shadow(world_pos: vec3<f32>, normal: vec3<f32>) -> f32") != null);
     try testing.expect(std.mem.indexOf(u8, full, "fn sw_point_lights(world_pos: vec3<f32>, normal: vec3<f32>) -> vec3<f32>") != null);
+}
+
+// =============================================================================
+// Tests of the point light shadows (REQ-GPU-044)
+// =============================================================================
+
+test "lighting: each cube face draws the directions that the WebGPU cube lookup reads (REQ-GPU-044)" {
+    const near: f32 = 0.05;
+    const far: f32 = 10;
+    const light: [3]f32 = .{ 1.5, -2, 0.25 };
+    var prng = std.Random.DefaultPrng.init(44);
+    const rand = prng.random();
+    var seen: [6]bool = @splat(false);
+    for (0..2000) |_| {
+        var d: [3]f32 = undefined;
+        for (&d) |*v| v.* = rand.float(f32) * 8 - 4;
+        const m = majorAxis(d);
+        if (m < 0.2) continue;
+        const c = cubeLookup(pointLookup(d));
+        seen[c.layer] = true;
+        // The face camera of that layer puts the point at the same texture
+        // coordinates, with the depth of `pointDepth`.
+        const w: [3]f32 = .{ light[0] + d[0], light[1] + d[1], light[2] + d[2] };
+        const p = pointFaceViewProj(light, near, far, c.layer).mulVec4(.{ .x = w[0], .y = w[1], .z = w[2], .w = 1 });
+        try testing.expectApproxEqAbs(m, p.w, 1e-4);
+        try testing.expectApproxEqAbs(c.uv[0], p.x / p.w * 0.5 + 0.5, 1e-4);
+        try testing.expectApproxEqAbs(c.uv[1], 0.5 - p.y / p.w * 0.5, 1e-4);
+        try testing.expectApproxEqAbs(pointDepth(near, far, m), p.z / p.w, 1e-5);
+    }
+    for (seen) |s| try testing.expect(s);
+    // `cubeDirection` is the inverse of the lookup.
+    for (0..6) |l| {
+        for ([_][2]f32{ .{ 0.3, -0.6 }, .{ -0.9, 0.2 }, .{ 0.05, 0.95 } }) |st| {
+            const c = cubeLookup(cubeDirection(@intCast(l), st[0], st[1]));
+            try testing.expectEqual(@as(u32, @intCast(l)), c.layer);
+            try testing.expectApproxEqAbs((st[0] + 1) * 0.5, c.uv[0], 1e-6);
+            try testing.expectApproxEqAbs((st[1] + 1) * 0.5, c.uv[1], 1e-6);
+        }
+    }
+    // The depth is 0 at the near plane and 1 at the far plane.
+    try testing.expectApproxEqAbs(@as(f32, 0), pointDepth(near, far, near), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1), pointDepth(near, far, far), 1e-6);
+    // Each face has the winding of a usual camera: the same sign of the
+    // determinant of the rows x, y and w as a `lookAt` camera.
+    const usual = sw_math.perspective(1, 1, near, far).mul(sw_math.lookAt(.{ .x = 0, .y = 0, .z = 0 }, .{ .x = 0.3, .y = 0.2, .z = -1 }, .{ .x = 0, .y = 1, .z = 0 }));
+    const want = std.math.sign(det3Rows(usual));
+    for (0..6) |f| try testing.expectEqual(want, std.math.sign(det3Rows(pointFaceViewProj(light, near, far, @intCast(f)))));
+}
+
+/// The determinant of the 3 x 3 matrix of the rows x, y and w of the
+/// linear part of `m`.
+fn det3Rows(m: Mat4) f32 {
+    const d = m.data;
+    const r0: [3]f32 = .{ d[0], d[4], d[8] };
+    const r1: [3]f32 = .{ d[1], d[5], d[9] };
+    const r2: [3]f32 = .{ d[3], d[7], d[11] };
+    return dot3(r0, cross3(r1, r2));
+}
+
+const TestBox = struct { min: [3]f32, max: [3]f32 };
+
+/// Make a CPU cube map of the boxes from a light at `light`: the nearest
+/// box on the ray through the centre of each texel, as the GPU draws it.
+fn renderCube(allocator: std.mem.Allocator, light: [3]f32, near: f32, far: f32, size: u32, boxes: []const TestBox) ![]f32 {
+    const n = size * size;
+    const out = try allocator.alloc(f32, 6 * n);
+    const s: f32 = @floatFromInt(size);
+    for (cube_faces, 0..) |f, layer| {
+        const r = normalize3(cross3(f.forward, f.up));
+        const up = cross3(r, f.forward);
+        for (0..size) |y| {
+            for (0..size) |x| {
+                const nx = (@as(f32, @floatFromInt(x)) + 0.5) / s * 2 - 1;
+                const ny = 1 - (@as(f32, @floatFromInt(y)) + 0.5) / s * 2;
+                var dir: [3]f32 = undefined;
+                for (0..3) |a| dir[a] = f.forward[a] + r[a] * nx + up[a] * ny;
+                // The view depth is t, because the forward part of `dir` is 1.
+                var t: f32 = std.math.inf(f32);
+                for (boxes) |b| {
+                    if (rayBox(light, dir, b.min, b.max)) |h| t = @min(t, h);
+                }
+                out[layer * n + y * size + x] = if (t >= near and t <= far) pointDepth(near, far, t) else 1;
+            }
+        }
+    }
+    return out;
+}
+
+/// The uniforms of point lights that cast shadows, slot `i` for light `i`.
+fn shadowedUniforms(lights: []const PointLight, settings: ShadowSettings, map_size: u32, near: f32) !LightingUniforms {
+    var u = try uniforms(&.{}, .{ 0, 1, 0 }, settings, map_size, lights);
+    var slots: [max_point_lights]i32 = undefined;
+    for (slots[0..lights.len], 0..) |*s, i| s.* = @intCast(i);
+    setPointShadows(&u, settings, map_size, near, slots[0..lights.len]);
+    return u;
+}
+
+/// The room of the tests: a floor at y = 0, a wall at x = 3, and a crate.
+const test_room = [_]TestBox{
+    .{ .min = .{ -8, -1, -8 }, .max = .{ 8, 0, 8 } },
+    .{ .min = .{ 3, 0, -8 }, .max = .{ 3.5, 4, 8 } },
+    .{ .min = .{ 0.8, 0, -0.3 }, .max = .{ 1.4, 0.6, 0.3 } },
+};
+const test_crate = test_room[2];
+
+/// 1 when no box of `boxes` is between `p` and `light`, at `p` and at
+/// four points `margin` to the side. 0 when each one is blocked. Null
+/// near an edge.
+fn visibleFrom(p: [3]f32, light: [3]f32, boxes: []const TestBox, margin: f32, side: [2][3]f32) ?f32 {
+    var lit: u32 = 0;
+    var blocked: u32 = 0;
+    const offsets = [_][2]f32{ .{ 0, 0 }, .{ 1, 0 }, .{ -1, 0 }, .{ 0, 1 }, .{ 0, -1 } };
+    for (offsets) |o| {
+        var q: [3]f32 = undefined;
+        for (0..3) |a| q[a] = p[a] + (side[0][a] * o[0] + side[1][a] * o[1]) * margin;
+        var hit = false;
+        for (boxes) |b| {
+            // Shrink the box a little: a point on its face is not behind it.
+            const e: f32 = 1e-3;
+            if (segmentHitsBox(q, light, .{ b.min[0] + e, b.min[1] + e, b.min[2] + e }, .{ b.max[0] - e, b.max[1] - e, b.max[2] - e })) hit = true;
+        }
+        if (hit) blocked += 1 else lit += 1;
+    }
+    if (lit == offsets.len) return 1;
+    if (blocked == offsets.len) return 0;
+    return null;
+}
+
+const Surface = struct {
+    normal: [3]f32,
+    side: [2][3]f32,
+    /// The point at (0, 0) on the surface.
+    origin: [3]f32,
+    a_range: [2]f32,
+    b_range: [2]f32,
+};
+
+/// The floor, the wall, and the top and the near side of the crate.
+const test_surfaces = [_]Surface{
+    .{ .normal = .{ 0, 1, 0 }, .side = .{ .{ 1, 0, 0 }, .{ 0, 0, 1 } }, .origin = .{ 0, 0, 0 }, .a_range = .{ -4, 2.95 }, .b_range = .{ -4, 4 } },
+    .{ .normal = .{ -1, 0, 0 }, .side = .{ .{ 0, 1, 0 }, .{ 0, 0, 1 } }, .origin = .{ 3, 0, 0 }, .a_range = .{ 0.05, 3 }, .b_range = .{ -4, 4 } },
+    .{ .normal = .{ 0, 1, 0 }, .side = .{ .{ 1, 0, 0 }, .{ 0, 0, 1 } }, .origin = .{ 0, 0.6, 0 }, .a_range = .{ 0.82, 1.38 }, .b_range = .{ -0.28, 0.28 } },
+    .{ .normal = .{ -1, 0, 0 }, .side = .{ .{ 0, 1, 0 }, .{ 0, 0, 1 } }, .origin = .{ 0.8, 0, 0 }, .a_range = .{ 0.02, 0.58 }, .b_range = .{ -0.28, 0.28 } },
+};
+
+/// Check the CPU point shadow on each surface of the room: 1 where the
+/// light reaches the point, 0 where the crate blocks it. Give the number
+/// of points in light and in shadow.
+fn checkRoom(light: [3]f32, size: u32) ![2]u32 {
+    const near: f32 = 0.05;
+    const lights = [_]PointLight{.{ .position = light, .radius = 7, .shadow = true }};
+    const u = try shadowedUniforms(&lights, .{}, size, near);
+    const depth = try renderCube(testing.allocator, light, pointNear(7, near), 7, size, &test_room);
+    defer testing.allocator.free(depth);
+    const map: CubeDepthMap = .{ .size = size, .depth = depth };
+    var counts: [2]u32 = .{ 0, 0 };
+    for (test_surfaces) |sf| {
+        var a = sf.a_range[0];
+        while (a <= sf.a_range[1]) : (a += 0.07) {
+            var b = sf.b_range[0];
+            while (b <= sf.b_range[1]) : (b += 0.07) {
+                var p: [3]f32 = undefined;
+                for (0..3) |k| p[k] = sf.origin[k] + sf.side[0][k] * a + sf.side[1][k] * b;
+                // Skip the floor under the crate, and the points that do
+                // not face the light.
+                if (p[1] < 0.5 and rayHitsBox(p, .{ 0, 1, 0 }, test_crate.min, test_crate.max)) continue;
+                const to: [3]f32 = .{ light[0] - p[0], light[1] - p[1], light[2] - p[2] };
+                if (dot3(to, sf.normal) <= 0 or len3(to) > 6.5) continue;
+                // The soft edge: the PCF disk, the bias and the linear
+                // compare, in texels at the point, on the surface.
+                const s: ShadowSettings = .{};
+                const texel = majorAxis(to) * u.point_shadow[0];
+                const n_dot_l = dot3(sf.normal, normalize3(to));
+                const margin = (s.filter_radius + u.point_shadow[1] + 2) * texel / @max(n_dot_l, 0.1);
+                const want = visibleFrom(p, light, &test_room, margin, sf.side) orelse continue;
+                const got = pointShadow(u, 0, map, p, sf.normal);
+                if (@abs(got - want) > 1e-3) {
+                    std.debug.print("point shadow at {any} (normal {any}) is {d}, want {d}\n", .{ p, sf.normal, got, want });
+                    return error.TestUnexpectedResult;
+                }
+                counts[if (want == 1) 0 else 1] += 1;
+            }
+        }
+    }
+    return counts;
+}
+
+test "lighting: a point shadow has no acne on a floor, a wall and a crate (REQ-GPU-044)" {
+    // A light over the room, and a light near the floor: the floor far
+    // from it is at a grazing angle.
+    for ([_][3]f32{ .{ 0, 1.5, 0 }, .{ -0.5, 0.3, 0.4 } }) |light| {
+        const counts = try checkRoom(light, 256);
+        // Many points in light, and many in the shadow of the crate.
+        try testing.expect(counts[0] > 1000);
+        try testing.expect(counts[1] > 20);
+    }
+}
+
+test "lighting: a point shadow starts at the foot of the crate, with no gap (REQ-GPU-044)" {
+    const near: f32 = 0.05;
+    const light: [3]f32 = .{ 0, 1.5, 0 };
+    const lights = [_]PointLight{.{ .position = light, .radius = 7, .shadow = true }};
+    for ([_]u32{ 256, 512 }) |size| {
+        const u = try shadowedUniforms(&lights, .{}, size, near);
+        const depth = try renderCube(testing.allocator, light, pointNear(7, near), 7, size, &test_room);
+        defer testing.allocator.free(depth);
+        const map: CubeDepthMap = .{ .size = size, .depth = depth };
+        // The floor behind the crate, 1 cm and 3 cm from its far face.
+        for ([_]f32{ -0.2, 0, 0.2 }) |z| {
+            try testing.expect(pointShadow(u, 0, map, .{ 1.41, 0, z }, .{ 0, 1, 0 }) < 0.5);
+            try testing.expect(pointShadow(u, 0, map, .{ 1.43, 0, z }, .{ 0, 1, 0 }) < 0.05);
+        }
+        // The floor in front of the crate, 8 cm from its near face, is in
+        // light. Nearer, the soft edge of the PCF disk starts.
+        try testing.expectEqual(@as(f32, 1), pointShadow(u, 0, map, .{ 0.72, 0, 0 }, .{ 0, 1, 0 }));
+    }
+}
+
+test "lighting: two point lights give two shadows of one crate (REQ-GPU-044)" {
+    const near: f32 = 0.05;
+    const crate = [_]TestBox{
+        .{ .min = .{ -8, -1, -8 }, .max = .{ 8, 0, 8 } },
+        .{ .min = .{ -0.2, 0, -0.3 }, .max = .{ 0.2, 0.5, 0.3 } },
+    };
+    const lights = [_]PointLight{
+        .{ .position = .{ -1, 0.8, 0 }, .color = .{ 1, 0.5, 0.2 }, .intensity = 2, .radius = 4, .shadow = true },
+        .{ .position = .{ 1, 0.8, 0 }, .color = .{ 0.2, 0.4, 1 }, .intensity = 2, .radius = 4, .shadow = true },
+    };
+    const size = 256;
+    const u = try shadowedUniforms(&lights, .{}, size, near);
+    var maps: [2]CubeDepthMap = undefined;
+    var depths: [2][]f32 = undefined;
+    for (lights, 0..) |l, i| {
+        depths[i] = try renderCube(testing.allocator, l.position, pointNear(l.radius, near), l.radius, size, &crate);
+        maps[i] = .{ .size = size, .depth = depths[i] };
+    }
+    defer for (depths) |d| testing.allocator.free(d);
+    const up: [3]f32 = .{ 0, 1, 0 };
+    const plain = u.points[0..2];
+    // Left of the crate: the crate blocks the right light, and the left
+    // light still lights the floor.
+    const left: [3]f32 = .{ -0.5, 0, 0 };
+    const got_left = pointLightsShadowed(u, &maps, left, up);
+    const only_left = pointLight(plain[0], left, up);
+    for (0..3) |k| try testing.expectApproxEqAbs(only_left[k], got_left[k], 1e-6);
+    try testing.expect(only_left[0] > 0.1 and pointLight(plain[1], left, up)[2] > 0.05);
+    // Right of the crate: the other shadow.
+    const right: [3]f32 = .{ 0.5, 0, 0 };
+    const got_right = pointLightsShadowed(u, &maps, right, up);
+    const only_right = pointLight(plain[1], right, up);
+    for (0..3) |k| try testing.expectApproxEqAbs(only_right[k], got_right[k], 1e-6);
+    // In front of the crate, both lights reach the floor.
+    const front: [3]f32 = .{ 0, 0, 1.2 };
+    const both = pointLights(u, front, up);
+    const got_front = pointLightsShadowed(u, &maps, front, up);
+    for (0..3) |k| try testing.expectApproxEqAbs(both[k], got_front[k], 1e-6);
+    // The known shadows give the same values.
+    for (0..3) |k| try testing.expectApproxEqAbs(got_left[k], pointLightsWith(u, left, up, &.{ 1, 0 })[k], 1e-6);
+    // Half strength: half of the blocked light.
+    const half = try shadowedUniforms(&lights, .{ .strength = 0.5 }, size, near);
+    const got_half = pointLightsShadowed(half, &maps, left, up);
+    const blocked = pointLight(plain[1], left, up);
+    for (0..3) |k| try testing.expectApproxEqAbs(only_left[k] + 0.5 * blocked[k], got_half[k], 1e-5);
+}
+
+test "lighting: a light with no cube map has no shadow (REQ-GPU-044)" {
+    const lights = [_]PointLight{
+        .{ .position = .{ 0, 1, 0 }, .radius = 4, .shadow = true },
+        .{ .position = .{ 0, 1, 0 }, .radius = 4 },
+        .{ .position = .{ 0, 1, 0 }, .radius = 0.05, .shadow = true },
+    };
+    var u = try uniforms(&.{}, .{ 0, 1, 0 }, .{}, 512, &lights);
+    setPointShadows(&u, .{}, 512, 0.05, &.{ 2, -1, 0 });
+    const far: f32 = 4;
+    const near: f32 = 0.05;
+    try testing.expectEqual([4]f32{ 2, far / (far - near), near, 0 }, u.points[0].shadow);
+    try testing.expectEqual(@as(f32, -1), u.points[1].shadow[0]);
+    // A radius near the near plane: the near plane is half the radius.
+    try testing.expectEqual(@as(f32, 0), u.points[2].shadow[0]);
+    try testing.expectEqual(@as(f32, 0.025), u.points[2].shadow[2]);
+    try testing.expect(!hasPointShadow(0, 0.05));
+    // The texel and the bias of the settings.
+    const s: ShadowSettings = .{};
+    try testing.expectEqual([4]f32{ 2.0 / 512.0, s.filter_radius + 1, s.depth_bias, s.filter_radius }, u.point_shadow);
+    // A light with no shadow gives 1, with any map.
+    const empty: [6]f32 = @splat(0);
+    try testing.expectEqual(@as(f32, 1), pointShadow(u, 1, .{ .size = 1, .depth = &empty }, .{ 1, 0, 0 }, .{ 0, 1, 0 }));
 }

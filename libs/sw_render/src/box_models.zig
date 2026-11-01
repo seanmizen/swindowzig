@@ -30,8 +30,9 @@
 //! fades into the sky as the rest of the scene does.
 //!
 //! With `Options.lighting`, the `.world` layer casts shadows into each
-//! cascade of the `Lighting`, and the draws get the shadows and the point
-//! lights (REQ-GPU-016, REQ-GPU-017). The light direction then comes from
+//! cascade of the `Lighting` and into each cube face of a point light
+//! shadow, and the draws get the shadows and the point lights
+//! (REQ-GPU-016, REQ-GPU-017, REQ-GPU-044). The light direction then comes from
 //! the `Lighting` (the sun by default). `Light` gives the colours.
 
 const std = @import("std");
@@ -89,7 +90,10 @@ pub const Options = struct {
     /// Receive the shadows and the point lights of this lighting. Deinit
     /// the models before the lighting.
     lighting: ?lighting_mod.Lighting = null,
-    /// With `lighting`: draw the `.world` layer into each shadow cascade.
+    /// With `lighting`: draw the `.world` layer into each shadow cascade
+    /// and each cube face of a point light shadow. The `Lighting` does not
+    /// know when an instance moves: set `PointLight.shadow_changed` for a
+    /// light near a moved instance.
     cast_shadows: bool = true,
 };
 
@@ -219,7 +223,7 @@ const State = struct {
         self.stats.draw_calls += calls;
     }
 
-    /// Draw the `.world` layer into one shadow cascade.
+    /// Draw the `.world` layer into one shadow cascade or one cube face.
     fn drawShadow(self: *State, cp: *lighting_mod.CasterPass) anyerror!void {
         self.resetStats();
         const pipeline = self.shadow_pipeline orelse return;

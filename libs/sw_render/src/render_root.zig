@@ -44,7 +44,9 @@
 //! which follows the sun by default, and holds the point lights of the
 //! frame. A scene shader samples the shadow with a PCF filter and adds
 //! the point lights through a WGSL include (REQ-GPU-016, REQ-GPU-017). A
-//! setting turns the shadows off (REQ-GPU-018). See `lighting.zig`.
+//! setting turns the shadows off (REQ-GPU-018). A point light can cast
+//! shadows into a cube map, which draws again only when the light moves
+//! (REQ-GPU-044). See `lighting.zig`.
 //!
 //! The cloud pass draws a layer of boxes at a set height, from a shape
 //! image that the game gives, and the wind moves it (REQ-GPU-020). The
@@ -169,6 +171,7 @@ pub const LightingOptions = lighting_mod.Options;
 pub const ShadowSettings = lighting.ShadowSettings;
 pub const PointLight = lighting.PointLight;
 pub const ShadowCasterPass = lighting_mod.CasterPass;
+pub const PointShadowFace = lighting_mod.PointFace;
 pub const ShadowCaster = lighting_mod.CasterCallback;
 pub const LightingUniforms = lighting.LightingUniforms;
 pub const Clouds = weather_mod.Clouds;

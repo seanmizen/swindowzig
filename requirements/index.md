@@ -85,6 +85,7 @@
 | [`REQ-GPU-041`](gpu.md#req-gpu-041--particles-and-translucent-quads-draw-in-one-far-to-near-order) | Particles and translucent quads draw in one far-to-near order | active | functional | P3 | agent:SWZ-112 |
 | [`REQ-GPU-042`](gpu.md#req-gpu-042--the-shadow-edge-has-no-step-at-a-cascade-split-and-no-texel-steps-near-the-camera) | The shadow edge has no step at a cascade split and no texel steps near the camera | active | quality | P2 | agent:SWZ-119 |
 | [`REQ-GPU-043`](gpu.md#req-gpu-043--a-new-shadow-map-size-or-cascade-count-applies-with-no-restart) | A new shadow map size or cascade count applies with no restart | active | functional | P2 | agent:SWZ-121 |
+| [`REQ-GPU-044`](gpu.md#req-gpu-044--a-point-light-casts-shadows-from-a-cube-shadow-map) | A point light casts shadows from a cube shadow map | active | functional | P2 | agent:SWZ-126 |
 | [`REQ-INPUT-001`](input.md#req-input-001--key-code-values-do-not-change) | Key code values do not change | active | constraint | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-002`](input.md#req-input-002--punctuation-keys-follow-the-physical-key) | Punctuation keys follow the physical key | active | functional | P2 | agent:SWZ-3 |
 | [`REQ-INPUT-003`](input.md#req-input-003--actions-come-only-from-the-input-and-the-bindings) | Actions come only from the input and the bindings | active | constraint | P1 | agent:SWZ-49 |
@@ -235,6 +236,7 @@ graph TD
   REQ_GPU_041["REQ-GPU-041<br/>Particles and translucent quads draw in one far-to-near order"]
   REQ_GPU_042["REQ-GPU-042<br/>The shadow edge has no step at a cascade split and no texel steps near the camera"]
   REQ_GPU_043["REQ-GPU-043<br/>A new shadow map size or cascade count applies with no restart"]
+  REQ_GPU_044["REQ-GPU-044<br/>A point light casts shadows from a cube shadow map"]
   REQ_INPUT_001["REQ-INPUT-001<br/>Key code values do not change"]
   REQ_INPUT_002["REQ-INPUT-002<br/>Punctuation keys follow the physical key"]
   REQ_INPUT_003["REQ-INPUT-003<br/>Actions come only from the input and the bindings"]
@@ -335,6 +337,7 @@ graph TD
   REQ_GPU_016 -->|refines| REQ_GPU_014
   REQ_GPU_016 -->|amended-by| REQ_GPU_042
   REQ_GPU_017 -->|refines| REQ_GPU_006
+  REQ_GPU_017 -->|amended-by| REQ_GPU_044
   REQ_GPU_018 -->|refines| REQ_GPU_016
   REQ_GPU_020 -->|refines| REQ_GPU_011
   REQ_GPU_021 -->|refines| REQ_GPU_011
@@ -353,6 +356,8 @@ graph TD
   REQ_GPU_041 -->|refines| REQ_GPU_024
   REQ_GPU_042 -->|amends| REQ_GPU_016
   REQ_GPU_043 -->|refines| REQ_GPU_016
+  REQ_GPU_044 -->|amends| REQ_GPU_017
+  REQ_GPU_044 -->|depends-on| REQ_GPU_042
   REQ_INPUT_009 -->|refines| REQ_INPUT_007
   REQ_INPUT_011 -->|refines| REQ_INPUT_007
   REQ_JOBS_003 -->|depends-on| REQ_JOBS_002
@@ -426,6 +431,7 @@ graph TD
 - `REQ-GPU-038` — required-by REQ-GPU-039
 - `REQ-GPU-039` — required-by REQ-VOXEL-025
 - `REQ-GPU-040` — required-by REQ-VOXEL-031
+- `REQ-GPU-042` — required-by REQ-GPU-044
 - `REQ-INPUT-007` — refined-by REQ-INPUT-009, refined-by REQ-INPUT-011
 - `REQ-JOBS-002` — required-by REQ-JOBS-003
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
