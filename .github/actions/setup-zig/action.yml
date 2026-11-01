@@ -14,8 +14,11 @@ description: >
 # artifacts for another model. The voxel native build then takes 125 s to
 # 210 s, although the restore says "Cache hit".
 #
+# The key uses the native target that Zig finds (zig targets): the CPU
+# name, and a hash of the triple, the CPU name and the CPU features. Thus
+# two runners share an entry only when Zig compiles the same code on both.
 # The key of each entry is:
-#   zig-<zig version>-<CPU model>-<flags hash>-<group>-<part>-<run id>-<attempt>
+#   zig-<zig version>-<Zig CPU name>-<native target hash>-<group>-<part>-<run id>-<attempt>
 # The restore tries the newest entry of the same group and part first, and
 # then the newest entry of the same group. Jobs that build the same
 # programs use one group, so that each one can use an entry of the others.
@@ -47,10 +50,13 @@ runs:
         PART: ${{ inputs.part }}
       run: |
         model=$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
-        flags=$(sed -n 's/^flags[[:space:]]*: //p' /proc/cpuinfo | head -n 1 | sha256sum | cut -c 1-8)
-        echo "CPU model: $model (flags hash $flags)"
-        cpu=$(printf '%s' "$model" | tr -cs 'A-Za-z0-9' '-')
-        base="zig-$(zig version)-$cpu-$flags-$GROUP-"
+        native=$(zig targets | sed -n '/^    \.native = /,/^    },/p')
+        triple=$(printf '%s\n' "$native" | sed -n 's/^ *\.triple = "\(.*\)",$/\1/p')
+        cpu=$(printf '%s\n' "$native" | sed -n 's/^ *\.name = "\(.*\)",$/\1/p' | head -n 1)
+        hash=$(printf '%s\n' "$native" | sha256sum | cut -c 1-8)
+        echo "CPU model: $model"
+        echo "Zig native target: $triple, CPU $cpu (hash $hash)"
+        base="zig-$(zig version)-$cpu-$hash-$GROUP-"
         {
           echo "ZIG_CACHE_GROUP=$base"
           echo "ZIG_CACHE_PART=$base$PART-"
