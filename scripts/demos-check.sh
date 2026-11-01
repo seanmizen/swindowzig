@@ -3,6 +3,10 @@
 # and compare the frame hashes at the checkpoints with the committed file
 # demos/<demo>/hashes/lavapipe-<preset>.txt (REQ-DEMO-003).
 #
+# A demo with more than one map (`<demo> --list-maps` writes the names)
+# plays the script of each map (REQ-DEMO-029). The first map uses the file
+# above. Each other map uses demos/<demo>/hashes/<map>-lavapipe-<preset>.txt.
+#
 # The hashes are lavapipe frames (Mesa software Vulkan): the CI runner has
 # the same driver. A GPU gives other pixels, so run this on Linux with
 # lavapipe (VK_LOADER_DRIVERS_SELECT='*lvp*').
@@ -43,25 +47,35 @@ for d in demos/*/; do
     [[ -z "$ONLY_DEMO" || "$ONLY_DEMO" == "$demo" ]] || continue
     echo "== $demo: build"
     zig build native -Ddemo="$demo" -Doptimize=ReleaseFast
-    for preset in low medium high; do
-        runs=1
-        [[ $TWICE -eq 1 && $UPDATE -eq 0 ]] && runs=2
-        for run in $(seq 1 "$runs"); do
-            args=(--check --preset "$preset")
-            [[ $UPDATE -eq 1 ]] && args+=(--update)
-            echo "== $demo $preset (run $run)"
-            log="$(mktemp)"
-            set +e
-            timeout "$RUN_TIMEOUT" "./zig-out/bin/$demo" "${args[@]}" > "$log" 2>&1
-            rc=$?
-            set -e
-            # The log lists each checkpoint hash. Show the rest.
-            grep -v "checkpoint .* [0-9a-f]\{16\}$" "$log" || true
-            rm -f "$log"
-            if [[ $rc -ne 0 ]]; then
-                echo "FAIL: $demo $preset (exit $rc)"
-                FAIL=1
-            fi
+    # The maps of the demo. No names: one map, with no --map flag.
+    maps=()
+    while IFS= read -r m; do
+        [[ -n "$m" ]] && maps+=("$m")
+    done < <("./zig-out/bin/$demo" --list-maps)
+    [[ ${#maps[@]} -gt 0 ]] || maps=("")
+    for map in "${maps[@]}"; do
+        for preset in low medium high; do
+            runs=1
+            [[ $TWICE -eq 1 && $UPDATE -eq 0 ]] && runs=2
+            for run in $(seq 1 "$runs"); do
+                args=(--check --preset "$preset")
+                [[ -n "$map" ]] && args+=(--map "$map")
+                [[ $UPDATE -eq 1 ]] && args+=(--update)
+                label="$demo${map:+ map $map} $preset"
+                echo "== $label (run $run)"
+                log="$(mktemp)"
+                set +e
+                timeout "$RUN_TIMEOUT" "./zig-out/bin/$demo" "${args[@]}" > "$log" 2>&1
+                rc=$?
+                set -e
+                # The log lists each checkpoint hash. Show the rest.
+                grep -v "checkpoint .* [0-9a-f]\{16\}$" "$log" || true
+                rm -f "$log"
+                if [[ $rc -ne 0 ]]; then
+                    echo "FAIL: $label (exit $rc)"
+                    FAIL=1
+                fi
+            done
         done
     done
 done

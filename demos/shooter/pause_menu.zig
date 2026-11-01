@@ -2,8 +2,9 @@
 //! shared game menu of the demos (demos/common/game_menu.zig,
 //! REQ-DEMO-026).
 //!
-//! - The main screen: Resume, Graphics, Mouse, Audio, and Quit (native
-//!   only).
+//! - The main screen: Resume, Graphics, Mouse, Audio, Map, and Quit
+//!   (native only). Map changes the map at once (REQ-DEMO-030). It shows
+//!   only when the caller gives the map: the player has control.
 //! - Graphics: the preset, the shadows, the shadow quality, the
 //!   anti-aliasing, vsync and the frame limit.
 //! - Mouse: the sensitivity and invert Y.
@@ -19,6 +20,7 @@ const sw_core = @import("sw_core");
 const sw_render = @import("sw_render");
 const gfx = @import("sw_gfx2d");
 const prefs_mod = @import("prefs.zig");
+const Map = @import("arena.zig").Map;
 const gm = demo.game_menu;
 const ids = gm.ids;
 const Prefs = prefs_mod.Prefs;
@@ -37,6 +39,8 @@ pub const Result = struct {
     quit: bool = false,
     /// A setting changed: apply and save the settings.
     changed: bool = false,
+    /// The player chose this map: put the player on it.
+    map: ?Map = null,
 };
 
 pub const PauseMenu = struct {
@@ -85,8 +89,8 @@ pub const PauseMenu = struct {
     }
 
     /// One tick of the open menu. `escape`: the menu can read Escape (see
-    /// `Pause.Step.escape`).
-    pub fn tick(self: *PauseMenu, host: *demo.Host, snap: *const sw_core.InputSnapshot, prefs: *Prefs, escape: bool) !Result {
+    /// `Pause.Step.escape`). `map`: the map now, or null for no Map button.
+    pub fn tick(self: *PauseMenu, host: *demo.Host, snap: *const sw_core.InputSnapshot, prefs: *Prefs, escape: bool, map: ?Map) !Result {
         const m = &self.m;
         m.setLayout(host.gpu.getSurfaceWidth(), host.gpu.getSurfaceHeight(), host.ctx.window());
         m.nav.update(snap);
@@ -100,7 +104,7 @@ pub const PauseMenu = struct {
                 .{ .base = ids.master, .label = .master, .value = &prefs.volume },
                 .{ .base = ids.effects, .label = .shots, .value = &prefs.shots },
             }),
-        } else try self.buildMain();
+        } else try self.buildMain(map);
         try m.ui.finish();
 
         var r: Result = .{};
@@ -108,10 +112,15 @@ pub const PauseMenu = struct {
         if (input.keys.left or input.keys.right) {
             if (m.ui.focused()) |f| {
                 if (step(prefs, f, input.keys.right)) r.changed = true;
+                if (f == ids.map) r.map = nextMap(map, input.keys.right);
             }
         }
         for (m.ui.frameEvents()) |e| switch (e.kind) {
             .activate => {
+                if (e.id == ids.map) {
+                    r.map = nextMap(map, true);
+                    continue;
+                }
                 if (step(prefs, e.id, true)) {
                     r.changed = true;
                     continue;
@@ -138,13 +147,17 @@ pub const PauseMenu = struct {
         return r;
     }
 
-    fn buildMain(self: *PauseMenu) !void {
+    fn buildMain(self: *PauseMenu, map: ?Map) !void {
         const m = &self.m;
         try m.beginPanel(null, m.tr(.paused));
         try m.ui.addButton(ids.resume_game, m.tr(.resume_game), gm.Menu.wide(m.tr(.fight_tip)));
         try m.ui.addButton(ids.graphics, m.tr(.graphics), gm.Menu.wide(m.tr(.shooter_graphics_tip)));
         try m.ui.addButton(ids.mouse, m.tr(.mouse), gm.Menu.wide(m.tr(.mouse_tip)));
         try m.ui.addButton(ids.sound, m.tr(.sound), gm.Menu.wide(m.tr(.shooter_sound_tip)));
+        if (map) |now| try m.cycleButton(ids.map, .map, m.tr(switch (now) {
+            .arena => .map_arena,
+            .indoor => .map_indoor,
+        }));
         // The browser closes a page, not the game.
         if (!builtin.cpu.arch.isWasm()) try m.ui.addButton(ids.quit, m.tr(.quit), gm.Menu.wide(m.tr(.quit_tip)));
         try m.ui.addText(ids.hint, m.tr(.paused_hint), .{});
@@ -194,6 +207,11 @@ pub const PauseMenu = struct {
         try self.m.drawEnd(pass);
     }
 };
+
+/// The map after `now` in the Map button, or null with no Map button.
+fn nextMap(now: ?Map, forward: bool) ?Map {
+    return gm.cycle(Map, now orelse return null, forward);
+}
 
 /// Change the value of a cycle or toggle button. True when the ID is one.
 fn step(p: *Prefs, id: u32, forward: bool) bool {

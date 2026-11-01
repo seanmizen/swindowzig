@@ -1,0 +1,57 @@
+# shooter, map indoor: a closed room with two shadowed lamps
+# (REQ-DEMO-030, REQ-DEMO-031).
+#
+# `shooter --map indoor` plays this script. The room has no sun and no
+# bots. Light 1 hangs still at the centre: its cube shadow map is drawn
+# one time. Light 2 moves on a rail near the ceiling. L sends it to the
+# other end at a constant speed (5 seconds for the full rail). A press
+# during a move turns it round. Each crate casts one shadow from each
+# lamp. The checkpoints hash the frames for scripts/demos-check.sh
+# (REQ-DEMO-003, REQ-DEMO-029).
+0 set time 0.37
+0 set snow on
+0 set clouds on
+0 set fog on
+0 set shadows on
+0 set exposure 0.8
+0 set indoor_ambient 0.04
+0 set bots_hold on
+0 set god on
+0 set follow -1
+0 set trace off
+0 caption An indoor room: no sun, two lamps with cube shadow maps
+# Look down 12 degrees, at the crates and their shadows.
+10 mouse move 0 8
+11 mouse move 0 16
+12 mouse move 0 24
+13 mouse move 0 32
+14 mouse move 0 40
+15 mouse move 0 48
+16 mouse move 0 56
+17 mouse move 0 64
+18 mouse move 0 72
+19 mouse move 0 80
+20 mouse move 0 88
+21 mouse move 0 96
+60 checkpoint light2_west
+90 caption L moves light 2 along the rail. Each crate casts two shadows
+90 key L down
+95 key L up
+240 checkpoint light2_middle
+400 checkpoint light2_east
+420 caption A press during a move turns the lamp round
+420 key L down
+425 key L up
+495 key L down
+500 key L up
+540 checkpoint turned
+600 caption The player walks in the room with the gun
+600 key A down
+650 key A up
+650 key Right down
+665 key Right up
+720 checkpoint walk
+760 caption Shadows off: the light of each lamp reaches each place
+760 set shadows off
+800 checkpoint no_shadows
+820 end

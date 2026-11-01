@@ -15,6 +15,10 @@
 #
 # Output: DIR/<demo>-<preset>.mp4 and DIR/<demo>-<preset>.webp. Do not
 # commit the MP4 files: the demos-videos workflow attaches them to a release.
+#
+# A demo with more than one map (`<demo> --list-maps`) records each map
+# (REQ-DEMO-029). The first map gives the names above. Each other map gives
+# DIR/<demo>-<map>-<preset>.mp4 and .webp, and docs/media/<demo>-<map>.webp.
 
 set -euo pipefail
 
@@ -79,13 +83,27 @@ make_webp() {
 for demo in "${DEMOS[@]}"; do
     echo "== $demo: build"
     zig build native -Ddemo="$demo" -Doptimize=ReleaseFast
+    # The maps of the demo. No names: one map, with no --map flag.
+    MAPS=()
+    while IFS= read -r m; do
+        [[ -n "$m" ]] && MAPS+=("$m")
+    done < <("./zig-out/bin/$demo" --list-maps)
+    [[ ${#MAPS[@]} -gt 0 ]] || MAPS=("")
+    for map in "${MAPS[@]}"; do
+    # The first map keeps the file names of a demo with one map.
+    name="$demo"
+    map_args=()
+    if [[ -n "$map" ]]; then
+        map_args=(--map "$map")
+        [[ "$map" == "${MAPS[0]}" ]] || name="$demo-$map"
+    fi
     for preset in "${PRESETS[@]}"; do
-        run="$OUT/$demo-$preset"
-        echo "== $demo $preset: record"
+        run="$OUT/$name-$preset"
+        echo "== $name $preset: record"
         rm -rf "$run"
         mkdir -p "$run"
         mkfifo "$run/frames.bgra"
-        "./zig-out/bin/$demo" --preset "$preset" --capture "$run" > "$run/demo.log" 2>&1 &
+        "./zig-out/bin/$demo" --preset "$preset" "${map_args[@]}" --capture "$run" > "$run/demo.log" 2>&1 &
         pid=$!
         # The demo writes info.txt (width, height, frames each second)
         # before it opens the pipe.
@@ -103,16 +121,17 @@ for demo in "${DEMOS[@]}"; do
         ffmpeg -hide_banner -loglevel error -y \
             -f rawvideo -pix_fmt bgra -s "${w}x${h}" -r "$fps" -i "$run/frames.bgra" \
             -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart \
-            "$OUT/$demo-$preset.mp4"
-        wait "$pid" || { echo "demos-record.sh: $demo exited with an error. See $run/demo.log" >&2; exit 1; }
-        echo "    mp4: $OUT/$demo-$preset.mp4 ($(( $(stat -c %s "$OUT/$demo-$preset.mp4") / 1024 )) KB)"
-        make_webp "$OUT/$demo-$preset.mp4" "$OUT/$demo-$preset.webp"
+            "$OUT/$name-$preset.mp4"
+        wait "$pid" || { echo "demos-record.sh: $name exited with an error. See $run/demo.log" >&2; exit 1; }
+        echo "    mp4: $OUT/$name-$preset.mp4 ($(( $(stat -c %s "$OUT/$name-$preset.mp4") / 1024 )) KB)"
+        make_webp "$OUT/$name-$preset.mp4" "$OUT/$name-$preset.webp"
         rm -f "$run/frames.bgra"
         if [[ $MEDIA -eq 1 && "$preset" == medium ]]; then
             mkdir -p docs/media
-            cp "$OUT/$demo-$preset.webp" "docs/media/$demo.webp"
-            echo "    copied to docs/media/$demo.webp"
+            cp "$OUT/$name-$preset.webp" "docs/media/$name.webp"
+            echo "    copied to docs/media/$name.webp"
         fi
+    done
     done
 done
 echo "== done: $OUT"

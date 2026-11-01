@@ -127,6 +127,10 @@ pub const S = enum {
     vsync,
     frame_limit,
     no_limit,
+    // The maps of the shooter (REQ-DEMO-030).
+    map,
+    map_arena,
+    map_indoor,
 };
 
 pub const english = std.enums.EnumArray(S, []const u8).init(.{
@@ -216,6 +220,9 @@ pub const english = std.enums.EnumArray(S, []const u8).init(.{
     .vsync = "Vsync",
     .frame_limit = "Frame limit",
     .no_limit = "none",
+    .map = "Map",
+    .map_arena = "Snowy arena",
+    .map_indoor = "Indoor room",
 });
 
 // Hebrew needs no letter joining. The bidi algorithm of sw_text puts each
@@ -307,6 +314,9 @@ pub const hebrew = std.enums.EnumArray(S, []const u8).init(.{
     .vsync = "סנכרון אנכי",
     .frame_limit = "הגבלת קצב",
     .no_limit = "ללא",
+    .map = "מפה",
+    .map_arena = "זירה מושלגת",
+    .map_indoor = "חדר סגור",
 });
 
 /// The Hebrew keys of the on-screen keyboard (the Israeli layout).
@@ -402,6 +412,7 @@ pub const ids = struct {
     // The pause menu of the shooter.
     pub const mouse: u32 = 230;
     pub const quit: u32 = 231;
+    pub const map: u32 = 232;
     /// The screens are 300 to 307 (the menu demo) and 310 to 312 (the
     /// shooter).
     pub const screen: u32 = 300;

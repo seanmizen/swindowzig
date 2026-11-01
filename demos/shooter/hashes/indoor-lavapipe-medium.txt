@@ -1,0 +1,7 @@
+# shooter, map indoor: frame hashes at the checkpoints of the script, preset medium, lavapipe (REQ-DEMO-003, REQ-DEMO-029)
+light2_west 3a89a3732bed978b
+light2_middle fe1dc9e325b2fe3d
+light2_east abca4c9b75087dc5
+turned bc9ac8920c8930e8
+walk dda3b0ace16721ad
+no_shadows 5aa167fac4414a23

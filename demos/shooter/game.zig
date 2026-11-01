@@ -44,6 +44,36 @@ pub const Input = struct {
     reload: bool = false,
     /// -1 lean left, 0, 1 lean right.
     lean: f32 = 0,
+    /// The press that moves light 2 of the room (REQ-DEMO-031).
+    move_light: bool = false,
+};
+
+/// Light 2 of the room on its rail (REQ-DEMO-031). A press sends the lamp
+/// to the other end at a constant speed. A press during a move turns it
+/// round.
+pub const Rail = struct {
+    /// The place of the lamp: 0 at the west end, 1 at the east end.
+    pos: f32 = 0,
+    /// The end that the lamp moves to.
+    target: f32 = 0,
+
+    /// The part of the rail that the lamp moves in one second.
+    pub const speed: f32 = 0.2;
+
+    /// One press: go to the other end, or turn round.
+    pub fn press(self: *Rail) void {
+        self.target = 1 - self.target;
+    }
+
+    pub fn moving(self: Rail) bool {
+        return self.pos != self.target;
+    }
+
+    pub fn step(self: *Rail, dt: f32) void {
+        const d = self.target - self.pos;
+        const s = speed * dt;
+        if (@abs(d) <= s) self.pos = self.target else self.pos += std.math.sign(d) * s;
+    }
 };
 
 /// The settings that a script can change (`set <name> <value>`).
@@ -216,8 +246,11 @@ pub const Game = struct {
     rng: std.Random.DefaultPrng = .init(79),
     seed: u64 = 79,
     ticks: u64 = 0,
+    /// Light 2 of the room (REQ-DEMO-031). Only the `indoor` map moves it.
+    rail: Rail = .{},
 
     /// Start the fight. weapon.loadModels and arena.build must have run.
+    /// A map with no bot spawns (the room) has no bots and no waves.
     pub fn init(seed: u64, settings: Settings) Game {
         var g: Game = .{ .settings = settings, .seed = seed, .rng = .init(seed) };
         g.respawnPlayer();
@@ -243,7 +276,7 @@ pub const Game = struct {
     fn newWave(self: *Game) void {
         self.wave += 1;
         self.wave_t = 0;
-        self.bot_n = std.math.clamp(self.settings.bots, 1, max_bots);
+        self.bot_n = @min(std.math.clamp(self.settings.bots, 1, max_bots), arena.bot_spawns.len);
         for (self.bots[0..self.bot_n], 0..) |*b, i| {
             const sp = arena.bot_spawns[i];
             b.* = .{ .rng = .init(self.seed *% 31 +% self.wave *% 977 +% i) };
@@ -283,9 +316,13 @@ pub const Game = struct {
         self.marker = @max(0, self.marker - dt);
         self.stepNumbers(dt);
         self.stepPlayer(dt, in);
+        if (arena.map == .indoor) {
+            if (in.move_light) self.rail.press();
+            self.rail.step(dt);
+        }
         for (self.bots[0..self.bot_n], 0..) |*b, i| self.stepBot(b, i, dt);
         if (self.settings.trace and self.ticks % 15 == 0) self.traceLog();
-        if (self.liveBots() == 0) {
+        if (self.liveBots() == 0 and arena.bot_spawns.len > 0) {
             self.wave_t += dt;
             if (self.wave_t > wave_gap) self.newWave();
         }
@@ -759,7 +796,7 @@ test "game: the same seed and input give the same fight (REQ-DEMO-021)" {
         std.testing.allocator.free(weapon.models);
         weapon.models = &.{};
     }
-    arena.build();
+    arena.build(.arena);
     const a = testFight(5, 1500);
     const b = testFight(5, 1500);
     try std.testing.expectEqual(a.hp, b.hp);
@@ -778,7 +815,7 @@ test "game: the bots take cover and fire back (REQ-DEMO-021)" {
         std.testing.allocator.free(weapon.models);
         weapon.models = &.{};
     }
-    arena.build();
+    arena.build(.arena);
     var g = Game.init(11, .{ .god = true });
     var hidden_ticks: u32 = 0;
     var bot_shots: u32 = 0;
@@ -796,4 +833,47 @@ test "game: the bots take cover and fire back (REQ-DEMO-021)" {
     try std.testing.expect(hidden_ticks > 300);
     try std.testing.expect(bot_shots > 5);
     try std.testing.expect(player_hit);
+}
+
+test "game: a press moves light 2 to the other end, and a press during a move turns it round (REQ-DEMO-031)" {
+    var r: Rail = .{};
+    const dt: f32 = 1.0 / 60.0;
+    r.step(dt);
+    try std.testing.expectEqual(@as(f32, 0), r.pos);
+    r.press();
+    // A constant speed: the same distance in each tick.
+    r.step(dt);
+    const d = r.pos;
+    try std.testing.expectApproxEqAbs(Rail.speed * dt, d, 1e-6);
+    for (0..59) |_| r.step(dt);
+    try std.testing.expectApproxEqAbs(Rail.speed, r.pos, 1e-4);
+    // A press during the move: back to the west end.
+    r.press();
+    try std.testing.expect(r.moving());
+    for (0..600) |_| r.step(dt);
+    try std.testing.expectEqual(@as(f32, 0), r.pos);
+    try std.testing.expect(!r.moving());
+    // From the west end to the east end, then it stops there.
+    r.press();
+    for (0..600) |_| r.step(dt);
+    try std.testing.expectEqual(@as(f32, 1), r.pos);
+    try std.testing.expect(!r.moving());
+}
+
+test "game: the room has no bots and no waves, and L moves light 2 (REQ-DEMO-030, REQ-DEMO-031)" {
+    try weapon.loadModels(std.testing.allocator);
+    defer {
+        for (weapon.models) |m| std.testing.allocator.free(m.verts);
+        std.testing.allocator.free(weapon.models);
+        weapon.models = &.{};
+    }
+    defer arena.build(.arena);
+    arena.build(.indoor);
+    var g = Game.init(3, .{});
+    try std.testing.expectEqual(@as(usize, 0), g.bot_n);
+    g.step(1.0 / 60.0, .{ .move_light = true });
+    for (0..400) |_| g.step(1.0 / 60.0, .{});
+    try std.testing.expectEqual(@as(usize, 0), g.bot_n);
+    try std.testing.expectEqual(@as(u32, 1), g.wave);
+    try std.testing.expectEqual(@as(f32, 1), g.rail.pos);
 }

@@ -2,7 +2,7 @@
 //!
 //! ```
 //! <demo> [--tas <file>] [--preset low|medium|high] [--capture <dir>]
-//!        [--check] [--update] [--hashes <file>]
+//!        [--check] [--update] [--hashes <file>] [--map <name>] [--list-maps]
 //! ```
 //!
 //! - `--tas <file>`: play this script. Default: the script of the demo.
@@ -14,6 +14,10 @@
 //! - `--update`: with `--check`, write the hash file.
 //! - `--hashes <file>`: the hash file. Default:
 //!   `demos/<name>/hashes/lavapipe-<preset>.txt`.
+//! - `--map <name>`: start on this map of the demo. Each map has its own
+//!   script and its own hash files (REQ-DEMO-029).
+//! - `--list-maps`: write the names of the maps of the demo, one on each
+//!   line, and stop. A demo with one map writes nothing.
 
 const std = @import("std");
 
@@ -26,6 +30,9 @@ pub const Options = struct {
     check: bool = false,
     update: bool = false,
     hashes_path: ?[]const u8 = null,
+    /// The map of the demo (REQ-DEMO-029). Null: the first map.
+    map: ?[]const u8 = null,
+    list_maps: bool = false,
 
     /// True when the frames must not depend on the wall clock: capture and
     /// check runs (REQ-DEMO-004).
@@ -38,7 +45,7 @@ pub const Error = error{ UnknownFlag, MissingValue, BadPreset, UpdateNeedsCheck 
 
 pub const usage =
     \\usage: <demo> [--tas <file>] [--preset low|medium|high] [--capture <dir>]
-    \\              [--check] [--update] [--hashes <file>]
+    \\              [--check] [--update] [--hashes <file>] [--map <name>] [--list-maps]
 ;
 
 /// Parse the arguments after the program name.
@@ -51,8 +58,10 @@ pub fn parse(args: []const []const u8) Error!Options {
             o.check = true;
         } else if (std.mem.eql(u8, a, "--update")) {
             o.update = true;
+        } else if (std.mem.eql(u8, a, "--list-maps")) {
+            o.list_maps = true;
         } else if (std.mem.eql(u8, a, "--tas") or std.mem.eql(u8, a, "--preset") or
-            std.mem.eql(u8, a, "--capture") or std.mem.eql(u8, a, "--hashes"))
+            std.mem.eql(u8, a, "--capture") or std.mem.eql(u8, a, "--hashes") or std.mem.eql(u8, a, "--map"))
         {
             i += 1;
             if (i >= args.len) return error.MissingValue;
@@ -60,6 +69,7 @@ pub fn parse(args: []const []const u8) Error!Options {
             if (std.mem.eql(u8, a, "--tas")) o.tas_path = v;
             if (std.mem.eql(u8, a, "--capture")) o.capture_dir = v;
             if (std.mem.eql(u8, a, "--hashes")) o.hashes_path = v;
+            if (std.mem.eql(u8, a, "--map")) o.map = v;
             if (std.mem.eql(u8, a, "--preset")) o.preset = std.meta.stringToEnum(Preset, v) orelse return error.BadPreset;
         } else return error.UnknownFlag;
     }
@@ -83,4 +93,13 @@ test "cli: each flag (REQ-DEMO-001)" {
     try testing.expectError(error.MissingValue, parse(&.{"--tas"}));
     try testing.expectError(error.UnknownFlag, parse(&.{"--fast"}));
     try testing.expectError(error.UpdateNeedsCheck, parse(&.{"--update"}));
+}
+
+test "cli: the map flags (REQ-DEMO-029)" {
+    const o = try parse(&.{ "--map", "indoor", "--check" });
+    try testing.expectEqualStrings("indoor", o.map.?);
+    try testing.expect(!o.list_maps);
+    try testing.expect((try parse(&.{"--list-maps"})).list_maps);
+    try testing.expectEqual(@as(?[]const u8, null), (try parse(&.{})).map);
+    try testing.expectError(error.MissingValue, parse(&.{"--map"}));
 }

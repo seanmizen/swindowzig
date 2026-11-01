@@ -388,3 +388,81 @@ scripts, the frame hashes and the recordings.
     shooter, and the mirror shows the pause menu": the page writes
     localStorage, and a new page reads it.
 - **Relations:** depends-on REQ-DEMO-027
+
+## REQ-DEMO-029 — A demo can have more than one map, each with its own script and hashes
+
+- **Status:** active
+- **Source:** agent:SWZ-127
+- **Origin:** #127
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When a demo gives more than one map, `scripts/demos-check.sh`
+  shall play the script of each map and compare its frame hashes with the
+  hash files of that map.
+- **Rationale:** The shooter has a second map with its own script. The
+  script of the first map is tuned to exact bot places, so its script and
+  its hash files must not change when a map is added. `--map <name>` picks
+  the map. The first map keeps the file names of a demo with one map.
+  Each other map uses `hashes/<map>-lavapipe-<preset>.txt`.
+  `--list-maps` gives the names to the check and record scripts.
+- **Verification:**
+  - Test — `demos/common/cli.zig` › "cli: the map flags (REQ-DEMO-029)"
+  - Test — `.github/workflows/demos-check.yml` › the job checks
+    `demos/shooter/indoor.tas` with
+    `demos/shooter/hashes/indoor-lavapipe-<preset>.txt`.
+- **Relations:** depends-on REQ-DEMO-003
+
+## REQ-DEMO-030 — The shooter has a closed room lit by two shadowed lamps
+
+- **Status:** active
+- **Source:** agent:SWZ-127
+- **Origin:** #127
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the shooter demo shows the `indoor` map, the demo
+  shall light the room with two point lights that cast shadows from cube
+  shadow maps, and with no sun light.
+- **Rationale:** Sean wants to see two lights that compete: two shadows of
+  each crate, and the light of one lamp where the other is blocked. The
+  room is closed: a floor, four walls and a ceiling, with no sky, snow,
+  clouds or fog inside. The ambient light is low (`indoor_ambient`,
+  default 0.04), so the shadows are easy to see. Light 1 hangs still at
+  the centre. Its lamp is a box model that casts no shadow, and the player
+  casts none, so nothing that moves casts into its cube map: the lighting
+  draws that cube map one time. The room has no bots. The pause menu
+  changes the map with no restart. The Map button shows only when the
+  player has control, because a script plays one map.
+- **Verification:**
+  - Test — `demos/shooter/arena.zig` › "arena: the room is closed, has no
+    bots and no snow, and the lamps are inside (REQ-DEMO-030)"
+  - Test — `demos/shooter/game.zig` › "game: the room has no bots and no
+    waves, and L moves light 2 (REQ-DEMO-030, REQ-DEMO-031)"
+  - Test — `scripts/demos-check.sh` › the checkpoints of
+    `demos/shooter/indoor.tas`.
+  - Demonstration — Sean opens the pause menu in the native build and
+    changes the map.
+- **Relations:**
+  - depends-on REQ-GPU-044
+  - depends-on REQ-DEMO-027
+  - depends-on REQ-DEMO-029
+
+## REQ-DEMO-031 — L moves the rail lamp of the shooter room
+
+- **Status:** active
+- **Source:** agent:SWZ-127
+- **Origin:** #127
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** When the player presses L or the gamepad north button in
+  the room of the shooter, the demo shall move light 2 at a constant speed
+  to the other end of its rail, or turn it round during a move.
+- **Rationale:** The moving lamp shows the shadows move, and the shadows of
+  the still lamp stay. A moving lamp draws its cube map again in each
+  frame of the move only. The HUD names the key.
+- **Verification:**
+  - Test — `demos/shooter/game.zig` › "game: a press moves light 2 to the
+    other end, and a press during a move turns it round (REQ-DEMO-031)"
+  - Test — `scripts/demos-check.sh` › the checkpoints `light2_west`,
+    `light2_middle`, `light2_east` and `turned` of
+    `demos/shooter/indoor.tas`.
+- **Relations:** depends-on REQ-DEMO-030

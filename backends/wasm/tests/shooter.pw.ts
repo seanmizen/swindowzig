@@ -131,6 +131,16 @@ test('Escape pauses the shooter, and the mirror shows the pause menu', async ({
     1,
   );
 
+  // Map changes the map at once, with no restart (REQ-DEMO-030).
+  await page.waitForTimeout(300);
+  await press(page, 'Escape');
+  await expect.poll(focus).toBe('button: Mouse');
+  await press(page, 'ArrowDown');
+  await press(page, 'ArrowDown');
+  await expect.poll(focus).toBe('button: Map: Snowy arena');
+  await press(page, 'ArrowRight');
+  await expect.poll(focus).toBe('button: Map: Indoor room');
+
   // A new page loads the saved settings.
   await page.reload();
   await expect(mirror).toBeAttached({ timeout: 45_000 });

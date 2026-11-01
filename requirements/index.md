@@ -43,6 +43,9 @@
 | [`REQ-DEMO-026`](demo.md#req-demo-026--the-menu-and-shooter-demos-share-one-game-menu) | The menu and shooter demos share one game menu | active | constraint | P2 | agent:SWZ-121 |
 | [`REQ-DEMO-027`](demo.md#req-demo-027--escape-or-start-pauses-the-shooter-and-opens-its-menu) | Escape or Start pauses the shooter and opens its menu | active | functional | P2 | agent:SWZ-121 |
 | [`REQ-DEMO-028`](demo.md#req-demo-028--the-shooter-keeps-the-settings-of-its-menu) | The shooter keeps the settings of its menu | active | functional | P3 | agent:SWZ-121 |
+| [`REQ-DEMO-029`](demo.md#req-demo-029--a-demo-can-have-more-than-one-map-each-with-its-own-script-and-hashes) | A demo can have more than one map, each with its own script and hashes | active | functional | P2 | agent:SWZ-127 |
+| [`REQ-DEMO-030`](demo.md#req-demo-030--the-shooter-has-a-closed-room-lit-by-two-shadowed-lamps) | The shooter has a closed room lit by two shadowed lamps | active | functional | P2 | agent:SWZ-127 |
+| [`REQ-DEMO-031`](demo.md#req-demo-031--l-moves-the-rail-lamp-of-the-shooter-room) | L moves the rail lamp of the shooter room | active | functional | P2 | agent:SWZ-127 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -194,6 +197,9 @@ graph TD
   REQ_DEMO_026["REQ-DEMO-026<br/>The menu and shooter demos share one game menu"]
   REQ_DEMO_027["REQ-DEMO-027<br/>Escape or Start pauses the shooter and opens its menu"]
   REQ_DEMO_028["REQ-DEMO-028<br/>The shooter keeps the settings of its menu"]
+  REQ_DEMO_029["REQ-DEMO-029<br/>A demo can have more than one map, each with its own script and hashes"]
+  REQ_DEMO_030["REQ-DEMO-030<br/>The shooter has a closed room lit by two shadowed lamps"]
+  REQ_DEMO_031["REQ-DEMO-031<br/>L moves the rail lamp of the shooter room"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
@@ -323,6 +329,11 @@ graph TD
   REQ_DEMO_027 -->|depends-on| REQ_DEMO_025
   REQ_DEMO_027 -->|depends-on| REQ_DEMO_026
   REQ_DEMO_028 -->|depends-on| REQ_DEMO_027
+  REQ_DEMO_029 -->|depends-on| REQ_DEMO_003
+  REQ_DEMO_030 -->|depends-on| REQ_GPU_044
+  REQ_DEMO_030 -->|depends-on| REQ_DEMO_027
+  REQ_DEMO_030 -->|depends-on| REQ_DEMO_029
+  REQ_DEMO_031 -->|depends-on| REQ_DEMO_030
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
@@ -404,6 +415,7 @@ graph TD
 - `REQ-BUILD-002` — refined-by REQ-BUILD-004
 - `REQ-DEMO-001` — required-by REQ-DEMO-020
 - `REQ-DEMO-002` — required-by REQ-DEMO-008
+- `REQ-DEMO-003` — required-by REQ-DEMO-029
 - `REQ-DEMO-004` — required-by REQ-DEMO-003, required-by REQ-DEMO-007, required-by REQ-DEMO-021
 - `REQ-DEMO-008` — required-by REQ-DEMO-009, required-by REQ-DEMO-010
 - `REQ-DEMO-009` — required-by REQ-DEMO-026
@@ -411,7 +423,9 @@ graph TD
 - `REQ-DEMO-021` — required-by REQ-DEMO-023
 - `REQ-DEMO-025` — required-by REQ-DEMO-027
 - `REQ-DEMO-026` — required-by REQ-DEMO-027
-- `REQ-DEMO-027` — required-by REQ-DEMO-028
+- `REQ-DEMO-027` — required-by REQ-DEMO-028, required-by REQ-DEMO-030
+- `REQ-DEMO-029` — required-by REQ-DEMO-030
+- `REQ-DEMO-030` — required-by REQ-DEMO-031
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
 - `REQ-GPU-005` — refined-by REQ-GPU-008, refined-by REQ-GPU-009, refined-by REQ-GPU-012, refined-by REQ-GPU-013, refined-by REQ-GPU-016
@@ -432,6 +446,7 @@ graph TD
 - `REQ-GPU-039` — required-by REQ-VOXEL-025
 - `REQ-GPU-040` — required-by REQ-VOXEL-031
 - `REQ-GPU-042` — required-by REQ-GPU-044
+- `REQ-GPU-044` — required-by REQ-DEMO-030
 - `REQ-INPUT-007` — refined-by REQ-INPUT-009, refined-by REQ-INPUT-011
 - `REQ-JOBS-002` — required-by REQ-JOBS-003
 - `REQ-TEXT-001` — refined-by REQ-TEXT-002, required-by REQ-TEXT-003, refined-by REQ-TEXT-004, refined-by REQ-TEXT-006
