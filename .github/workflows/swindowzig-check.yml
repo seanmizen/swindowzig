@@ -359,6 +359,7 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build (or the binary of the same inputs)
+        # The cull and goldens jobs use the same binary key.
         uses: ./.github/actions/voxel-native-build
 
       - name: Each voxel TAS script runs headless
