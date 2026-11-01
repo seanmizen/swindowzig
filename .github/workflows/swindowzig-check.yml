@@ -328,7 +328,9 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
-        run: zig build native -Dexample=voxel
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          zig build native -Dexample=voxel --summary all
 
       - name: Each voxel TAS script runs headless
         # A TAS script that does not parse stops voxel with an error. Each
@@ -422,7 +424,9 @@ jobs:
 
       - name: Native build
         if: env.RUN_TEST == 'true'
-        run: zig build native -Dexample=voxel
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          zig build native -Dexample=voxel --summary all
 
       - name: Cave cull, section cull and occlusion cull (${{ matrix.test }})
         # Each cull must give the same frame as the frustum cull only
@@ -473,7 +477,9 @@ jobs:
           unzip -q "$RUNNER_TEMP/wgpu.zip" -d ~/.local
 
       - name: Native build
-        run: zig build native -Dexample=voxel
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          zig build native -Dexample=voxel --summary all
 
       - name: Compare with the goldens
         # The step takes about 1.5 minutes. The script stops a run after
