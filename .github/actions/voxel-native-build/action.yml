@@ -7,9 +7,9 @@ description: >
 # Why a cache of the binary:
 #
 # The voxel jobs (headless, cull, goldens) build the same debug binary. A
-# fresh job compiles voxel again (30 s to 60 s) although the Zig cache of
-# the same native target and the same sources is restored. Thus a commit
-# that changes only a workflow file compiles voxel again in each job.
+# fresh job compiles voxel again (30 s to 60 s) although setup-zig restores
+# the Zig cache of the same native target and the same sources. Thus a
+# commit that changes only a workflow file compiles voxel again in each job.
 #
 # The key holds each input of the binary:
 #   - the Zig version and the native target (ZIG_NATIVE, from setup-zig),

@@ -410,7 +410,7 @@ jobs:
     # The frame tests that render each frame of a TAS on lavapipe. Each
     # one has its own job, so that they run at the same time: the 5 scenes
     # of cave_cull.sh, and chunk_border.sh. The two slowest (surface and
-    # chunk_border, about 100 s and 150 s after a 2 to 3 min build) run
+    # chunk_border, about 100 s and 150 s after the voxel build) run
     # only on a push to main, so that a pull request check stays short.
     name: voxel frames ${{ matrix.test }} (lavapipe)
     runs-on: ubuntu-24.04
