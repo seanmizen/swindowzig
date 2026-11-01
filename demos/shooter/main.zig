@@ -19,7 +19,8 @@
 // Controls: WASD move, mouse or arrow keys look, left button fire, right
 // button aim, R reload, Space jump, Q and E lean. Gamepad: left stick
 // move, right stick look, right trigger fire, left trigger aim, south
-// jump, west reload, shoulders lean.
+// jump, west reload, shoulders lean. The mouse works only while the
+// pointer is locked. A click in the window locks it (REQ-DEMO-025).
 //
 //   zig build run -Ddemo=shooter
 //   ./zig-out/bin/shooter --check                     # the frame hashes
@@ -37,6 +38,7 @@ const game_mod = @import("game.zig");
 const scene_mod = @import("scene.zig");
 const fx = @import("impact_fx.zig");
 const sfx_mod = @import("sfx.zig");
+const mouse_gate = @import("mouse_gate.zig");
 const V3 = vec.V3;
 const v3 = vec.v3;
 
@@ -89,8 +91,11 @@ const App = struct {
     var sfx: ?sfx_mod.Sfx = null;
     var actions: Actions = undefined;
     var mouse: sw_core.MouseSettings = .{};
-    /// The pointer lock is on: the player took the control.
-    var locked = false;
+    /// The pointer lock and the mouse of the player (REQ-DEMO-025).
+    var gate: mouse_gate.Gate = .{};
+    /// The input of the tick with no mouse, while the game does not read
+    /// the mouse.
+    var no_mouse: sw_core.InputSnapshot = .{};
     var ticks: u64 = 0;
 
     pub fn init(host: *demo.Host) !void {
@@ -142,13 +147,27 @@ const App = struct {
         };
     }
 
+    /// The input of the tick. The script input goes to the game as it is.
+    /// The input of the player goes with the mouse only while the pointer
+    /// is locked (REQ-DEMO-025). A capture or check run has no player, so
+    /// its input and its frames do not change.
+    fn playerInput(host: *demo.Host) *const sw_core.InputSnapshot {
+        const snap = host.input();
+        if (!host.user_control) return snap;
+        const ctx = host.ctx;
+        // SDL keeps the relative mode when the window loses the focus. End
+        // the lock, so a click locks it again as on the web.
+        if (mouse_gate.focusLost(ctx.bus().eventsForTick(ctx.tickId()))) ctx.setCursorMode(.normal);
+        const st = gate.step(ctx.isCursorLocked(), snap);
+        if (st.lock) ctx.setCursorMode(.locked);
+        if (st.mouse) return snap;
+        no_mouse = mouse_gate.withoutMouse(snap);
+        return &no_mouse;
+    }
+
     pub fn tick(host: *demo.Host) !void {
         const dt = host.dt;
-        if (host.user_control and !locked) {
-            locked = true;
-            host.ctx.setCursorMode(.locked);
-        }
-        g.step(dt, readInput(host.input(), dt));
+        g.step(dt, readInput(playerInput(host), dt));
         ticks += 1;
 
         // The particles of the tick.

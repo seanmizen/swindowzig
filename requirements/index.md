@@ -39,6 +39,7 @@
 | [`REQ-DEMO-022`](demo.md#req-demo-022--one-box-model-draws-the-bodies-of-all-the-bots) | One box model draws the bodies of all the bots | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-DEMO-023`](demo.md#req-demo-023--each-hit-throws-the-particles-of-its-material) | Each hit throws the particles of its material | active | functional | P3 | agent:SWZ-79 |
 | [`REQ-DEMO-024`](demo.md#req-demo-024--the-shots-of-the-shooter-play-as-3d-sound) | The shots of the shooter play as 3D sound | active | functional | P3 | agent:SWZ-79 |
+| [`REQ-DEMO-025`](demo.md#req-demo-025--a-click-in-the-shooter-locks-the-pointer-again) | A click in the shooter locks the pointer again | active | functional | P2 | agent:SWZ-120 |
 | [`REQ-GPU-001`](gpu.md#req-gpu-001--the-gpu-makes-the-mip-levels-on-native-and-on-the-web) | The GPU makes the mip levels on native and on the web | active | functional | P1 | agent:SWZ-27 |
 | [`REQ-GPU-002`](gpu.md#req-gpu-002--the-mip-levels-of-an-atlas-do-not-mix-tiles) | The mip levels of an atlas do not mix tiles | active | constraint | P1 | agent:SWZ-27 |
 | [`REQ-GPU-003`](gpu.md#req-gpu-003--an-animated-sprite-changes-with-gpu-copies-only) | An animated sprite changes with GPU copies only | active | functional | P1 | agent:SWZ-28 |
@@ -183,6 +184,7 @@ graph TD
   REQ_DEMO_022["REQ-DEMO-022<br/>One box model draws the bodies of all the bots"]
   REQ_DEMO_023["REQ-DEMO-023<br/>Each hit throws the particles of its material"]
   REQ_DEMO_024["REQ-DEMO-024<br/>The shots of the shooter play as 3D sound"]
+  REQ_DEMO_025["REQ-DEMO-025<br/>A click in the shooter locks the pointer again"]
   REQ_GPU_001["REQ-GPU-001<br/>The GPU makes the mip levels on native and on the web"]
   REQ_GPU_002["REQ-GPU-002<br/>The mip levels of an atlas do not mix tiles"]
   REQ_GPU_003["REQ-GPU-003<br/>An animated sprite changes with GPU copies only"]
@@ -304,6 +306,7 @@ graph TD
   REQ_DEMO_020 -->|depends-on| REQ_DEMO_001
   REQ_DEMO_021 -->|depends-on| REQ_DEMO_004
   REQ_DEMO_023 -->|depends-on| REQ_DEMO_021
+  REQ_DEMO_025 -->|depends-on| REQ_DEMO_010
   REQ_GPU_002 -->|refines| REQ_GPU_001
   REQ_GPU_004 -->|refines| REQ_GPU_002
   REQ_GPU_008 -->|refines| REQ_GPU_005
@@ -381,6 +384,7 @@ graph TD
 - `REQ-DEMO-002` — required-by REQ-DEMO-008
 - `REQ-DEMO-004` — required-by REQ-DEMO-003, required-by REQ-DEMO-007, required-by REQ-DEMO-021
 - `REQ-DEMO-008` — required-by REQ-DEMO-009, required-by REQ-DEMO-010
+- `REQ-DEMO-010` — required-by REQ-DEMO-025
 - `REQ-DEMO-021` — required-by REQ-DEMO-023
 - `REQ-GPU-001` — refined-by REQ-GPU-002
 - `REQ-GPU-002` — refined-by REQ-GPU-004
