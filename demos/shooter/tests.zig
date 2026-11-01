@@ -7,4 +7,5 @@ test {
     _ = @import("guns_test.zig");
     _ = @import("game.zig");
     _ = @import("impact_fx.zig");
+    _ = @import("mouse_gate.zig");
 }

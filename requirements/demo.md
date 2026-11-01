@@ -287,3 +287,26 @@ scripts, the frame hashes and the recordings.
 - **Verification:** Inspection — `demos/shooter/sfx.zig` › `Sfx.shots`.
   Demonstration — Sean listens to the native and the web build.
 - **Relations:** none
+
+## REQ-DEMO-025 — A click in the shooter locks the pointer again
+
+- **Status:** active
+- **Source:** agent:SWZ-120
+- **Origin:** #120
+- **Type:** functional
+- **Priority:** P2
+- **Statement:** While the player controls the shooter demo and the
+  pointer is not locked, when the player clicks in the window, the demo
+  shall ask for the pointer lock, and keep that click and the mouse
+  movement from the game.
+- **Rationale:** The browser ends the lock on Escape and on a focus loss.
+  SDL on macOS keeps the relative mode during a focus loss, so the demo
+  ends the lock itself on a focus loss. Before this requirement, the demo
+  asked for the lock one time only, so the player lost the mouse after the
+  first focus loss. The click that locks the pointer must not fire the gun.
+- **Verification:**
+  - Test — `demos/shooter/mouse_gate.zig` › "a click locks the pointer
+    again and does not reach the game"
+  - Demonstration — Sean clicks in another window, then in the shooter, in
+    the native build on macOS and in the web build in Chromium.
+- **Relations:** depends-on REQ-DEMO-010

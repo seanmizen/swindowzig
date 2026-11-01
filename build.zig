@@ -774,13 +774,15 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(demo_tests).step);
     }
     // The shooter demo without the GPU: the arena, the body model, the gun
-    // model and the bot fight (REQ-DEMO-020 to REQ-DEMO-023).
+    // model, the bot fight (REQ-DEMO-020 to REQ-DEMO-023) and the mouse
+    // gate (REQ-DEMO-025).
     const shooter_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("demos/shooter/tests.zig"),
         .target = target,
         .optimize = optimize,
     }) });
     shooter_tests.root_module.addImport("sw_math", web_libs.math);
+    shooter_tests.root_module.addImport("sw_core", web_libs.core);
     shooter_tests.root_module.addImport("sw_render", web_libs.render);
     test_step.dependOn(&b.addRunArtifact(shooter_tests).step);
     // Chunk stage tests (pipeline/stages.zig): equivalence with World,
